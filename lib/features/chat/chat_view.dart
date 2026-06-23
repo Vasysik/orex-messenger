@@ -1,22 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
-import '../../core/call_service.dart';
 import '../../core/matrix_service.dart';
 import '../../theme/orex_theme.dart';
+import '../call/element_call.dart';
 import 'message_bubble.dart';
+
+/// Первая буква имени для аватара-заглушки (без внешних зависимостей).
+String _initial(String s) => s.isEmpty ? '?' : s.characters.first.toUpperCase();
 
 /// Правая панель: шапка чата, лента сообщений, строка ввода.
 class ChatView extends StatefulWidget {
   const ChatView({
     super.key,
     required this.matrix,
-    required this.calls,
     required this.roomId,
     this.onBack,
   });
 
   final MatrixService matrix;
-  final CallService calls;
   final String roomId;
   final VoidCallback? onBack;
 
@@ -86,7 +87,8 @@ class _ChatViewState extends State<ChatView> {
         _ChatHeader(
           room: room,
           onBack: widget.onBack,
-          onCall: (video) => widget.calls.joinCall(room.id, video: video),
+          onCall: (video) =>
+              openElementCall(context, roomId: room.id, video: video),
         ),
         Divider(height: 1, color: OrexColors.copper.withValues(alpha: 0.12)),
         Expanded(
@@ -142,9 +144,7 @@ class _ChatHeader extends StatelessWidget {
             ),
             alignment: Alignment.center,
             child: Text(
-              room.getLocalizedDisplayname().characters.firstOrNull
-                      ?.toUpperCase() ??
-                  '?',
+              _initial(room.getLocalizedDisplayname()),
               style: const TextStyle(
                 color: OrexColors.cream,
                 fontWeight: FontWeight.w700,

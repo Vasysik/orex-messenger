@@ -1,45 +1,45 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
-.DS_Store
-.atom/
-.build/
-.buildlog/
-.history
-.svn/
-.swiftpm/
-migrate_working_dir/
+# =============================================================
+# Orex Messenger — .gitignore
+#
+# Платформенные папки (android/ios/windows/web/linux/macos) и test/
+# РЕГЕНЕРИРУЮТСЯ командой `flutter create` и здесь намеренно НЕ хранятся,
+# чтобы репозиторий содержал только исходники (lib/, pubspec, assets).
+# После клонирования выполните:
+#   flutter create --platforms=web,android,windows .
+#   flutter pub get
+#   dart run flutter_launcher_icons
+#   ./tool/setup_web_vodozemac.sh   # wasm для E2EE на web (см. README)
+# =============================================================
 
-# IntelliJ related
+# --- Генерируемые платформенные папки ---
+/android/
+/ios/
+/linux/
+/macos/
+/windows/
+/web/
+/test/
+
+# --- Сборка и кэш Flutter/Dart ---
+/build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+flutter_*.png
+**/generated_plugin_registrant.dart
+
+# --- IDE ---
+.idea/
+.vscode/
 *.iml
 *.ipr
 *.iws
-.idea/
 
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
-
-# Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
-.dart_tool/
-.flutter-plugins-dependencies
-.pub-cache/
-.pub/
-/build/
-/coverage/
-
-# Symbolication related
-app.*.symbols
-
-# Obfuscation related
-app.*.map.json
-
-# Android Studio will place build artifacts here
-/android/app/debug
-/android/app/profile
-/android/app/release
+# --- Прочее ---
+.DS_Store
+*.log
+EOF
+echo "gitignore created"

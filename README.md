@@ -1,180 +1,172 @@
 # Orex Messenger — архитектура (Lead Flutter Architect)
 
-Тёплый ореховый мессенджер на **Flutter** поверх **Matrix (Synapse)** и **LiveKit**.
-Единая кодовая база: **Web · Android · Windows** (плюс iOS/macOS/Linux «бесплатно»,
-если понадобятся).
+Тёплый ореховый мессенджер на **Flutter** поверх **Matrix (Synapse)**, со
+сквозным шифрованием (**vodozemac**) и звонками через **Element Call**
+(MatrixRTC + ваш LiveKit). Единая кодовая база: **Web · Android · Windows**.
 
-Этот пакет — рабочий **каркас**: тема, glassmorphism-компоненты, адаптивный
-двухпанельный layout в стиле Telegram, список чатов с папками, окно переписки,
-оверлей звонка и сервисы Matrix/LiveKit. Бизнес-логику и крайние случаи нужно
-дорастить (см. «Дорожная карта»).
-
----
-
-## 1. Технологический стек (проверено на актуальность)
-
-| Слой              | Решение                                  | Заметки |
-|-------------------|------------------------------------------|---------|
-| UI                | Flutter 3.24+, Material 3                | Glassmorphism через `BackdropFilter` |
-| Протокол          | Matrix CS API (Synapse 1.155+)           | Логин, sync, сообщения, комнаты |
-| Matrix-клиент     | `matrix` (Famedly), ветка **7.x**        | Содержит встроенные LiveKit-звонки («famedly calls») |
-| E2EE              | **vodozemac** (`flutter_vodozemac`)      | Заменил устаревший olm |
-| Звонки            | `livekit_client` 2.x + lk-jwt-service    | Поток в стиле Element Call / MatrixRTC |
-| TURN/STUN         | Coturn (на сервере)                      | Прозрачно для клиента через LiveKit |
-
-### Важные уточнения (читать перед стартом)
-
-1. **Sliding Sync.** Нативный Simplified Sliding Sync (MSC4186) реализован в
-   Synapse и в Rust/JS SDK. Но **Dart SDK (Famedly) исторически работает на
-   классическом `/sync`** + локальный кэш; «мгновенный запуск» там делается за
-   счёт БД, а не sliding sync. Поэтому архитектура опирается на
-   `Client.init(waitForFirstSync: false)` + локальную базу. Если ваша версия
-   Dart SDK уже умеет MSC4186 — включайте отдельно и тестируйте; не считайте это
-   гарантированным «из коробки».
-
-2. **Звонки.** Встроенные «famedly calls» в SDK 7.x умеют LiveKit. При этом ваш
-   развёрнутый `lk-jwt-service` ждёт **OpenID-токен** Matrix (не сырой
-   `access_token`). В `CallService` реализован корректный поток:
-   `openid/request_token` → `POST /sfu/get` → `connect()`. Если ваш сервис
-   настроен иначе — точка правки одна (`CallService._requestSfu`).
-
-3. **Версии API SDK.** Экосистема быстро меняется, между мажорами matrix SDK
-   бывают breaking changes. Отдельные геттеры в коде (например,
-   `directChatPresence`, `canSendDefaultMessages`) сверьте с установленной
-   версией — это пометки `// уточните` в коде. Запустите
-   `flutter pub upgrade --major-versions` и поправьте сигнатуры под реальный API.
+Это уже близкий к рабочему билд: тема, glassmorphism, адаптивный двухпанельный
+layout, список чатов с папками, переписка, **настройки (профиль, тема,
+устройства, выход)**, **E2EE** и **звонки через Element Call**.
 
 ---
 
-## 2. Структура проекта
+## 1. Стек (сверено с реальными исходниками 7.3.0)
+
+| Слой     | Решение                               | Заметки |
+|----------|---------------------------------------|---------|
+| UI       | Flutter 3.24+, Material 3             | Glassmorphism, орехово-медная гамма |
+| Протокол | Matrix CS API (Synapse 1.155+)        | Логин, sync, сообщения, профиль, устройства |
+| Клиент   | `matrix` (Famedly) 7.3.x              | Классический `/sync` + локальный кэш |
+| E2EE     | `flutter_vodozemac` 0.5.x (vodozemac) | Заменил olm |
+| Звонки   | **Element Call** (web/native)         | Поверх вашего LiveKit + lk-jwt-service |
+| Кэш      | sqflite / ffi / IndexedDB             | Кроссплатформенно через conditional import |
+
+---
+
+## 2. Что реализовано
+
+- Авторизация по паролю, восстановление сессии из локальной БД.
+- Список чатов: поиск, папки, аватары, превью, время, непрочитанные; адаптивный layout.
+- Переписка: статус сети/число участников, баблы, отправка, авто-пометка прочитанного.
+- E2EE: vodozemac до `client.init()`, дальше SDK сам шифрует зашифрованные комнаты.
+- Звонки через Element Call: web — `<iframe>`, native — системный браузер
+  (без тяжёлого WebRTC в клиенте — это и убирало лаги).
+- Настройки: профиль (аватар + имя), тема (сохраняется), устройства аккаунта
+  (переименование, удаление с паролём через UIA), Matrix ID, выход.
+- Иконка приложения: `assets/icon/app_icon.png` + `flutter_launcher_icons`.
+
+---
+
+## 3. Структура
 
 ```
 lib/
-├─ main.dart                      # запуск, DI сервисов, выбор экрана
-├─ theme/
-│  ├─ orex_theme.dart            # палитра (walnut/copper) + ThemeData
-│  └─ glass.dart                 # GlassPanel + амбиентный фон
+├─ main.dart                 # vodozemac → тема → БД → Matrix → запуск
 ├─ core/
-│  ├─ matrix_service.dart        # клиент, логин, sync, папки, отправка
-│  └─ call_service.dart          # OpenID → lk-jwt-service → LiveKit
-├─ widgets/
-│  └─ squirrel_mascot.dart       # маскот-Белочка (пустые состояния)
+│  ├─ config.dart            # адреса бэкенда (homeserver, Element Call)
+│  ├─ matrix_service.dart    # логин, sync, профиль, устройства, E2EE-флаг
+│  ├─ database.dart / database_web.dart / database_io.dart
+├─ theme/ orex_theme.dart, glass.dart, theme_controller.dart
+├─ widgets/squirrel_mascot.dart
 └─ features/
    ├─ auth/login_screen.dart
-   ├─ home/home_shell.dart        # адаптивный двухпанельный каркас
-   ├─ chat_list/chat_list_panel.dart  # поиск + папки + список чатов
-   ├─ chat/chat_view.dart         # шапка + лента + ввод
-   ├─ chat/message_bubble.dart
-   └─ call/call_overlay.dart      # стеклянный оверлей звонка
-```
-
-**Управление состоянием.** Каркас намеренно использует `ChangeNotifier` +
-`AnimatedBuilder`, чтобы не навязывать стек. Для продакшена рекомендую
-**Riverpod** (или Bloc): обернуть `MatrixService`/`CallService` в провайдеры,
-а таймлайны комнат — в семейство провайдеров по `roomId`.
-
----
-
-## 3. Потоки данных
-
-### Авторизация
-```
-LoginScreen → MatrixService.login()
-  → client.checkHomeserver(https://vasys.ru)
-  → client.login(m.login.password)         # POST /_matrix/client/v3/login
-  → SDK сохраняет access_token + deviceId в локальную БД
-```
-
-### Синхронизация и список чатов
-```
-App start → MatrixService.init()
-  → client.init(waitForFirstSync:false)    # поднимает кэш из БД -> мгновенный UI
-  → client.onSync.stream → notifyListeners()
-ChatListPanel слушает MatrixService, фильтрует rooms по папке (Все/Личные/Группы/Каналы)
-```
-
-### Сообщения
-```
-ChatView.open → room.getTimeline(onUpdate: setState)
-Отправка → room.sendTextEvent(text)        # PUT /rooms/{id}/send/m.room.message
-```
-
-### Звонок (LiveKit / MatrixRTC)
-```
-Кнопка звонка → CallService.joinCall(roomId, video)
-  1. POST /_matrix/client/v3/user/{userId}/openid/request_token  → openid access_token
-  2. POST https://jwt.vasys.ru/sfu/get
-        { room, openid_token:{access_token, matrix_server_name}, device_id }
-     → { url: "wss://lk.vasys.ru", jwt }
-  3. lk.Room.connect(url, jwt) → publish mic/cam
-CallOverlay рисует сетку участников поверх чата
+   ├─ home/home_shell.dart
+   ├─ chat_list/chat_list_panel.dart
+   ├─ chat/chat_view.dart, message_bubble.dart
+   ├─ settings/settings_screen.dart, devices_screen.dart
+   └─ call/element_call*.dart   # фасад + web(iframe) + native(browser) + url
 ```
 
 ---
 
-## 4. Дизайн-система
+## 4. Шифрование (E2EE)
 
-**Палитра** (`OrexColors`): медь `#C8763C`, светлая медь `#D98C4A`, орех
-`#8B5A2B`, глубокий орех `#5E3A1A`, охра `#D9A05B`, кремовый `#FBF5EC`.
-**Тёмная тема** — «чёрный шоколад»: фон `#1C140E`, поверхности с тёплым медным
-отливом, никакого холодного синего/серого.
+vodozemac **обязан** инициализироваться до `client.init()` — иначе SDK не включит
+шифрование (это была причина, почему «шифрование не происходило»). В `main.dart`:
 
-**Glassmorphism** (`GlassPanel`): `BackdropFilter(blur)` + полупрозрачный тёплый
-слой + тонкая медная светящаяся граница + диагональный световой градиент.
-Под стеклом — `AmbientBackground` с тёплыми «пятнами» света, чтобы блюру было
-что размывать.
+```dart
+try { await vod.init(); } catch (e) { /* работаем без E2EE */ }
+```
 
-**Маскот-Белочка** появляется на splash/логине, в пустом списке, в пустом окне
-переписки и в звонке «ожидаем собеседника». Положите ассет в
-`assets/mascot/squirrel.png` (есть graceful-fallback на эмодзи 🐿).
+- Android / Windows / desktop — `flutter_vodozemac` собирает Rust через cargokit.
+  Для desktop-сборки нужен **Rust toolchain** (`rustup`).
+- Web — vodozemac это **wasm**, и его надо собрать в `web/pkg/`:
 
----
+```bash
+./tool/setup_web_vodozemac.sh          # bash / git-bash / WSL
+```
+PowerShell-эквивалент (если нет bash) — см. шаги в скрипте; ключевая команда:
+`flutter_rust_bridge_codegen build-web --dart-root dart --rust-root <abs>/rust --release`,
+затем перенести получившийся `pkg/` в `web/pkg/`.
 
-## 5. Сборка под платформы
+После этого запускайте web с заголовками cross-origin isolation (нужно
+flutter_rust_bridge для разделяемой памяти):
 
-**Общее:** `flutter pub get`, затем правьте `kHomeserver`/`kJwtService` в `main.dart`.
+```bash
+flutter run -d chrome \
+  --web-header=Cross-Origin-Opener-Policy=same-origin \
+  --web-header=Cross-Origin-Embedder-Policy=require-corp
+```
 
-- **Web.** Для vodozemac нужен wasm/worker — следуйте README `flutter_vodozemac`.
-  Для E2EE LiveKit на web соберите `e2ee.worker.dart.js` (см. доку livekit_client).
-  Synapse должен слать корректные CORS-заголовки (у вас бэкенд готов — проверьте).
-- **Android.** В `AndroidManifest.xml` — разрешения `INTERNET`, `RECORD_AUDIO`,
-  `CAMERA`, `BLUETOOTH`/`MODIFY_AUDIO_SETTINGS`; для демонстрации экрана —
-  foreground service (требование flutter_webrtc).
-- **Windows.** Десктоп-таргет Flutter + Visual Studio (C++ desktop workload).
-  `livekit_client` поддерживает desktop через flutter_webrtc.
+> Если wasm не собран, `vod.init()` на web завис бы и блокировал запуск
+> (белый экран). В `main.dart` он теперь под таймаутом 6 c: при отсутствии wasm
+> приложение стартует **без** E2EE, а не зависает. Это и была причина, почему
+> «приложение не запускалось».
 
----
+Статус: Настройки → Безопасность → «Сквозное шифрование».
 
-## 6. Дорожная карта (что дорастить)
-
-Приоритет 1 — функциональный паритет:
-- Локальная БД для кэша (Hive/SQLite) и устойчивый старт оффлайн.
-- E2EE: инициализация vodozemac, верификация устройств, key backup.
-- Вложения: загрузка/скачивание media (`room.sendFileEvent`), превью.
-- Прочитанные/печатает/доставлено, reactions, ответы, редактирование.
-- Пуш-уведомления (UnifiedPush/FCM) + бейджи непрочитанного.
-
-Приоритет 2 — «лучше Telegram»:
-- Настоящие папки Matrix (spaces / m.space) вместо эвристики каналов.
-- Групповые звонки с раскладками, шумоподавление, демонстрация экрана.
-- Поиск по сообщениям, закреплённые, мьюты, архив.
-- Тонкая настройка sliding sync, если Dart SDK его поддержит.
-
-Технический долг каркаса:
-- Заменить `ChangeNotifier` на Riverpod/Bloc.
-- Пагинация таймлайна (`timeline.requestHistory()`), индикаторы загрузки.
-- Обработка ошибок сети/токена (soft logout, refresh).
-- Сверить помеченные `// уточните` геттеры SDK с установленной версией.
+> Дальше по E2EE: кросс-подпись, верификация устройств, key backup (SDK умеет —
+> нужен UI).
 
 ---
 
-## 7. Риски и рекомендации
+## 5. Звонки (Element Call)
 
-- **Версии SDK.** Закрепите версии после первой успешной сборки и обновляйтесь
-  осознанно — у matrix SDK бывают breaking changes между мажорами.
-- **Sliding sync.** Не закладывайте маркетинг «instant sync через MSC4186» в
-  Dart-клиенте, пока не подтвердите поддержку в вашей версии SDK.
-- **Звонки.** Протестируйте формат запроса к `lk-jwt-service` против реального
-  ответа вашего сервиса (поле `room`: id или alias; нужен ли `device_id`).
-- **Юридическое.** Лицензия matrix SDK — AGPL-3.0; учтите требования при
-  распространении клиента.
+EC — веб-приложение MatrixRTC поверх **вашего** LiveKit + lk-jwt-service. Мы его
+открываем, а не реализуем WebRTC в Flutter:
+- Web → `<iframe>` на полноэкранном экране (камера/микрофон через `allow`).
+- Native → системный браузер (`url_launcher`), надёжно вкл. Windows.
+
+Настройка в `core/config.dart`:
+```dart
+static const String elementCallBase = 'https://call.element.io';
+```
+Рекомендуется поднять свой EC (`https://call.vasys.ru`) на ваш homeserver+LiveKit.
+
+> Точный набор query-параметров URL EC зависит от версии — сверьте
+> `element_call_url.dart` со своим деплоем. Встроенный звонок в native без выхода
+> в браузер — следующий шаг (webview + Matrix Widget API).
+
+---
+
+## 6. Иконка приложения
+
+```bash
+flutter pub get
+dart run flutter_launcher_icons   # генерит иконки для всех платформ из PNG
+```
+
+---
+
+## 7. Сборка и запуск
+
+Репозиторий хранит только исходники (`lib/`, `pubspec.yaml`, `assets/`,
+`tool/`). Платформенные папки регенерируются (см. `.gitignore`):
+
+```bash
+flutter create --platforms=web,android,windows .   # воссоздать android/web/windows
+flutter pub get
+dart run flutter_launcher_icons                     # иконки (ios отключён)
+./tool/setup_web_vodozemac.sh                        # wasm для E2EE на web
+
+# web (быстрее всего), с cross-origin isolation для шифрования:
+flutter run -d chrome \
+  --web-header=Cross-Origin-Opener-Policy=same-origin \
+  --web-header=Cross-Origin-Embedder-Policy=require-corp
+
+# flutter run -d android  /  flutter run -d windows
+```
+
+Мелочи:
+- Android: `INTERNET` в манифесте.
+- Web: CORS на Synapse (иначе логин из браузера упадёт); wasm vodozemac в `web/pkg/`.
+- Windows: Rust toolchain для E2EE-сборки.
+
+### Что не коммитится в Git
+`.gitignore` исключает `android/ios/windows/web/linux/macos`, `test/`, `build/`,
+`.dart_tool/` и т.п. — это и есть «лишнее», что попадало в репозиторий. После
+`git clone` восстановите платформы командами выше. Минус подхода: `web/pkg/`
+(wasm) тоже не хранится — пересоберите его скриптом `tool/setup_web_vodozemac.sh`.
+
+---
+
+## 8. Дорожная карта
+
+E2EE UI (верификация, key backup) · вложения/reactions/ответы · пуши ·
+Matrix Spaces вместо эвристики каналов · встроенный EC через webview ·
+маскот-Белочка как помощник · пагинация ленты · Riverpod/Bloc.
+
+## 9. Заметки
+
+Лицензия matrix SDK — AGPL-3.0. После первой удачной сборки закрепите версии
+пакетов (у matrix SDK бывают breaking changes между мажорами).

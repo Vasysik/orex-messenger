@@ -1,5 +1,5 @@
 name: orex_messenger
-description: "Orex Messenger — тёплый ореховый мессенджер на Matrix + LiveKit."
+description: "Orex Messenger — тёплый ореховый мессенджер на Matrix + Element Call."
 publish_to: "none"
 version: 0.1.0+1
 
@@ -7,29 +7,28 @@ environment:
   sdk: ">=3.4.0 <4.0.0"
   flutter: ">=3.24.0"
 
-# ВНИМАНИЕ: версии указаны как «не ниже актуальных на момент создания».
-# Перед сборкой выполните `flutter pub upgrade --major-versions` и сверьтесь
-# с pub.dev — экосистема Matrix/LiveKit обновляется часто, а у matrix SDK
-# бывают breaking changes между мажорами (сейчас актуальна ветка 7.x).
+# Версии — «не ниже актуальных на момент сборки». Экосистема Matrix меняется
+# часто; после первой удачной сборки закрепите версии. matrix резолвится в 7.3.x.
 dependencies:
   flutter:
     sdk: flutter
 
-  # Matrix Dart SDK (Famedly) — ветка 7.x (резолвится в 7.3.0)
+  # Matrix Dart SDK (Famedly)
   matrix: ^7.2.0
-  # E2EE (vodozemac заменил olm). Должен быть совместим с matrix 7.x:
+  # E2EE (vodozemac заменил olm). Совместим с matrix 7.x:
   flutter_vodozemac: ^0.5.0
-
-  # LiveKit (звонки)
-  livekit_client: ^2.8.0
 
   # Сеть/утилиты
   http: ^1.2.0
   path: ^1.9.0
+  url_launcher: ^6.3.0       # открыть Element Call в браузере (native)
+  file_picker: ^8.0.0        # выбор аватара
+  shared_preferences: ^2.2.0 # сохранение темы
+  web: ^1.1.0                # <iframe> Element Call на web
 
   # Локальный кэш для «мгновенного» старта.
-  # Web использует IndexedDB (встроено в SDK, без пакета).
-  # Android/iOS -> sqflite; Windows/Linux/macOS -> sqflite_common_ffi.
+  # Web -> IndexedDB (встроено в SDK). Android/iOS -> sqflite;
+  # Windows/Linux/macOS -> sqflite_common_ffi.
   path_provider: ^2.1.0
   sqflite: ^2.3.0
   sqflite_common_ffi: ^2.3.0
@@ -38,14 +37,23 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.0
+
+# Генерация иконок приложения из assets/icon/app_icon.png:
+#   flutter pub run flutter_launcher_icons
+flutter_launcher_icons:
+  image_path: "assets/icon/app_icon.png"
+  android: true
+  ios: false                 # iOS-папки нет (создавали web,android,windows)
+  web:
+    generate: true
+  windows:
+    generate: true
+    icon_size: 256
+  # remove_alpha_ios: true   # включите вместе с ios: true, если добавите iOS
 
 flutter:
   uses-material-design: true
-  # assets:
-  #   - assets/mascot/squirrel.png
-  # fonts:
-  #   - family: Inter
-  #     fonts:
-  #       - asset: assets/fonts/Inter-Regular.ttf
-  #       - asset: assets/fonts/Inter-SemiBold.ttf
-  #         weight: 600
+  assets:
+    - assets/icon/app_icon.png
+    # - assets/mascot/squirrel.png   # добавите, когда будет ассет маскота

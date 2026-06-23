@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
 
@@ -88,6 +90,76 @@ class MatrixService extends ChangeNotifier {
 
   Future<void> sendText(Room room, String text) =>
       room.sendTextEvent(text.trim());
+
+  // ---------------------------------------------------------------------------
+  // Шифрование
+  // ---------------------------------------------------------------------------
+
+  /// E2EE доступно, только если vodozemac был инициализирован ДО client.init().
+  bool get encryptionEnabled => client.encryptionEnabled;
+
+  // ---------------------------------------------------------------------------
+  // Профиль
+  // ---------------------------------------------------------------------------
+
+  String get userId => client.userID ?? '';
+  String? get deviceId => client.deviceID;
+
+  Future<Profile> ownProfile() => client.getProfileFromUserId(client.userID!);
+
+  Future<void> setDisplayName(String name) async {
+    await client.setProfileField(client.userID!, 'displayname', {
+      'displayname': name,
+    });
+    notifyListeners();
+  }
+
+  /// Загружает и устанавливает аватар из сырых байтов (см. file_picker).
+  Future<void> setAvatarBytes(List<int> bytes, String filename) async {
+    await client.setAvatar(
+      MatrixFile(bytes: Uint8List.fromList(bytes), name: filename),
+    );
+    notifyListeners();
+  }
+
+  Future<void> removeAvatar() async {
+    await client.setAvatar(null);
+    notifyListeners();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Устройства аккаунта
+  // ---------------------------------------------------------------------------
+
+  Future<List<Device>> devices() async {
+    final list = await client.getDevices();
+    return list ?? <Device>[];
+  }
+
+  Future<void> renameDevice(String deviceId, String name) async {
+    await client.updateDevice(deviceId, displayName: name);
+    notifyListeners();
+  }
+
+  /// Удаляет устройство. Эта операция защищена User-Interactive Auth, поэтому
+  /// требует пароль пользователя (паттерн повторяет сам SDK для changePassword).
+  Future<void> deleteDevice(String deviceId, String password) async {
+    final userID = client.userID!;
+    try {
+      await client.deleteDevice(deviceId);
+    } on MatrixException catch (e) {
+      if (!e.requireAdditionalAuthentication) rethrow;
+      await client.deleteDevice(
+        deviceId,
+        auth: AuthenticationPassword(
+          identifier: AuthenticationUserIdentifier(user: userID),
+          password: password,
+          session: e.session,
+        ),
+      );
+    }
+    notifyListeners();
+  }
 
   @override
   void dispose() {

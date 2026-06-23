@@ -11,11 +11,13 @@ class ChatListPanel extends StatefulWidget {
     required this.matrix,
     required this.selectedRoomId,
     required this.onSelect,
+    required this.onOpenSettings,
   });
 
   final MatrixService matrix;
   final String? selectedRoomId;
   final ValueChanged<String> onSelect;
+  final VoidCallback onOpenSettings;
 
   @override
   State<ChatListPanel> createState() => _ChatListPanelState();
@@ -40,7 +42,10 @@ class _ChatListPanelState extends State<ChatListPanel> {
 
         return Column(
           children: [
-            _Header(onSearch: (v) => setState(() => _query = v)),
+            _Header(
+              onSearch: (v) => setState(() => _query = v),
+              onOpenSettings: widget.onOpenSettings,
+            ),
             _FolderTabs(
               selected: _folder,
               onChanged: (f) => setState(() => _folder = f),
@@ -72,8 +77,9 @@ class _ChatListPanelState extends State<ChatListPanel> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.onSearch});
+  const _Header({required this.onSearch, required this.onOpenSettings});
   final ValueChanged<String> onSearch;
+  final VoidCallback onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -116,9 +122,10 @@ class _Header extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           IconButton(
-            onPressed: () {}, // меню / новый чат
-            icon: const Icon(Icons.edit_square),
+            onPressed: onOpenSettings,
+            icon: const Icon(Icons.settings),
             color: OrexColors.copper,
+            tooltip: 'Настройки',
           ),
         ],
       ),
