@@ -1,0 +1,51 @@
+name: orex_messenger
+description: "Orex Messenger — тёплый ореховый мессенджер на Matrix + LiveKit."
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.24.0"
+
+# ВНИМАНИЕ: версии указаны как «не ниже актуальных на момент создания».
+# Перед сборкой выполните `flutter pub upgrade --major-versions` и сверьтесь
+# с pub.dev — экосистема Matrix/LiveKit обновляется часто, а у matrix SDK
+# бывают breaking changes между мажорами (сейчас актуальна ветка 7.x).
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Matrix Dart SDK (Famedly) — ветка 7.x (резолвится в 7.3.0)
+  matrix: ^7.2.0
+  # E2EE (vodozemac заменил olm). Должен быть совместим с matrix 7.x:
+  flutter_vodozemac: ^0.5.0
+
+  # LiveKit (звонки)
+  livekit_client: ^2.8.0
+
+  # Сеть/утилиты
+  http: ^1.2.0
+  path: ^1.9.0
+
+  # Локальный кэш для «мгновенного» старта.
+  # Web использует IndexedDB (встроено в SDK, без пакета).
+  # Android/iOS -> sqflite; Windows/Linux/macOS -> sqflite_common_ffi.
+  path_provider: ^2.1.0
+  sqflite: ^2.3.0
+  sqflite_common_ffi: ^2.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  # assets:
+  #   - assets/mascot/squirrel.png
+  # fonts:
+  #   - family: Inter
+  #     fonts:
+  #       - asset: assets/fonts/Inter-Regular.ttf
+  #       - asset: assets/fonts/Inter-SemiBold.ttf
+  #         weight: 600
