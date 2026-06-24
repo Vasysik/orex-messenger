@@ -30,6 +30,46 @@ class _ChatListPanelState extends State<ChatListPanel> {
   OrexFolder _folder = OrexFolder.all;
   String _query = '';
 
+  void _handleTap(Room room) {
+    if (widget.matrix.isInvite(room)) {
+      _showInviteDialog(room);
+    } else {
+      widget.onSelect(room.id);
+    }
+  }
+
+  Future<void> _showInviteDialog(Room room) async {
+    final from = room.unsafeGetUserFromMemoryOrFallback(
+      room.directChatMatrixID ?? '',
+    );
+    final who = from.calcDisplayname();
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Приглашение в чат'),
+        content: Text('$who приглашает вас в «${room.getLocalizedDisplayname()}».'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'reject'),
+            child: const Text('Отклонить'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: OrexColors.copper),
+            onPressed: () => Navigator.pop(ctx, 'accept'),
+            child: const Text('Принять'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'accept') {
+      await widget.matrix.acceptInvite(room);
+      if (mounted) widget.onSelect(room.id);
+    } else if (action == 'reject') {
+      await widget.matrix.rejectInvite(room);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -70,7 +110,7 @@ class _ChatListPanelState extends State<ChatListPanel> {
                         matrix: widget.matrix,
                         room: rooms[i],
                         selected: rooms[i].id == widget.selectedRoomId,
-                        onTap: () => widget.onSelect(rooms[i].id),
+                        onTap: () => _handleTap(rooms[i]),
                       ),
                     ),
             ),
@@ -210,11 +250,17 @@ class _ChatTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final name = room.getLocalizedDisplayname();
+    final isInvite = matrix.isInvite(room);
     final lastEvent = room.lastEvent;
-    final preview = lastEvent?.calcLocalizedBodyFallback(
-          MatrixDefaultLocalizations(),
-        ) ??
-        '';
+    final preview = isInvite
+        ? '✉️ Приглашение — нажмите, чтобы принять'
+        : (lastEvent == null
+            ? ''
+            : (lastEvent.type == EventTypes.GroupCallMember
+                ? '📞 Звонок'
+                : lastEvent.calcLocalizedBodyFallback(
+                    const MatrixDefaultLocalizations(),
+                  )));
     final unread = room.notificationCount;
 
     return Material(
@@ -264,7 +310,11 @@ class _ChatTile extends StatelessWidget {
                             preview,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodySmall,
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  color: isInvite ? OrexColors.copper : null,
+                                  fontWeight:
+                                      isInvite ? FontWeight.w600 : null,
+                                ),
                           ),
                         ),
                         if (unread > 0) _UnreadBadge(count: unread),

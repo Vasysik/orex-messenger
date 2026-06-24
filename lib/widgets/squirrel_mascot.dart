@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import '../theme/orex_theme.dart';
 
-/// Маскот-Белочка. Ожидает ассет `assets/mascot/squirrel.png`
-/// (положите PNG/SVG туда и пропишите в pubspec). Пока ассета нет —
-/// рисует тёплый медальон-заглушку, чтобы экран не выглядел пустым.
+/// Маскот-Белочка. Пока ассета нет — рисует тёплый медальон с эмодзи-белочкой,
+/// чтобы экран не выглядел пустым. Когда добавите `assets/mascot/squirrel.png`
+/// (и пропишете в pubspec) — верните сюда `Image.asset(...)` с тем же
+/// `errorBuilder`. Раньше здесь был Image.asset, который на web спамил 404 в
+/// консоль (ассета нет) — заменено на прямую заглушку.
 class SquirrelMascot extends StatelessWidget {
   const SquirrelMascot({super.key, this.size = 140, this.caption});
 
@@ -24,14 +26,9 @@ class SquirrelMascot extends StatelessWidget {
             gradient: OrexColors.copperGradient,
           ),
           alignment: Alignment.center,
-          child: Image.asset(
-            'assets/mascot/squirrel.png',
-            width: size * 0.7,
-            height: size * 0.7,
-            errorBuilder: (_, __, ___) => Text(
-              '\u{1F43F}', // 🐿 — временная заглушка
-              style: TextStyle(fontSize: size * 0.42),
-            ),
+          child: Text(
+            '\u{1F43F}', // 🐿 — временная заглушка вместо ассета
+            style: TextStyle(fontSize: size * 0.42),
           ),
         ),
         if (caption != null) ...[

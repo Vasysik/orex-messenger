@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
 import 'package:matrix/encryption/utils/key_verification.dart';
+import 'package:matrix/encryption/utils/bootstrap.dart';
 
+import 'call_controller.dart';
 import 'voip_service.dart';
 
 /// Тонкая обёртка над Famedly Matrix Dart SDK.
@@ -25,6 +29,18 @@ class MatrixService extends ChangeNotifier {
   late final Client client = Client(
     'OrexMessenger',
     database: _database,
+    // По умолчанию SDK раздаёт ключи комнаты только устройствам, кросс-
+    // подписанным master-ключом (crossVerifiedIfEnabled). Пока сессии не
+    // кросс-подписаны, это давало «Could not decrypt message: No permission».
+    // ShareKeysWith.all раздаёт ключи всем устройствам участников (как и Element
+    // по умолчанию) — сообщения расшифровываются сразу, независимо от проверки.
+    shareKeysWith: ShareKeysWith.all,
+    // По умолчанию пусто → запрос проверки уходил с methods: [] и Element
+    // отвечал «несоответствие». Включаем SAS-эмодзи (числа — фолбэк).
+    verificationMethods: const {
+      KeyVerificationMethod.emoji,
+      KeyVerificationMethod.numbers,
+    },
   );
 
   bool get isLoggedIn => client.isLogged();
@@ -32,6 +48,9 @@ class MatrixService extends ChangeNotifier {
   /// MatrixRTC-сигналинг звонков. Создаётся при init(); null, если модуль
   /// почему-то не поднялся (тогда звонки просто не работают, но клиент жив).
   VoipService? voip;
+
+  /// Активный звонок (живёт поверх экранов — можно свернуть).
+  late final CallController call = CallController(this);
 
   /// Инициализация: восстановление сессии из БД (если была) и подписка на sync.
   Future<void> init() async {
@@ -103,6 +122,24 @@ class MatrixService extends ChangeNotifier {
       room.sendTextEvent(text.trim());
 
   // ---------------------------------------------------------------------------
+  // Приглашения в чаты
+  // ---------------------------------------------------------------------------
+
+  bool isInvite(Room room) => room.membership == Membership.invite;
+
+  /// Принять приглашение (войти в комнату).
+  Future<void> acceptInvite(Room room) async {
+    await room.join();
+    notifyListeners();
+  }
+
+  /// Отклонить приглашение (покинуть комнату).
+  Future<void> rejectInvite(Room room) async {
+    await room.leave();
+    notifyListeners();
+  }
+
+  // ---------------------------------------------------------------------------
   // Шифрование и проверка ТЕКУЩЕЙ сессии (кросс-подпись)
   // ---------------------------------------------------------------------------
 
@@ -119,18 +156,27 @@ class MatrixService extends ChangeNotifier {
   bool get crossSigningAvailable =>
       client.encryption?.crossSigning.enabled ?? false;
 
-  /// Текущее устройство уже доверенное (подписано напрямую или кросс-подписью).
+  /// Эта сессия КРОСС-ПОДПИСАНА master-ключом владельца. Ровно этот признак
+  /// смотрят и раздача ключей комнаты, и Element X: пока false — Element пишет
+  /// «зашифровано устройством, не проверенным его владельцем».
+  ///
+  /// ВАЖНО про прошлые попытки: `dk.verified` для своей текущей сессии всегда
+  /// true (доверяет себе локально); `signed`/`isUnknownSession` требует, чтобы
+  /// master был directVerified — оба давали неверный статус. Корректно —
+  /// `hasValidSignatureChain(verifiedByTheirMasterKey: true)`: есть ли валидная
+  /// цепочка подписей устройство → SSK → master.
   bool get isThisSessionVerified {
     final dk =
         client.userDeviceKeys[client.userID]?.deviceKeys[client.deviceID];
-    return dk?.verified ?? false;
+    return dk?.hasValidSignatureChain(verifiedByTheirMasterKey: true) ?? false;
   }
 
-  /// Нужно ли просить подтвердить эту сессию: шифрование включено, на аккаунте
-  /// есть кросс-подпись, но эта сессия ещё не доверенная. Именно из-за этого
-  /// другие клиенты (Element X) пишут «владелец не подтверждён».
+  /// Нужно ли показать плашку «сессия не подтверждена». Показываем, как только
+  /// шифрование включено, а сессия ещё не кросс-подписана — даже если на
+  /// аккаунте кросс-подписи ещё нет (тогда экран предложит её НАСТРОИТЬ через
+  /// bootstrap; для свежих аккаунтов это и нужно).
   bool get needsSessionVerification =>
-      encryptionEnabled && crossSigningAvailable && !isThisSessionVerified;
+      encryptionEnabled && !isThisSessionVerified;
 
   /// Запустить самопроверку этой сессии с других своих устройств (Element X и
   /// пр.). Они покажут сравнение эмодзи; после успеха кросс-подпишут это
@@ -153,6 +199,110 @@ class MatrixService extends ChangeNotifier {
     }
     await crossSigning.selfSign(keyOrPassphrase: keyOrPassphrase.trim());
     notifyListeners();
+  }
+
+  /// ПЕРВИЧНАЯ настройка проверки подлинности (как «собачки» в Element при
+  /// регистрации): создаёт кросс-подпись (master/self/user-signing), ключ
+  /// восстановления (SSSS) и онлайн-бэкап ключей, после чего эта сессия
+  /// становится доверенной. Возвращает КЛЮЧ ВОССТАНОВЛЕНИЯ — его нужно
+  /// сохранить (это и есть тот самый ключ, которым потом подтверждают сессии).
+  ///
+  /// [askPassword] вызывается, когда серверу нужен пароль (UIA) для загрузки
+  /// ключей подписи.
+  ///
+  /// БЕЗОПАСНОСТЬ: если на аккаунте УЖЕ есть данные безопасности
+  /// (SSSS/кросс-подпись/бэкап) — метод НЕ перезатирает их (иначе слетело бы
+  /// доверие на других сессиях), а бросает ошибку. В этом случае нужно не
+  /// настраивать заново, а подтвердить сессию ключом восстановления.
+  Future<String> setupCrossSigning({
+    required Future<String?> Function() askPassword,
+  }) async {
+    final encryption = client.encryption;
+    if (encryption == null) {
+      throw StateError('Шифрование не инициализировано');
+    }
+    if (crossSigningAvailable) {
+      throw StateError(
+        'Кросс-подпись уже настроена — подтвердите сессию ключом восстановления',
+      );
+    }
+
+    final completer = Completer<String>();
+    void fail(Object e) {
+      if (!completer.isCompleted) completer.completeError(e);
+    }
+
+    // UIA: сервер требует пароль при загрузке cross-signing ключей.
+    final uiaSub = client.onUiaRequest.stream.listen((uia) async {
+      if (uia.state != UiaRequestState.waitForUser) return;
+      if (!uia.nextStages.contains(AuthenticationTypes.password)) {
+        uia.cancel(Exception('Неподдерживаемый способ входа: ${uia.nextStages}'));
+        return;
+      }
+      final pw = await askPassword();
+      if (pw == null || pw.isEmpty) {
+        uia.cancel(Exception('Отменено'));
+        return;
+      }
+      await uia.completeStage(
+        AuthenticationPassword(
+          identifier: AuthenticationUserIdentifier(user: client.userID!),
+          password: pw,
+          session: uia.session,
+        ),
+      );
+    });
+
+    encryption.bootstrap(onUpdate: (b) async {
+      try {
+        switch (b.state) {
+          case BootstrapState.askNewSsss:
+            // Без passphrase → SDK сгенерирует ключ восстановления.
+            await b.newSsss();
+            break;
+          case BootstrapState.askSetupCrossSigning:
+            await b.askSetupCrossSigning(
+              setupMasterKey: true,
+              setupSelfSigningKey: true,
+              setupUserSigningKey: true,
+            );
+            break;
+          case BootstrapState.askSetupOnlineKeyBackup:
+            await b.askSetupOnlineKeyBackup(true);
+            break;
+          case BootstrapState.done:
+            if (!completer.isCompleted) {
+              completer.complete(b.newSsssKey?.recoveryKey ?? '');
+            }
+            break;
+          case BootstrapState.error:
+            fail(StateError('Не удалось настроить кросс-подпись'));
+            break;
+          case BootstrapState.loading:
+            break;
+          default:
+            // askWipe* / askUseExisting / askUnlock / askBadSsss / openExisting —
+            // значит данные уже есть. НЕ трогаем (риск потери ключей).
+            fail(
+              StateError(
+                'На аккаунте уже есть данные безопасности — не трогаю их, чтобы '
+                'не потерять ключи. Подтвердите эту сессию ключом восстановления '
+                'или сбросьте безопасность в Element.',
+              ),
+            );
+        }
+      } catch (e) {
+        fail(e);
+      }
+    });
+
+    try {
+      final key = await completer.future;
+      notifyListeners();
+      return key;
+    } finally {
+      await uiaSub.cancel();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -205,6 +355,13 @@ class MatrixService extends ChangeNotifier {
     return dk.startVerification();
   }
 
+  /// Доверена ли (проверена напрямую или кросс-подписью) другая сессия —
+  /// для значка статуса в списке устройств.
+  bool isDeviceVerified(String deviceId) {
+    final dk = client.userDeviceKeys[client.userID]?.deviceKeys[deviceId];
+    return dk?.verified ?? false;
+  }
+
   /// Входящие запросы на проверку (от Element X и др.).
   Stream<KeyVerification> get incomingVerifications =>
       client.onKeyVerificationRequest.stream;
@@ -233,11 +390,51 @@ class MatrixService extends ChangeNotifier {
   // Поиск людей и создание чатов
   // ---------------------------------------------------------------------------
 
-  /// Поиск пользователей в директории сервера.
+  /// Поиск пользователей: директория сервера + прямое разрешение по MXID.
+  ///
+  /// Директория (`searchUserDirectory`) на свежем Synapse возвращает только тех,
+  /// с кем уже есть общая комната/публичные комнаты — поэтому новых знакомых не
+  /// найти. Дополнительно пробуем точный MXID (`@localpart:server`) через
+  /// профиль, чтобы можно было найти любого по имени.
   Future<List<Profile>> searchUsers(String query) async {
-    if (query.trim().isEmpty) return [];
-    final res = await client.searchUserDirectory(query.trim(), limit: 30);
-    return res.results;
+    final q = query.trim();
+    if (q.isEmpty) return [];
+
+    final byId = <String, Profile>{};
+    try {
+      final res = await client.searchUserDirectory(q, limit: 30);
+      for (final p in res.results) {
+        byId[p.userId] = p;
+      }
+    } catch (_) {
+      // директория может быть выключена/недоступна — не критично
+    }
+
+    final candidate = _asMxid(q);
+    if (candidate != null && !byId.containsKey(candidate)) {
+      try {
+        final prof = await client.getProfileFromUserId(candidate);
+        byId[candidate] = Profile(
+          userId: candidate,
+          displayName: prof.displayName,
+          avatarUrl: prof.avatarUrl,
+        );
+      } catch (_) {
+        // нет такого пользователя — просто не добавляем
+      }
+    }
+    return byId.values.toList();
+  }
+
+  /// Привести введённое к виду `@localpart:server` (или null, если не похоже).
+  String? _asMxid(String q) {
+    if (q.contains(' ')) return null;
+    if (q.startsWith('@') && q.contains(':')) return q; // уже полный MXID
+    final localpart = q.startsWith('@') ? q.substring(1) : q;
+    if (localpart.isEmpty || localpart.contains(':')) return null;
+    final server = client.userID?.split(':').last;
+    if (server == null) return null;
+    return '@$localpart:$server';
   }
 
   /// Личный чат (создаёт или возвращает существующий).

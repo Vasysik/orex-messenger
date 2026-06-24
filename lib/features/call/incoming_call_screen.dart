@@ -28,14 +28,9 @@ class IncomingCallScreen extends StatelessWidget {
   }
 
   void _accept(BuildContext context, {required bool video}) {
+    matrix.call.start(room.id, video: video);
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(
-        builder: (_) => CallScreen(
-          matrix: matrix,
-          roomId: room.id,
-          video: video,
-        ),
-      ),
+      MaterialPageRoute(builder: (_) => CallScreen(matrix: matrix)),
     );
   }
 

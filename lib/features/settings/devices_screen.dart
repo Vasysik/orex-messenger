@@ -140,6 +140,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
               itemBuilder: (_, i) {
                 final d = devices[i];
                 final isCurrent = d.deviceId == currentDeviceId;
+                final verified =
+                    isCurrent || widget.matrix.isDeviceVerified(d.deviceId);
                 return GlassPanel(
                   borderRadius: 16,
                   child: ListTile(
@@ -159,16 +161,16 @@ class _DevicesScreenState extends State<DevicesScreen> {
                           ),
                         ),
                         if (isCurrent)
-                          Container(
-                            margin: const EdgeInsets.only(left: 8),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: OrexColors.online.withValues(alpha: 0.25),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: const Text('текущее',
-                                style: TextStyle(fontSize: 11)),
+                          const _Badge(
+                            text: 'текущее',
+                            color: OrexColors.online,
+                          )
+                        else
+                          _Badge(
+                            text: verified ? 'проверено' : 'не проверено',
+                            color: verified
+                                ? OrexColors.online
+                                : const Color(0xFFE0A03A),
                           ),
                       ],
                     ),
@@ -178,21 +180,37 @@ class _DevicesScreenState extends State<DevicesScreen> {
                         if (d.lastSeenIp != null) d.lastSeenIp!,
                       ].join(' · '),
                     ),
-                    trailing: PopupMenuButton<String>(
-                      onSelected: (v) {
-                        if (v == 'verify') _verify(d);
-                        if (v == 'rename') _rename(d);
-                        if (v == 'delete') _delete(d);
-                      },
-                      itemBuilder: (_) => [
-                        if (!isCurrent)
-                          const PopupMenuItem(
-                              value: 'verify', child: Text('Проверить')),
-                        const PopupMenuItem(
-                            value: 'rename', child: Text('Переименовать')),
-                        if (!isCurrent)
-                          const PopupMenuItem(
-                              value: 'delete', child: Text('Удалить')),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Явная кнопка проверки для непроверённых чужих сессий —
+                        // чтобы подтвердить, например, Element X с этой (доверенной)
+                        // сессии.
+                        if (!isCurrent && !verified)
+                          IconButton(
+                            tooltip: 'Подтвердить',
+                            icon: const Icon(Icons.verified_user,
+                                color: OrexColors.copper),
+                            onPressed: () => _verify(d),
+                          ),
+                        PopupMenuButton<String>(
+                          onSelected: (v) {
+                            if (v == 'verify') _verify(d);
+                            if (v == 'rename') _rename(d);
+                            if (v == 'delete') _delete(d);
+                          },
+                          itemBuilder: (_) => [
+                            if (!isCurrent)
+                              const PopupMenuItem(
+                                  value: 'verify',
+                                  child: Text('Подтвердить')),
+                            const PopupMenuItem(
+                                value: 'rename', child: Text('Переименовать')),
+                            if (!isCurrent)
+                              const PopupMenuItem(
+                                  value: 'delete', child: Text('Удалить')),
+                          ],
+                        ),
                       ],
                     ),
                   ),
@@ -202,6 +220,25 @@ class _DevicesScreenState extends State<DevicesScreen> {
           },
         ),
       ),
+    );
+  }
+}
+
+class _Badge extends StatelessWidget {
+  const _Badge({required this.text, required this.color});
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(left: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.25),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(text, style: const TextStyle(fontSize: 11)),
     );
   }
 }

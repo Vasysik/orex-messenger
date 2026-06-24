@@ -92,6 +92,15 @@ class OrexTheme {
       iconTheme: IconThemeData(
         color: isDark ? OrexColors.ochreLight : OrexColors.walnut,
       ),
+      snackBarTheme: SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: OrexColors.walnutDeep,
+        contentTextStyle: const TextStyle(color: OrexColors.cream),
+        actionTextColor: OrexColors.ochreLight,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+      ),
     );
   }
 

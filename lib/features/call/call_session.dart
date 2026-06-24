@@ -24,6 +24,7 @@ class CallSession extends ChangeNotifier {
 
   CallStatus status = CallStatus.connecting;
   String? error;
+  String? cameraError; // камера не запустилась (звонок при этом идёт со звуком)
   lk.Room? _room;
   lk.Room? get room => _room;
 
@@ -47,7 +48,15 @@ class CallSession extends ChangeNotifier {
       await room.prepareConnection(creds.url, creds.jwt);
       await room.connect(creds.url, creds.jwt);
       await room.localParticipant?.setMicrophoneEnabled(true);
-      if (video) await room.localParticipant?.setCameraEnabled(true);
+      if (video) {
+        // Камера может быть недоступна (занята другим окном/приложением —
+        // NotReadableError). Не валим весь звонок: продолжаем со звуком.
+        try {
+          await room.localParticipant?.setCameraEnabled(true);
+        } catch (e) {
+          cameraError = '$e';
+        }
+      }
 
       _room = room;
       room.addListener(_onRoom);
@@ -72,7 +81,12 @@ class CallSession extends ChangeNotifier {
   Future<void> toggleCam() async {
     final lp = _room?.localParticipant;
     if (lp == null) return;
-    await lp.setCameraEnabled(!lp.isCameraEnabled());
+    try {
+      await lp.setCameraEnabled(!lp.isCameraEnabled());
+      cameraError = null;
+    } catch (e) {
+      cameraError = '$e';
+    }
     notifyListeners();
   }
 

@@ -28,6 +28,7 @@ class _ChatViewState extends State<ChatView> {
   final _scroll = ScrollController();
   Timeline? _timeline;
   Room? _room;
+  Event? _editing; // редактируемое сообщение (если есть)
 
   @override
   void initState() {
@@ -56,8 +57,36 @@ class _ChatViewState extends State<ChatView> {
   Future<void> _send() async {
     final text = _input.text.trim();
     if (text.isEmpty || _room == null) return;
+    final editing = _editing;
     _input.clear();
-    await widget.matrix.sendText(_room!, text);
+    setState(() => _editing = null);
+    if (editing != null) {
+      await _room!.sendTextEvent(text, editEventId: editing.eventId);
+    } else {
+      await widget.matrix.sendText(_room!, text);
+    }
+  }
+
+  void _startEdit(Event e) {
+    final body = e.getDisplayEvent(_timeline!).calcLocalizedBodyFallback(
+          const MatrixDefaultLocalizations(),
+        );
+    setState(() => _editing = e);
+    _input.text = body;
+    _input.selection =
+        TextSelection.collapsed(offset: _input.text.length);
+  }
+
+  void _cancelEdit() {
+    setState(() => _editing = null);
+    _input.clear();
+  }
+
+  void _openCall(bool video) {
+    widget.matrix.call.start(widget.roomId, video: video);
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
+    );
   }
 
   @override
@@ -75,8 +104,12 @@ class _ChatViewState extends State<ChatView> {
       return const Center(child: CircularProgressIndicator());
     }
 
+    // Правки (m.replace) не показываем отдельными сообщениями — их применяет
+    // getDisplayEvent на оригинале.
     final events = _timeline!.events
-        .where((e) => e.type == EventTypes.Message)
+        .where((e) =>
+            e.type == EventTypes.Message &&
+            e.relationshipType != RelationshipTypes.edit)
         .toList();
     final myId = widget.matrix.client.userID;
 
@@ -86,17 +119,10 @@ class _ChatViewState extends State<ChatView> {
           matrix: widget.matrix,
           room: room,
           onBack: widget.onBack,
-          onCall: (video) => Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => CallScreen(
-                matrix: widget.matrix,
-                roomId: room.id,
-                video: video,
-              ),
-            ),
-          ),
+          onCall: _openCall,
         ),
         Divider(height: 1, color: OrexColors.copper.withValues(alpha: 0.12)),
+        _CallJoinBanner(matrix: widget.matrix, room: room, onJoin: _openCall),
         Expanded(
           child: ListView.builder(
             controller: _scroll,
@@ -109,12 +135,81 @@ class _ChatViewState extends State<ChatView> {
                 event: e,
                 isMine: e.senderId == myId,
                 showSender: !room.isDirectChat,
+                timeline: _timeline,
+                myUserId: myId,
+                onReact: (emoji) => room.sendReaction(e.eventId, emoji),
+                onRedact: (rid) => room.redactEvent(rid),
+                onEdit: () => _startEdit(e),
+                onDelete: () => room.redactEvent(e.eventId),
               );
             },
           ),
         ),
-        _InputBar(controller: _input, onSend: _send),
+        _InputBar(
+          controller: _input,
+          onSend: _send,
+          editing: _editing != null,
+          onCancelEdit: _cancelEdit,
+        ),
       ],
+    );
+  }
+}
+
+/// Полоска «Идёт звонок · Войти» в чате, когда в комнате активен звонок,
+/// а мы в нём не участвуем.
+class _CallJoinBanner extends StatelessWidget {
+  const _CallJoinBanner({
+    required this.matrix,
+    required this.room,
+    required this.onJoin,
+  });
+
+  final MatrixService matrix;
+  final Room room;
+  final void Function(bool video) onJoin;
+
+  @override
+  Widget build(BuildContext context) {
+    final voipSvc = matrix.voip;
+    if (voipSvc == null) return const SizedBox.shrink();
+    final hasCall =
+        room.hasActiveGroupCall(voipSvc.voip, ignoreDirectChats: false);
+    if (!hasCall) return const SizedBox.shrink();
+
+    return ListenableBuilder(
+      listenable: matrix.call,
+      builder: (context, _) {
+        final inThisCall =
+            matrix.call.isActive && matrix.call.roomId == room.id;
+        if (inThisCall) return const SizedBox.shrink();
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () => onJoin(false),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              color: OrexColors.online.withValues(alpha: 0.18),
+              child: Row(
+                children: [
+                  const Icon(Icons.call, color: OrexColors.online, size: 20),
+                  const SizedBox(width: 10),
+                  const Expanded(child: Text('Идёт звонок')),
+                  FilledButton(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: OrexColors.online,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    onPressed: () => onJoin(false),
+                    child: const Text('Войти'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -214,22 +309,48 @@ class _PresenceLine extends StatelessWidget {
 }
 
 class _InputBar extends StatelessWidget {
-  const _InputBar({required this.controller, required this.onSend});
+  const _InputBar({
+    required this.controller,
+    required this.onSend,
+    this.editing = false,
+    this.onCancelEdit,
+  });
   final TextEditingController controller;
   final VoidCallback onSend;
+  final bool editing;
+  final VoidCallback? onCancelEdit;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
-      child: Row(
-        children: [
-          IconButton(
-            onPressed: () {}, // вложения
-            icon: const Icon(Icons.attach_file),
-            color: OrexColors.copper,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (editing)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 8, 0),
+            child: Row(
+              children: [
+                const Icon(Icons.edit, size: 16, color: OrexColors.copper),
+                const SizedBox(width: 8),
+                const Expanded(child: Text('Редактирование сообщения')),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.close, size: 18),
+                  onPressed: onCancelEdit,
+                ),
+              ],
+            ),
           ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
+          child: Row(
+            children: [
+              IconButton(
+                onPressed: () {}, // вложения
+                icon: const Icon(Icons.attach_file),
+                color: OrexColors.copper,
+              ),
           Expanded(
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -275,8 +396,10 @@ class _InputBar extends StatelessWidget {
               child: const Icon(Icons.send, color: OrexColors.cream, size: 20),
             ),
           ),
-        ],
-      ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

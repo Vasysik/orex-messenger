@@ -155,20 +155,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ? 'Эта сессия подтверждена'
                         : 'Подтвердить эту сессию',
                     subtitle: widget.matrix.isThisSessionVerified
-                        ? 'Другие клиенты доверяют этой сессии'
+                        ? 'Другие клиенты доверяют этой сессии · открыть'
                         : 'Иначе другие клиенты считают её непроверенной',
-                    onTap: widget.matrix.isThisSessionVerified
-                        ? null
-                        : () => Navigator.of(context)
-                                .push(
-                                  MaterialPageRoute(
-                                    builder: (_) => VerifySessionScreen(
-                                        matrix: widget.matrix),
-                                  ),
-                                )
-                                .then((_) {
-                              if (mounted) setState(() {});
-                            }),
+                    // Всегда доступно: даже если статус определился неточно,
+                    // отсюда можно подписать сессию ключом восстановления.
+                    onTap: () => Navigator.of(context)
+                        .push(
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                VerifySessionScreen(matrix: widget.matrix),
+                          ),
+                        )
+                        .then((_) {
+                          if (mounted) setState(() {});
+                        }),
                   ),
                 _Tile(
                   icon: Icons.devices,

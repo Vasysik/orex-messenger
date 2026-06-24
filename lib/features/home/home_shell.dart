@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import '../../core/call_controller.dart';
 import '../../core/matrix_service.dart';
 import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 import '../../theme/theme_controller.dart';
 import '../../widgets/squirrel_mascot.dart';
+import '../call/call_screen.dart';
 import '../chat/chat_view.dart';
 import '../chat_list/chat_list_panel.dart';
 import '../new_chat/new_chat_screen.dart';
@@ -28,6 +30,7 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   String? _selectedRoomId;
+  bool _verifyBannerDismissed = false;
 
   static const double _wideBreakpoint = 900;
 
@@ -56,6 +59,13 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
+  void _openCall() {
+    widget.matrix.call.expand();
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isWide = MediaQuery.sizeOf(context).width >= _wideBreakpoint;
@@ -63,12 +73,25 @@ class _HomeShellState extends State<HomeShell> {
       child: Scaffold(
         backgroundColor: Colors.transparent,
         body: SafeArea(
-          child: Column(
-            children: [
-              if (widget.matrix.needsSessionVerification)
-                _VerifyBanner(onTap: _openVerifySession),
-              Expanded(child: isWide ? _buildWide() : _buildNarrow()),
-            ],
+          child: ListenableBuilder(
+            listenable: widget.matrix.call,
+            builder: (context, _) {
+              final call = widget.matrix.call;
+              return Column(
+                children: [
+                  if (widget.matrix.needsSessionVerification &&
+                      !_verifyBannerDismissed)
+                    _VerifyBanner(
+                      onTap: _openVerifySession,
+                      onClose: () =>
+                          setState(() => _verifyBannerDismissed = true),
+                    ),
+                  if (call.isActive && call.minimized)
+                    _MiniCallBar(call: call, onOpen: _openCall),
+                  Expanded(child: isWide ? _buildWide() : _buildNarrow()),
+                ],
+              );
+            },
           ),
         ),
       ),
@@ -140,8 +163,9 @@ class _HomeShellState extends State<HomeShell> {
 /// Полоска-предупреждение: эта сессия ещё не подтверждена кросс-подписью,
 /// поэтому другие клиенты считают владельца непроверенным.
 class _VerifyBanner extends StatelessWidget {
-  const _VerifyBanner({required this.onTap});
+  const _VerifyBanner({required this.onTap, required this.onClose});
   final VoidCallback onTap;
+  final VoidCallback onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -158,11 +182,11 @@ class _VerifyBanner extends StatelessWidget {
               gradient: OrexColors.copperGradient,
               borderRadius: BorderRadius.circular(16),
             ),
-            child: const Row(
+            child: Row(
               children: [
-                Icon(Icons.gpp_maybe, color: OrexColors.cream),
-                SizedBox(width: 12),
-                Expanded(
+                const Icon(Icons.gpp_maybe, color: OrexColors.cream),
+                const SizedBox(width: 12),
+                const Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -175,7 +199,75 @@ class _VerifyBanner extends StatelessWidget {
                     ],
                   ),
                 ),
-                Icon(Icons.chevron_right, color: OrexColors.cream),
+                const Icon(Icons.chevron_right, color: OrexColors.cream),
+                IconButton(
+                  tooltip: 'Скрыть',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: onClose,
+                  icon: const Icon(Icons.close,
+                      color: OrexColors.cream, size: 18),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Мини-панель свёрнутого звонка над чатом: тап — развернуть, плюс mic/трубка.
+class _MiniCallBar extends StatelessWidget {
+  const _MiniCallBar({required this.call, required this.onOpen});
+  final CallController call;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final room = call.roomId != null
+        ? call.matrix.client.getRoomById(call.roomId!)
+        : null;
+    final name = room?.getLocalizedDisplayname() ?? 'Звонок';
+    final session = call.session;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: onOpen,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              gradient: OrexColors.copperGradient,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.call, color: OrexColors.cream, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Звонок · $name',
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: OrexColors.cream, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Микрофон',
+                  icon: Icon(
+                    (session?.micOn ?? true) ? Icons.mic : Icons.mic_off,
+                    color: OrexColors.cream,
+                  ),
+                  onPressed: () => session?.toggleMic(),
+                ),
+                IconButton(
+                  tooltip: 'Завершить',
+                  icon: const Icon(Icons.call_end, color: Color(0xFFCF6679)),
+                  onPressed: call.hangUp,
+                ),
               ],
             ),
           ),
