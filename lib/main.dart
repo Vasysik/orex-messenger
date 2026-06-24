@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
 
@@ -8,6 +7,7 @@ import 'core/config.dart';
 import 'core/database.dart';
 import 'core/matrix_service.dart';
 import 'features/auth/login_screen.dart';
+import 'features/call/incoming_call_screen.dart';
 import 'features/home/home_shell.dart';
 import 'features/settings/verification_screen.dart';
 import 'theme/glass.dart';
@@ -97,8 +97,8 @@ class SplashScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AmbientBackground(
-      child: const Scaffold(
+    return const AmbientBackground(
+      child: Scaffold(
         backgroundColor: Colors.transparent,
         body: Center(
           child: Column(
@@ -165,6 +165,7 @@ class OrexApp extends StatefulWidget {
 class _OrexAppState extends State<OrexApp> {
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
   StreamSubscription? _verificationSub;
+  StreamSubscription? _incomingCallSub;
 
   @override
   void initState() {
@@ -178,6 +179,15 @@ class _OrexAppState extends State<OrexApp> {
         MaterialPageRoute(builder: (_) => VerificationScreen(request: kv)),
       );
     });
+    // Входящие звонки (кто-то начал звонок в комнате) → экран входящего.
+    _incomingCallSub = widget.matrix.voip?.onIncomingCall.listen((gc) {
+      _navKey.currentState?.push(
+        MaterialPageRoute(
+          builder: (_) =>
+              IncomingCallScreen(matrix: widget.matrix, groupCall: gc),
+        ),
+      );
+    });
   }
 
   void _onChanged() => setState(() {});
@@ -185,6 +195,7 @@ class _OrexAppState extends State<OrexApp> {
   @override
   void dispose() {
     _verificationSub?.cancel();
+    _incomingCallSub?.cancel();
     widget.matrix.removeListener(_onChanged);
     widget.theme.removeListener(_onChanged);
     super.dispose();

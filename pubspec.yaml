@@ -20,6 +20,10 @@ dependencies:
 
   # LiveKit (нативные звонки в нашем UI, поверх вашего lk-jwt-service)
   livekit_client: ^2.8.0
+  # WebRTC-примитивы для WebRTCDelegate модуля VoIP (MatrixRTC-сигналинг).
+  # Были транзитивными зависимостями matrix/livekit — фиксируем явно.
+  flutter_webrtc: ^1.4.0
+  webrtc_interface: ^1.5.0   # типы MediaDevices/RTCPeerConnection для делегата
 
   # Сеть/утилиты
   http: ^1.2.0

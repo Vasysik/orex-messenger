@@ -8,6 +8,7 @@ import '../../theme/orex_theme.dart';
 import '../../theme/theme_controller.dart';
 import '../../widgets/mxc_avatar.dart';
 import 'devices_screen.dart';
+import 'verify_session_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
@@ -145,6 +146,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ? 'Включено (vodozemac)'
                       : 'Недоступно — vodozemac не инициализирован',
                 ),
+                if (widget.matrix.encryptionEnabled)
+                  _Tile(
+                    icon: widget.matrix.isThisSessionVerified
+                        ? Icons.verified_user
+                        : Icons.gpp_maybe,
+                    title: widget.matrix.isThisSessionVerified
+                        ? 'Эта сессия подтверждена'
+                        : 'Подтвердить эту сессию',
+                    subtitle: widget.matrix.isThisSessionVerified
+                        ? 'Другие клиенты доверяют этой сессии'
+                        : 'Иначе другие клиенты считают её непроверенной',
+                    onTap: widget.matrix.isThisSessionVerified
+                        ? null
+                        : () => Navigator.of(context)
+                                .push(
+                                  MaterialPageRoute(
+                                    builder: (_) => VerifySessionScreen(
+                                        matrix: widget.matrix),
+                                  ),
+                                )
+                                .then((_) {
+                              if (mounted) setState(() {});
+                            }),
+                  ),
                 _Tile(
                   icon: Icons.devices,
                   title: 'Устройства аккаунта',

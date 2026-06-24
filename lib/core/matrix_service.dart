@@ -1,8 +1,8 @@
-import 'dart:typed_data';
-
 import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
 import 'package:matrix/encryption/utils/key_verification.dart';
+
+import 'voip_service.dart';
 
 /// Тонкая обёртка над Famedly Matrix Dart SDK.
 ///
@@ -29,6 +29,10 @@ class MatrixService extends ChangeNotifier {
 
   bool get isLoggedIn => client.isLogged();
 
+  /// MatrixRTC-сигналинг звонков. Создаётся при init(); null, если модуль
+  /// почему-то не поднялся (тогда звонки просто не работают, но клиент жив).
+  VoipService? voip;
+
   /// Инициализация: восстановление сессии из БД (если была) и подписка на sync.
   Future<void> init() async {
     // Для E2EE инициализируйте vodozemac до init():
@@ -38,6 +42,12 @@ class MatrixService extends ChangeNotifier {
     );
     client.onSync.stream.listen((_) => notifyListeners());
     client.onLoginStateChanged.stream.listen((_) => notifyListeners());
+    // VoIP-сигналинг (звонки). Изолируем сбой, чтобы он не ронял запуск.
+    try {
+      voip = VoipService(client);
+    } catch (e) {
+      debugPrint('VoipService init failed, calls disabled: $e');
+    }
   }
 
   /// Логин по паролю: POST /_matrix/client/v3/login под капотом SDK.
@@ -93,11 +103,57 @@ class MatrixService extends ChangeNotifier {
       room.sendTextEvent(text.trim());
 
   // ---------------------------------------------------------------------------
-  // Шифрование
+  // Шифрование и проверка ТЕКУЩЕЙ сессии (кросс-подпись)
   // ---------------------------------------------------------------------------
 
   /// E2EE доступно, только если vodozemac был инициализирован ДО client.init().
   bool get encryptionEnabled => client.encryptionEnabled;
+
+  /// Дождаться, пока ключи устройств подгрузятся из БД/сети (иначе статусы ниже
+  /// могут быть «ложно непроверенными» сразу после логина).
+  Future<void> ensureKeysLoaded() => client.userDeviceKeysLoading ?? Future.value();
+
+  /// На аккаунте настроена кросс-подпись (обычно её включают в Element).
+  /// Если false — проверять нечем: сперва нужно настроить безопасность в Element
+  /// (или сделать bootstrap, что мы намеренно не делаем вслепую).
+  bool get crossSigningAvailable =>
+      client.encryption?.crossSigning.enabled ?? false;
+
+  /// Текущее устройство уже доверенное (подписано напрямую или кросс-подписью).
+  bool get isThisSessionVerified {
+    final dk =
+        client.userDeviceKeys[client.userID]?.deviceKeys[client.deviceID];
+    return dk?.verified ?? false;
+  }
+
+  /// Нужно ли просить подтвердить эту сессию: шифрование включено, на аккаунте
+  /// есть кросс-подпись, но эта сессия ещё не доверенная. Именно из-за этого
+  /// другие клиенты (Element X) пишут «владелец не подтверждён».
+  bool get needsSessionVerification =>
+      encryptionEnabled && crossSigningAvailable && !isThisSessionVerified;
+
+  /// Запустить самопроверку этой сессии с других своих устройств (Element X и
+  /// пр.). Они покажут сравнение эмодзи; после успеха кросс-подпишут это
+  /// устройство, и в других клиентах оно станет «проверенным».
+  Future<KeyVerification> startSelfVerification() async {
+    await ensureKeysLoaded();
+    final own = client.userDeviceKeys[client.userID];
+    if (own == null) {
+      throw StateError('Ключи устройства ещё не загружены');
+    }
+    return own.startVerification();
+  }
+
+  /// Подтвердить эту сессию ключом восстановления (или passphrase) — без второго
+  /// устройства: разблокируем SSSS и сами кросс-подписываем это устройство.
+  Future<void> verifyWithRecoveryKey(String keyOrPassphrase) async {
+    final crossSigning = client.encryption?.crossSigning;
+    if (crossSigning == null) {
+      throw StateError('Шифрование не инициализировано');
+    }
+    await crossSigning.selfSign(keyOrPassphrase: keyOrPassphrase.trim());
+    notifyListeners();
+  }
 
   // ---------------------------------------------------------------------------
   // Профиль

@@ -33,17 +33,33 @@ class _CallScreenState extends State<CallScreen> {
   @override
   void initState() {
     super.initState();
-    _session.connect(video: widget.video);
+    _start();
+  }
+
+  Future<void> _start() async {
+    // Сигналинг MatrixRTC: публикуем своё членство в звонке, чтобы у собеседника
+    // зазвонило / появилось «присоединиться». Без этого медиа подключится, но
+    // другая сторона о звонке не узнает.
+    try {
+      await widget.matrix.voip?.enterCall(widget.roomId);
+    } catch (e) {
+      debugPrint('Сигналинг звонка не удался: $e');
+    }
+    // Медиа через ваш livekit_client.
+    await _session.connect(video: widget.video);
   }
 
   @override
   void dispose() {
     _session.dispose();
+    // Подстраховка: убрать членство, если вышли не через кнопку.
+    widget.matrix.voip?.leaveCurrent();
     super.dispose();
   }
 
   void _leave() {
     _session.hangUp();
+    widget.matrix.voip?.leaveCurrent();
     if (mounted) Navigator.of(context).pop();
   }
 

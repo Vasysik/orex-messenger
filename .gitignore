@@ -1,24 +1,14 @@
 # =============================================================
 # Orex Messenger — .gitignore
 #
-# Платформенные папки (android/ios/windows/web/linux/macos) и test/
-# РЕГЕНЕРИРУЮТСЯ командой `flutter create` и здесь намеренно НЕ хранятся,
-# чтобы репозиторий содержал только исходники (lib/, pubspec, assets).
-# После клонирования выполните:
-#   flutter create --platforms=web,android,windows .
+# Храним исходники (lib/, pubspec, assets) и НАТИВНУЮ конфигурацию android/
+# (пермишены звонков, minSdk, иконки и т.п. — иначе они теряются при каждом
+# `flutter create`). Остальные платформенные папки регенерируются:
+#   flutter create --platforms=web,windows .
 #   flutter pub get
 #   dart run flutter_launcher_icons
 #   ./tool/setup_web_vodozemac.sh   # wasm для E2EE на web (см. README)
 # =============================================================
-
-# --- Генерируемые платформенные папки ---
-/android/
-/ios/
-/linux/
-/macos/
-/windows/
-/web/
-/test/
 
 # --- Сборка и кэш Flutter/Dart ---
 /build/
@@ -31,6 +21,23 @@
 flutter_*.png
 **/generated_plugin_registrant.dart
 
+# --- android/: храним, но без генерируемых/машинно-зависимых частей ---
+android/.gradle/
+android/.cxx/
+android/local.properties
+android/key.properties
+android/**/GeneratedPluginRegistrant.java
+**/*.keystore
+**/*.jks
+
+# --- Остальные платформы регенерируются flutter create ---
+/ios/
+/linux/
+/macos/
+/windows/
+/web/
+/test/
+
 # --- IDE ---
 .idea/
 .vscode/
@@ -41,5 +48,3 @@ flutter_*.png
 # --- Прочее ---
 .DS_Store
 *.log
-EOF
-echo "gitignore created"

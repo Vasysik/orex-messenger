@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import '../../core/matrix_service.dart';
 import '../../theme/glass.dart';
+import '../../theme/orex_theme.dart';
 import '../../theme/theme_controller.dart';
 import '../../widgets/squirrel_mascot.dart';
 import '../chat/chat_view.dart';
 import '../chat_list/chat_list_panel.dart';
 import '../new_chat/new_chat_screen.dart';
 import '../settings/settings_screen.dart';
+import '../settings/verify_session_screen.dart';
 
 /// Главный экран. На широком экране (web/desktop) — две панели рядом,
 /// как в Telegram Desktop. На узком (телефон) — стек с навигацией.
@@ -46,13 +48,29 @@ class _HomeShellState extends State<HomeShell> {
     if (roomId != null && mounted) setState(() => _selectedRoomId = roomId);
   }
 
+  void _openVerifySession() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => VerifySessionScreen(matrix: widget.matrix),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isWide = MediaQuery.sizeOf(context).width >= _wideBreakpoint;
     return AmbientBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: SafeArea(child: isWide ? _buildWide() : _buildNarrow()),
+        body: SafeArea(
+          child: Column(
+            children: [
+              if (widget.matrix.needsSessionVerification)
+                _VerifyBanner(onTap: _openVerifySession),
+              Expanded(child: isWide ? _buildWide() : _buildNarrow()),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -113,6 +131,54 @@ class _HomeShellState extends State<HomeShell> {
           matrix: widget.matrix,
           roomId: _selectedRoomId!,
           onBack: () => setState(() => _selectedRoomId = null),
+        ),
+      ),
+    );
+  }
+}
+
+/// Полоска-предупреждение: эта сессия ещё не подтверждена кросс-подписью,
+/// поэтому другие клиенты считают владельца непроверенным.
+class _VerifyBanner extends StatelessWidget {
+  const _VerifyBanner({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              gradient: OrexColors.copperGradient,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.gpp_maybe, color: OrexColors.cream),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Сессия не подтверждена',
+                          style: TextStyle(
+                              color: OrexColors.cream,
+                              fontWeight: FontWeight.w700)),
+                      Text('Нажмите, чтобы подтвердить с другого устройства',
+                          style: TextStyle(color: OrexColors.cream, fontSize: 12)),
+                    ],
+                  ),
+                ),
+                Icon(Icons.chevron_right, color: OrexColors.cream),
+              ],
+            ),
+          ),
         ),
       ),
     );
