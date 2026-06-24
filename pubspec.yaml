@@ -18,13 +18,14 @@ dependencies:
   # E2EE (vodozemac заменил olm). Совместим с matrix 7.x:
   flutter_vodozemac: ^0.5.0
 
+  # LiveKit (нативные звонки в нашем UI, поверх вашего lk-jwt-service)
+  livekit_client: ^2.8.0
+
   # Сеть/утилиты
   http: ^1.2.0
   path: ^1.9.0
-  url_launcher: ^6.3.0       # открыть Element Call в браузере (native)
   file_picker: ^8.0.0        # выбор аватара
   shared_preferences: ^2.2.0 # сохранение темы
-  web: ^1.1.0                # <iframe> Element Call на web
 
   # Локальный кэш для «мгновенного» старта.
   # Web -> IndexedDB (встроено в SDK). Android/iOS -> sqflite;

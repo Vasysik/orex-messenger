@@ -4,6 +4,7 @@ import 'package:matrix/matrix.dart';
 import '../../core/matrix_service.dart';
 import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
+import 'verification_screen.dart';
 
 class DevicesScreen extends StatefulWidget {
   const DevicesScreen({super.key, required this.matrix});
@@ -22,7 +23,26 @@ class _DevicesScreenState extends State<DevicesScreen> {
     _future = widget.matrix.devices();
   }
 
-  void _reload() => setState(() => _future = widget.matrix.devices());
+  void _reload() => setState(() {
+        _future = widget.matrix.devices();
+      });
+
+  Future<void> _verify(Device d) async {
+    final kv = await widget.matrix.verifyDevice(d.deviceId);
+    if (kv == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ключи устройства недоступны')),
+        );
+      }
+      return;
+    }
+    if (mounted) {
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => VerificationScreen(request: kv)),
+      );
+    }
+  }
 
   Future<void> _rename(Device d) async {
     final controller = TextEditingController(text: d.displayName ?? '');
@@ -160,10 +180,14 @@ class _DevicesScreenState extends State<DevicesScreen> {
                     ),
                     trailing: PopupMenuButton<String>(
                       onSelected: (v) {
+                        if (v == 'verify') _verify(d);
                         if (v == 'rename') _rename(d);
                         if (v == 'delete') _delete(d);
                       },
                       itemBuilder: (_) => [
+                        if (!isCurrent)
+                          const PopupMenuItem(
+                              value: 'verify', child: Text('Проверить')),
                         const PopupMenuItem(
                             value: 'rename', child: Text('Переименовать')),
                         if (!isCurrent)

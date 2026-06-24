@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 import '../../core/matrix_service.dart';
 import '../../theme/orex_theme.dart';
+import '../../widgets/mxc_avatar.dart';
 import '../../widgets/squirrel_mascot.dart';
 
 /// Левая колонка: поиск, вкладки-папки и список чатов.
@@ -12,12 +13,14 @@ class ChatListPanel extends StatefulWidget {
     required this.selectedRoomId,
     required this.onSelect,
     required this.onOpenSettings,
+    required this.onNewChat,
   });
 
   final MatrixService matrix;
   final String? selectedRoomId;
   final ValueChanged<String> onSelect;
   final VoidCallback onOpenSettings;
+  final VoidCallback onNewChat;
 
   @override
   State<ChatListPanel> createState() => _ChatListPanelState();
@@ -45,6 +48,7 @@ class _ChatListPanelState extends State<ChatListPanel> {
             _Header(
               onSearch: (v) => setState(() => _query = v),
               onOpenSettings: widget.onOpenSettings,
+              onNewChat: widget.onNewChat,
             ),
             _FolderTabs(
               selected: _folder,
@@ -63,6 +67,7 @@ class _ChatListPanelState extends State<ChatListPanel> {
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       itemCount: rooms.length,
                       itemBuilder: (_, i) => _ChatTile(
+                        matrix: widget.matrix,
                         room: rooms[i],
                         selected: rooms[i].id == widget.selectedRoomId,
                         onTap: () => widget.onSelect(rooms[i].id),
@@ -77,9 +82,14 @@ class _ChatListPanelState extends State<ChatListPanel> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.onSearch, required this.onOpenSettings});
+  const _Header({
+    required this.onSearch,
+    required this.onOpenSettings,
+    required this.onNewChat,
+  });
   final ValueChanged<String> onSearch;
   final VoidCallback onOpenSettings;
+  final VoidCallback onNewChat;
 
   @override
   Widget build(BuildContext context) {
@@ -120,7 +130,13 @@ class _Header extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 4),
+          IconButton(
+            onPressed: onNewChat,
+            icon: const Icon(Icons.edit_square),
+            color: OrexColors.copper,
+            tooltip: 'Новый чат',
+          ),
           IconButton(
             onPressed: onOpenSettings,
             icon: const Icon(Icons.settings),
@@ -180,11 +196,13 @@ class _FolderTabs extends StatelessWidget {
 
 class _ChatTile extends StatelessWidget {
   const _ChatTile({
+    required this.matrix,
     required this.room,
     required this.selected,
     required this.onTap,
   });
 
+  final MatrixService matrix;
   final Room room;
   final bool selected;
   final VoidCallback onTap;
@@ -216,7 +234,7 @@ class _ChatTile extends StatelessWidget {
           ),
           child: Row(
             children: [
-              _Avatar(name: name),
+              MxcAvatar(matrix: matrix, name: name, mxc: room.avatar, size: 48),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -271,33 +289,6 @@ class _ChatTile extends StatelessWidget {
     }
     return '${ts.day.toString().padLeft(2, '0')}.'
         '${ts.month.toString().padLeft(2, '0')}';
-  }
-}
-
-class _Avatar extends StatelessWidget {
-  const _Avatar({required this.name});
-  final String name;
-
-  @override
-  Widget build(BuildContext context) {
-    final initials = name.isNotEmpty ? name.characters.first.toUpperCase() : '?';
-    return Container(
-      width: 48,
-      height: 48,
-      decoration: const BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: OrexColors.copperGradient,
-      ),
-      alignment: Alignment.center,
-      child: Text(
-        initials,
-        style: const TextStyle(
-          color: OrexColors.cream,
-          fontWeight: FontWeight.w700,
-          fontSize: 18,
-        ),
-      ),
-    );
   }
 }
 

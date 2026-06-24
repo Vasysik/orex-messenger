@@ -6,6 +6,7 @@ import '../../core/matrix_service.dart';
 import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 import '../../theme/theme_controller.dart';
+import '../../widgets/mxc_avatar.dart';
 import 'devices_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -117,6 +118,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           padding: const EdgeInsets.all(16),
           children: [
             _ProfileCard(
+              matrix: widget.matrix,
               profile: _profile,
               client: widget.matrix.client,
               savingAvatar: _savingAvatar,
@@ -181,6 +183,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
 class _ProfileCard extends StatelessWidget {
   const _ProfileCard({
+    required this.matrix,
     required this.profile,
     required this.client,
     required this.savingAvatar,
@@ -188,6 +191,7 @@ class _ProfileCard extends StatelessWidget {
     required this.onName,
   });
 
+  final MatrixService matrix;
   final Profile? profile;
   final Client client;
   final bool savingAvatar;
@@ -197,7 +201,6 @@ class _ProfileCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final name = profile?.displayName ?? client.userID ?? '';
-    final avatarUri = profile?.avatarUrl?.getDownloadLink(client);
 
     return GlassPanel(
       borderRadius: 22,
@@ -209,32 +212,11 @@ class _ProfileCard extends StatelessWidget {
             child: Stack(
               alignment: Alignment.center,
               children: [
-                Container(
-                  width: 72,
-                  height: 72,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: OrexColors.copperGradient,
-                    image: avatarUri != null
-                        ? DecorationImage(
-                            image: NetworkImage(avatarUri.toString()),
-                            fit: BoxFit.cover,
-                          )
-                        : null,
-                  ),
-                  alignment: Alignment.center,
-                  child: avatarUri == null
-                      ? Text(
-                          name.isEmpty
-                              ? '?'
-                              : name.characters.first.toUpperCase(),
-                          style: const TextStyle(
-                            color: OrexColors.cream,
-                            fontSize: 28,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        )
-                      : null,
+                MxcAvatar(
+                  matrix: matrix,
+                  name: name,
+                  mxc: profile?.avatarUrl,
+                  size: 72,
                 ),
                 if (savingAvatar)
                   const CircularProgressIndicator(color: OrexColors.cream),

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
@@ -7,6 +9,7 @@ import 'core/database.dart';
 import 'core/matrix_service.dart';
 import 'features/auth/login_screen.dart';
 import 'features/home/home_shell.dart';
+import 'features/settings/verification_screen.dart';
 import 'theme/glass.dart';
 import 'theme/orex_theme.dart';
 import 'theme/theme_controller.dart';
@@ -160,17 +163,28 @@ class OrexApp extends StatefulWidget {
 }
 
 class _OrexAppState extends State<OrexApp> {
+  final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
+  StreamSubscription? _verificationSub;
+
   @override
   void initState() {
     super.initState();
     widget.matrix.addListener(_onChanged);
     widget.theme.addListener(_onChanged);
+    // Входящие запросы на проверку (например, из Element X) → показываем
+    // экран сравнения эмодзи поверх текущего.
+    _verificationSub = widget.matrix.incomingVerifications.listen((kv) {
+      _navKey.currentState?.push(
+        MaterialPageRoute(builder: (_) => VerificationScreen(request: kv)),
+      );
+    });
   }
 
   void _onChanged() => setState(() {});
 
   @override
   void dispose() {
+    _verificationSub?.cancel();
     widget.matrix.removeListener(_onChanged);
     widget.theme.removeListener(_onChanged);
     super.dispose();
@@ -180,6 +194,7 @@ class _OrexAppState extends State<OrexApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Orex Messenger',
+      navigatorKey: _navKey,
       debugShowCheckedModeBanner: false,
       theme: OrexTheme.light,
       darkTheme: OrexTheme.dark,

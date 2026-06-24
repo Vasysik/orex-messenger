@@ -1,12 +1,13 @@
 # Orex Messenger — архитектура (Lead Flutter Architect)
 
 Тёплый ореховый мессенджер на **Flutter** поверх **Matrix (Synapse)**, со
-сквозным шифрованием (**vodozemac**) и звонками через **Element Call**
-(MatrixRTC + ваш LiveKit). Единая кодовая база: **Web · Android · Windows**.
+сквозным шифрованием (**vodozemac**) и **нативными звонками** на стеке Element
+Call (MatrixRTC) поверх вашего LiveKit. Единая кодовая база: **Web · Android · Windows**.
 
 Это уже близкий к рабочему билд: тема, glassmorphism, адаптивный двухпанельный
 layout, список чатов с папками, переписка, **настройки (профиль, тема,
-устройства, выход)**, **E2EE** и **звонки через Element Call**.
+устройства, проверка по эмодзи, выход)**, **E2EE**, **поиск людей / группы /
+каналы** и **нативные звонки на LiveKit**.
 
 ---
 
@@ -18,7 +19,7 @@ layout, список чатов с папками, переписка, **нас�
 | Протокол | Matrix CS API (Synapse 1.155+)        | Логин, sync, сообщения, профиль, устройства |
 | Клиент   | `matrix` (Famedly) 7.3.x              | Классический `/sync` + локальный кэш |
 | E2EE     | `flutter_vodozemac` 0.5.x (vodozemac) | Заменил olm |
-| Звонки   | **Element Call** (web/native)         | Поверх вашего LiveKit + lk-jwt-service |
+| Звонки   | **livekit_client** (наш UI)           | Стек Element Call: ваш LiveKit + lk-jwt-service |
 | Кэш      | sqflite / ffi / IndexedDB             | Кроссплатформенно через conditional import |
 
 ---
@@ -26,13 +27,19 @@ layout, список чатов с папками, переписка, **нас�
 ## 2. Что реализовано
 
 - Авторизация по паролю, восстановление сессии из локальной БД.
-- Список чатов: поиск, папки, аватары, превью, время, непрочитанные; адаптивный layout.
+- Список чатов: поиск, папки, аватары (через аутентифицированные медиа),
+  превью, время, непрочитанные; адаптивный layout.
 - Переписка: статус сети/число участников, баблы, отправка, авто-пометка прочитанного.
+- **Новый чат**: поиск людей в директории сервера → личный чат; создание
+  **групп** и **каналов** (кнопка-карандаш в шапке списка).
 - E2EE: vodozemac до `client.init()`, дальше SDK сам шифрует зашифрованные комнаты.
-- Звонки через Element Call: web — `<iframe>`, native — системный браузер
-  (без тяжёлого WebRTC в клиенте — это и убирало лаги).
+- **Проверка сессий по эмодзи (SAS)** — своя, как в Element: убирает
+  «зашифровано устройством, не проверенным владельцем». Принимает входящие
+  запросы (из Element X) и умеет запускать проверку своих сессий.
+- **Нативные звонки** на LiveKit в нашем интерфейсе (стек Element Call), без
+  встраивания call.element.io.
 - Настройки: профиль (аватар + имя), тема (сохраняется), устройства аккаунта
-  (переименование, удаление с паролём через UIA), Matrix ID, выход.
+  (переименование, удаление с паролём через UIA, проверка), Matrix ID, выход.
 - Иконка приложения: `assets/icon/app_icon.png` + `flutter_launcher_icons`.
 
 ---
@@ -43,7 +50,7 @@ layout, список чатов с папками, переписка, **нас�
 lib/
 ├─ main.dart                 # vodozemac → тема → БД → Matrix → запуск
 ├─ core/
-│  ├─ config.dart            # адреса бэкенда (homeserver, Element Call)
+│  ├─ config.dart            # адреса бэкенда (homeserver, lk-jwt-service)
 │  ├─ matrix_service.dart    # логин, sync, профиль, устройства, E2EE-флаг
 │  ├─ database.dart / database_web.dart / database_io.dart
 ├─ theme/ orex_theme.dart, glass.dart, theme_controller.dart
@@ -54,7 +61,10 @@ lib/
    ├─ chat_list/chat_list_panel.dart
    ├─ chat/chat_view.dart, message_bubble.dart
    ├─ settings/settings_screen.dart, devices_screen.dart
-   └─ call/element_call*.dart   # фасад + web(iframe) + native(browser) + url
+   ├─ call/call_session.dart    # LiveKit-сессия (OpenID → lk-jwt → connect)
+   ├─ call/call_screen.dart     # наш экран звонка (сетка участников)
+   ├─ new_chat/new_chat_screen.dart  # поиск людей, группы, каналы
+   └─ settings/verification_screen.dart  # сверка эмодзи (SAS)
 ```
 
 ---
@@ -95,27 +105,36 @@ flutter run -d chrome \
 
 Статус: Настройки → Безопасность → «Сквозное шифрование».
 
-> Дальше по E2EE: кросс-подпись, верификация устройств, key backup (SDK умеет —
-> нужен UI).
+> Проверка сессий (эмодзи/SAS) уже реализована — см. экран «Проверка сессии».
+> Дальше по E2EE: кросс-подпись/key backup setup (bootstrap) — намеренно не
+> трогаем вслепую, чтобы не потерять ключи; обычно это уже настроено в Element.
 
 ---
 
-## 5. Звонки (Element Call)
+## 5. Звонки (нативно, стек Element Call)
 
-EC — веб-приложение MatrixRTC поверх **вашего** LiveKit + lk-jwt-service. Мы его
-открываем, а не реализуем WebRTC в Flutter:
-- Web → `<iframe>` на полноэкранном экране (камера/микрофон через `allow`).
-- Native → системный браузер (`url_launcher`), надёжно вкл. Windows.
+Мы **не встраиваем** call.element.io. Звонок реализован в нашем интерфейсе на
+`livekit_client`, а токен берётся у **вашего** `lk-jwt-service` по OpenID —
+это и есть стек Element Call (MatrixRTC):
+
+1. `client.requestOpenIdToken(...)` → OpenID-токен Matrix.
+2. `POST {lk-jwt-service}/sfu/get` с этим токеном и `room` → `{url, jwt}` LiveKit.
+3. `livekit_client` подключается к вашему SFU; рисуем сетку участников сами.
+
+Два клиента Orex, начавшие звонок в одной Matrix-комнате, получают одну и ту же
+LiveKit-комнату (она выводится из roomId) и встречаются в звонке.
 
 Настройка в `core/config.dart`:
 ```dart
-static const String elementCallBase = 'https://call.element.io';
+static const String jwtService = 'https://jwt.vasys.ru';
 ```
-Рекомендуется поднять свой EC (`https://call.vasys.ru`) на ваш homeserver+LiveKit.
 
-> Точный набор query-параметров URL EC зависит от версии — сверьте
-> `element_call_url.dart` со своим деплоем. Встроенный звонок в native без выхода
-> в браузер — следующий шаг (webview + Matrix Widget API).
+> Что осталось для полноценного MatrixRTC-интероп с Element X: публикация
+> membership-события `com.famedly.call.member` в состоянии комнаты (сигналинг
+> «кто в звонке») и обмен ключами шифрования звонка. Сейчас реализовано
+> подключение к общей LiveKit-комнате + наш UI. В matrix SDK есть модуль
+> `VoIP`/`GroupCallSession` с LiveKit-бэкендом — следующий шаг перевести
+> сигналинг на него.
 
 ---
 
@@ -148,7 +167,10 @@ flutter run -d chrome \
 ```
 
 Мелочи:
-- Android: `INTERNET` в манифесте.
+- Android: в `AndroidManifest.xml` нужны `INTERNET`, а для звонков —
+  `RECORD_AUDIO`, `CAMERA`, `MODIFY_AUDIO_SETTINGS`, `BLUETOOTH` и
+  `android.permission.FOREGROUND_SERVICE`. minSdkVersion ≥ 23 (требование
+  livekit_client/flutter_webrtc).
 - Web: CORS на Synapse (иначе логин из браузера упадёт); wasm vodozemac в `web/pkg/`.
 - Windows: Rust toolchain для E2EE-сборки.
 

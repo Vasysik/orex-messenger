@@ -5,6 +5,7 @@ import '../../theme/theme_controller.dart';
 import '../../widgets/squirrel_mascot.dart';
 import '../chat/chat_view.dart';
 import '../chat_list/chat_list_panel.dart';
+import '../new_chat/new_chat_screen.dart';
 import '../settings/settings_screen.dart';
 
 /// Главный экран. На широком экране (web/desktop) — две панели рядом,
@@ -36,6 +37,15 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
+  Future<void> _openNewChat() async {
+    final roomId = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => NewChatScreen(matrix: widget.matrix),
+      ),
+    );
+    if (roomId != null && mounted) setState(() => _selectedRoomId = roomId);
+  }
+
   @override
   Widget build(BuildContext context) {
     final isWide = MediaQuery.sizeOf(context).width >= _wideBreakpoint;
@@ -52,6 +62,7 @@ class _HomeShellState extends State<HomeShell> {
         selectedRoomId: showSelection ? _selectedRoomId : null,
         onSelect: (id) => setState(() => _selectedRoomId = id),
         onOpenSettings: _openSettings,
+        onNewChat: _openNewChat,
       );
 
   Widget _buildWide() {

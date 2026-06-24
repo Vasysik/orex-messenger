@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
+import 'package:matrix/encryption/utils/key_verification.dart';
 
 /// Тонкая обёртка над Famedly Matrix Dart SDK.
 ///
@@ -141,6 +142,17 @@ class MatrixService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Начать проверку (SAS) другой своей сессии.
+  Future<KeyVerification?> verifyDevice(String deviceId) async {
+    final dk = client.userDeviceKeys[client.userID]?.deviceKeys[deviceId];
+    if (dk == null) return null;
+    return dk.startVerification();
+  }
+
+  /// Входящие запросы на проверку (от Element X и др.).
+  Stream<KeyVerification> get incomingVerifications =>
+      client.onKeyVerificationRequest.stream;
+
   /// Удаляет устройство. Эта операция защищена User-Interactive Auth, поэтому
   /// требует пароль пользователя (паттерн повторяет сам SDK для changePassword).
   Future<void> deleteDevice(String deviceId, String password) async {
@@ -159,6 +171,58 @@ class MatrixService extends ChangeNotifier {
       );
     }
     notifyListeners();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Поиск людей и создание чатов
+  // ---------------------------------------------------------------------------
+
+  /// Поиск пользователей в директории сервера.
+  Future<List<Profile>> searchUsers(String query) async {
+    if (query.trim().isEmpty) return [];
+    final res = await client.searchUserDirectory(query.trim(), limit: 30);
+    return res.results;
+  }
+
+  /// Личный чат (создаёт или возвращает существующий).
+  Future<String> startDirectChat(String userId) =>
+      client.startDirectChat(userId);
+
+  /// Создать группу.
+  Future<String> createGroup(String name, {List<String> invite = const []}) =>
+      client.createGroupChat(groupName: name, invite: invite);
+
+  /// Создать канал: группа, где обычные участники не могут писать
+  /// (events_default поднят) — совпадает с эвристикой папки «Каналы».
+  Future<String> createChannel(String name) => client.createGroupChat(
+        groupName: name,
+        preset: CreateRoomPreset.publicChat,
+        powerLevelContentOverride: const {'events_default': 50},
+      );
+
+  // ---------------------------------------------------------------------------
+  // Медиа (аутентифицированные): качаем байты с токеном и кэшируем
+  // ---------------------------------------------------------------------------
+
+  final Map<String, Uint8List> _mediaCache = {};
+
+  /// Скачивает содержимое mxc:// через аутентифицированный эндпоинт.
+  /// Обычный <img>/NetworkImage на новых Synapse даёт 404, т.к. требуется
+  /// заголовок авторизации — поэтому грузим сами.
+  Future<Uint8List?> downloadMxc(Uri mxc) async {
+    if (mxc.scheme != 'mxc') return null;
+    final key = mxc.toString();
+    final cached = _mediaCache[key];
+    if (cached != null) return cached;
+    try {
+      final serverName = mxc.host;
+      final mediaId = mxc.pathSegments.isNotEmpty ? mxc.pathSegments.last : '';
+      final res = await client.getContent(serverName, mediaId);
+      _mediaCache[key] = res.data;
+      return res.data;
+    } catch (_) {
+      return null;
+    }
   }
 
   @override

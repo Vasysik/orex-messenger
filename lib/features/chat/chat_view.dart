@@ -2,11 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 import '../../core/matrix_service.dart';
 import '../../theme/orex_theme.dart';
-import '../call/element_call.dart';
+import '../../widgets/mxc_avatar.dart';
+import '../call/call_screen.dart';
 import 'message_bubble.dart';
-
-/// Первая буква имени для аватара-заглушки (без внешних зависимостей).
-String _initial(String s) => s.isEmpty ? '?' : s.characters.first.toUpperCase();
 
 /// Правая панель: шапка чата, лента сообщений, строка ввода.
 class ChatView extends StatefulWidget {
@@ -85,10 +83,18 @@ class _ChatViewState extends State<ChatView> {
     return Column(
       children: [
         _ChatHeader(
+          matrix: widget.matrix,
           room: room,
           onBack: widget.onBack,
-          onCall: (video) =>
-              openElementCall(context, roomId: room.id, video: video),
+          onCall: (video) => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => CallScreen(
+                matrix: widget.matrix,
+                roomId: room.id,
+                video: video,
+              ),
+            ),
+          ),
         ),
         Divider(height: 1, color: OrexColors.copper.withValues(alpha: 0.12)),
         Expanded(
@@ -115,11 +121,13 @@ class _ChatViewState extends State<ChatView> {
 
 class _ChatHeader extends StatelessWidget {
   const _ChatHeader({
+    required this.matrix,
     required this.room,
     required this.onCall,
     this.onBack,
   });
 
+  final MatrixService matrix;
   final Room room;
   final ValueChanged<bool> onCall; // true = видео
   final VoidCallback? onBack;
@@ -135,21 +143,11 @@ class _ChatHeader extends StatelessWidget {
               onPressed: onBack,
               icon: const Icon(Icons.arrow_back),
             ),
-          Container(
-            width: 42,
-            height: 42,
-            decoration: const BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: OrexColors.copperGradient,
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              _initial(room.getLocalizedDisplayname()),
-              style: const TextStyle(
-                color: OrexColors.cream,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
+          MxcAvatar(
+            matrix: matrix,
+            name: room.getLocalizedDisplayname(),
+            mxc: room.avatar,
+            size: 42,
           ),
           const SizedBox(width: 12),
           Expanded(
