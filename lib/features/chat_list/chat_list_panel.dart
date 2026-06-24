@@ -30,43 +30,33 @@ class _ChatListPanelState extends State<ChatListPanel> {
   OrexFolder _folder = OrexFolder.all;
   String _query = '';
 
-  void _handleTap(Room room) {
-    if (widget.matrix.isInvite(room)) {
-      _showInviteDialog(room);
-    } else {
-      widget.onSelect(room.id);
-    }
-  }
-
-  Future<void> _showInviteDialog(Room room) async {
-    final from = room.unsafeGetUserFromMemoryOrFallback(
-      room.directChatMatrixID ?? '',
-    );
-    final who = from.calcDisplayname();
-    final action = await showDialog<String>(
+  // Приглашения теперь принимаются прямо в открытом чате (ChatView), поэтому
+  // тап просто открывает комнату.
+  Future<void> _confirmDelete(Room room) async {
+    final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Приглашение в чат'),
-        content: Text('$who приглашает вас в «${room.getLocalizedDisplayname()}».'),
+        title: const Text('Удалить чат?'),
+        content: Text(
+          'Чат «${room.getLocalizedDisplayname()}» исчезнет из списка. '
+          'Вы выйдете из комнаты.',
+        ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, 'reject'),
-            child: const Text('Отклонить'),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: OrexColors.copper),
-            onPressed: () => Navigator.pop(ctx, 'accept'),
-            child: const Text('Принять'),
+            style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFCF6679)),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить'),
           ),
         ],
       ),
     );
-    if (!mounted) return;
-    if (action == 'accept') {
-      await widget.matrix.acceptInvite(room);
-      if (mounted) widget.onSelect(room.id);
-    } else if (action == 'reject') {
-      await widget.matrix.rejectInvite(room);
+    if (ok == true) {
+      await widget.matrix.deleteRoom(room);
     }
   }
 
@@ -110,7 +100,8 @@ class _ChatListPanelState extends State<ChatListPanel> {
                         matrix: widget.matrix,
                         room: rooms[i],
                         selected: rooms[i].id == widget.selectedRoomId,
-                        onTap: () => _handleTap(rooms[i]),
+                        onTap: () => widget.onSelect(rooms[i].id),
+                        onLongPress: () => _confirmDelete(rooms[i]),
                       ),
                     ),
             ),
@@ -240,12 +231,14 @@ class _ChatTile extends StatelessWidget {
     required this.room,
     required this.selected,
     required this.onTap,
+    this.onLongPress,
   });
 
   final MatrixService matrix;
   final Room room;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -268,6 +261,7 @@ class _ChatTile extends StatelessWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: onTap,
+        onLongPress: onLongPress,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
           margin: const EdgeInsets.symmetric(vertical: 2),

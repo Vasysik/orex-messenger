@@ -17,6 +17,7 @@ class MessageBubble extends StatelessWidget {
     this.onRedact,
     this.onEdit,
     this.onDelete,
+    this.onReply,
   });
 
   final Event event;
@@ -28,6 +29,19 @@ class MessageBubble extends StatelessWidget {
   final void Function(String reactionEventId)? onRedact;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
+  final VoidCallback? onReply;
+
+  /// Сообщение, на которое отвечает это (если это ответ) — ищем в ленте.
+  Event? _repliedEvent() {
+    final t = timeline;
+    if (t == null) return null;
+    final id = event.inReplyToEventId();
+    if (id == null) return null;
+    for (final ev in t.events) {
+      if (ev.eventId == id) return ev;
+    }
+    return null;
+  }
 
   static const _quickEmojis = ['👍', '❤️', '😂', '🎉', '😮', '😢', '🔥', '🙏'];
 
@@ -70,6 +84,15 @@ class MessageBubble extends StatelessWidget {
               ),
             ),
             const Divider(height: 1),
+            if (onReply != null)
+              ListTile(
+                leading: const Icon(Icons.reply, color: OrexColors.copper),
+                title: const Text('Ответить'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  onReply?.call();
+                },
+              ),
             ListTile(
               leading: const Icon(Icons.copy, color: OrexColors.copper),
               title: const Text('Копировать'),
@@ -131,6 +154,7 @@ class MessageBubble extends StatelessWidget {
             .calcLocalizedBodyFallback(const MatrixDefaultLocalizations());
     final ts = event.originServerTs;
     final reactions = _reactions();
+    final replied = _repliedEvent();
 
     return Align(
       alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
@@ -175,6 +199,41 @@ class MessageBubble extends StatelessWidget {
                           fontWeight: FontWeight.w700,
                           fontSize: 13,
                         ),
+                      ),
+                    ),
+                  if (replied != null)
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 4),
+                      padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                        border: const Border(
+                          left: BorderSide(color: OrexColors.copper, width: 3),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            replied.senderFromMemoryOrFallback.calcDisplayname(),
+                            style: const TextStyle(
+                              color: OrexColors.copper,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 12,
+                            ),
+                          ),
+                          Text(
+                            replied.calcLocalizedBodyFallback(
+                                const MatrixDefaultLocalizations()),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: textColor.withValues(alpha: 0.8),
+                              fontSize: 12.5,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   Text(

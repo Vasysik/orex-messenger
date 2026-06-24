@@ -29,6 +29,7 @@ class _ChatViewState extends State<ChatView> {
   Timeline? _timeline;
   Room? _room;
   Event? _editing; // редактируемое сообщение (если есть)
+  Event? _replyTo; // сообщение, на которое отвечаем
 
   @override
   void initState() {
@@ -39,6 +40,11 @@ class _ChatViewState extends State<ChatView> {
   Future<void> _openTimeline() async {
     final room = widget.matrix.client.getRoomById(widget.roomId);
     if (room == null) return;
+    // Приглашение: ленту не открываем (мы не в комнате) — покажем приём/отказ.
+    if (room.membership == Membership.invite) {
+      if (mounted) setState(() => _room = room);
+      return;
+    }
     final timeline = await room.getTimeline(onUpdate: () {
       if (mounted) setState(() {});
     });
@@ -58,12 +64,16 @@ class _ChatViewState extends State<ChatView> {
     final text = _input.text.trim();
     if (text.isEmpty || _room == null) return;
     final editing = _editing;
+    final replyTo = _replyTo;
     _input.clear();
-    setState(() => _editing = null);
+    setState(() {
+      _editing = null;
+      _replyTo = null;
+    });
     if (editing != null) {
       await _room!.sendTextEvent(text, editEventId: editing.eventId);
     } else {
-      await widget.matrix.sendText(_room!, text);
+      await _room!.sendTextEvent(text, inReplyTo: replyTo);
     }
   }
 
@@ -71,15 +81,59 @@ class _ChatViewState extends State<ChatView> {
     final body = e.getDisplayEvent(_timeline!).calcLocalizedBodyFallback(
           const MatrixDefaultLocalizations(),
         );
-    setState(() => _editing = e);
+    setState(() {
+      _editing = e;
+      _replyTo = null;
+    });
     _input.text = body;
-    _input.selection =
-        TextSelection.collapsed(offset: _input.text.length);
+    _input.selection = TextSelection.collapsed(offset: _input.text.length);
   }
 
   void _cancelEdit() {
     setState(() => _editing = null);
     _input.clear();
+  }
+
+  void _startReply(Event e) {
+    setState(() {
+      _replyTo = e;
+      _editing = null;
+    });
+  }
+
+  void _cancelReply() => setState(() => _replyTo = null);
+
+  void _insertEmoji(String emoji) {
+    final sel = _input.selection;
+    final text = _input.text;
+    if (sel.isValid) {
+      final newText = text.replaceRange(sel.start, sel.end, emoji);
+      _input.value = TextEditingValue(
+        text: newText,
+        selection: TextSelection.collapsed(offset: sel.start + emoji.length),
+      );
+    } else {
+      _input.text = text + emoji;
+    }
+  }
+
+  Future<void> _acceptInvite() async {
+    final room = _room;
+    if (room == null) return;
+    await widget.matrix.acceptInvite(room);
+    if (!mounted) return;
+    // После join открываем ленту напрямую — membership в кэше мог ещё не доехать.
+    final timeline = await room.getTimeline(onUpdate: () {
+      if (mounted) setState(() {});
+    });
+    if (mounted) setState(() => _timeline = timeline);
+  }
+
+  Future<void> _rejectInvite() async {
+    final room = _room;
+    if (room == null) return;
+    await widget.matrix.rejectInvite(room);
+    if (mounted) widget.onBack?.call();
   }
 
   void _openCall(bool video) {
@@ -100,7 +154,24 @@ class _ChatViewState extends State<ChatView> {
   @override
   Widget build(BuildContext context) {
     final room = _room;
-    if (room == null || _timeline == null) {
+    if (room == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    // Приглашение: вместо ленты — приём/отказ прямо в блоке чата.
+    // (после принятия лента уже загружена — показываем чат, даже если
+    //  membership в кэше ещё «invite».)
+    if (room.membership == Membership.invite && _timeline == null) {
+      return _InviteView(
+        matrix: widget.matrix,
+        room: room,
+        onBack: widget.onBack,
+        onAccept: _acceptInvite,
+        onReject: _rejectInvite,
+      );
+    }
+
+    if (_timeline == null) {
       return const Center(child: CircularProgressIndicator());
     }
 
@@ -141,6 +212,7 @@ class _ChatViewState extends State<ChatView> {
                 onRedact: (rid) => room.redactEvent(rid),
                 onEdit: () => _startEdit(e),
                 onDelete: () => room.redactEvent(e.eventId),
+                onReply: () => _startReply(e),
               );
             },
           ),
@@ -150,6 +222,94 @@ class _ChatViewState extends State<ChatView> {
           onSend: _send,
           editing: _editing != null,
           onCancelEdit: _cancelEdit,
+          replyTo: _replyTo,
+          onCancelReply: _cancelReply,
+          onPickEmoji: _insertEmoji,
+        ),
+      ],
+    );
+  }
+}
+
+/// Экран приглашения внутри блока чата: «вас пригласили» + Принять/Отклонить.
+class _InviteView extends StatelessWidget {
+  const _InviteView({
+    required this.matrix,
+    required this.room,
+    required this.onAccept,
+    required this.onReject,
+    this.onBack,
+  });
+
+  final MatrixService matrix;
+  final Room room;
+  final VoidCallback onAccept;
+  final VoidCallback onReject;
+  final VoidCallback? onBack;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = room.getLocalizedDisplayname();
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 10, 12, 10),
+          child: Row(
+            children: [
+              if (onBack != null)
+                IconButton(onPressed: onBack, icon: const Icon(Icons.arrow_back)),
+              MxcAvatar(matrix: matrix, name: name, mxc: room.avatar, size: 42),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 380),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    MxcAvatar(
+                        matrix: matrix, name: name, mxc: room.avatar, size: 88),
+                    const SizedBox(height: 16),
+                    Text('Вас пригласили в «$name»',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 24),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: onReject,
+                            child: const Text('Отклонить'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: FilledButton(
+                            style: FilledButton.styleFrom(
+                                backgroundColor: OrexColors.copper),
+                            onPressed: onAccept,
+                            child: const Text('Принять'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
       ],
     );
@@ -314,15 +474,51 @@ class _InputBar extends StatelessWidget {
     required this.onSend,
     this.editing = false,
     this.onCancelEdit,
+    this.replyTo,
+    this.onCancelReply,
+    required this.onPickEmoji,
   });
   final TextEditingController controller;
   final VoidCallback onSend;
   final bool editing;
   final VoidCallback? onCancelEdit;
+  final Event? replyTo;
+  final VoidCallback? onCancelReply;
+  final void Function(String emoji) onPickEmoji;
+
+  static const _emojis = [
+    '😀','😁','😂','🤣','😊','😍','😘','😎','🤩','🥳',
+    '🤔','😴','😭','😡','👍','👎','🙏','👏','🔥','❤️',
+    '🎉','✨','💯','✅','❌','⚡','🌟','😅','😉','🙃',
+    '🤝','💪','👀','🍀','☕','🚀','🐿️','💜','😇','🤗',
+  ];
+
+  void _openEmoji(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Wrap(
+            children: _emojis
+                .map((e) => InkWell(
+                      onTap: () => onPickEmoji(e),
+                      child: Padding(
+                        padding: const EdgeInsets.all(6),
+                        child: Text(e, style: const TextStyle(fontSize: 26)),
+                      ),
+                    ))
+                .toList(),
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final reply = replyTo;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -338,6 +534,29 @@ class _InputBar extends StatelessWidget {
                   visualDensity: VisualDensity.compact,
                   icon: const Icon(Icons.close, size: 18),
                   onPressed: onCancelEdit,
+                ),
+              ],
+            ),
+          ),
+        if (reply != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 8, 0),
+            child: Row(
+              children: [
+                const Icon(Icons.reply, size: 16, color: OrexColors.copper),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Ответ: ${reply.calcLocalizedBodyFallback(const MatrixDefaultLocalizations())}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.close, size: 18),
+                  onPressed: onCancelReply,
                 ),
               ],
             ),
@@ -377,8 +596,11 @@ class _InputBar extends StatelessWidget {
                       ),
                     ),
                   ),
-                  Icon(Icons.emoji_emotions_outlined,
-                      color: OrexColors.copper.withValues(alpha: 0.8)),
+                  GestureDetector(
+                    onTap: () => _openEmoji(context),
+                    child: Icon(Icons.emoji_emotions_outlined,
+                        color: OrexColors.copper.withValues(alpha: 0.8)),
+                  ),
                 ],
               ),
             ),

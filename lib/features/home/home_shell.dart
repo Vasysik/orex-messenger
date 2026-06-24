@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
-import '../../core/call_controller.dart';
 import '../../core/matrix_service.dart';
 import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 import '../../theme/theme_controller.dart';
 import '../../widgets/squirrel_mascot.dart';
 import '../call/call_screen.dart';
+import '../call/minimized_call_panel.dart';
 import '../chat/chat_view.dart';
 import '../chat_list/chat_list_panel.dart';
 import '../new_chat/new_chat_screen.dart';
@@ -87,7 +87,7 @@ class _HomeShellState extends State<HomeShell> {
                           setState(() => _verifyBannerDismissed = true),
                     ),
                   if (call.isActive && call.minimized)
-                    _MiniCallBar(call: call, onOpen: _openCall),
+                    MinimizedCallPanel(call: call, onExpand: _openCall),
                   Expanded(child: isWide ? _buildWide() : _buildNarrow()),
                 ],
               );
@@ -206,67 +206,6 @@ class _VerifyBanner extends StatelessWidget {
                   onPressed: onClose,
                   icon: const Icon(Icons.close,
                       color: OrexColors.cream, size: 18),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Мини-панель свёрнутого звонка над чатом: тап — развернуть, плюс mic/трубка.
-class _MiniCallBar extends StatelessWidget {
-  const _MiniCallBar({required this.call, required this.onOpen});
-  final CallController call;
-  final VoidCallback onOpen;
-
-  @override
-  Widget build(BuildContext context) {
-    final room = call.roomId != null
-        ? call.matrix.client.getRoomById(call.roomId!)
-        : null;
-    final name = room?.getLocalizedDisplayname() ?? 'Звонок';
-    final session = call.session;
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: onOpen,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              gradient: OrexColors.copperGradient,
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.call, color: OrexColors.cream, size: 20),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Звонок · $name',
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: OrexColors.cream, fontWeight: FontWeight.w600),
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Микрофон',
-                  icon: Icon(
-                    (session?.micOn ?? true) ? Icons.mic : Icons.mic_off,
-                    color: OrexColors.cream,
-                  ),
-                  onPressed: () => session?.toggleMic(),
-                ),
-                IconButton(
-                  tooltip: 'Завершить',
-                  icon: const Icon(Icons.call_end, color: Color(0xFFCF6679)),
-                  onPressed: call.hangUp,
                 ),
               ],
             ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:matrix/encryption/utils/key_verification.dart';
 
+import '../../core/matrix_service.dart';
 import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 
@@ -8,8 +9,12 @@ import '../../theme/orex_theme.dart';
 /// но свой. Убирает предупреждение «зашифровано устройством, не проверенным
 /// владельцем»: после сравнения эмодзи сессии взаимно подписываются.
 class VerificationScreen extends StatefulWidget {
-  const VerificationScreen({super.key, required this.request});
+  const VerificationScreen({super.key, required this.request, this.matrix});
   final KeyVerification request;
+
+  /// Нужен, чтобы после успешной проверки обновить плашку «не подтверждена»
+  /// без перезагрузки вкладки (статус кросс-подписи доезжает с задержкой).
+  final MatrixService? matrix;
 
   @override
   State<VerificationScreen> createState() => _VerificationScreenState();
@@ -22,6 +27,14 @@ class _VerificationScreenState extends State<VerificationScreen> {
   void initState() {
     super.initState();
     kv.onUpdate = () {
+      if (kv.state == KeyVerificationState.done) {
+        final m = widget.matrix;
+        if (m != null) {
+          for (final ms in const [300, 1500, 3500]) {
+            Future.delayed(Duration(milliseconds: ms), m.refresh);
+          }
+        }
+      }
       if (mounted) setState(() {});
     };
   }

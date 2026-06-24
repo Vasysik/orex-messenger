@@ -39,7 +39,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
     }
     if (mounted) {
       Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => VerificationScreen(request: kv)),
+        MaterialPageRoute(
+            builder: (_) =>
+                VerificationScreen(request: kv, matrix: widget.matrix)),
       );
     }
   }

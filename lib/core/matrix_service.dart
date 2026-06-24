@@ -139,6 +139,21 @@ class MatrixService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Удалить чат у себя: выйти из комнаты и «забыть» её.
+  Future<void> deleteRoom(Room room) async {
+    try {
+      if (room.membership != Membership.leave) await room.leave();
+    } catch (_) {}
+    try {
+      await room.forget();
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  /// Принудительно перерисовать слушателей (например, после завершения
+  /// проверки сессии, чтобы плашка «не подтверждена» убралась без перезагрузки).
+  void refresh() => notifyListeners();
+
   // ---------------------------------------------------------------------------
   // Шифрование и проверка ТЕКУЩЕЙ сессии (кросс-подпись)
   // ---------------------------------------------------------------------------

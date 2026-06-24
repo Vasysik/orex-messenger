@@ -176,7 +176,9 @@ class _OrexAppState extends State<OrexApp> {
     // экран сравнения эмодзи поверх текущего.
     _verificationSub = widget.matrix.incomingVerifications.listen((kv) {
       _navKey.currentState?.push(
-        MaterialPageRoute(builder: (_) => VerificationScreen(request: kv)),
+        MaterialPageRoute(
+            builder: (_) =>
+                VerificationScreen(request: kv, matrix: widget.matrix)),
       );
     });
     // Входящие звонки (кто-то начал звонок в комнате) → экран входящего.

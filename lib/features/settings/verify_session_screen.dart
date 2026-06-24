@@ -38,7 +38,9 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
       final kv = await widget.matrix.startSelfVerification();
       if (!mounted) return;
       await Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => VerificationScreen(request: kv)),
+        MaterialPageRoute(
+            builder: (_) =>
+                VerificationScreen(request: kv, matrix: widget.matrix)),
       );
       if (mounted) Navigator.of(context).maybePop();
     } catch (e) {
