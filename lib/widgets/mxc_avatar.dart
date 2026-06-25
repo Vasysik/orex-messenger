@@ -33,7 +33,12 @@ class _MxcAvatarState extends State<MxcAvatar> {
   void initState() {
     super.initState();
     _load();
+    // Реагируем на sync/обновление профилей: если у человека сменился аватар
+    // (новый mxc) или сбросился кэш — подтянем картинку без перезагрузки.
+    widget.matrix.addListener(_onMatrix);
   }
+
+  void _onMatrix() => _load();
 
   @override
   void didUpdateWidget(MxcAvatar old) {
@@ -44,11 +49,21 @@ class _MxcAvatarState extends State<MxcAvatar> {
     }
   }
 
+  @override
+  void dispose() {
+    widget.matrix.removeListener(_onMatrix);
+    super.dispose();
+  }
+
   Future<void> _load() async {
     final mxc = widget.mxc;
     if (mxc == null) return;
     final data = await widget.matrix.downloadMxc(mxc);
-    if (mounted && data != null) setState(() => _bytes = data);
+    // identical-проверка: кэш отдаёт ту же ссылку для неизменных аватаров —
+    // тогда не дёргаем setState (иначе перерисовка на каждый sync).
+    if (mounted && data != null && !identical(data, _bytes)) {
+      setState(() => _bytes = data);
+    }
   }
 
   @override

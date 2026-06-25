@@ -85,7 +85,7 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                       ),
               ),
               _controls(session),
-              _resizeHandle(tilesH, minH, maxH),
+              _resizeHandle(minH, maxH),
             ],
           ),
         );
@@ -94,14 +94,19 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
   }
 
   /// Нижняя кромка-«ручка»: тянуть вверх/вниз, чтобы менять высоту плиток.
-  Widget _resizeHandle(double current, double minH, double maxH) {
+  /// База берётся из ПОЛЯ (не из build) — иначе при быстром перетаскивании
+  /// несколько событий за кадр считают от устаревшей высоты и дельты теряются
+  /// (визуально «медленнее мыши»).
+  Widget _resizeHandle(double minH, double maxH) {
     return MouseRegion(
       cursor: SystemMouseCursors.resizeUpDown,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onVerticalDragUpdate: (d) {
           setState(() {
-            _tilesHeight = (current + d.delta.dy).clamp(minH, maxH);
+            final base = _tilesHeight ??
+                (MediaQuery.sizeOf(context).height / 3);
+            _tilesHeight = (base + d.delta.dy).clamp(minH, maxH);
           });
         },
         child: Container(

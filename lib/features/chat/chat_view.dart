@@ -35,6 +35,12 @@ class _ChatViewState extends State<ChatView> {
   void initState() {
     super.initState();
     _openTimeline();
+    // Перестраиваемся на sync (имя/аватар/пресенс собеседника в шапке).
+    widget.matrix.addListener(_onMatrix);
+  }
+
+  void _onMatrix() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _openTimeline() async {
@@ -152,6 +158,7 @@ class _ChatViewState extends State<ChatView> {
 
   @override
   void dispose() {
+    widget.matrix.removeListener(_onMatrix);
     _timeline?.cancelSubscriptions();
     _input.dispose();
     _scroll.dispose();

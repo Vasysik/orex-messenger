@@ -71,6 +71,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
       widget.matrix.call.minimize(); // десктоп — звонок панелью над чатом
       Navigator.of(context).maybePop();
     } else {
+      // Мобильный — разворачиваем на весь экран (а не свёрнуто).
+      widget.matrix.call.expand();
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
       );

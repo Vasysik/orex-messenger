@@ -31,6 +31,7 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   String? _selectedRoomId;
   bool _verifyBannerDismissed = false;
+  double _chatListWidth = 360; // ширина левой колонки (можно тянуть мышью)
 
   static const double _wideBreakpoint = 900;
 
@@ -129,6 +130,32 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
+  /// Перетаскиваемая граница между списком чатов и правым блоком (12px-зазор).
+  Widget _columnResizer() {
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeLeftRight,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragUpdate: (d) {
+          setState(() {
+            _chatListWidth = (_chatListWidth + d.delta.dx).clamp(260.0, 560.0);
+          });
+        },
+        child: Center(
+          child: Container(
+            width: 4,
+            height: 44,
+            margin: const EdgeInsets.symmetric(horizontal: 4),
+            decoration: BoxDecoration(
+              color: OrexColors.copper.withValues(alpha: 0.25),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _chatList({required bool showSelection}) => ChatListPanel(
         matrix: widget.matrix,
         selectedRoomId: showSelection ? _selectedRoomId : null,
@@ -143,13 +170,13 @@ class _HomeShellState extends State<HomeShell> {
       child: Row(
         children: [
           SizedBox(
-            width: 360,
+            width: _chatListWidth,
             child: GlassPanel(
               borderRadius: 24,
               child: _chatList(showSelection: true),
             ),
           ),
-          const SizedBox(width: 12),
+          _columnResizer(),
           Expanded(
             child: Column(
               children: [
