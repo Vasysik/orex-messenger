@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
 
 import 'core/config.dart';
@@ -17,6 +19,9 @@ import 'widgets/squirrel_mascot.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // На web отключаем нативное контекст-меню браузера, чтобы по правому клику
+  // показывалось наше меню сообщения, а не хромовское.
+  if (kIsWeb) BrowserContextMenu.disableContextMenu();
   // Показываем сплэш сразу, тяжёлую инициализацию делаем под ним.
   runApp(const OrexBootstrap());
 }

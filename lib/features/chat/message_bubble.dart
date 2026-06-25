@@ -82,20 +82,24 @@ class MessageBubble extends StatelessWidget {
         if (onReact != null)
           PopupMenuItem<String>(
             padding: EdgeInsets.zero,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: _quickEmojis
-                    .map((e) => InkWell(
-                          onTap: () => Navigator.pop(context, 'react:$e'),
-                          child: Padding(
-                            padding: const EdgeInsets.all(6),
-                            child:
-                                Text(e, style: const TextStyle(fontSize: 22)),
-                          ),
-                        ))
-                    .toList(),
+            child: SizedBox(
+              width: 280,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: _quickEmojis
+                      .map((e) => InkWell(
+                            onTap: () => Navigator.pop(context, 'react:$e'),
+                            child: Padding(
+                              padding: const EdgeInsets.all(5),
+                              child: Text(e,
+                                  style: const TextStyle(fontSize: 22)),
+                            ),
+                          ))
+                      .toList(),
+                ),
               ),
             ),
           ),
@@ -153,10 +157,11 @@ class MessageBubble extends StatelessWidget {
     final readByOther = event.room.receiptState.global.otherUsers.values.any(
       (r) => r.ts >= event.originServerTs.millisecondsSinceEpoch,
     );
+    // Отправлено — две серые галочки; просмотрено — две зелёные.
     return Icon(
-      readByOther ? Icons.done_all : Icons.check,
+      Icons.done_all,
       size: 13,
-      color: readByOther ? OrexColors.online : base.withValues(alpha: 0.6),
+      color: readByOther ? OrexColors.online : base.withValues(alpha: 0.55),
     );
   }
 

@@ -253,6 +253,8 @@ class _ChatTile extends StatelessWidget {
                 ? '📞 Звонок'
                 : lastEvent.calcLocalizedBodyFallback(
                     const MatrixDefaultLocalizations(),
+                    hideReply: true,
+                    hideEdit: true,
                   )));
     final unread = room.notificationCount;
 

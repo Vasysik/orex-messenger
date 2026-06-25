@@ -56,17 +56,28 @@ class _ChatViewState extends State<ChatView> {
     }
     final timeline = await room.getTimeline(onUpdate: () {
       if (mounted) setState(() {});
+      // Пришло новое сообщение, пока чат открыт → сразу отмечаем прочитанным,
+      // чтобы у отправителя появилось «просмотрено» без передёргивания чата.
+      _markRead(room);
     });
-    final lastId = room.lastEvent?.eventId;
-    if (lastId != null) {
-      await room.setReadMarker(lastId, mRead: lastId);
-    }
+    await _markRead(room);
     if (mounted) {
       setState(() {
         _room = room;
         _timeline = timeline;
       });
     }
+  }
+
+  String? _lastReadId;
+
+  Future<void> _markRead(Room room) async {
+    final id = room.lastEvent?.eventId;
+    if (id == null || id == _lastReadId) return;
+    _lastReadId = id;
+    try {
+      await room.setReadMarker(id, mRead: id);
+    } catch (_) {}
   }
 
   Future<void> _send() async {
