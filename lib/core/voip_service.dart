@@ -54,6 +54,25 @@ class VoipService extends ChangeNotifier {
     // Грейс 3 c: всё, что активно сразу после запуска/перезагрузки (включая
     // звонок, из которого мы только что вышли), НЕ звонит — покажется панелью.
     Future.delayed(const Duration(seconds: 3), () => _ready = true);
+    // Чистим СВОИ зависшие членства (после перезагрузки/закрытия вкладки во
+    // время звонка) — иначе другой аккаунт видит нас «в звонке» (фантом).
+    Future.delayed(
+        const Duration(seconds: 4), _cleanupOwnStaleMemberships);
+  }
+
+  /// Удаляем своё членство в звонках, в которых мы на самом деле не находимся.
+  Future<void> _cleanupOwnStaleMemberships() async {
+    final myId = client.userID;
+    for (final room in client.rooms) {
+      if (!_callMembers(room).contains(myId)) continue;
+      if (active != null && active!.room.id == room.id) continue; // реально в звонке
+      try {
+        await room.removeFamedlyCallMemberEvent(room.id, voip);
+        debugPrint('Removed phantom call membership in ${room.id}');
+      } catch (e) {
+        debugPrint('cleanup stale membership failed: $e');
+      }
+    }
   }
 
   static const _handledEventType = 'com.orex.call.handled';
@@ -221,7 +240,12 @@ class VoipService extends ChangeNotifier {
       } catch (e) {
         debugPrint('VoipService.leaveCurrent failed: $e');
       }
-      // Подстраховка: чистим карту, чтобы будущие звонки не глохли (VoipId не
+      // Подстраховка: гарантированно убираем своё членство (если leave() не
+      // справился) — иначе остаёмся «фантомом» в звонке для остальных.
+      try {
+        await gc.room.removeFamedlyCallMemberEvent(gc.groupCallId, voip);
+      } catch (_) {}
+      // И чистим локальную карту, чтобы будущие звонки не глохли (VoipId не
       // экспортируется — фильтруем по полям ключа).
       voip.groupCalls.removeWhere(
         (k, v) => k.roomId == gc.room.id && k.callId == gc.groupCallId,
