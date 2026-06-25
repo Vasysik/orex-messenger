@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import '../../theme/orex_theme.dart';
 import '../../widgets/media_player.dart';
 import '../../core/file_helper.dart';
@@ -21,7 +22,7 @@ class MessageBubble extends StatelessWidget {
     this.onEdit,
     this.onDelete,
     this.onReply,
-    this.albumEvents, // Список сгруппированных медиафайлов для альбома
+    this.albumEvents, 
   });
 
   final Event event;
@@ -98,8 +99,7 @@ class MessageBubble extends StatelessWidget {
                             onTap: () => Navigator.pop(context, 'react:$e'),
                             child: Padding(
                               padding: const EdgeInsets.all(5),
-                              child: Text(e,
-                                  style: const TextStyle(fontSize: 22)),
+                              child: Text(e, style: const TextStyle(fontSize: 22)),
                             ),
                           ))
                       .toList(),
@@ -125,10 +125,7 @@ class MessageBubble extends StatelessWidget {
         if (canModify && onDelete != null)
           const PopupMenuItem(
             value: 'delete',
-            child: _MenuRow(
-                icon: Icons.delete_outline,
-                label: 'Удалить',
-                color: Color(0xFFCF6679)),
+            child: _MenuRow(icon: Icons.delete_outline, label: 'Удалить', color: Color(0xFFCF6679)),
           ),
       ],
     );
@@ -188,7 +185,7 @@ class MessageBubble extends StatelessWidget {
         timeline != null &&
         event.hasAggregatedEvents(timeline!, RelationshipTypes.edit);
     
-    final body = redacted ? '' : (displayEvent.body ?? '');
+    final body = redacted ? '' : displayEvent.body;
     
     final ts = event.originServerTs;
     final reactions = _reactions();
@@ -201,8 +198,6 @@ class MessageBubble extends StatelessWidget {
             isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         children: [
           GestureDetector(
-            onLongPressStart:
-                redacted ? null : (d) => _showMenu(context, d.globalPosition, body),
             onSecondaryTapDown:
                 redacted ? null : (d) => _showMenu(context, d.globalPosition, body),
             child: Container(
@@ -285,9 +280,7 @@ class MessageBubble extends StatelessWidget {
           const SizedBox(width: 6),
           Flexible(
             child: Text('Зашифровано — ключ недоступен',
-                style: TextStyle(
-                    color: textColor.withValues(alpha: 0.7),
-                    fontStyle: FontStyle.italic)),
+                style: TextStyle(color: textColor.withValues(alpha: 0.7), fontStyle: FontStyle.italic)),
           ),
         ],
       );
@@ -315,10 +308,23 @@ class MessageBubble extends StatelessWidget {
     if (t == null) return const SizedBox.shrink();
 
     final isAlbum = albumEvents != null && albumEvents!.isNotEmpty;
-    final filename = event.content.tryGet<String>('filename') ?? '';
     
-    // Подпись отображается, если текст не совпадает с дефолтным именем медиафайла
-    final hasCaption = isAlbum ? body.isNotEmpty : (filename.isNotEmpty && body.isNotEmpty && body != filename);
+    // ИСПРАВЛЕНИЕ БАГА С ПОДПИСЬЮ: Сканируем все события альбома в поиске кастомной подписи
+    String activeCaption = body;
+    if (isAlbum) {
+      activeCaption = '';
+      for (final ev in albumEvents!) {
+        final evFname = ev.content.tryGet<String>('filename') ?? '';
+        final evBody = ev.body; 
+        if (evFname.isNotEmpty && evBody.isNotEmpty && evBody != evFname) {
+          activeCaption = evBody;
+          break;
+        }
+      }
+    }
+
+    final filename = event.content.tryGet<String>('filename') ?? '';
+    final hasCaption = isAlbum ? activeCaption.isNotEmpty : (filename.isNotEmpty && body.isNotEmpty && body != filename);
 
     final bubbleKey = ValueKey(event.eventId);
 
@@ -344,18 +350,17 @@ class MessageBubble extends StatelessWidget {
       }
     }
 
-    // ИСПРАВЛЕНИЕ: Выносим медиаблок строго НАД текстом, отделяя его разметкой
     if (hasCaption) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          mediaWidget, // Медиа всегда вверху
-          const SizedBox(height: 8), // Отступ под медиа
+          mediaWidget, 
+          const SizedBox(height: 8), 
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 2),
             child: Text(
-              body, 
+              activeCaption, 
               style: TextStyle(color: textColor, height: 1.35, fontSize: 14),
             ),
           ),
@@ -370,28 +375,39 @@ class MessageBubble extends StatelessWidget {
   Widget _albumGrid(List<Event> album, BuildContext context) {
     final cols = album.length == 1 ? 1 : 2;
     final rows = (album.length / cols).ceil();
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 240),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (var r = 0; r < rows; r++)
-              Row(
-                children: [
-                  for (var c = 0; c < cols; c++)
-                    Expanded(
-                      child: r * cols + c < album.length
-                          ? Padding(
-                              padding: const EdgeInsets.all(1.5),
-                              child: _albumTile(album[r * cols + c], context),
-                            )
-                          : const SizedBox.shrink(),
-                    ),
-                ],
-              ),
-          ],
+    return Container(
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 240),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var r = 0; r < rows; r++)
+                Row(
+                  children: [
+                    for (var c = 0; c < cols; c++)
+                      Expanded(
+                        child: r * cols + c < album.length
+                            ? Padding(
+                                padding: const EdgeInsets.all(1.5),
+                                child: SizedBox(
+                                  height: 110,
+                                  child: _albumTile(album[r * cols + c], context),
+                                ),
+                              )
+                            : const SizedBox.shrink(),
+                      ),
+                  ],
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -400,9 +416,23 @@ class MessageBubble extends StatelessWidget {
   Widget _albumTile(Event ev, BuildContext context) {
     final bubbleKey = ValueKey(ev.eventId);
     if (ev.messageType == MessageTypes.Image) {
-      return _AttachmentImage(key: bubbleKey, event: ev, timeline: timeline!);
+      // Для альбомов запрашиваем растягивание double.infinity
+      return _AttachmentImage(
+        key: bubbleKey, 
+        event: ev, 
+        timeline: timeline!,
+        width: double.infinity,
+        height: double.infinity,
+      );
     } else {
-      return _AttachmentMedia(key: bubbleKey, event: ev, isVideo: true, timeline: timeline!);
+      return _AttachmentMedia(
+        key: bubbleKey, 
+        event: ev, 
+        isVideo: true, 
+        timeline: timeline!,
+        width: double.infinity,
+        height: double.infinity,
+      );
     }
   }
 
@@ -487,9 +517,18 @@ class _MenuRow extends StatelessWidget {
 }
 
 class _AttachmentImage extends StatefulWidget {
-  const _AttachmentImage({super.key, required this.event, required this.timeline});
+  const _AttachmentImage({
+    super.key, 
+    required this.event, 
+    required this.timeline,
+    this.width,
+    this.height,
+  });
+  
   final Event event;
   final Timeline timeline;
+  final double? width;
+  final double? height;
 
   @override
   State<_AttachmentImage> createState() => _AttachmentImageState();
@@ -506,7 +545,6 @@ class _AttachmentImageState extends State<_AttachmentImage> {
   }
 
   Future<void> _load() async {
-    // ИСПРАВЛЕНИЕ: Чтение из оперативного RAM-кэша. Предотвращает зависания.
     final cached = _decryptedCache[widget.event.eventId];
     if (cached != null) {
       if (mounted) setState(() => _bytes = cached);
@@ -534,17 +572,20 @@ class _AttachmentImageState extends State<_AttachmentImage> {
 
   @override
   Widget build(BuildContext context) {
+    // ИСПРАВЛЕНИЕ: Автоматически применяем дефолтные ограничения, если размеры не заданы родителем
+    final w = widget.width ?? 240.0;
+    final h = widget.height ?? 200.0;
+
     return GestureDetector(
       onTap: _openGallery,
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 200, maxWidth: 240),
+        borderRadius: BorderRadius.circular(8),
+        child: SizedBox(
+          width: w,
+          height: h,
           child: _bytes != null
               ? Image.memory(_bytes!, fit: BoxFit.cover)
               : Container(
-                  width: 200,
-                  height: 150,
                   color: Colors.black.withValues(alpha: 0.2),
                   alignment: Alignment.center,
                   child: _failed
@@ -563,11 +604,15 @@ class _AttachmentMedia extends StatefulWidget {
     required this.event,
     required this.isVideo,
     required this.timeline,
+    this.width,
+    this.height,
   });
 
   final Event event;
   final bool isVideo;
   final Timeline timeline;
+  final double? width;
+  final double? height;
 
   @override
   State<_AttachmentMedia> createState() => _AttachmentMediaState();
@@ -584,7 +629,6 @@ class _AttachmentMediaState extends State<_AttachmentMedia> {
   }
 
   Future<void> _load() async {
-    // ИСПРАВЛЕНИЕ: Чтение из оперативного RAM-кэша. Предотвращает зависания.
     final cached = _decryptedCache[widget.event.eventId];
     if (cached != null) {
       if (mounted) setState(() => _bytes = cached);
@@ -612,32 +656,29 @@ class _AttachmentMediaState extends State<_AttachmentMedia> {
 
   @override
   Widget build(BuildContext context) {
+    // ИСПРАВЛЕНИЕ: Автоматически применяем дефолтные ограничения, если размеры не заданы родителем
+    final w = widget.width ?? 240.0;
+    final h = widget.height ?? (widget.isVideo ? 150.0 : 54.0);
+
     if (_failed) {
       return Container(
-        width: 240,
-        height: widget.isVideo ? 150 : 54,
+        width: w,
+        height: h,
         decoration: BoxDecoration(
           color: Colors.black.withValues(alpha: 0.15),
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(8),
         ),
         alignment: Alignment.center,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error_outline, color: Color(0xFFCF6679)),
-            const SizedBox(width: 8),
-            Text(widget.isVideo ? 'Ошибка загрузки видео' : 'Ошибка загрузки аудио'),
-          ],
-        ),
+        child: const Icon(Icons.error_outline, color: Color(0xFFCF6679)),
       );
     }
     if (_bytes == null) {
       return Container(
-        width: 240,
-        height: widget.isVideo ? 150 : 54,
+        width: w,
+        height: h,
         decoration: BoxDecoration(
           color: Colors.black.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(8),
         ),
         alignment: Alignment.center,
         child: const CircularProgressIndicator(strokeWidth: 2, color: OrexColors.copper),
@@ -652,26 +693,19 @@ class _AttachmentMediaState extends State<_AttachmentMedia> {
       return GestureDetector(
         onTap: _openGallery,
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(8),
           child: Container(
-            width: 240,
-            height: 150,
+            width: w,
+            height: h,
             decoration: const BoxDecoration(gradient: OrexColors.copperGradient),
             child: Stack(
               alignment: Alignment.center,
               children: [
-                const Icon(Icons.play_circle_outline, size: 54, color: Colors.white),
-                Positioned(
-                  bottom: 8,
-                  left: 8,
-                  right: 8,
-                  child: Text(
-                    filename,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white70, fontSize: 11),
+                if (kIsWeb)
+                  Positioned.fill(
+                    child: OrexMediaPlayer(bytes: _bytes!, filename: filename, isVideo: true, isPreview: true),
                   ),
-                ),
+                const Icon(Icons.play_circle_outline, size: 36, color: Colors.white),
               ],
             ),
           ),

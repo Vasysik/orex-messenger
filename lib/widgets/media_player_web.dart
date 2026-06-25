@@ -11,11 +11,13 @@ class OrexMediaPlayer extends StatefulWidget {
     required this.bytes,
     required this.filename,
     required this.isVideo,
+    this.isPreview = false,
   });
 
   final Uint8List bytes;
   final String filename;
   final bool isVideo;
+  final bool isPreview;
 
   @override
   State<OrexMediaPlayer> createState() => _OrexMediaPlayerState();
@@ -38,13 +40,11 @@ class _OrexMediaPlayerState extends State<OrexMediaPlayer> {
     _objectUrl = web.URL.createObjectURL(_blob);
 
     if (!widget.isVideo) {
-      // Для аудио создаем невидимый элемент в DOM
       _audioElement = web.HTMLAudioElement()
         ..src = _objectUrl
         ..autoplay = false;
       web.document.body?.appendChild(_audioElement!);
 
-      // Синхронизация состояния HTML5-аудио с Flutter UI
       _audioElement!.addEventListener('timeupdate', (web.Event e) {
         if (mounted) {
           setState(() {
@@ -73,11 +73,17 @@ class _OrexMediaPlayerState extends State<OrexMediaPlayer> {
       ui_web.platformViewRegistry.registerViewFactory(_viewId, (int viewId) {
         final video = web.document.createElement('video') as web.HTMLVideoElement
           ..src = _objectUrl
-          ..controls = true
-          ..autoplay = false;
+          ..controls = !widget.isPreview // Скрываем контроли, если это превью
+          ..autoplay = false
+          ..muted = widget.isPreview; // Отключаем звук для превью
+        
         video.style.setProperty('width', '100%');
         video.style.setProperty('height', '100%');
         video.style.setProperty('border-radius', '12px');
+        
+        if (widget.isPreview) {
+          video.style.setProperty('object-fit', 'cover'); // Натягиваем кадр без полей
+        }
         return video;
       });
     }
@@ -104,13 +110,12 @@ class _OrexMediaPlayerState extends State<OrexMediaPlayer> {
   Widget build(BuildContext context) {
     if (widget.isVideo) {
       return SizedBox(
-        width: 280,
-        height: 180,
+        width: double.infinity,
+        height: double.infinity,
         child: HtmlElementView(viewType: _viewId),
       );
     }
 
-    // Кастомный медный аудио-плеер Orex
     return Container(
       width: 280,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),

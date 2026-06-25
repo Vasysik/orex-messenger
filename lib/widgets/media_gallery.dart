@@ -90,7 +90,6 @@ class _MediaGalleryDialogState extends State<MediaGalleryDialog> {
               return _GalleryItem(event: event);
             },
           ),
-          // Кнопка влево
           if (_currentIndex > 0)
             Positioned(
               left: 16,
@@ -111,7 +110,6 @@ class _MediaGalleryDialogState extends State<MediaGalleryDialog> {
                 ),
               ),
             ),
-          // Кнопка вправо
           if (_currentIndex < _mediaEvents.length - 1)
             Positioned(
               right: 16,
@@ -183,7 +181,6 @@ class _GalleryItemState extends State<_GalleryItem> {
     }
   }
 
-  // Двойной тап для зумирования (auto-zoom)
   void _doubleTapZoom() {
     if (_transformController.value != Matrix4.identity()) {
       _transformController.value = Matrix4.identity();
@@ -191,15 +188,6 @@ class _GalleryItemState extends State<_GalleryItem> {
       _transformController.value = Matrix4.identity()
         ..scaleByDouble(2.0, 2.0, 2.0, 1.0);
     }
-  }
-
-  Future<void> _downloadRightClick() async {
-    final bytes = _bytes;
-    if (bytes == null) return;
-    final filename = widget.event.content.tryGet<String>('filename') ??
-        widget.event.content.tryGet<String>('body') ??
-        'file';
-    await FileHelper.saveAndOpenFile(filename, bytes);
   }
 
   @override
@@ -217,17 +205,28 @@ class _GalleryItemState extends State<_GalleryItem> {
     final isVideo = widget.event.messageType == MessageTypes.Video;
 
     return GestureDetector(
-      onSecondaryTap: _downloadRightClick, // Скачивание по ПКМ
-      onDoubleTap: _doubleTapZoom, // Двойной клик - Автозум
+      // Убрана поддержка скачивания по ПКМ (onSecondaryTap)
+      onDoubleTap: _doubleTapZoom, 
       child: Center(
         child: isVideo
             ? InteractiveViewer(
                 transformationController: _transformController,
-                child: _GalleryVideoPlayer(bytes: _bytes!, event: widget.event),
+                minScale: 1.0,
+                maxScale: 4.0,
+                child: Center(
+                  child: _GalleryVideoPlayer(bytes: _bytes!, event: widget.event),
+                ),
               )
             : InteractiveViewer(
                 transformationController: _transformController,
-                child: Image.memory(_bytes!),
+                minScale: 1.0,
+                maxScale: 4.0,
+                child: Center(
+                  child: Image.memory(
+                    _bytes!,
+                    fit: BoxFit.contain,
+                  ),
+                ),
               ),
       ),
     );

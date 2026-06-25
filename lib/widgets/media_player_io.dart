@@ -11,11 +11,13 @@ class OrexMediaPlayer extends StatelessWidget {
     required this.bytes,
     required this.filename,
     required this.isVideo,
+    this.isPreview = false,
   });
 
   final Uint8List bytes;
   final String filename;
   final bool isVideo;
+  final bool isPreview; // Поле успешно объявлено
 
   Future<void> _play() async {
     final dir = await getTemporaryDirectory();
@@ -54,6 +56,7 @@ class OrexMediaPlayer extends StatelessWidget {
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
                   filename,
@@ -65,7 +68,6 @@ class OrexMediaPlayer extends StatelessWidget {
                   isVideo ? 'Открыть видео в системе' : 'Открыть аудио в системе',
                   style: TextStyle(
                     fontSize: 11,
-                    // Заменяем TextStyle(opacity) на цвет с прозрачностью
                     color: Colors.white.withValues(alpha: 0.7),
                   ),
                 ),
