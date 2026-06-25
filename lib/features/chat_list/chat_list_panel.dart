@@ -251,11 +251,13 @@ class _ChatTile extends StatelessWidget {
             ? ''
             : (lastEvent.type == EventTypes.GroupCallMember
                 ? '📞 Звонок'
-                : lastEvent.calcLocalizedBodyFallback(
-                    const MatrixDefaultLocalizations(),
-                    hideReply: true,
-                    hideEdit: true,
-                  )));
+                : lastEvent.type == EventTypes.Encrypted
+                    ? '🔒 Зашифровано'
+                    : lastEvent.calcLocalizedBodyFallback(
+                        const MatrixDefaultLocalizations(),
+                        hideReply: true,
+                        hideEdit: true,
+                      )));
     final unread = room.notificationCount;
 
     return Material(

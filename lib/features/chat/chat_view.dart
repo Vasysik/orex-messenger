@@ -230,7 +230,10 @@ class _ChatViewState extends State<ChatView> {
     // getDisplayEvent на оригинале.
     final events = _timeline!.events
         .where((e) =>
-            e.type == EventTypes.Message &&
+            // m.room.encrypted — нерасшифрованные сообщения: их НЕЛЬЗЯ прятать
+            // (иначе «пропадают»), показываем заглушкой как в Element.
+            (e.type == EventTypes.Message ||
+                e.type == EventTypes.Encrypted) &&
             !e.redacted && // удалённые просто прячем (без подписи)
             e.relationshipType != RelationshipTypes.edit)
         .toList();

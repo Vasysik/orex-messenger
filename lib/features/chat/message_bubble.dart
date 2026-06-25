@@ -279,6 +279,24 @@ class MessageBubble extends StatelessWidget {
       return Text('',
           style: TextStyle(color: textColor.withValues(alpha: 0.6)));
     }
+    // Нерасшифрованное сообщение — заглушка (ключ ещё не подъехал из бэкапа
+    // либо его нет). НЕ прячем, чтобы сообщение не «пропадало».
+    if (event.type == EventTypes.Encrypted) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.lock_outline,
+              size: 15, color: textColor.withValues(alpha: 0.6)),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text('Зашифровано — ключ недоступен',
+                style: TextStyle(
+                    color: textColor.withValues(alpha: 0.7),
+                    fontStyle: FontStyle.italic)),
+          ),
+        ],
+      );
+    }
     final outcome = event.content['com.orex.call_outcome'] as String?;
     if (outcome != null) {
       final color = switch (outcome) {
