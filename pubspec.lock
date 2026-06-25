@@ -576,14 +576,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "9.4.1"
-  open_file_plus:
+  open_app_file:
     dependency: "direct main"
     description:
-      name: open_file_plus
-      sha256: "01ad7011d46d253aa22e5f0bc7345ca49cfe652c50ae9b0af945491c1728a8c3"
+      name: open_app_file
+      sha256: d5611ffb9c46d7cb176ddb88461cbe79e6c220b01a9e009d8e0ebd704493bfff
       url: "https://pub.dev"
     source: hosted
-    version: "3.4.1+1"
+    version: "4.0.5"
   package_config:
     dependency: transitive
     description:

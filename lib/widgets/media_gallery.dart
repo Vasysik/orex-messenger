@@ -165,6 +165,7 @@ class _GalleryItemState extends State<_GalleryItem> {
   Uint8List? _bytes;
   bool _failed = false;
   final TransformationController _transformController = TransformationController();
+  double _currentScale = 1.0;
 
   @override
   void initState() {
@@ -184,9 +185,34 @@ class _GalleryItemState extends State<_GalleryItem> {
   void _doubleTapZoom() {
     if (_transformController.value != Matrix4.identity()) {
       _transformController.value = Matrix4.identity();
+      setState(() {
+        _currentScale = 1.0;
+      });
     } else {
       _transformController.value = Matrix4.identity()
         ..scaleByDouble(2.0, 2.0, 2.0, 1.0);
+      setState(() {
+        _currentScale = 2.0;
+      });
+    }
+  }
+
+  void _onInteractionUpdate(ScaleUpdateDetails details) {
+    final double scale = _transformController.value.getMaxScaleOnAxis();
+    if (scale != _currentScale) {
+      setState(() {
+        _currentScale = scale;
+      });
+    }
+  }
+
+  void _onInteractionEnd(ScaleEndDetails details) {
+    final double scale = _transformController.value.getMaxScaleOnAxis();
+    if (scale < 1.0) {
+      _transformController.value = Matrix4.identity();
+      setState(() {
+        _currentScale = 1.0;
+      });
     }
   }
 
@@ -203,51 +229,41 @@ class _GalleryItemState extends State<_GalleryItem> {
     }
 
     final isVideo = widget.event.messageType == MessageTypes.Video;
+    final filename = widget.event.content.tryGet<String>('filename') ??
+        widget.event.content.tryGet<String>('body') ??
+        'video.mp4';
 
     return GestureDetector(
-      // Убрана поддержка скачивания по ПКМ (onSecondaryTap)
       onDoubleTap: _doubleTapZoom, 
       child: Center(
         child: isVideo
             ? InteractiveViewer(
                 transformationController: _transformController,
-                minScale: 1.0,
+                minScale: 0.5, 
                 maxScale: 4.0,
+                panEnabled: _currentScale > 1.0, 
+                onInteractionUpdate: _onInteractionUpdate,
+                onInteractionEnd: _onInteractionEnd,
                 child: Center(
-                  child: _GalleryVideoPlayer(bytes: _bytes!, event: widget.event),
+                  // Прямой вызов OrexMediaPlayer взамен удаленной прослойки
+                  child: OrexMediaPlayer(bytes: _bytes!, filename: filename, isVideo: true),
                 ),
               )
             : InteractiveViewer(
                 transformationController: _transformController,
-                minScale: 1.0,
+                minScale: 0.5, 
                 maxScale: 4.0,
+                panEnabled: _currentScale > 1.0, 
+                onInteractionUpdate: _onInteractionUpdate,
+                onInteractionEnd: _onInteractionEnd,
                 child: Center(
                   child: Image.memory(
                     _bytes!,
-                    fit: BoxFit.contain,
+                    fit: BoxFit.contain, 
                   ),
                 ),
               ),
       ),
     );
-  }
-}
-
-class _GalleryVideoPlayer extends StatefulWidget {
-  const _GalleryVideoPlayer({required this.bytes, required this.event});
-  final Uint8List bytes;
-  final Event event;
-
-  @override
-  State<_GalleryVideoPlayer> createState() => _GalleryVideoPlayerState();
-}
-
-class _GalleryVideoPlayerState extends State<_GalleryVideoPlayer> {
-  @override
-  Widget build(BuildContext context) {
-    final filename = widget.event.content.tryGet<String>('filename') ??
-        widget.event.content.tryGet<String>('body') ??
-        'video.mp4';
-    return OrexMediaPlayer(bytes: widget.bytes, filename: filename, isVideo: true);
   }
 }

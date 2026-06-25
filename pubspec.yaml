@@ -30,7 +30,7 @@ dependencies:
   file_picker: ^8.0.0        # выбор аватара
   shared_preferences: ^2.2.0 # сохранение темы
   desktop_drop: ^0.5.0       # Drag-and-drop файлов
-  open_file_plus: ^3.4.0    # Открытие файлов на Android/Windows
+  open_app_file: ^4.0.4    # Открытие файлов на Android/Windows
 
   # Локальный кэш для «мгновенного» старта.
   path_provider: ^2.1.0

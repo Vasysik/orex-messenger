@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:open_file_plus/open_file_plus.dart';
+import 'package:open_app_file/open_app_file.dart';
 import '../theme/orex_theme.dart';
 
 class OrexMediaPlayer extends StatelessWidget {
@@ -17,13 +17,13 @@ class OrexMediaPlayer extends StatelessWidget {
   final Uint8List bytes;
   final String filename;
   final bool isVideo;
-  final bool isPreview; // Поле успешно объявлено
+  final bool isPreview;
 
   Future<void> _play() async {
     final dir = await getTemporaryDirectory();
     final file = File('${dir.path}/$filename');
     await file.writeAsBytes(bytes);
-    await OpenFile.open(file.path);
+    await OpenAppFile.open(file.path);
   }
 
   @override

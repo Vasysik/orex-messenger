@@ -309,7 +309,6 @@ class MessageBubble extends StatelessWidget {
 
     final isAlbum = albumEvents != null && albumEvents!.isNotEmpty;
     
-    // ИСПРАВЛЕНИЕ БАГА С ПОДПИСЬЮ: Сканируем все события альбома в поиске кастомной подписи
     String activeCaption = body;
     if (isAlbum) {
       activeCaption = '';
@@ -371,10 +370,12 @@ class MessageBubble extends StatelessWidget {
     return mediaWidget;
   }
 
-  /// Плиточная сетка альбома
+  /// Плиточная сетка альбома (максимум 4 элемента)
   Widget _albumGrid(List<Event> album, BuildContext context) {
-    final cols = album.length == 1 ? 1 : 2;
-    final rows = (album.length / cols).ceil();
+    final displayLength = album.length > 4 ? 4 : album.length;
+    final cols = displayLength == 1 ? 1 : 2;
+    final rows = (displayLength / cols).ceil();
+
     return Container(
       padding: const EdgeInsets.all(6),
       decoration: BoxDecoration(
@@ -394,12 +395,12 @@ class MessageBubble extends StatelessWidget {
                   children: [
                     for (var c = 0; c < cols; c++)
                       Expanded(
-                        child: r * cols + c < album.length
+                        child: r * cols + c < displayLength
                             ? Padding(
                                 padding: const EdgeInsets.all(1.5),
                                 child: SizedBox(
                                   height: 110,
-                                  child: _albumTile(album[r * cols + c], context),
+                                  child: _albumTile(r * cols + c, album, context),
                                 ),
                               )
                             : const SizedBox.shrink(),
@@ -413,11 +414,15 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-  Widget _albumTile(Event ev, BuildContext context) {
+  /// Отрисовка отдельной ячейки сетки альбома
+  Widget _albumTile(int idx, List<Event> album, BuildContext context) {
+    final ev = album[idx];
     final bubbleKey = ValueKey(ev.eventId);
+    final isLastTile = idx == 3 && album.length > 4;
+
+    Widget tileChild;
     if (ev.messageType == MessageTypes.Image) {
-      // Для альбомов запрашиваем растягивание double.infinity
-      return _AttachmentImage(
+      tileChild = _AttachmentImage(
         key: bubbleKey, 
         event: ev, 
         timeline: timeline!,
@@ -425,7 +430,7 @@ class MessageBubble extends StatelessWidget {
         height: double.infinity,
       );
     } else {
-      return _AttachmentMedia(
+      tileChild = _AttachmentMedia(
         key: bubbleKey, 
         event: ev, 
         isVideo: true, 
@@ -434,6 +439,44 @@ class MessageBubble extends StatelessWidget {
         height: double.infinity,
       );
     }
+
+    if (isLastTile) {
+      final remainingCount = album.length - 3;
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          tileChild,
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => MediaGalleryDialog(
+                      timeline: timeline!,
+                      initialEventId: ev.eventId,
+                    ),
+                  ),
+                );
+              },
+              child: Container(
+                color: Colors.black.withValues(alpha: 0.65),
+                alignment: Alignment.center,
+                child: Text(
+                  '+$remainingCount',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return tileChild;
   }
 
   Widget _replyQuote(Event replied, Color textColor) {
@@ -572,7 +615,6 @@ class _AttachmentImageState extends State<_AttachmentImage> {
 
   @override
   Widget build(BuildContext context) {
-    // ИСПРАВЛЕНИЕ: Автоматически применяем дефолтные ограничения, если размеры не заданы родителем
     final w = widget.width ?? 240.0;
     final h = widget.height ?? 200.0;
 
@@ -656,7 +698,6 @@ class _AttachmentMediaState extends State<_AttachmentMedia> {
 
   @override
   Widget build(BuildContext context) {
-    // ИСПРАВЛЕНИЕ: Автоматически применяем дефолтные ограничения, если размеры не заданы родителем
     final w = widget.width ?? 240.0;
     final h = widget.height ?? (widget.isVideo ? 150.0 : 54.0);
 
