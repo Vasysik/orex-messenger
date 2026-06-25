@@ -8,6 +8,7 @@ import '../../theme/orex_theme.dart';
 import '../../theme/theme_controller.dart';
 import '../../widgets/mxc_avatar.dart';
 import 'devices_screen.dart';
+import 'key_storage_screen.dart';
 import 'verify_session_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -177,20 +178,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         : Icons.cloud_off,
                     title: 'Хранилище ключей',
                     subtitle: widget.matrix.keyBackupEnabled
-                        ? 'Включено — история восстановится на новых устройствах'
+                        ? 'Бэкап ключей сообщений: статус и резервные копии'
                         : 'Выключено — настройте, чтобы не терять переписку',
-                    onTap: widget.matrix.keyBackupEnabled
-                        ? null
-                        : () => Navigator.of(context)
-                                .push(
-                                  MaterialPageRoute(
-                                    builder: (_) => VerifySessionScreen(
-                                        matrix: widget.matrix),
-                                  ),
-                                )
-                                .then((_) {
-                              if (mounted) setState(() {});
-                            }),
+                    onTap: () => Navigator.of(context)
+                        .push(
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                KeyStorageScreen(matrix: widget.matrix),
+                          ),
+                        )
+                        .then((_) {
+                          if (mounted) setState(() {});
+                        }),
                   ),
                 _Tile(
                   icon: Icons.devices,

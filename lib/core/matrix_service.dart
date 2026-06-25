@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
 import 'package:matrix/encryption/utils/key_verification.dart';
 import 'package:matrix/encryption/utils/bootstrap.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'call_controller.dart';
 import 'voip_service.dart';
@@ -78,6 +79,7 @@ class MatrixService extends ChangeNotifier {
     for (final s in const [3, 8]) {
       Future.delayed(Duration(seconds: s), restoreKeyBackup);
     }
+    await _loadBackupPrefs();
   }
 
   /// Логин по паролю: POST /_matrix/client/v3/login под капотом SDK.
@@ -216,6 +218,89 @@ class MatrixService extends ChangeNotifier {
       debugPrint('Не удалось загрузить ключи из бэкапа: $e');
     }
     notifyListeners();
+  }
+
+  // --- Управление хранилищем ключей (бэкап сообщений) ---
+
+  static const _kLastBackup = 'orex_last_backup_ms';
+  static const _kAutoBackup = 'orex_auto_backup';
+
+  /// Когда в последний раз ключи выгружались в бэкап (для показа в настройках).
+  DateTime? lastBackup;
+
+  /// Автоматический бэкап включён (по умолчанию — да).
+  bool autoBackup = true;
+
+  /// Идёт ручной бэкап (для индикатора в UI).
+  bool backupInProgress = false;
+
+  Timer? _autoBackupTimer;
+
+  Future<void> _loadBackupPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      autoBackup = prefs.getBool(_kAutoBackup) ?? true;
+      final ms = prefs.getInt(_kLastBackup);
+      if (ms != null) lastBackup = DateTime.fromMillisecondsSinceEpoch(ms);
+      if (autoBackup) _startAutoBackup();
+    } catch (_) {}
+  }
+
+  void _startAutoBackup() {
+    _autoBackupTimer?.cancel();
+    // SDK и так выгружает новые ключи на каждом sync; здесь — периодическая
+    // догрузка отстающих + обновление времени «последний бэкап».
+    _autoBackupTimer = Timer.periodic(
+      const Duration(minutes: 2),
+      (_) => _uploadKeys(record: true),
+    );
+  }
+
+  /// Включить/выключить автоматический бэкап.
+  Future<void> setAutoBackup(bool on) async {
+    autoBackup = on;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kAutoBackup, on);
+    } catch (_) {}
+    if (on) {
+      _startAutoBackup();
+      await _uploadKeys(record: true);
+    } else {
+      _autoBackupTimer?.cancel();
+    }
+  }
+
+  /// Полный бэкап сейчас: помечаем ВСЕ ключи к выгрузке и загружаем в хранилище.
+  Future<void> backupNow() async {
+    backupInProgress = true;
+    notifyListeners();
+    try {
+      await client.database.markInboundGroupSessionsAsNeedingUpload();
+      await _uploadKeys(record: true);
+    } catch (e) {
+      debugPrint('backupNow failed: $e');
+    } finally {
+      backupInProgress = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _uploadKeys({bool record = false}) async {
+    final km = client.encryption?.keyManager;
+    if (km == null || !km.enabled) return;
+    try {
+      await km.uploadInboundGroupSessions();
+      if (record) {
+        lastBackup = DateTime.now();
+        notifyListeners();
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt(_kLastBackup, lastBackup!.millisecondsSinceEpoch);
+      }
+    } catch (e) {
+      debugPrint('uploadInboundGroupSessions failed: $e');
+    }
   }
 
   /// На аккаунте настроена кросс-подпись (обычно её включают в Element).
@@ -557,6 +642,7 @@ class MatrixService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _autoBackupTimer?.cancel();
     client.dispose();
     super.dispose();
   }
