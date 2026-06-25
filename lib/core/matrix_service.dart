@@ -73,6 +73,11 @@ class MatrixService extends ChangeNotifier {
     } catch (e) {
       debugPrint('VoipService init failed, calls disabled: $e');
     }
+    // На старте подтягиваем историю из бэкапа ключей (если сессия уже проверена
+    // и ключ бэкапа в кэше) — чтобы старые сообщения не оставались «пустыми».
+    for (final s in const [3, 8]) {
+      Future.delayed(Duration(seconds: s), restoreKeyBackup);
+    }
   }
 
   /// Логин по паролю: POST /_matrix/client/v3/login под капотом SDK.

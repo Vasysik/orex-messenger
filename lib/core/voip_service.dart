@@ -25,28 +25,25 @@ import 'config.dart';
 class VoipService extends ChangeNotifier {
   VoipService(this.client) {
     voip = VoIP(client, _OrexCallDelegate(this));
-    // onIncomingGroupCall — обычный (не broadcast) контроллер, поэтому слушаем
-    // его ровно один раз здесь и ретранслируем наружу через broadcast-поток.
-    _incomingSub = voip.onIncomingGroupCall.stream.listen(_onIncoming);
-    // Сигнал «звонок обработан на другом моём устройстве» (принят/отклонён) —
-    // чтобы входящий перестал звонить на остальных моих клиентах.
+    // Входящие ловим СКАНИРОВАНИЕМ комнат на каждом sync (надёжнее, чем
+    // voip.onIncomingGroupCall: не зависит от того, открывали ли мы чат, и не
+    // «перезванивает» по уже существующему звонку при перезагрузке).
+    _syncSub = client.onSync.stream.listen((_) => _scan());
+    // Сигнал «звонок обработан на другом моём устройстве» (принят/отклонён).
     _toDeviceSub = client.onToDeviceEvent.stream.listen((ev) {
       if (ev.type == _handledEventType && ev.sender == client.userID) {
-        final callId = ev.content['call_id'] as String?;
-        if (callId != null) {
-          _markHandled(callId);
-          _dismiss.add(callId);
+        final roomId = ev.content['room_id'] as String?;
+        if (roomId != null) {
+          _suppress.add(roomId);
+          _shown.remove(roomId);
+          _dismiss.add(roomId);
         }
       }
     });
-  }
-
-  /// Помечаем звонок обработанным НА КОРОТКОЕ ВРЕМЯ. Важно: callId == roomId,
-  /// поэтому нельзя глушить навсегда — иначе будущие звонки в ту же комнату не
-  /// придут. Через 15 с снимаем пометку.
-  void _markHandled(String callId) {
-    _handled.add(callId);
-    Future.delayed(const Duration(seconds: 15), () => _handled.remove(callId));
+    _scan(); // первичное (по кэшу) — звонки, активные на старте, помечаем виденными
+    // Грейс 3 c: всё, что активно сразу после запуска/перезагрузки (включая
+    // звонок, из которого мы только что вышли), НЕ звонит — покажется панелью.
+    Future.delayed(const Duration(seconds: 3), () => _ready = true);
   }
 
   static const _handledEventType = 'com.orex.call.handled';
@@ -54,20 +51,22 @@ class VoipService extends ChangeNotifier {
   final Client client;
   late final VoIP voip;
 
-  StreamSubscription<GroupCallSession>? _incomingSub;
+  StreamSubscription? _syncSub;
   StreamSubscription<ToDeviceEvent>? _toDeviceSub;
-  final StreamController<GroupCallSession> _incoming =
-      StreamController<GroupCallSession>.broadcast();
+  final StreamController<Room> _incoming = StreamController<Room>.broadcast();
   final StreamController<String> _dismiss =
       StreamController<String>.broadcast();
-  final Set<String> _handled = <String>{};
 
-  /// Входящие групповые звонки (кто-то опубликовал членство в комнате, где нас
-  /// ещё нет в звонке). UI слушает это, чтобы показать экран входящего.
-  Stream<GroupCallSession> get onIncomingCall => _incoming.stream;
+  bool _ready = false;
+  final Set<String> _shown = <String>{}; // по этим комнатам сейчас показан входящий
+  final Set<String> _suppress =
+      <String>{}; // не звонить: вышли / было при старте / обработано
 
-  /// callId звонков, которые надо закрыть на этом устройстве (обработаны на
-  /// другом нашем клиенте). UI входящего слушает и закрывается.
+  /// Входящие звонки: roomId комнаты, где идёт звонок, в который мы не вошли.
+  Stream<Room> get onIncomingCall => _incoming.stream;
+
+  /// Комнаты, по которым надо ЗАКРЫТЬ открытый входящий (звонок кончился или
+  /// обработан на другом устройстве).
   Stream<String> get onDismissIncoming => _dismiss.stream;
 
   /// Текущий звонок, в который мы вошли (опубликовали своё членство).
@@ -75,18 +74,50 @@ class VoipService extends ChangeNotifier {
 
   bool get inCall => active != null;
 
-  void _onIncoming(GroupCallSession gc) {
-    // Не звоним сами себе: если мы уже в звонке в этой комнате — игнор.
-    if (active != null && active!.room.id == gc.room.id) return;
-    // Уже обработан на другом нашем устройстве — не показываем.
-    if (_handled.contains(gc.groupCallId)) return;
-    _incoming.add(gc);
+  bool _roomHasCall(Room room) =>
+      room.hasActiveGroupCall(voip, ignoreDirectChats: false);
+
+  Iterable<String> _callMembers(Room room) => room
+      .getCallMembershipsFromRoom(voip)
+      .values
+      .expand((e) => e)
+      .where((m) => !m.isExpired)
+      .map((m) => m.userId);
+
+  /// Сканируем все комнаты на активные звонки.
+  void _scan() {
+    final firstScan = !_ready;
+    final myId = client.userID;
+    for (final room in client.rooms) {
+      if (!_roomHasCall(room)) {
+        // Звонок закончился — сбрасываем и закрываем открытый входящий.
+        final wasTracked = _shown.remove(room.id) | _suppress.remove(room.id);
+        if (wasTracked) _dismiss.add(room.id);
+        continue;
+      }
+      if (active != null && active!.room.id == room.id) continue; // я в звонке
+      if (_shown.contains(room.id) || _suppress.contains(room.id)) continue;
+      final others = _callMembers(room).where((id) => id != myId);
+      if (others.isEmpty) continue; // только моё членство — не входящий
+      if (firstScan) {
+        _suppress.add(room.id); // активен на старте → не звоним (покажет панель «войти»)
+        continue;
+      }
+      _shown.add(room.id);
+      _incoming.add(room);
+    }
   }
 
-  /// Пометить звонок обработанным (принят/отклонён) и сообщить своим другим
-  /// устройствам, чтобы у них входящий закрылся.
+  /// Я вышел из звонка — не «перезванивать» по тому же продолжающемуся звонку.
+  void markLeft(String roomId) {
+    _suppress.add(roomId);
+    _shown.remove(roomId);
+  }
+
+  /// Пометить обработанным (принят/отклонён) и сообщить другим своим устройствам.
   Future<void> markCallHandled(String roomId, String callId) async {
-    _markHandled(callId);
+    _suppress.add(roomId);
+    _shown.remove(roomId);
     try {
       await client.sendToDevice(
         _handledEventType,
@@ -139,15 +170,14 @@ class VoipService extends ChangeNotifier {
     active = null;
     notifyListeners();
     if (gc != null) {
+      markLeft(gc.room.id); // не «перезванивать» по этому же звонку
       try {
         await gc.leave();
       } catch (e) {
         debugPrint('VoipService.leaveCurrent failed: $e');
       }
-      // Подстраховка: если leave() упал до удаления, чистим вручную — иначе
-      // будущие входящие в эту комнату глохнут (createGroupCallFromRoomStateEvent
-      // делает ранний return, если groupCall уже в карте). VoipId не
-      // экспортируется, поэтому фильтруем по полям ключа.
+      // Подстраховка: чистим карту, чтобы будущие звонки не глохли (VoipId не
+      // экспортируется — фильтруем по полям ключа).
       voip.groupCalls.removeWhere(
         (k, v) => k.roomId == gc.room.id && k.callId == gc.groupCallId,
       );
@@ -156,7 +186,7 @@ class VoipService extends ChangeNotifier {
 
   @override
   void dispose() {
-    _incomingSub?.cancel();
+    _syncSub?.cancel();
     _toDeviceSub?.cancel();
     _incoming.close();
     _dismiss.close();

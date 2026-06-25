@@ -182,12 +182,12 @@ class _OrexAppState extends State<OrexApp> {
       );
     });
     // Входящие звонки (кто-то начал звонок в комнате) → окно входящего.
-    _incomingCallSub = widget.matrix.voip?.onIncomingCall.listen((gc) {
+    _incomingCallSub = widget.matrix.voip?.onIncomingCall.listen((room) {
       final ctx = _navKey.currentContext;
       if (ctx == null || !ctx.mounted) return;
       // Уже в этом звонке — не показываем.
       final call = widget.matrix.call;
-      if (call.isActive && call.roomId == gc.room.id) return;
+      if (call.isActive && call.roomId == room.id) return;
       final isWide = MediaQuery.sizeOf(ctx).width >= 900;
       if (isWide) {
         // Десктоп: компактное окно, не на весь экран.
@@ -195,13 +195,13 @@ class _OrexAppState extends State<OrexApp> {
           context: ctx,
           barrierDismissible: false,
           builder: (_) => IncomingCallScreen(
-              matrix: widget.matrix, groupCall: gc, asDialog: true),
+              matrix: widget.matrix, room: room, asDialog: true),
         );
       } else {
         _navKey.currentState?.push(
           MaterialPageRoute(
             builder: (_) =>
-                IncomingCallScreen(matrix: widget.matrix, groupCall: gc),
+                IncomingCallScreen(matrix: widget.matrix, room: room),
           ),
         );
       }

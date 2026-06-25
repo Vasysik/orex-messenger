@@ -16,12 +16,12 @@ class IncomingCallScreen extends StatefulWidget {
   const IncomingCallScreen({
     super.key,
     required this.matrix,
-    required this.groupCall,
+    required this.room,
     this.asDialog = false,
   });
 
   final MatrixService matrix;
-  final GroupCallSession groupCall;
+  final Room room;
   final bool asDialog;
 
   @override
@@ -31,8 +31,8 @@ class IncomingCallScreen extends StatefulWidget {
 class _IncomingCallScreenState extends State<IncomingCallScreen> {
   StreamSubscription<String>? _dismissSub;
 
-  Room get room => widget.groupCall.room;
-  String get _callId => widget.groupCall.groupCallId;
+  Room get room => widget.room;
+  String get _callId => widget.room.id;
 
   @override
   void initState() {
