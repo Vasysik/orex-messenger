@@ -33,10 +33,12 @@ class _ChatViewState extends State<ChatView> {
   Room? _room;
   Event? _editing; // редактируемое сообщение (если есть)
   Event? _replyTo; // сообщение, на которое отвечаем
+  bool _loadingHistory = false; // индикатор подгрузки истории
 
   @override
   void initState() {
     super.initState();
+    _scroll.addListener(_scrollListener);
     _openTimeline();
     // Перестраиваемся на sync (имя/аватар/пресенс собеседника в шапке).
     widget.matrix.addListener(_onMatrix);
@@ -44,6 +46,31 @@ class _ChatViewState extends State<ChatView> {
 
   void _onMatrix() {
     if (mounted) setState(() {});
+  }
+
+  /// Слушатель прокрутки для пагинации назад.
+  void _scrollListener() {
+    if (!mounted || _timeline == null || _loadingHistory) return;
+    // В reversed ListView верхняя граница экрана находится у maxScrollExtent
+    if (_scroll.position.pixels >= _scroll.position.maxScrollExtent - 200) {
+      _loadMoreHistory();
+    }
+  }
+
+  /// Подгрузка более старых сообщений из истории комнаты.
+  Future<void> _loadMoreHistory() async {
+    final timeline = _timeline;
+    if (timeline == null || _loadingHistory) return;
+    setState(() => _loadingHistory = true);
+    try {
+      await timeline.requestHistory(historyCount: 30);
+    } catch (e) {
+      debugPrint('Ошибка загрузки истории: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _loadingHistory = false);
+      }
+    }
   }
 
   Future<void> _openTimeline() async {
@@ -196,6 +223,7 @@ class _ChatViewState extends State<ChatView> {
   @override
   void dispose() {
     widget.matrix.removeListener(_onMatrix);
+    _scroll.removeListener(_scrollListener);
     _timeline?.cancelSubscriptions();
     _input.dispose();
     _scroll.dispose();
@@ -210,8 +238,6 @@ class _ChatViewState extends State<ChatView> {
     }
 
     // Приглашение: вместо ленты — приём/отказ прямо в блоке чата.
-    // (после принятия лента уже загружена — показываем чат, даже если
-    //  membership в кэше ещё «invite».)
     if (room.membership == Membership.invite && _timeline == null) {
       return _InviteView(
         matrix: widget.matrix,
@@ -226,15 +252,11 @@ class _ChatViewState extends State<ChatView> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    // Правки (m.replace) не показываем отдельными сообщениями — их применяет
-    // getDisplayEvent на оригинале.
     final events = _timeline!.events
         .where((e) =>
-            // m.room.encrypted — нерасшифрованные сообщения: их НЕЛЬЗЯ прятать
-            // (иначе «пропадают»), показываем заглушкой как в Element.
             (e.type == EventTypes.Message ||
                 e.type == EventTypes.Encrypted) &&
-            !e.redacted && // удалённые просто прячем (без подписи)
+            !e.redacted &&
             e.relationshipType != RelationshipTypes.edit)
         .toList();
     final myId = widget.matrix.client.userID;
@@ -253,8 +275,24 @@ class _ChatViewState extends State<ChatView> {
             controller: _scroll,
             reverse: true, // новые снизу
             padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-            itemCount: events.length,
+            itemCount: events.length + (_loadingHistory ? 1 : 0),
             itemBuilder: (_, i) {
+              if (i == events.length) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 16),
+                  child: Center(
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: OrexColors.copper,
+                      ),
+                    ),
+                  ),
+                );
+              }
+              
               final e = events[i];
               return MessageBubble(
                 event: e,
