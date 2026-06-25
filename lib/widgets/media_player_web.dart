@@ -29,17 +29,32 @@ class _OrexMediaPlayerState extends State<OrexMediaPlayer> {
   late final String _objectUrl;
   
   web.HTMLAudioElement? _audioElement;
-  bool _isPlaying = false;
-  double _currentTime = 0.0;
-  double _duration = 0.0;
+  web.HTMLVideoElement? _videoElement;
 
   @override
   void initState() {
     super.initState();
+    _viewId = 'orex-media-${DateTime.now().microsecondsSinceEpoch}';
     _blob = web.Blob([widget.bytes.toJS].toJS);
     _objectUrl = web.URL.createObjectURL(_blob);
 
-    if (!widget.isVideo) {
+    if (widget.isVideo) {
+      _videoElement = web.document.createElement('video') as web.HTMLVideoElement
+        ..src = _objectUrl
+        ..controls = !widget.isPreview
+        ..autoplay = false
+        ..muted = widget.isPreview;
+      
+      _videoElement!.style.setProperty('width', '100%');
+      _videoElement!.style.setProperty('height', '100%');
+      _videoElement!.style.setProperty('border-radius', '12px');
+      
+      if (widget.isPreview) {
+        _videoElement!.style.setProperty('object-fit', 'cover');
+      }
+
+      ui_web.platformViewRegistry.registerViewFactory(_viewId, (int viewId) => _videoElement!);
+    } else {
       _audioElement = web.HTMLAudioElement()
         ..src = _objectUrl
         ..autoplay = false;
@@ -68,32 +83,21 @@ class _OrexMediaPlayerState extends State<OrexMediaPlayer> {
       _audioElement!.addEventListener('pause', (web.Event e) {
         if (mounted) setState(() => _isPlaying = false);
       }.toJS);
-    } else {
-      _viewId = 'orex-video-${DateTime.now().microsecondsSinceEpoch}';
-      ui_web.platformViewRegistry.registerViewFactory(_viewId, (int viewId) {
-        final video = web.document.createElement('video') as web.HTMLVideoElement
-          ..src = _objectUrl
-          ..controls = !widget.isPreview // Скрываем контроли, если это превью
-          ..autoplay = false
-          ..muted = widget.isPreview; // Отключаем звук для превью
-        
-        video.style.setProperty('width', '100%');
-        video.style.setProperty('height', '100%');
-        video.style.setProperty('border-radius', '12px');
-        
-        if (widget.isPreview) {
-          video.style.setProperty('object-fit', 'cover'); // Натягиваем кадр без полей
-        }
-        return video;
-      });
     }
   }
+
+  bool _isPlaying = false;
+  double _currentTime = 0.0;
+  double _duration = 0.0;
 
   @override
   void dispose() {
     if (_audioElement != null) {
       _audioElement!.pause();
       web.document.body?.removeChild(_audioElement!);
+    }
+    if (_videoElement != null) {
+      _videoElement!.pause();
     }
     web.URL.revokeObjectURL(_objectUrl);
     super.dispose();

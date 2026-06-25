@@ -113,7 +113,8 @@ class _ChatViewState extends State<ChatView> {
 
   void _scrollListener() {
     if (!mounted || _timeline == null || _loadingHistory) return;
-    if (_scroll.position.pixels >= _scroll.position.maxScrollExtent - 200) {
+    final pos = _scroll.position;
+    if (pos.pixels >= pos.maxScrollExtent - 200 || (pos.outOfRange && pos.pixels > 0)) {
       _loadMoreHistory();
     }
   }
@@ -150,6 +151,10 @@ class _ChatViewState extends State<ChatView> {
         _room = room;
         _timeline = timeline;
       });
+
+      if (timeline.events.length < 15) {
+        Future.delayed(const Duration(milliseconds: 300), _loadMoreHistory);
+      }
     }
   }
 
@@ -377,6 +382,7 @@ class _ChatViewState extends State<ChatView> {
             child: ListView.builder(
               controller: _scroll,
               reverse: true, 
+              physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
               padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
               itemCount: _chatItems.length + (_loadingHistory ? 1 : 0),
               itemBuilder: (_, i) {

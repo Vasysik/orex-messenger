@@ -10,10 +10,12 @@ class MediaGalleryDialog extends StatefulWidget {
     super.key,
     required this.timeline,
     required this.initialEventId,
+    required this.myUserId, 
   });
 
   final Timeline timeline;
   final String initialEventId;
+  final String myUserId;
 
   @override
   State<MediaGalleryDialog> createState() => _MediaGalleryDialogState();
@@ -48,11 +50,53 @@ class _MediaGalleryDialogState extends State<MediaGalleryDialog> {
     super.dispose();
   }
 
+  Future<void> _deleteCurrent() async {
+    final event = _mediaEvents[_currentIndex];
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить медиафайл?'),
+        content: const Text('Это сообщение будет удалено для всех участников чата.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFCF6679)),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      try {
+        await event.room.redactEvent(event.eventId);
+        if (mounted) {
+          Navigator.pop(context); 
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Удалено')),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Ошибка удаления: $e')),
+          );
+        }
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_mediaEvents.isEmpty) {
       return const SizedBox.shrink();
     }
+
+    final currentEvent = _mediaEvents[_currentIndex];
+    final canDelete = currentEvent.senderId == widget.myUserId;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -68,6 +112,12 @@ class _MediaGalleryDialogState extends State<MediaGalleryDialog> {
           style: const TextStyle(color: Colors.white, fontSize: 16),
         ),
         actions: [
+          if (canDelete)
+            IconButton(
+              tooltip: 'Удалить сообщение',
+              icon: const Icon(Icons.delete_outline, color: Color(0xFFCF6679)),
+              onPressed: _deleteCurrent,
+            ),
           IconButton(
             tooltip: 'Скачать медиафайл',
             icon: const Icon(Icons.download, color: Colors.white),
@@ -182,21 +232,6 @@ class _GalleryItemState extends State<_GalleryItem> {
     }
   }
 
-  void _doubleTapZoom() {
-    if (_transformController.value != Matrix4.identity()) {
-      _transformController.value = Matrix4.identity();
-      setState(() {
-        _currentScale = 1.0;
-      });
-    } else {
-      _transformController.value = Matrix4.identity()
-        ..scaleByDouble(2.0, 2.0, 2.0, 1.0);
-      setState(() {
-        _currentScale = 2.0;
-      });
-    }
-  }
-
   void _onInteractionUpdate(ScaleUpdateDetails details) {
     final double scale = _transformController.value.getMaxScaleOnAxis();
     if (scale != _currentScale) {
@@ -209,6 +244,7 @@ class _GalleryItemState extends State<_GalleryItem> {
   void _onInteractionEnd(ScaleEndDetails details) {
     final double scale = _transformController.value.getMaxScaleOnAxis();
     if (scale < 1.0) {
+      // Плавно возвращаем масштаб к 1.0 при завершении жеста пальцами
       _transformController.value = Matrix4.identity();
       setState(() {
         _currentScale = 1.0;
@@ -233,37 +269,34 @@ class _GalleryItemState extends State<_GalleryItem> {
         widget.event.content.tryGet<String>('body') ??
         'video.mp4';
 
-    return GestureDetector(
-      onDoubleTap: _doubleTapZoom, 
-      child: Center(
-        child: isVideo
-            ? InteractiveViewer(
-                transformationController: _transformController,
-                minScale: 0.5, 
-                maxScale: 4.0,
-                panEnabled: _currentScale > 1.0, 
-                onInteractionUpdate: _onInteractionUpdate,
-                onInteractionEnd: _onInteractionEnd,
-                child: Center(
-                  // Прямой вызов OrexMediaPlayer взамен удаленной прослойки
-                  child: OrexMediaPlayer(bytes: _bytes!, filename: filename, isVideo: true),
-                ),
-              )
-            : InteractiveViewer(
-                transformationController: _transformController,
-                minScale: 0.5, 
-                maxScale: 4.0,
-                panEnabled: _currentScale > 1.0, 
-                onInteractionUpdate: _onInteractionUpdate,
-                onInteractionEnd: _onInteractionEnd,
-                child: Center(
-                  child: Image.memory(
-                    _bytes!,
-                    fit: BoxFit.contain, 
-                  ),
+    // Рендерим InteractiveViewer со стандартным pinch-to-zoom (сжатие/растяжение) без вылетов
+    return Center(
+      child: isVideo
+          ? InteractiveViewer(
+              transformationController: _transformController,
+              minScale: 0.5, // Позволяет отдалять медиа
+              maxScale: 4.0,
+              panEnabled: _currentScale > 1.0, 
+              onInteractionUpdate: _onInteractionUpdate,
+              onInteractionEnd: _onInteractionEnd,
+              child: Center(
+                child: OrexMediaPlayer(bytes: _bytes!, filename: filename, isVideo: true),
+              ),
+            )
+          : InteractiveViewer(
+              transformationController: _transformController,
+              minScale: 0.5, // Позволяет отдалять изображение
+              maxScale: 4.0,
+              panEnabled: _currentScale > 1.0, 
+              onInteractionUpdate: _onInteractionUpdate,
+              onInteractionEnd: _onInteractionEnd,
+              child: Center(
+                child: Image.memory(
+                  _bytes!,
+                  fit: BoxFit.contain, 
                 ),
               ),
-      ),
+            ),
     );
   }
 }

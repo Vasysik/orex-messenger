@@ -333,13 +333,13 @@ class MessageBubble extends StatelessWidget {
     } else {
       switch (event.messageType) {
         case MessageTypes.Image:
-          mediaWidget = _AttachmentImage(key: bubbleKey, event: event, timeline: t);
+          mediaWidget = _AttachmentImage(key: bubbleKey, event: event, timeline: t, myUserId: myUserId ?? '');
           break;
         case MessageTypes.Video:
-          mediaWidget = _AttachmentMedia(key: bubbleKey, event: event, isVideo: true, timeline: t);
+          mediaWidget = _AttachmentMedia(key: bubbleKey, event: event, isVideo: true, timeline: t, myUserId: myUserId ?? '');
           break;
         case MessageTypes.Audio:
-          mediaWidget = _AttachmentMedia(key: bubbleKey, event: event, isVideo: false, timeline: t);
+          mediaWidget = _AttachmentMedia(key: bubbleKey, event: event, isVideo: false, timeline: t, myUserId: myUserId ?? '');
           break;
         case MessageTypes.File:
           mediaWidget = _FileTile(key: bubbleKey, event: event, body: body, textColor: textColor);
@@ -426,6 +426,7 @@ class MessageBubble extends StatelessWidget {
         key: bubbleKey, 
         event: ev, 
         timeline: timeline!,
+        myUserId: myUserId ?? '',
         width: double.infinity,
         height: double.infinity,
       );
@@ -435,6 +436,7 @@ class MessageBubble extends StatelessWidget {
         event: ev, 
         isVideo: true, 
         timeline: timeline!,
+        myUserId: myUserId ?? '',
         width: double.infinity,
         height: double.infinity,
       );
@@ -454,6 +456,7 @@ class MessageBubble extends StatelessWidget {
                     builder: (_) => MediaGalleryDialog(
                       timeline: timeline!,
                       initialEventId: ev.eventId,
+                      myUserId: myUserId ?? '',
                     ),
                   ),
                 );
@@ -564,12 +567,14 @@ class _AttachmentImage extends StatefulWidget {
     super.key, 
     required this.event, 
     required this.timeline,
+    required this.myUserId,
     this.width,
     this.height,
   });
   
   final Event event;
   final Timeline timeline;
+  final String myUserId;
   final double? width;
   final double? height;
 
@@ -594,11 +599,17 @@ class _AttachmentImageState extends State<_AttachmentImage> {
       return;
     }
     try {
-      final file = await widget.event.downloadAndDecryptAttachment();
+      final file = await widget.event.downloadAndDecryptAttachment(getThumbnail: true);
       _decryptedCache[widget.event.eventId] = file.bytes;
       if (mounted) setState(() => _bytes = file.bytes);
     } catch (_) {
-      if (mounted) setState(() => _failed = true);
+      try {
+        final file = await widget.event.downloadAndDecryptAttachment();
+        _decryptedCache[widget.event.eventId] = file.bytes;
+        if (mounted) setState(() => _bytes = file.bytes);
+      } catch (_) {
+        if (mounted) setState(() => _failed = true);
+      }
     }
   }
 
@@ -608,6 +619,7 @@ class _AttachmentImageState extends State<_AttachmentImage> {
         builder: (_) => MediaGalleryDialog(
           timeline: widget.timeline,
           initialEventId: widget.event.eventId,
+          myUserId: widget.myUserId,
         ),
       ),
     );
@@ -646,6 +658,7 @@ class _AttachmentMedia extends StatefulWidget {
     required this.event,
     required this.isVideo,
     required this.timeline,
+    required this.myUserId,
     this.width,
     this.height,
   });
@@ -653,6 +666,7 @@ class _AttachmentMedia extends StatefulWidget {
   final Event event;
   final bool isVideo;
   final Timeline timeline;
+  final String myUserId;
   final double? width;
   final double? height;
 
@@ -677,11 +691,17 @@ class _AttachmentMediaState extends State<_AttachmentMedia> {
       return;
     }
     try {
-      final file = await widget.event.downloadAndDecryptAttachment();
+      final file = await widget.event.downloadAndDecryptAttachment(getThumbnail: true);
       _decryptedCache[widget.event.eventId] = file.bytes;
       if (mounted) setState(() => _bytes = file.bytes);
     } catch (_) {
-      if (mounted) setState(() => _failed = true);
+      try {
+        final file = await widget.event.downloadAndDecryptAttachment();
+        _decryptedCache[widget.event.eventId] = file.bytes;
+        if (mounted) setState(() => _bytes = file.bytes);
+      } catch (_) {
+        if (mounted) setState(() => _failed = true);
+      }
     }
   }
 
@@ -691,6 +711,7 @@ class _AttachmentMediaState extends State<_AttachmentMedia> {
         builder: (_) => MediaGalleryDialog(
           timeline: widget.timeline,
           initialEventId: widget.event.eventId,
+          myUserId: widget.myUserId,
         ),
       ),
     );
