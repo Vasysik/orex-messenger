@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 import '../../core/matrix_service.dart';
@@ -108,6 +111,29 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _cancelReply() => setState(() => _replyTo = null);
+
+  static const _imgExts = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'};
+
+  Future<void> _attach() async {
+    final room = _room;
+    if (room == null) return;
+    final res = await FilePicker.platform.pickFiles(withData: true);
+    final files = res?.files ?? const [];
+    if (files.isEmpty) return;
+    final f = files.first;
+    final bytes = f.bytes;
+    if (bytes == null) return;
+    final ext = (f.extension ?? '').toLowerCase();
+    final isImg = _imgExts.contains(ext);
+    final data = Uint8List.fromList(bytes);
+    final MatrixFile file = isImg
+        ? MatrixImageFile(
+            bytes: data, name: f.name, mimeType: 'image/$ext')
+        : MatrixFile(bytes: data, name: f.name);
+    final replyTo = _replyTo;
+    setState(() => _replyTo = null);
+    await room.sendFileEvent(file, inReplyTo: replyTo);
+  }
 
   void _insertEmoji(String emoji) {
     final sel = _input.selection;
@@ -239,6 +265,7 @@ class _ChatViewState extends State<ChatView> {
           replyTo: _replyTo,
           onCancelReply: _cancelReply,
           onPickEmoji: _insertEmoji,
+          onAttach: _attach,
         ),
       ],
     );
@@ -433,6 +460,7 @@ class _InputBar extends StatelessWidget {
     this.replyTo,
     this.onCancelReply,
     required this.onPickEmoji,
+    required this.onAttach,
   });
   final TextEditingController controller;
   final VoidCallback onSend;
@@ -441,6 +469,7 @@ class _InputBar extends StatelessWidget {
   final Event? replyTo;
   final VoidCallback? onCancelReply;
   final void Function(String emoji) onPickEmoji;
+  final VoidCallback onAttach;
 
   static const _emojis = [
     '😀','😁','😂','🤣','😊','😍','😘','😎','🤩','🥳',
@@ -522,7 +551,7 @@ class _InputBar extends StatelessWidget {
           child: Row(
             children: [
               IconButton(
-                onPressed: () {}, // вложения
+                onPressed: onAttach,
                 icon: const Icon(Icons.attach_file),
                 color: OrexColors.copper,
               ),

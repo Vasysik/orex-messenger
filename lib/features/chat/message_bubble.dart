@@ -3,8 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart';
 import '../../theme/orex_theme.dart';
 
-/// Бабл сообщения в орехово-медных тонах. Долгое нажатие — меню (копировать +
-/// быстрые реакции). Под баблом — чипы реакций.
+/// Бабл сообщения. Контекст-меню (реакции/ответ/копировать/изменить/удалить)
+/// открывается долгим нажатием ИЛИ правым кликом — всплывает рядом с сообщением.
 class MessageBubble extends StatelessWidget {
   const MessageBubble({
     super.key,
@@ -31,7 +31,8 @@ class MessageBubble extends StatelessWidget {
   final VoidCallback? onDelete;
   final VoidCallback? onReply;
 
-  /// Сообщение, на которое отвечает это (если это ответ) — ищем в ленте.
+  static const _quickEmojis = ['👍', '❤️', '😂', '🎉', '😮', '😢', '🔥', '🙏'];
+
   Event? _repliedEvent() {
     final t = timeline;
     if (t == null) return null;
@@ -42,8 +43,6 @@ class MessageBubble extends StatelessWidget {
     }
     return null;
   }
-
-  static const _quickEmojis = ['👍', '❤️', '😂', '🎉', '😮', '😢', '🔥', '🙏'];
 
   Map<String, _ReactionInfo> _reactions() {
     final map = <String, _ReactionInfo>{};
@@ -60,73 +59,104 @@ class MessageBubble extends StatelessWidget {
     return map;
   }
 
-  void _openMenu(BuildContext context, String body) {
+  bool get _isMedia =>
+      event.messageType == MessageTypes.Image ||
+      event.messageType == MessageTypes.Video ||
+      event.messageType == MessageTypes.Audio ||
+      event.messageType == MessageTypes.File;
+
+  // --- Контекст-меню рядом с сообщением (не на весь экран) ---
+  Future<void> _showMenu(BuildContext context, Offset pos, String body) async {
     final canModify = isMine && !event.redacted;
-    showModalBottomSheet<void>(
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final selected = await showMenu<String>(
       context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Wrap(
-                spacing: 4,
+      position: RelativeRect.fromLTRB(
+        pos.dx,
+        pos.dy,
+        overlay.size.width - pos.dx,
+        overlay.size.height - pos.dy,
+      ),
+      items: [
+        if (onReact != null)
+          PopupMenuItem<String>(
+            padding: EdgeInsets.zero,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
                 children: _quickEmojis
-                    .map((e) => IconButton(
-                          icon: Text(e, style: const TextStyle(fontSize: 26)),
-                          onPressed: () {
-                            Navigator.pop(ctx);
-                            onReact?.call(e);
-                          },
+                    .map((e) => InkWell(
+                          onTap: () => Navigator.pop(context, 'react:$e'),
+                          child: Padding(
+                            padding: const EdgeInsets.all(6),
+                            child:
+                                Text(e, style: const TextStyle(fontSize: 22)),
+                          ),
                         ))
                     .toList(),
               ),
             ),
-            const Divider(height: 1),
-            if (onReply != null)
-              ListTile(
-                leading: const Icon(Icons.reply, color: OrexColors.copper),
-                title: const Text('Ответить'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  onReply?.call();
-                },
-              ),
-            ListTile(
-              leading: const Icon(Icons.copy, color: OrexColors.copper),
-              title: const Text('Копировать'),
-              onTap: () {
-                Clipboard.setData(ClipboardData(text: body));
-                Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Скопировано')),
-                );
-              },
-            ),
-            if (canModify && onEdit != null)
-              ListTile(
-                leading: const Icon(Icons.edit, color: OrexColors.copper),
-                title: const Text('Изменить'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  onEdit?.call();
-                },
-              ),
-            if (canModify && onDelete != null)
-              ListTile(
-                leading: const Icon(Icons.delete_outline,
-                    color: Color(0xFFCF6679)),
-                title: const Text('Удалить',
-                    style: TextStyle(color: Color(0xFFCF6679))),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  onDelete?.call();
-                },
-              ),
-          ],
-        ),
-      ),
+          ),
+        if (onReply != null)
+          const PopupMenuItem(
+            value: 'reply',
+            child: _MenuRow(icon: Icons.reply, label: 'Ответить'),
+          ),
+        if (!_isMedia)
+          const PopupMenuItem(
+            value: 'copy',
+            child: _MenuRow(icon: Icons.copy, label: 'Копировать'),
+          ),
+        if (canModify && onEdit != null && !_isMedia)
+          const PopupMenuItem(
+            value: 'edit',
+            child: _MenuRow(icon: Icons.edit, label: 'Изменить'),
+          ),
+        if (canModify && onDelete != null)
+          const PopupMenuItem(
+            value: 'delete',
+            child: _MenuRow(
+                icon: Icons.delete_outline,
+                label: 'Удалить',
+                color: Color(0xFFCF6679)),
+          ),
+      ],
+    );
+    if (selected == null) return;
+    if (selected.startsWith('react:')) {
+      onReact?.call(selected.substring(6));
+    } else if (selected == 'reply') {
+      onReply?.call();
+    } else if (selected == 'copy') {
+      await Clipboard.setData(ClipboardData(text: body));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Скопировано')),
+        );
+      }
+    } else if (selected == 'edit') {
+      onEdit?.call();
+    } else if (selected == 'delete') {
+      onDelete?.call();
+    }
+  }
+
+  Widget _statusIcon(Color base) {
+    if (event.status == EventStatus.sending) {
+      return Icon(Icons.schedule, size: 13, color: base.withValues(alpha: 0.6));
+    }
+    if (event.status == EventStatus.error) {
+      return const Icon(Icons.error_outline, size: 13, color: Color(0xFFCF6679));
+    }
+    final readByOther = event.room.receiptState.global.otherUsers.values.any(
+      (r) => r.ts >= event.originServerTs.millisecondsSinceEpoch,
+    );
+    return Icon(
+      readByOther ? Icons.done_all : Icons.check,
+      size: 13,
+      color: readByOther ? OrexColors.online : base.withValues(alpha: 0.6),
     );
   }
 
@@ -140,8 +170,6 @@ class MessageBubble extends StatelessWidget {
         ? (isDark ? OrexColors.cream : OrexColors.walnutDeep)
         : (isDark ? OrexColors.darkText : OrexColors.lightText);
 
-    // getDisplayEvent применяет правки (m.replace) — иначе правка приходила
-    // отдельным сообщением «* …».
     final displayEvent =
         timeline != null ? event.getDisplayEvent(timeline!) : event;
     final redacted = displayEvent.redacted;
@@ -152,7 +180,7 @@ class MessageBubble extends StatelessWidget {
         ? ''
         : displayEvent.calcLocalizedBodyFallback(
             const MatrixDefaultLocalizations(),
-            hideReply: true, // не дублируем цитату — она рисуется отдельным блоком
+            hideReply: true,
             hideEdit: true,
           );
     final ts = event.originServerTs;
@@ -166,7 +194,10 @@ class MessageBubble extends StatelessWidget {
             isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         children: [
           GestureDetector(
-            onLongPress: redacted ? null : () => _openMenu(context, body),
+            onLongPressStart:
+                redacted ? null : (d) => _showMenu(context, d.globalPosition, body),
+            onSecondaryTapDown:
+                redacted ? null : (d) => _showMenu(context, d.globalPosition, body),
             child: Container(
               margin: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
               padding: const EdgeInsets.fromLTRB(14, 9, 12, 7),
@@ -204,105 +235,231 @@ class MessageBubble extends StatelessWidget {
                         ),
                       ),
                     ),
-                  if (replied != null)
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 4),
-                      padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(8),
-                        border: const Border(
-                          left: BorderSide(color: OrexColors.copper, width: 3),
+                  if (replied != null) _replyQuote(replied, textColor),
+                  _content(body, redacted, textColor),
+                  const SizedBox(height: 2),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        '${edited ? 'изм. · ' : ''}'
+                        '${ts.hour.toString().padLeft(2, '0')}:'
+                        '${ts.minute.toString().padLeft(2, '0')}',
+                        style: TextStyle(
+                          color: textColor.withValues(alpha: 0.6),
+                          fontSize: 11,
                         ),
                       ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            replied.senderFromMemoryOrFallback.calcDisplayname(),
-                            style: const TextStyle(
-                              color: OrexColors.copper,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 12,
-                            ),
-                          ),
-                          Text(
-                            replied.calcLocalizedBodyFallback(
-                              const MatrixDefaultLocalizations(),
-                              hideReply: true,
-                              hideEdit: true,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: textColor.withValues(alpha: 0.8),
-                              fontSize: 12.5,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  Text(
-                    body,
-                    style: TextStyle(
-                      color: redacted
-                          ? textColor.withValues(alpha: 0.6)
-                          : textColor,
-                      height: 1.3,
-                      fontStyle:
-                          redacted ? FontStyle.italic : FontStyle.normal,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '${edited ? 'изм. · ' : ''}'
-                    '${ts.hour.toString().padLeft(2, '0')}:'
-                    '${ts.minute.toString().padLeft(2, '0')}',
-                    style: TextStyle(
-                      color: textColor.withValues(alpha: 0.6),
-                      fontSize: 11,
-                    ),
+                      if (isMine && !redacted) ...[
+                        const SizedBox(width: 4),
+                        _statusIcon(textColor),
+                      ],
+                    ],
                   ),
                 ],
               ),
             ),
           ),
-          if (reactions.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(left: 6, right: 6, bottom: 4),
-              child: Wrap(
-                spacing: 4,
-                runSpacing: 4,
-                children: reactions.entries.map((e) {
-                  final mine = e.value.myReactionId != null;
-                  return GestureDetector(
-                    onTap: () {
-                      if (mine) {
-                        onRedact?.call(e.value.myReactionId!);
-                      } else {
-                        onReact?.call(e.key);
-                      }
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: mine
-                            ? OrexColors.copper.withValues(alpha: 0.30)
-                            : (isDark ? Colors.black : Colors.white)
-                                .withValues(alpha: 0.25),
-                        borderRadius: BorderRadius.circular(12),
-                        border: mine
-                            ? Border.all(color: OrexColors.copper, width: 1)
-                            : null,
-                      ),
-                      child: Text('${e.key} ${e.value.count}',
-                          style: const TextStyle(fontSize: 12.5)),
-                    ),
-                  );
-                }).toList(),
-              ),
+          if (reactions.isNotEmpty) _reactionChips(reactions, isDark),
+        ],
+      ),
+    );
+  }
+
+  Widget _content(String body, bool redacted, Color textColor) {
+    if (redacted) {
+      return Text('',
+          style: TextStyle(color: textColor.withValues(alpha: 0.6)));
+    }
+    switch (event.messageType) {
+      case MessageTypes.Image:
+        return _AttachmentImage(event: event);
+      case MessageTypes.Video:
+      case MessageTypes.Audio:
+      case MessageTypes.File:
+        return _FileTile(event: event, body: body, textColor: textColor);
+      default:
+        return Text(body, style: TextStyle(color: textColor, height: 1.3));
+    }
+  }
+
+  Widget _replyQuote(Event replied, Color textColor) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: const Border(
+          left: BorderSide(color: OrexColors.copper, width: 3),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            replied.senderFromMemoryOrFallback.calcDisplayname(),
+            style: const TextStyle(
+              color: OrexColors.copper,
+              fontWeight: FontWeight.w600,
+              fontSize: 12,
             ),
+          ),
+          Text(
+            replied.calcLocalizedBodyFallback(
+              const MatrixDefaultLocalizations(),
+              hideReply: true,
+              hideEdit: true,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: textColor.withValues(alpha: 0.8),
+              fontSize: 12.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _reactionChips(Map<String, _ReactionInfo> reactions, bool isDark) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 6, right: 6, bottom: 4),
+      child: Wrap(
+        spacing: 4,
+        runSpacing: 4,
+        children: reactions.entries.map((e) {
+          final mine = e.value.myReactionId != null;
+          return GestureDetector(
+            onTap: () {
+              if (mine) {
+                onRedact?.call(e.value.myReactionId!);
+              } else {
+                onReact?.call(e.key);
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: mine
+                    ? OrexColors.copper.withValues(alpha: 0.30)
+                    : (isDark ? Colors.black : Colors.white)
+                        .withValues(alpha: 0.25),
+                borderRadius: BorderRadius.circular(12),
+                border:
+                    mine ? Border.all(color: OrexColors.copper, width: 1) : null,
+              ),
+              child: Text('${e.key} ${e.value.count}',
+                  style: const TextStyle(fontSize: 12.5)),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+}
+
+class _MenuRow extends StatelessWidget {
+  const _MenuRow({required this.icon, required this.label, this.color});
+  final IconData icon;
+  final String label;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = color ?? OrexColors.copper;
+    return Row(
+      children: [
+        Icon(icon, color: c, size: 20),
+        const SizedBox(width: 12),
+        Text(label, style: TextStyle(color: color)),
+      ],
+    );
+  }
+}
+
+/// Картинка-вложение: грузим и расшифровываем байты через SDK.
+class _AttachmentImage extends StatefulWidget {
+  const _AttachmentImage({required this.event});
+  final Event event;
+
+  @override
+  State<_AttachmentImage> createState() => _AttachmentImageState();
+}
+
+class _AttachmentImageState extends State<_AttachmentImage> {
+  Uint8List? _bytes;
+  bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final file = await widget.event.downloadAndDecryptAttachment();
+      if (mounted) setState(() => _bytes = file.bytes);
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 320, maxWidth: 280),
+        child: _bytes != null
+            ? Image.memory(_bytes!, fit: BoxFit.cover)
+            : Container(
+                width: 200,
+                height: 150,
+                color: Colors.black.withValues(alpha: 0.2),
+                alignment: Alignment.center,
+                child: _failed
+                    ? const Icon(Icons.broken_image, color: OrexColors.cream)
+                    : const CircularProgressIndicator(
+                        strokeWidth: 2, color: OrexColors.copper),
+              ),
+      ),
+    );
+  }
+}
+
+/// Файл-вложение: иконка + имя.
+class _FileTile extends StatelessWidget {
+  const _FileTile(
+      {required this.event, required this.body, required this.textColor});
+  final Event event;
+  final String body;
+  final Color textColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = event.content.tryGet<String>('filename') ??
+        event.content.tryGet<String>('body') ??
+        body;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.insert_drive_file, color: OrexColors.copper),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: textColor)),
+          ),
         ],
       ),
     );
