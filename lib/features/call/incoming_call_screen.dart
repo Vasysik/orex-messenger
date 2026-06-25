@@ -29,9 +29,16 @@ class IncomingCallScreen extends StatelessWidget {
 
   void _accept(BuildContext context, {required bool video}) {
     matrix.call.start(room.id, video: video);
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => CallScreen(matrix: matrix)),
-    );
+    final isWide = MediaQuery.sizeOf(context).width >= 900;
+    if (isWide) {
+      // Десктоп: закрываем экран входящего, звонок показывается панелью.
+      matrix.call.minimize();
+      Navigator.of(context).maybePop();
+    } else {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => CallScreen(matrix: matrix)),
+      );
+    }
   }
 
   @override

@@ -149,9 +149,12 @@ class MessageBubble extends StatelessWidget {
         timeline != null &&
         event.hasAggregatedEvents(timeline!, RelationshipTypes.edit);
     final body = redacted
-        ? 'Сообщение удалено'
-        : displayEvent
-            .calcLocalizedBodyFallback(const MatrixDefaultLocalizations());
+        ? ''
+        : displayEvent.calcLocalizedBodyFallback(
+            const MatrixDefaultLocalizations(),
+            hideReply: true, // не дублируем цитату — она рисуется отдельным блоком
+            hideEdit: true,
+          );
     final ts = event.originServerTs;
     final reactions = _reactions();
     final replied = _repliedEvent();
@@ -225,7 +228,10 @@ class MessageBubble extends StatelessWidget {
                           ),
                           Text(
                             replied.calcLocalizedBodyFallback(
-                                const MatrixDefaultLocalizations()),
+                              const MatrixDefaultLocalizations(),
+                              hideReply: true,
+                              hideEdit: true,
+                            ),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(

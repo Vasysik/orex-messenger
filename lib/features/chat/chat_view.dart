@@ -138,9 +138,16 @@ class _ChatViewState extends State<ChatView> {
 
   void _openCall(bool video) {
     widget.matrix.call.start(widget.roomId, video: video);
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
-    );
+    final isWide = MediaQuery.sizeOf(context).width >= 900;
+    if (isWide) {
+      // На десктопе показываем звонок свёрнутой панелью над чатом.
+      widget.matrix.call.minimize();
+    } else {
+      widget.matrix.call.expand();
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
+      );
+    }
   }
 
   @override
@@ -180,6 +187,7 @@ class _ChatViewState extends State<ChatView> {
     final events = _timeline!.events
         .where((e) =>
             e.type == EventTypes.Message &&
+            !e.redacted && // удалённые просто прячем (без подписи)
             e.relationshipType != RelationshipTypes.edit)
         .toList();
     final myId = widget.matrix.client.userID;
@@ -193,7 +201,6 @@ class _ChatViewState extends State<ChatView> {
           onCall: _openCall,
         ),
         Divider(height: 1, color: OrexColors.copper.withValues(alpha: 0.12)),
-        _CallJoinBanner(matrix: widget.matrix, room: room, onJoin: _openCall),
         Expanded(
           child: ListView.builder(
             controller: _scroll,
@@ -312,64 +319,6 @@ class _InviteView extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-/// Полоска «Идёт звонок · Войти» в чате, когда в комнате активен звонок,
-/// а мы в нём не участвуем.
-class _CallJoinBanner extends StatelessWidget {
-  const _CallJoinBanner({
-    required this.matrix,
-    required this.room,
-    required this.onJoin,
-  });
-
-  final MatrixService matrix;
-  final Room room;
-  final void Function(bool video) onJoin;
-
-  @override
-  Widget build(BuildContext context) {
-    final voipSvc = matrix.voip;
-    if (voipSvc == null) return const SizedBox.shrink();
-    final hasCall =
-        room.hasActiveGroupCall(voipSvc.voip, ignoreDirectChats: false);
-    if (!hasCall) return const SizedBox.shrink();
-
-    return ListenableBuilder(
-      listenable: matrix.call,
-      builder: (context, _) {
-        final inThisCall =
-            matrix.call.isActive && matrix.call.roomId == room.id;
-        if (inThisCall) return const SizedBox.shrink();
-        return Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: () => onJoin(false),
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              color: OrexColors.online.withValues(alpha: 0.18),
-              child: Row(
-                children: [
-                  const Icon(Icons.call, color: OrexColors.online, size: 20),
-                  const SizedBox(width: 10),
-                  const Expanded(child: Text('Идёт звонок')),
-                  FilledButton(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: OrexColors.online,
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    onPressed: () => onJoin(false),
-                    child: const Text('Войти'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
     );
   }
 }
@@ -547,7 +496,7 @@ class _InputBar extends StatelessWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Ответ: ${reply.calcLocalizedBodyFallback(const MatrixDefaultLocalizations())}',
+                    'Ответ: ${reply.calcLocalizedBodyFallback(const MatrixDefaultLocalizations(), hideReply: true, hideEdit: true)}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodySmall,

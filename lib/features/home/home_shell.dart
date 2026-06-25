@@ -59,11 +59,45 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  void _openCall() {
+  /// Развернуть звонок на весь экран (кнопка «развернуть» в панели).
+  void _openCallFullScreen() {
     widget.matrix.call.expand();
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
     );
+  }
+
+  /// Начать/присоединиться к звонку. На десктопе показываем сразу свёрнутой
+  /// панелью над чатом (не на весь экран); на узком экране — полноэкранно.
+  void _startCall(String roomId, bool video) {
+    widget.matrix.call.start(roomId, video: video);
+    final isWide = MediaQuery.sizeOf(context).width >= _wideBreakpoint;
+    if (isWide) {
+      widget.matrix.call.minimize();
+    } else {
+      _openCallFullScreen();
+    }
+  }
+
+  /// Панель звонка над областью разговора: активный звонок (плитки+управление)
+  /// или «Идёт звонок · Войти» для звонка в открытой комнате, куда мы не вошли.
+  Widget _callArea() {
+    final call = widget.matrix.call;
+    if (call.isActive) {
+      return MinimizedCallPanel(call: call, onExpand: _openCallFullScreen);
+    }
+    final roomId = _selectedRoomId;
+    if (roomId != null) {
+      final room = widget.matrix.client.getRoomById(roomId);
+      if (room != null && widget.matrix.roomHasActiveCall(room)) {
+        return JoinCallPanel(
+          matrix: widget.matrix,
+          room: room,
+          onJoin: () => _startCall(roomId, false),
+        );
+      }
+    }
+    return const SizedBox.shrink();
   }
 
   @override
@@ -76,7 +110,6 @@ class _HomeShellState extends State<HomeShell> {
           child: ListenableBuilder(
             listenable: widget.matrix.call,
             builder: (context, _) {
-              final call = widget.matrix.call;
               return Column(
                 children: [
                   if (widget.matrix.needsSessionVerification &&
@@ -86,8 +119,6 @@ class _HomeShellState extends State<HomeShell> {
                       onClose: () =>
                           setState(() => _verifyBannerDismissed = true),
                     ),
-                  if (call.isActive && call.minimized)
-                    MinimizedCallPanel(call: call, onExpand: _openCall),
                   Expanded(child: isWide ? _buildWide() : _buildNarrow()),
                 ],
               );
@@ -120,15 +151,22 @@ class _HomeShellState extends State<HomeShell> {
           ),
           const SizedBox(width: 12),
           Expanded(
-            child: GlassPanel(
-              borderRadius: 24,
-              child: _selectedRoomId == null
-                  ? const _EmptyConversation()
-                  : ChatView(
-                      key: ValueKey(_selectedRoomId),
-                      matrix: widget.matrix,
-                      roomId: _selectedRoomId!,
-                    ),
+            child: Column(
+              children: [
+                _callArea(),
+                Expanded(
+                  child: GlassPanel(
+                    borderRadius: 24,
+                    child: _selectedRoomId == null
+                        ? const _EmptyConversation()
+                        : ChatView(
+                            key: ValueKey(_selectedRoomId),
+                            matrix: widget.matrix,
+                            roomId: _selectedRoomId!,
+                          ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -140,21 +178,35 @@ class _HomeShellState extends State<HomeShell> {
     if (_selectedRoomId == null) {
       return Padding(
         padding: const EdgeInsets.all(8),
-        child: GlassPanel(
-          borderRadius: 24,
-          child: _chatList(showSelection: false),
+        child: Column(
+          children: [
+            _callArea(),
+            Expanded(
+              child: GlassPanel(
+                borderRadius: 24,
+                child: _chatList(showSelection: false),
+              ),
+            ),
+          ],
         ),
       );
     }
     return Padding(
       padding: const EdgeInsets.all(8),
-      child: GlassPanel(
-        borderRadius: 24,
-        child: ChatView(
-          matrix: widget.matrix,
-          roomId: _selectedRoomId!,
-          onBack: () => setState(() => _selectedRoomId = null),
-        ),
+      child: Column(
+        children: [
+          _callArea(),
+          Expanded(
+            child: GlassPanel(
+              borderRadius: 24,
+              child: ChatView(
+                matrix: widget.matrix,
+                roomId: _selectedRoomId!,
+                onBack: () => setState(() => _selectedRoomId = null),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

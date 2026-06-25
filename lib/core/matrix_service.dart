@@ -127,6 +127,25 @@ class MatrixService extends ChangeNotifier {
 
   bool isInvite(Room room) => room.membership == Membership.invite;
 
+  /// В комнате идёт звонок (учитываем и личные чаты).
+  bool roomHasActiveCall(Room room) {
+    final v = voip?.voip;
+    if (v == null) return false;
+    return room.hasActiveGroupCall(v, ignoreDirectChats: false);
+  }
+
+  /// userId участников активного звонка в комнате — для панели «войти».
+  List<String> callMemberIds(Room room) {
+    final v = voip?.voip;
+    if (v == null) return const [];
+    final mems = room.getCallMembershipsFromRoom(v).values.expand((e) => e);
+    return mems
+        .where((m) => !m.isExpired)
+        .map((m) => m.userId)
+        .toSet()
+        .toList();
+  }
+
   /// Принять приглашение (войти в комнату).
   Future<void> acceptInvite(Room room) async {
     await room.join();
@@ -164,6 +183,12 @@ class MatrixService extends ChangeNotifier {
   /// Дождаться, пока ключи устройств подгрузятся из БД/сети (иначе статусы ниже
   /// могут быть «ложно непроверенными» сразу после логина).
   Future<void> ensureKeysLoaded() => client.userDeviceKeysLoading ?? Future.value();
+
+  /// Включено ли «хранилище ключей» (онлайн-бэкап ключей сообщений). Когда
+  /// включено, история восстанавливается на новых устройствах после проверки —
+  /// сообщения не «теряются». Настраивается тем же bootstrap, что и кросс-подпись.
+  bool get keyBackupEnabled =>
+      client.encryption?.keyManager.enabled ?? false;
 
   /// На аккаунте настроена кросс-подпись (обычно её включают в Element).
   /// Если false — проверять нечем: сперва нужно настроить безопасность в Element

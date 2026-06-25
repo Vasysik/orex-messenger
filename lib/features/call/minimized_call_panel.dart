@@ -123,6 +123,65 @@ class MinimizedCallPanel extends StatelessWidget {
       );
 }
 
+/// Панель «Идёт звонок» для звонка в комнате, в который мы НЕ вошли: аватары
+/// участников + кнопка «Войти». Тот же стиль, что и у активного звонка.
+class JoinCallPanel extends StatelessWidget {
+  const JoinCallPanel({
+    super.key,
+    required this.matrix,
+    required this.room,
+    required this.onJoin,
+  });
+
+  final MatrixService matrix;
+  final Room room;
+  final VoidCallback onJoin;
+
+  @override
+  Widget build(BuildContext context) {
+    final memberIds = matrix.callMemberIds(room);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.call, color: OrexColors.online),
+          const SizedBox(width: 12),
+          for (final id in memberIds.take(4))
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Builder(builder: (_) {
+                final user = room.unsafeGetUserFromMemoryOrFallback(id);
+                return MxcAvatar(
+                  matrix: matrix,
+                  name: user.calcDisplayname(),
+                  mxc: user.avatarUrl,
+                  size: 32,
+                );
+              }),
+            ),
+          const SizedBox(width: 6),
+          const Expanded(
+            child: Text('Идёт звонок',
+                style: TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.w600)),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: OrexColors.online),
+            onPressed: onJoin,
+            icon: const Icon(Icons.call, size: 18),
+            label: const Text('Войти'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _MiniTile extends StatelessWidget {
   const _MiniTile({
     required this.participant,

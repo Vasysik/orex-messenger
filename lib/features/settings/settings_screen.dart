@@ -170,6 +170,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           if (mounted) setState(() {});
                         }),
                   ),
+                if (widget.matrix.encryptionEnabled)
+                  _Tile(
+                    icon: widget.matrix.keyBackupEnabled
+                        ? Icons.cloud_done
+                        : Icons.cloud_off,
+                    title: 'Хранилище ключей',
+                    subtitle: widget.matrix.keyBackupEnabled
+                        ? 'Включено — история восстановится на новых устройствах'
+                        : 'Выключено — настройте, чтобы не терять переписку',
+                    onTap: widget.matrix.keyBackupEnabled
+                        ? null
+                        : () => Navigator.of(context)
+                                .push(
+                                  MaterialPageRoute(
+                                    builder: (_) => VerifySessionScreen(
+                                        matrix: widget.matrix),
+                                  ),
+                                )
+                                .then((_) {
+                              if (mounted) setState(() {});
+                            }),
+                  ),
                 _Tile(
                   icon: Icons.devices,
                   title: 'Устройства аккаунта',
