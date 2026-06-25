@@ -167,6 +167,16 @@ class MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Итог звонка — центрированной служебной плашкой (не обычным баблом).
+    final outcome = event.content['com.orex.call_outcome'] as String?;
+    if (outcome != null && !event.redacted) {
+      return _CallSummaryCard(
+        text: event.body,
+        outcome: outcome,
+        ts: event.originServerTs,
+      );
+    }
+
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bg = isMine
         ? (isDark ? OrexColors.darkBubbleOut : OrexColors.lightBubbleOut)
@@ -474,4 +484,59 @@ class _FileTile extends StatelessWidget {
 class _ReactionInfo {
   int count = 0;
   String? myReactionId;
+}
+
+/// Центрированная служебная плашка об итоге звонка (Звонок / Пропущенный /
+/// Отклонённый вызов).
+class _CallSummaryCard extends StatelessWidget {
+  const _CallSummaryCard({
+    required this.text,
+    required this.outcome,
+    required this.ts,
+  });
+  final String text;
+  final String outcome;
+  final DateTime ts;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (outcome) {
+      'answered' => OrexColors.online,
+      'rejected' => const Color(0xFFCF6679),
+      _ => OrexColors.ochre,
+    };
+    final label = text.replaceFirst('📞 ', '');
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.22),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(outcome == 'answered' ? Icons.call : Icons.call_end,
+                size: 16, color: color),
+            const SizedBox(width: 8),
+            Text(label, style: const TextStyle(fontSize: 13)),
+            const SizedBox(width: 8),
+            Text(
+              '${ts.hour.toString().padLeft(2, '0')}:'
+              '${ts.minute.toString().padLeft(2, '0')}',
+              style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.color
+                    ?.withValues(alpha: 0.6),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

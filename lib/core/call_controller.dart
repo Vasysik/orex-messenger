@@ -19,6 +19,8 @@ class CallController extends ChangeNotifier {
   String? roomId;
   bool video = false;
   bool minimized = false;
+  bool _initiator = false; // мы начали этот звонок (а не присоединились)
+  DateTime? _start;
 
   bool get isActive => _session != null;
 
@@ -28,6 +30,10 @@ class CallController extends ChangeNotifier {
     this.roomId = roomId;
     this.video = video;
     minimized = false;
+    // Инициатор = в комнате ещё не было активного звонка до нас.
+    final room = matrix.client.getRoomById(roomId);
+    _initiator = room != null && !matrix.roomHasActiveCall(room);
+    _start = DateTime.now();
     final s = CallSession(client: matrix.client, matrixRoomId: roomId);
     _session = s;
     s.addListener(notifyListeners);
@@ -54,9 +60,15 @@ class CallController extends ChangeNotifier {
 
   Future<void> hangUp() async {
     final s = _session;
+    final rid = roomId;
+    final initiator = _initiator;
+    final start = _start;
+    final sawRemote = s?.sawRemote ?? false;
     _session = null;
     minimized = false;
     roomId = null;
+    _initiator = false;
+    _start = null;
     notifyListeners();
     if (s != null) {
       s.removeListener(notifyListeners);
@@ -64,6 +76,46 @@ class CallController extends ChangeNotifier {
       s.dispose();
     }
     await matrix.voip?.leaveCurrent();
+    // Итоговое сообщение о звонке постит ТОЛЬКО инициатор — без дублей.
+    if (initiator && rid != null) {
+      await _postCallSummary(rid, sawRemote, start);
+    }
+  }
+
+  Future<void> _postCallSummary(
+      String roomId, bool answered, DateTime? start) async {
+    final room = matrix.client.getRoomById(roomId);
+    if (room == null) return;
+    String outcome;
+    String text;
+    if (answered) {
+      outcome = 'answered';
+      final secs =
+          start != null ? DateTime.now().difference(start).inSeconds : 0;
+      text = secs > 0 ? '📞 Звонок · ${_fmtDur(secs)}' : '📞 Звонок';
+    } else if (matrix.voip?.wasRejected(roomId) ?? false) {
+      outcome = 'rejected';
+      text = '📞 Отклонённый вызов';
+    } else {
+      outcome = 'missed';
+      text = '📞 Пропущенный вызов';
+    }
+    matrix.voip?.clearRejected(roomId);
+    try {
+      await room.sendEvent({
+        'msgtype': 'm.notice',
+        'body': text,
+        'com.orex.call_outcome': outcome,
+      });
+    } catch (e) {
+      debugPrint('postCallSummary failed: $e');
+    }
+  }
+
+  String _fmtDur(int secs) {
+    final m = secs ~/ 60;
+    final s = secs % 60;
+    return m > 0 ? '$m мин ${s.toString().padLeft(2, '0')} с' : '$s с';
   }
 
   @override

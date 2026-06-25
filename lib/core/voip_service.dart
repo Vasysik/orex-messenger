@@ -29,14 +29,24 @@ class VoipService extends ChangeNotifier {
     // voip.onIncomingGroupCall: не зависит от того, открывали ли мы чат, и не
     // «перезванивает» по уже существующему звонку при перезагрузке).
     _syncSub = client.onSync.stream.listen((_) => _scan());
-    // Сигнал «звонок обработан на другом моём устройстве» (принят/отклонён).
     _toDeviceSub = client.onToDeviceEvent.stream.listen((ev) {
+      // «Обработано на другом моём устройстве» (принят/отклонён) → закрыть входящий.
       if (ev.type == _handledEventType && ev.sender == client.userID) {
         final roomId = ev.content['room_id'] as String?;
         if (roomId != null) {
           _suppress.add(roomId);
           _shown.remove(roomId);
           _dismiss.add(roomId);
+        }
+      }
+      // «Собеседник отклонил звонок» → запомним, чтобы инициатор написал
+      // «Отклонённый вызов» вместо «Пропущенный».
+      if (ev.type == _rejectedEventType) {
+        final roomId = ev.content['room_id'] as String?;
+        if (roomId != null) {
+          _rejected[roomId] = DateTime.now();
+          Future.delayed(
+              const Duration(seconds: 60), () => _rejected.remove(roomId));
         }
       }
     });
@@ -47,6 +57,41 @@ class VoipService extends ChangeNotifier {
   }
 
   static const _handledEventType = 'com.orex.call.handled';
+  static const _rejectedEventType = 'com.orex.call.rejected';
+
+  /// roomId → когда собеседник отклонил звонок (для текста итогового сообщения).
+  final Map<String, DateTime> _rejected = {};
+
+  /// Собеседник отклонил звонок в этой комнате (недавно).
+  bool wasRejected(String roomId) => _rejected.containsKey(roomId);
+
+  void clearRejected(String roomId) => _rejected.remove(roomId);
+
+  /// Сообщить инициатору (другим участникам комнаты), что мы отклонили звонок.
+  Future<void> notifyRejected(String roomId) async {
+    final room = client.getRoomById(roomId);
+    if (room == null) return;
+    final others = room
+        .getParticipants([Membership.join])
+        .map((u) => u.id)
+        .where((id) => id != client.userID)
+        .toSet();
+    if (others.isEmpty) return;
+    try {
+      await client.sendToDevice(
+        _rejectedEventType,
+        client.generateUniqueTransactionId(),
+        {
+          for (final u in others)
+            u: {
+              '*': {'room_id': roomId},
+            },
+        },
+      );
+    } catch (e) {
+      debugPrint('notifyRejected failed: $e');
+    }
+  }
 
   final Client client;
   late final VoIP voip;

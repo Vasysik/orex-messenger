@@ -29,6 +29,9 @@ class CallSession extends ChangeNotifier {
   lk.Room? get room => _room;
   bool _disposed = false;
 
+  /// Подключался ли хоть кто-то ещё (для итогового сообщения «ответили/пропущен»).
+  bool sawRemote = false;
+
   bool get micOn => _room?.localParticipant?.isMicrophoneEnabled() ?? false;
   bool get camOn => _room?.localParticipant?.isCameraEnabled() ?? false;
 
@@ -81,6 +84,7 @@ class CallSession extends ChangeNotifier {
     // Livekit при teardown комнаты шлёт события уже после dispose() — иначе
     // получаем «CallSession used after being disposed».
     if (_disposed) return;
+    if (_room?.remoteParticipants.isNotEmpty ?? false) sawRemote = true;
     notifyListeners();
   }
 

@@ -58,8 +58,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   }
 
   Future<void> _decline() async {
-    // Сообщаем своим другим устройствам, что звонок обработан (закрыть входящий).
+    // Закрыть входящий на других своих устройствах + сообщить инициатору, что
+    // мы отклонили (он напишет «Отклонённый вызов»).
     await widget.matrix.voip?.markCallHandled(room.id, _callId);
+    await widget.matrix.voip?.notifyRejected(room.id);
     if (mounted) Navigator.of(context).maybePop();
   }
 
