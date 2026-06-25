@@ -190,6 +190,23 @@ class MatrixService extends ChangeNotifier {
   bool get keyBackupEnabled =>
       client.encryption?.keyManager.enabled ?? false;
 
+  /// Скачать ВЕСЬ онлайн-бэкап ключей и расшифровать старую историю. Проверка
+  /// сессии восстанавливает лишь часть ключей; этот вызов подтягивает все, что
+  /// есть в бэкапе (включая сообщения прошлых сессий) — иначе на новой сессии
+  /// видны только сообщения за её собственное время.
+  Future<void> restoreKeyBackup() async {
+    final km = client.encryption?.keyManager;
+    if (km == null) return;
+    try {
+      if (await km.isCached()) {
+        await km.loadAllKeys();
+      }
+    } catch (e) {
+      debugPrint('Не удалось загрузить ключи из бэкапа: $e');
+    }
+    notifyListeners();
+  }
+
   /// На аккаунте настроена кросс-подпись (обычно её включают в Element).
   /// Если false — проверять нечем: сперва нужно настроить безопасность в Element
   /// (или сделать bootstrap, что мы намеренно не делаем вслепую).
@@ -239,6 +256,8 @@ class MatrixService extends ChangeNotifier {
     }
     await crossSigning.selfSign(keyOrPassphrase: keyOrPassphrase.trim());
     notifyListeners();
+    // Ключ восстановления разблокировал SSSS → тянем всю историю из бэкапа.
+    await restoreKeyBackup();
   }
 
   /// ПЕРВИЧНАЯ настройка проверки подлинности (как «собачки» в Element при

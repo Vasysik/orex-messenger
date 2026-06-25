@@ -33,6 +33,8 @@ class _VerificationScreenState extends State<VerificationScreen> {
           for (final ms in const [300, 1500, 3500]) {
             Future.delayed(Duration(milliseconds: ms), m.refresh);
           }
+          // Ключ бэкапа доезжает через SSSS чуть позже — тянем всю историю.
+          Future.delayed(const Duration(seconds: 2), m.restoreKeyBackup);
         }
       }
       if (mounted) setState(() {});

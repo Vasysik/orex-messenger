@@ -33,7 +33,7 @@ class MinimizedCallPanel extends StatelessWidget {
         final people = session.participants;
 
         return Container(
-          margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          margin: const EdgeInsets.only(bottom: 12),
           decoration: BoxDecoration(
             color: Colors.black.withValues(alpha: 0.55),
             borderRadius: BorderRadius.circular(16),
@@ -141,7 +141,7 @@ class JoinCallPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final memberIds = matrix.callMemberIds(room);
     return Container(
-      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.55),

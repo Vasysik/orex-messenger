@@ -181,14 +181,30 @@ class _OrexAppState extends State<OrexApp> {
                 VerificationScreen(request: kv, matrix: widget.matrix)),
       );
     });
-    // Входящие звонки (кто-то начал звонок в комнате) → экран входящего.
+    // Входящие звонки (кто-то начал звонок в комнате) → окно входящего.
     _incomingCallSub = widget.matrix.voip?.onIncomingCall.listen((gc) {
-      _navKey.currentState?.push(
-        MaterialPageRoute(
-          builder: (_) =>
-              IncomingCallScreen(matrix: widget.matrix, groupCall: gc),
-        ),
-      );
+      final ctx = _navKey.currentContext;
+      if (ctx == null || !ctx.mounted) return;
+      // Уже в этом звонке — не показываем.
+      final call = widget.matrix.call;
+      if (call.isActive && call.roomId == gc.room.id) return;
+      final isWide = MediaQuery.sizeOf(ctx).width >= 900;
+      if (isWide) {
+        // Десктоп: компактное окно, не на весь экран.
+        showDialog<void>(
+          context: ctx,
+          barrierDismissible: false,
+          builder: (_) => IncomingCallScreen(
+              matrix: widget.matrix, groupCall: gc, asDialog: true),
+        );
+      } else {
+        _navKey.currentState?.push(
+          MaterialPageRoute(
+            builder: (_) =>
+                IncomingCallScreen(matrix: widget.matrix, groupCall: gc),
+          ),
+        );
+      }
     });
   }
 

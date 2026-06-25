@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 
@@ -7,96 +9,140 @@ import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
 import 'call_screen.dart';
 
-/// Экран входящего звонка. Появляется, когда кто-то опубликовал членство в
-/// звонке (`com.famedly.call.member`) в комнате, где нас ещё нет в звонке.
-class IncomingCallScreen extends StatelessWidget {
+/// Входящий звонок. На узком экране — на весь экран; на десктопе показывается
+/// компактным окном (`asDialog`). Сам закрывается, если звонок завершился или
+/// был принят/отклонён на другом нашем устройстве.
+class IncomingCallScreen extends StatefulWidget {
   const IncomingCallScreen({
     super.key,
     required this.matrix,
     required this.groupCall,
+    this.asDialog = false,
   });
 
   final MatrixService matrix;
   final GroupCallSession groupCall;
+  final bool asDialog;
 
-  Room get room => groupCall.room;
+  @override
+  State<IncomingCallScreen> createState() => _IncomingCallScreenState();
+}
 
-  void _decline(BuildContext context) {
-    // Просто закрываем экран — мы не публиковали своё членство, поэтому ничего
-    // удалять не нужно. Звонок продолжит звонить у инициатора.
-    Navigator.of(context).maybePop();
+class _IncomingCallScreenState extends State<IncomingCallScreen> {
+  StreamSubscription<String>? _dismissSub;
+
+  Room get room => widget.groupCall.room;
+  String get _callId => widget.groupCall.groupCallId;
+
+  @override
+  void initState() {
+    super.initState();
+    _dismissSub = widget.matrix.voip?.onDismissIncoming.listen((callId) {
+      if (callId == _callId && mounted) Navigator.of(context).maybePop();
+    });
+    widget.matrix.addListener(_onMatrix);
   }
 
-  void _accept(BuildContext context, {required bool video}) {
-    matrix.call.start(room.id, video: video);
+  void _onMatrix() {
+    // Звонок завершился (инициатор повесил трубку) — закрываем входящий.
+    if (mounted && !widget.matrix.roomHasActiveCall(room)) {
+      Navigator.of(context).maybePop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _dismissSub?.cancel();
+    widget.matrix.removeListener(_onMatrix);
+    super.dispose();
+  }
+
+  Future<void> _decline() async {
+    // Сообщаем своим другим устройствам, что звонок обработан (закрыть входящий).
+    await widget.matrix.voip?.markCallHandled(room.id, _callId);
+    if (mounted) Navigator.of(context).maybePop();
+  }
+
+  void _accept({required bool video}) {
+    widget.matrix.voip?.markCallHandled(room.id, _callId);
+    widget.matrix.call.start(room.id, video: video);
     final isWide = MediaQuery.sizeOf(context).width >= 900;
-    if (isWide) {
-      // Десктоп: закрываем экран входящего, звонок показывается панелью.
-      matrix.call.minimize();
+    if (widget.asDialog || isWide) {
+      widget.matrix.call.minimize(); // десктоп — звонок панелью над чатом
       Navigator.of(context).maybePop();
     } else {
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => CallScreen(matrix: matrix)),
+        MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
       );
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final name = room.getLocalizedDisplayname();
+    if (widget.asDialog) {
+      return Dialog(
+        backgroundColor: OrexColors.darkSurface,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 360),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: _card(compact: true),
+          ),
+        ),
+      );
+    }
     return AmbientBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: SafeArea(
-          child: Column(
-            children: [
-              const Spacer(),
-              MxcAvatar(
-                matrix: matrix,
-                name: name,
-                mxc: room.avatar,
-                size: 112,
-              ),
-              const SizedBox(height: 20),
-              Text(name,
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(fontWeight: FontWeight.w700)),
-              const SizedBox(height: 6),
-              Text('Входящий звонок…',
-                  style: Theme.of(context).textTheme.bodyMedium),
-              const Spacer(),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 48, left: 24, right: 24),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _ActionButton(
-                      icon: Icons.call_end,
-                      label: 'Отклонить',
-                      color: const Color(0xFFCF6679),
-                      onTap: () => _decline(context),
-                    ),
-                    _ActionButton(
-                      icon: Icons.videocam,
-                      label: 'Видео',
-                      color: OrexColors.copper,
-                      onTap: () => _accept(context, video: true),
-                    ),
-                    _ActionButton(
-                      icon: Icons.call,
-                      label: 'Ответить',
-                      color: OrexColors.online,
-                      onTap: () => _accept(context, video: false),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
+        body: SafeArea(child: Center(child: _card(compact: false))),
       ),
+    );
+  }
+
+  Widget _card({required bool compact}) {
+    final name = room.getLocalizedDisplayname();
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        MxcAvatar(
+          matrix: widget.matrix,
+          name: name,
+          mxc: room.avatar,
+          size: compact ? 72 : 112,
+        ),
+        const SizedBox(height: 16),
+        Text(name,
+            style: Theme.of(context)
+                .textTheme
+                .titleLarge
+                ?.copyWith(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
+        Text('Входящий звонок…', style: Theme.of(context).textTheme.bodyMedium),
+        const SizedBox(height: 24),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            _ActionButton(
+              icon: Icons.call_end,
+              label: 'Отклонить',
+              color: const Color(0xFFCF6679),
+              onTap: _decline,
+            ),
+            _ActionButton(
+              icon: Icons.videocam,
+              label: 'Видео',
+              color: OrexColors.copper,
+              onTap: () => _accept(video: true),
+            ),
+            _ActionButton(
+              icon: Icons.call,
+              label: 'Ответить',
+              color: OrexColors.online,
+              onTap: () => _accept(video: false),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }
@@ -122,10 +168,10 @@ class _ActionButton extends StatelessWidget {
         GestureDetector(
           onTap: onTap,
           child: Container(
-            width: 66,
-            height: 66,
+            width: 60,
+            height: 60,
             decoration: BoxDecoration(shape: BoxShape.circle, color: color),
-            child: Icon(icon, color: OrexColors.cream, size: 28),
+            child: Icon(icon, color: OrexColors.cream, size: 26),
           ),
         ),
         const SizedBox(height: 8),
