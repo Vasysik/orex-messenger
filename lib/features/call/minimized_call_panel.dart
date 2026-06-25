@@ -9,8 +9,9 @@ import '../../widgets/mxc_avatar.dart';
 import 'call_session.dart';
 
 /// Свёрнутый звонок панелью над чатом (как в Discord): плитки участников +
-/// управление. Тап по плиткам — развернуть на весь экран.
-class MinimizedCallPanel extends StatelessWidget {
+/// управление. Тап по плиткам — развернуть на весь экран. Высоту можно тянуть
+/// мышью за нижнюю кромку.
+class MinimizedCallPanel extends StatefulWidget {
   const MinimizedCallPanel({
     super.key,
     required this.call,
@@ -21,7 +22,20 @@ class MinimizedCallPanel extends StatelessWidget {
   final VoidCallback onExpand;
 
   @override
+  State<MinimizedCallPanel> createState() => _MinimizedCallPanelState();
+}
+
+class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
+  double? _tilesHeight; // null → дефолт = 1/3 высоты экрана
+
+  @override
   Widget build(BuildContext context) {
+    final call = widget.call;
+    final screenH = MediaQuery.sizeOf(context).height;
+    final minH = 100.0;
+    final maxH = screenH * 0.7;
+    final tilesH = (_tilesHeight ?? screenH / 3).clamp(minH, maxH);
+
     return AnimatedBuilder(
       animation: call,
       builder: (context, _) {
@@ -42,14 +56,14 @@ class MinimizedCallPanel extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               SizedBox(
-                height: 120,
+                height: tilesH,
                 child: people.isEmpty
                     ? const Center(
                         child: Text('Соединение…',
                             style: TextStyle(color: Colors.white70)),
                       )
                     : GestureDetector(
-                        onTap: onExpand,
+                        onTap: widget.onExpand,
                         child: Padding(
                           padding: const EdgeInsets.all(6),
                           child: Row(
@@ -71,10 +85,38 @@ class MinimizedCallPanel extends StatelessWidget {
                       ),
               ),
               _controls(session),
+              _resizeHandle(tilesH, minH, maxH),
             ],
           ),
         );
       },
+    );
+  }
+
+  /// Нижняя кромка-«ручка»: тянуть вверх/вниз, чтобы менять высоту плиток.
+  Widget _resizeHandle(double current, double minH, double maxH) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeUpDown,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onVerticalDragUpdate: (d) {
+          setState(() {
+            _tilesHeight = (current + d.delta.dy).clamp(minH, maxH);
+          });
+        },
+        child: Container(
+          height: 16,
+          alignment: Alignment.center,
+          child: Container(
+            width: 44,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.white30,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -93,12 +135,12 @@ class MinimizedCallPanel extends StatelessWidget {
               onTap: session.toggleCam,
             ),
             const SizedBox(width: 12),
-            _btn(icon: Icons.open_in_full, onTap: onExpand),
+            _btn(icon: Icons.open_in_full, onTap: widget.onExpand),
             const SizedBox(width: 12),
             _btn(
               icon: Icons.call_end,
               bg: const Color(0xFFCF6679),
-              onTap: call.hangUp,
+              onTap: widget.call.hangUp,
             ),
           ],
         ),

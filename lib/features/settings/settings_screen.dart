@@ -34,8 +34,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadProfile();
   }
 
-  Future<void> _loadProfile() async {
-    final p = await widget.matrix.ownProfile();
+  Future<void> _loadProfile({bool fresh = false}) async {
+    final p = await widget.matrix.ownProfile(fresh: fresh);
     if (mounted) setState(() => _profile = p);
   }
 
@@ -50,7 +50,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _savingAvatar = true);
     try {
       await widget.matrix.setAvatarBytes(file!.bytes!, file.name);
-      await _loadProfile();
+      await _loadProfile(fresh: true);
     } finally {
       if (mounted) setState(() => _savingAvatar = false);
     }
@@ -80,7 +80,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (name == null || name.isEmpty) return;
     await widget.matrix.setDisplayName(name);
-    await _loadProfile();
+    await _loadProfile(fresh: true);
   }
 
   Future<void> _logout() async {

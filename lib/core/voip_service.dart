@@ -34,11 +34,19 @@ class VoipService extends ChangeNotifier {
       if (ev.type == _handledEventType && ev.sender == client.userID) {
         final callId = ev.content['call_id'] as String?;
         if (callId != null) {
-          _handled.add(callId);
+          _markHandled(callId);
           _dismiss.add(callId);
         }
       }
     });
+  }
+
+  /// Помечаем звонок обработанным НА КОРОТКОЕ ВРЕМЯ. Важно: callId == roomId,
+  /// поэтому нельзя глушить навсегда — иначе будущие звонки в ту же комнату не
+  /// придут. Через 15 с снимаем пометку.
+  void _markHandled(String callId) {
+    _handled.add(callId);
+    Future.delayed(const Duration(seconds: 15), () => _handled.remove(callId));
   }
 
   static const _handledEventType = 'com.orex.call.handled';
@@ -78,7 +86,7 @@ class VoipService extends ChangeNotifier {
   /// Пометить звонок обработанным (принят/отклонён) и сообщить своим другим
   /// устройствам, чтобы у них входящий закрылся.
   Future<void> markCallHandled(String roomId, String callId) async {
-    _handled.add(callId);
+    _markHandled(callId);
     try {
       await client.sendToDevice(
         _handledEventType,
@@ -136,6 +144,13 @@ class VoipService extends ChangeNotifier {
       } catch (e) {
         debugPrint('VoipService.leaveCurrent failed: $e');
       }
+      // Подстраховка: если leave() упал до удаления, чистим вручную — иначе
+      // будущие входящие в эту комнату глохнут (createGroupCallFromRoomStateEvent
+      // делает ранний return, если groupCall уже в карте). VoipId не
+      // экспортируется, поэтому фильтруем по полям ключа.
+      voip.groupCalls.removeWhere(
+        (k, v) => k.roomId == gc.room.id && k.callId == gc.groupCallId,
+      );
     }
   }
 

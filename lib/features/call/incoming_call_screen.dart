@@ -79,6 +79,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final name = room.getLocalizedDisplayname();
     if (widget.asDialog) {
       return Dialog(
         backgroundColor: OrexColors.darkSurface,
@@ -86,30 +87,45 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
           constraints: const BoxConstraints(maxWidth: 360),
           child: Padding(
             padding: const EdgeInsets.all(24),
-            child: _card(compact: true),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _avatarName(name, 72),
+                const SizedBox(height: 24),
+                _buttonsRow(),
+              ],
+            ),
           ),
         ),
       );
     }
+    // Полный экран: аватар сверху-по центру, кнопки приёма — внизу.
     return AmbientBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: SafeArea(child: Center(child: _card(compact: false))),
+        body: SafeArea(
+          child: Column(
+            children: [
+              const Spacer(flex: 2),
+              _avatarName(name, 120),
+              const Spacer(flex: 3),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 40),
+                child: _buttonsRow(),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
-  Widget _card({required bool compact}) {
-    final name = room.getLocalizedDisplayname();
+  Widget _avatarName(String name, double size) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         MxcAvatar(
-          matrix: widget.matrix,
-          name: name,
-          mxc: room.avatar,
-          size: compact ? 72 : 112,
-        ),
+            matrix: widget.matrix, name: name, mxc: room.avatar, size: size),
         const SizedBox(height: 16),
         Text(name,
             style: Theme.of(context)
@@ -118,29 +134,31 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                 ?.copyWith(fontWeight: FontWeight.w700)),
         const SizedBox(height: 4),
         Text('Входящий звонок…', style: Theme.of(context).textTheme.bodyMedium),
-        const SizedBox(height: 24),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            _ActionButton(
-              icon: Icons.call_end,
-              label: 'Отклонить',
-              color: const Color(0xFFCF6679),
-              onTap: _decline,
-            ),
-            _ActionButton(
-              icon: Icons.videocam,
-              label: 'Видео',
-              color: OrexColors.copper,
-              onTap: () => _accept(video: true),
-            ),
-            _ActionButton(
-              icon: Icons.call,
-              label: 'Ответить',
-              color: OrexColors.online,
-              onTap: () => _accept(video: false),
-            ),
-          ],
+      ],
+    );
+  }
+
+  Widget _buttonsRow() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        _ActionButton(
+          icon: Icons.call_end,
+          label: 'Отклонить',
+          color: const Color(0xFFCF6679),
+          onTap: _decline,
+        ),
+        _ActionButton(
+          icon: Icons.videocam,
+          label: 'Видео',
+          color: OrexColors.copper,
+          onTap: () => _accept(video: true),
+        ),
+        _ActionButton(
+          icon: Icons.call,
+          label: 'Ответить',
+          color: OrexColors.online,
+          onTap: () => _accept(video: false),
         ),
       ],
     );

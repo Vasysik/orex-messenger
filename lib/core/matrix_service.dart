@@ -61,6 +61,12 @@ class MatrixService extends ChangeNotifier {
     );
     client.onSync.stream.listen((_) => notifyListeners());
     client.onLoginStateChanged.stream.listen((_) => notifyListeners());
+    // Обновление профиля (имя/аватар) — сбрасываем кэш медиа и перерисовываем,
+    // чтобы новый аватар появился без перезагрузки вкладки.
+    client.onUserProfileUpdate.stream.listen((_) {
+      _mediaCache.clear();
+      notifyListeners();
+    });
     // VoIP-сигналинг (звонки). Изолируем сбой, чтобы он не ронял запуск.
     try {
       voip = VoipService(client);
@@ -371,7 +377,12 @@ class MatrixService extends ChangeNotifier {
   String get userId => client.userID ?? '';
   String? get deviceId => client.deviceID;
 
-  Future<Profile> ownProfile() => client.getProfileFromUserId(client.userID!);
+  /// Профиль. [fresh] — обойти кэш (нужно сразу после смены имени/аватара,
+  /// иначе вернётся старое значение и придётся перезагружать вкладку).
+  Future<Profile> ownProfile({bool fresh = false}) => client.getProfileFromUserId(
+        client.userID!,
+        maxCacheAge: fresh ? Duration.zero : const Duration(days: 1),
+      );
 
   Future<void> setDisplayName(String name) async {
     await client.setProfileField(client.userID!, 'displayname', {
@@ -385,11 +396,13 @@ class MatrixService extends ChangeNotifier {
     await client.setAvatar(
       MatrixFile(bytes: Uint8List.fromList(bytes), name: filename),
     );
+    _mediaCache.clear(); // сбросить кэш, чтобы новый аватар подтянулся сразу
     notifyListeners();
   }
 
   Future<void> removeAvatar() async {
     await client.setAvatar(null);
+    _mediaCache.clear();
     notifyListeners();
   }
 
