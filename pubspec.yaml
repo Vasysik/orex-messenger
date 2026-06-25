@@ -21,7 +21,6 @@ dependencies:
   # LiveKit (нативные звонки в нашем UI, поверх вашего lk-jwt-service)
   livekit_client: ^2.8.0
   # WebRTC-примитивы для WebRTCDelegate модуля VoIP (MatrixRTC-сигналинг).
-  # Были транзитивными зависимостями matrix/livekit — фиксируем явно.
   flutter_webrtc: ^1.4.0
   webrtc_interface: ^1.5.0   # типы MediaDevices/RTCPeerConnection для делегата
 
@@ -30,13 +29,14 @@ dependencies:
   path: ^1.9.0
   file_picker: ^8.0.0        # выбор аватара
   shared_preferences: ^2.2.0 # сохранение темы
+  desktop_drop: ^0.5.0       # Drag-and-drop файлов
+  open_file_plus: ^3.4.0    # Открытие файлов на Android/Windows
 
   # Локальный кэш для «мгновенного» старта.
-  # Web -> IndexedDB (встроено в SDK). Android/iOS -> sqflite;
-  # Windows/Linux/macOS -> sqflite_common_ffi.
   path_provider: ^2.1.0
   sqflite: ^2.3.0
   sqflite_common_ffi: ^2.3.0
+  web: ^1.1.1
 
 dev_dependencies:
   flutter_test:

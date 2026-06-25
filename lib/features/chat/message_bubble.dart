@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart';
 import '../../theme/orex_theme.dart';
+import '../../widgets/media_player.dart';
+import '../../core/file_helper.dart';
+import '../../widgets/media_gallery.dart';
 
-/// Бабл сообщения. Контекст-меню (реакции/ответ/копировать/изменить/удалить)
-/// открывается долгим нажатием ИЛИ правым кликом — всплывает рядом с сообщением.
+final Map<String, Uint8List> _decryptedCache = {};
+
 class MessageBubble extends StatelessWidget {
   const MessageBubble({
     super.key,
@@ -18,6 +21,7 @@ class MessageBubble extends StatelessWidget {
     this.onEdit,
     this.onDelete,
     this.onReply,
+    this.albumEvents, // Список сгруппированных медиафайлов для альбома
   });
 
   final Event event;
@@ -30,6 +34,7 @@ class MessageBubble extends StatelessWidget {
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
   final VoidCallback? onReply;
+  final List<Event>? albumEvents; 
 
   static const _quickEmojis = ['👍', '❤️', '😂', '🎉', '😮', '😢', '🔥', '🙏'];
 
@@ -65,7 +70,6 @@ class MessageBubble extends StatelessWidget {
       event.messageType == MessageTypes.Audio ||
       event.messageType == MessageTypes.File;
 
-  // --- Контекст-меню рядом с сообщением (не на весь экран) ---
   Future<void> _showMenu(BuildContext context, Offset pos, String body) async {
     final canModify = isMine && !event.redacted;
     final overlay =
@@ -157,7 +161,6 @@ class MessageBubble extends StatelessWidget {
     final readByOther = event.room.receiptState.global.otherUsers.values.any(
       (r) => r.ts >= event.originServerTs.millisecondsSinceEpoch,
     );
-    // Отправлено — две серые галочки; просмотрено — две зелёные.
     return Icon(
       Icons.done_all,
       size: 13,
@@ -184,13 +187,9 @@ class MessageBubble extends StatelessWidget {
     final edited = !redacted &&
         timeline != null &&
         event.hasAggregatedEvents(timeline!, RelationshipTypes.edit);
-    final body = redacted
-        ? ''
-        : displayEvent.calcLocalizedBodyFallback(
-            const MatrixDefaultLocalizations(),
-            hideReply: true,
-            hideEdit: true,
-          );
+    
+    final body = redacted ? '' : (displayEvent.body ?? '');
+    
     final ts = event.originServerTs;
     final reactions = _reactions();
     final replied = _repliedEvent();
@@ -244,7 +243,7 @@ class MessageBubble extends StatelessWidget {
                       ),
                     ),
                   if (replied != null) _replyQuote(replied, textColor),
-                  _content(body, redacted, textColor),
+                  _content(body, redacted, textColor, context),
                   const SizedBox(height: 2),
                   Row(
                     mainAxisSize: MainAxisSize.min,
@@ -274,19 +273,15 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-  Widget _content(String body, bool redacted, Color textColor) {
+  Widget _content(String body, bool redacted, Color textColor, BuildContext context) {
     if (redacted) {
-      return Text('',
-          style: TextStyle(color: textColor.withValues(alpha: 0.6)));
+      return Text('', style: TextStyle(color: textColor.withValues(alpha: 0.6)));
     }
-    // Нерасшифрованное сообщение — заглушка (ключ ещё не подъехал из бэкапа
-    // либо его нет). НЕ прячем, чтобы сообщение не «пропадало».
     if (event.type == EventTypes.Encrypted) {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.lock_outline,
-              size: 15, color: textColor.withValues(alpha: 0.6)),
+          Icon(Icons.lock_outline, size: 15, color: textColor.withValues(alpha: 0.6)),
           const SizedBox(width: 6),
           Flexible(
             child: Text('Зашифровано — ключ недоступен',
@@ -307,25 +302,107 @@ class MessageBubble extends StatelessWidget {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(outcome == 'answered' ? Icons.call : Icons.call_end,
-              size: 18, color: color),
+          Icon(outcome == 'answered' ? Icons.call : Icons.call_end, size: 18, color: color),
           const SizedBox(width: 8),
           Flexible(
-            child: Text(body.replaceFirst('📞 ', ''),
-                style: TextStyle(color: textColor)),
+            child: Text(body.replaceFirst('📞 ', ''), style: TextStyle(color: textColor)),
           ),
         ],
       );
     }
-    switch (event.messageType) {
-      case MessageTypes.Image:
-        return _AttachmentImage(event: event);
-      case MessageTypes.Video:
-      case MessageTypes.Audio:
-      case MessageTypes.File:
-        return _FileTile(event: event, body: body, textColor: textColor);
-      default:
-        return Text(body, style: TextStyle(color: textColor, height: 1.3));
+
+    final t = timeline;
+    if (t == null) return const SizedBox.shrink();
+
+    final isAlbum = albumEvents != null && albumEvents!.isNotEmpty;
+    final filename = event.content.tryGet<String>('filename') ?? '';
+    
+    // Подпись отображается, если текст не совпадает с дефолтным именем медиафайла
+    final hasCaption = isAlbum ? body.isNotEmpty : (filename.isNotEmpty && body.isNotEmpty && body != filename);
+
+    final bubbleKey = ValueKey(event.eventId);
+
+    Widget mediaWidget;
+    if (isAlbum) {
+      mediaWidget = _albumGrid(albumEvents!, context);
+    } else {
+      switch (event.messageType) {
+        case MessageTypes.Image:
+          mediaWidget = _AttachmentImage(key: bubbleKey, event: event, timeline: t);
+          break;
+        case MessageTypes.Video:
+          mediaWidget = _AttachmentMedia(key: bubbleKey, event: event, isVideo: true, timeline: t);
+          break;
+        case MessageTypes.Audio:
+          mediaWidget = _AttachmentMedia(key: bubbleKey, event: event, isVideo: false, timeline: t);
+          break;
+        case MessageTypes.File:
+          mediaWidget = _FileTile(key: bubbleKey, event: event, body: body, textColor: textColor);
+          break;
+        default:
+          return Text(body, style: TextStyle(color: textColor, height: 1.3));
+      }
+    }
+
+    // ИСПРАВЛЕНИЕ: Выносим медиаблок строго НАД текстом, отделяя его разметкой
+    if (hasCaption) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          mediaWidget, // Медиа всегда вверху
+          const SizedBox(height: 8), // Отступ под медиа
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            child: Text(
+              body, 
+              style: TextStyle(color: textColor, height: 1.35, fontSize: 14),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return mediaWidget;
+  }
+
+  /// Плиточная сетка альбома
+  Widget _albumGrid(List<Event> album, BuildContext context) {
+    final cols = album.length == 1 ? 1 : 2;
+    final rows = (album.length / cols).ceil();
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 240),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (var r = 0; r < rows; r++)
+              Row(
+                children: [
+                  for (var c = 0; c < cols; c++)
+                    Expanded(
+                      child: r * cols + c < album.length
+                          ? Padding(
+                              padding: const EdgeInsets.all(1.5),
+                              child: _albumTile(album[r * cols + c], context),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _albumTile(Event ev, BuildContext context) {
+    final bubbleKey = ValueKey(ev.eventId);
+    if (ev.messageType == MessageTypes.Image) {
+      return _AttachmentImage(key: bubbleKey, event: ev, timeline: timeline!);
+    } else {
+      return _AttachmentMedia(key: bubbleKey, event: ev, isVideo: true, timeline: timeline!);
     }
   }
 
@@ -336,33 +413,20 @@ class MessageBubble extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(8),
-        border: const Border(
-          left: BorderSide(color: OrexColors.copper, width: 3),
-        ),
+        border: const Border(left: BorderSide(color: OrexColors.copper, width: 3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             replied.senderFromMemoryOrFallback.calcDisplayname(),
-            style: const TextStyle(
-              color: OrexColors.copper,
-              fontWeight: FontWeight.w600,
-              fontSize: 12,
-            ),
+            style: const TextStyle(color: OrexColors.copper, fontWeight: FontWeight.w600, fontSize: 12),
           ),
           Text(
-            replied.calcLocalizedBodyFallback(
-              const MatrixDefaultLocalizations(),
-              hideReply: true,
-              hideEdit: true,
-            ),
+            replied.calcLocalizedBodyFallback(const MatrixDefaultLocalizations(), hideReply: true, hideEdit: true),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: textColor.withValues(alpha: 0.8),
-              fontSize: 12.5,
-            ),
+            style: TextStyle(color: textColor.withValues(alpha: 0.8), fontSize: 12.5),
           ),
         ],
       ),
@@ -390,14 +454,11 @@ class MessageBubble extends StatelessWidget {
               decoration: BoxDecoration(
                 color: mine
                     ? OrexColors.copper.withValues(alpha: 0.30)
-                    : (isDark ? Colors.black : Colors.white)
-                        .withValues(alpha: 0.25),
+                    : (isDark ? Colors.black : Colors.white).withValues(alpha: 0.25),
                 borderRadius: BorderRadius.circular(12),
-                border:
-                    mine ? Border.all(color: OrexColors.copper, width: 1) : null,
+                border: mine ? Border.all(color: OrexColors.copper, width: 1) : null,
               ),
-              child: Text('${e.key} ${e.value.count}',
-                  style: const TextStyle(fontSize: 12.5)),
+              child: Text('${e.key} ${e.value.count}', style: const TextStyle(fontSize: 12.5)),
             ),
           );
         }).toList(),
@@ -425,10 +486,10 @@ class _MenuRow extends StatelessWidget {
   }
 }
 
-/// Картинка-вложение: грузим и расшифровываем байты через SDK.
 class _AttachmentImage extends StatefulWidget {
-  const _AttachmentImage({required this.event});
+  const _AttachmentImage({super.key, required this.event, required this.timeline});
   final Event event;
+  final Timeline timeline;
 
   @override
   State<_AttachmentImage> createState() => _AttachmentImageState();
@@ -445,68 +506,246 @@ class _AttachmentImageState extends State<_AttachmentImage> {
   }
 
   Future<void> _load() async {
+    // ИСПРАВЛЕНИЕ: Чтение из оперативного RAM-кэша. Предотвращает зависания.
+    final cached = _decryptedCache[widget.event.eventId];
+    if (cached != null) {
+      if (mounted) setState(() => _bytes = cached);
+      return;
+    }
     try {
       final file = await widget.event.downloadAndDecryptAttachment();
+      _decryptedCache[widget.event.eventId] = file.bytes;
       if (mounted) setState(() => _bytes = file.bytes);
     } catch (_) {
       if (mounted) setState(() => _failed = true);
     }
   }
 
+  void _openGallery() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => MediaGalleryDialog(
+          timeline: widget.timeline,
+          initialEventId: widget.event.eventId,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxHeight: 320, maxWidth: 280),
-        child: _bytes != null
-            ? Image.memory(_bytes!, fit: BoxFit.cover)
-            : Container(
-                width: 200,
-                height: 150,
-                color: Colors.black.withValues(alpha: 0.2),
-                alignment: Alignment.center,
-                child: _failed
-                    ? const Icon(Icons.broken_image, color: OrexColors.cream)
-                    : const CircularProgressIndicator(
-                        strokeWidth: 2, color: OrexColors.copper),
-              ),
+    return GestureDetector(
+      onTap: _openGallery,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 200, maxWidth: 240),
+          child: _bytes != null
+              ? Image.memory(_bytes!, fit: BoxFit.cover)
+              : Container(
+                  width: 200,
+                  height: 150,
+                  color: Colors.black.withValues(alpha: 0.2),
+                  alignment: Alignment.center,
+                  child: _failed
+                      ? const Icon(Icons.broken_image, color: OrexColors.cream)
+                      : const CircularProgressIndicator(strokeWidth: 2, color: OrexColors.copper),
+                ),
+        ),
       ),
     );
   }
 }
 
-/// Файл-вложение: иконка + имя.
-class _FileTile extends StatelessWidget {
-  const _FileTile(
-      {required this.event, required this.body, required this.textColor});
+class _AttachmentMedia extends StatefulWidget {
+  const _AttachmentMedia({
+    super.key,
+    required this.event,
+    required this.isVideo,
+    required this.timeline,
+  });
+
+  final Event event;
+  final bool isVideo;
+  final Timeline timeline;
+
+  @override
+  State<_AttachmentMedia> createState() => _AttachmentMediaState();
+}
+
+class _AttachmentMediaState extends State<_AttachmentMedia> {
+  Uint8List? _bytes;
+  bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    // ИСПРАВЛЕНИЕ: Чтение из оперативного RAM-кэша. Предотвращает зависания.
+    final cached = _decryptedCache[widget.event.eventId];
+    if (cached != null) {
+      if (mounted) setState(() => _bytes = cached);
+      return;
+    }
+    try {
+      final file = await widget.event.downloadAndDecryptAttachment();
+      _decryptedCache[widget.event.eventId] = file.bytes;
+      if (mounted) setState(() => _bytes = file.bytes);
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
+    }
+  }
+
+  void _openGallery() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => MediaGalleryDialog(
+          timeline: widget.timeline,
+          initialEventId: widget.event.eventId,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_failed) {
+      return Container(
+        width: 240,
+        height: widget.isVideo ? 150 : 54,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        alignment: Alignment.center,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, color: Color(0xFFCF6679)),
+            const SizedBox(width: 8),
+            Text(widget.isVideo ? 'Ошибка загрузки видео' : 'Ошибка загрузки аудио'),
+          ],
+        ),
+      );
+    }
+    if (_bytes == null) {
+      return Container(
+        width: 240,
+        height: widget.isVideo ? 150 : 54,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        alignment: Alignment.center,
+        child: const CircularProgressIndicator(strokeWidth: 2, color: OrexColors.copper),
+      );
+    }
+
+    final filename = widget.event.content.tryGet<String>('filename') ??
+        widget.event.content.tryGet<String>('body') ??
+        (widget.isVideo ? 'video.mp4' : 'audio.mp3');
+
+    if (widget.isVideo) {
+      return GestureDetector(
+        onTap: _openGallery,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            width: 240,
+            height: 150,
+            decoration: const BoxDecoration(gradient: OrexColors.copperGradient),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                const Icon(Icons.play_circle_outline, size: 54, color: Colors.white),
+                Positioned(
+                  bottom: 8,
+                  left: 8,
+                  right: 8,
+                  child: Text(
+                    filename,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white70, fontSize: 11),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return OrexMediaPlayer(bytes: _bytes!, filename: filename, isVideo: false);
+  }
+}
+
+class _FileTile extends StatefulWidget {
+  const _FileTile({super.key, required this.event, required this.body, required this.textColor});
   final Event event;
   final String body;
   final Color textColor;
 
   @override
+  State<_FileTile> createState() => _FileTileState();
+}
+
+class _FileTileState extends State<_FileTile> {
+  bool _downloading = false;
+
+  Future<void> _download() async {
+    if (_downloading) return;
+    setState(() => _downloading = true);
+    try {
+      final file = await widget.event.downloadAndDecryptAttachment();
+      final filename = widget.event.content.tryGet<String>('filename') ??
+          widget.event.content.tryGet<String>('body') ??
+          widget.body;
+      await FileHelper.saveAndOpenFile(filename, file.bytes);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось открыть файл: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _downloading = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final name = event.content.tryGet<String>('filename') ??
-        event.content.tryGet<String>('body') ??
-        body;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.18),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.insert_drive_file, color: OrexColors.copper),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Text(name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: textColor)),
-          ),
-        ],
+    final name = widget.event.content.tryGet<String>('filename') ??
+        widget.event.content.tryGet<String>('body') ??
+        widget.body;
+
+    return GestureDetector(
+      onTap: _download,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.18),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _downloading
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: OrexColors.copper),
+                  )
+                : const Icon(Icons.insert_drive_file, color: OrexColors.copper),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: widget.textColor)),
+            ),
+          ],
+        ),
       ),
     );
   }

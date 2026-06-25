@@ -3,11 +3,33 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
+import 'package:desktop_drop/desktop_drop.dart';
 import '../../core/matrix_service.dart';
 import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
 import '../call/call_screen.dart';
 import 'message_bubble.dart';
+
+abstract class ChatItem {
+  String get id;
+}
+
+class SingleEventItem extends ChatItem {
+  SingleEventItem(this.event);
+  final Event event;
+
+  @override
+  String get id => event.eventId;
+}
+
+class AlbumItem extends ChatItem {
+  AlbumItem({required this.leader, required this.events});
+  final Event leader;
+  final List<Event> events;
+
+  @override
+  String get id => leader.eventId;
+}
 
 /// Правая панель: шапка чата, лента сообщений, строка ввода.
 class ChatView extends StatefulWidget {
@@ -31,16 +53,17 @@ class _ChatViewState extends State<ChatView> {
   final _scroll = ScrollController();
   Timeline? _timeline;
   Room? _room;
-  Event? _editing; // редактируемое сообщение (если есть)
-  Event? _replyTo; // сообщение, на которое отвечаем
-  bool _loadingHistory = false; // индикатор подгрузки истории
+  Event? _editing; 
+  Event? _replyTo; 
+  bool _loadingHistory = false; 
+  List<PlatformFile> _attachedFiles = []; 
+  List<ChatItem> _chatItems = [];
 
   @override
   void initState() {
     super.initState();
     _scroll.addListener(_scrollListener);
     _openTimeline();
-    // Перестраиваемся на sync (имя/аватар/пресенс собеседника в шапке).
     widget.matrix.addListener(_onMatrix);
   }
 
@@ -48,16 +71,53 @@ class _ChatViewState extends State<ChatView> {
     if (mounted) setState(() {});
   }
 
-  /// Слушатель прокрутки для пагинации назад.
+  /// ПРЕПРОЦЕССОР: Преобразует сырой плоский список Matrix-событий в чистые модели ChatItem
+  void _buildChatItems(List<Event> events) {
+    final List<ChatItem> items = [];
+    int i = 0;
+    while (i < events.length) {
+      final current = events[i];
+      if (current.redacted || 
+          (current.messageType != MessageTypes.Image && current.messageType != MessageTypes.Video)) {
+        items.add(SingleEventItem(current));
+        i++;
+        continue;
+      }
+
+      // Группируем последовательные медиа-события в AlbumItem
+      final List<Event> albumList = [current];
+      int j = i + 1;
+      while (j < events.length) {
+        final next = events[j];
+        if (!next.redacted &&
+            (next.messageType == MessageTypes.Image || next.messageType == MessageTypes.Video) &&
+            next.senderId == current.senderId &&
+            next.originServerTs.difference(current.originServerTs).abs().inMinutes < 1) {
+          albumList.add(next);
+          j++;
+        } else {
+          break;
+        }
+      }
+
+      if (albumList.length > 1) {
+        items.add(AlbumItem(leader: current, events: albumList));
+        i = j; // Пропускаем сгруппированные элементы
+      } else {
+        items.add(SingleEventItem(current));
+        i++;
+      }
+    }
+    _chatItems = items;
+  }
+
   void _scrollListener() {
     if (!mounted || _timeline == null || _loadingHistory) return;
-    // В reversed ListView верхняя граница экрана находится у maxScrollExtent
     if (_scroll.position.pixels >= _scroll.position.maxScrollExtent - 200) {
       _loadMoreHistory();
     }
   }
 
-  /// Подгрузка более старых сообщений из истории комнаты.
   Future<void> _loadMoreHistory() async {
     final timeline = _timeline;
     if (timeline == null || _loadingHistory) return;
@@ -76,15 +136,12 @@ class _ChatViewState extends State<ChatView> {
   Future<void> _openTimeline() async {
     final room = widget.matrix.client.getRoomById(widget.roomId);
     if (room == null) return;
-    // Приглашение: ленту не открываем (мы не в комнате) — покажем приём/отказ.
     if (room.membership == Membership.invite) {
       if (mounted) setState(() => _room = room);
       return;
     }
     final timeline = await room.getTimeline(onUpdate: () {
       if (mounted) setState(() {});
-      // Пришло новое сообщение, пока чат открыт → сразу отмечаем прочитанным,
-      // чтобы у отправителя появилось «просмотрено» без передёргивания чата.
       _markRead(room);
     });
     await _markRead(room);
@@ -109,28 +166,69 @@ class _ChatViewState extends State<ChatView> {
 
   Future<void> _send() async {
     final text = _input.text.trim();
-    if (text.isEmpty || _room == null) return;
-    final editing = _editing;
-    final replyTo = _replyTo;
-    _input.clear();
-    setState(() {
-      _editing = null;
-      _replyTo = null;
-    });
-    if (editing != null) {
-      await _room!.sendTextEvent(text, editEventId: editing.eventId);
+    final room = _room;
+    if (room == null) return;
+
+    final attachedList = List<PlatformFile>.from(_attachedFiles);
+    if (attachedList.isNotEmpty) {
+      setState(() {
+        _attachedFiles = [];
+        _replyTo = null;
+        _editing = null;
+      });
+      _input.clear();
+
+      for (var i = 0; i < attachedList.length; i++) {
+        final attached = attachedList[i];
+        final bytes = attached.bytes;
+        if (bytes == null) continue;
+
+        final ext = (attached.extension ?? '').toLowerCase();
+        final isImg = _imgExts.contains(ext);
+        final data = Uint8List.fromList(bytes);
+
+        final MatrixFile file = isImg
+            ? MatrixImageFile(
+                bytes: data, name: attached.name, mimeType: 'image/$ext')
+            : MatrixFile(bytes: data, name: attached.name);
+
+        final replyTo = _replyTo;
+        final fileCaption = (i == 0) ? text : '';
+
+        final Map<String, Object?> extraContent = {
+          'filename': attached.name,
+          if (fileCaption.isNotEmpty) 'body': fileCaption,
+        };
+
+        await room.sendFileEvent(
+          file,
+          inReplyTo: replyTo,
+          extraContent: extraContent,
+        );
+      }
     } else {
-      await _room!.sendTextEvent(text, inReplyTo: replyTo);
+      if (text.isEmpty) return;
+      final editing = _editing;
+      final replyTo = _replyTo;
+      _input.clear();
+      setState(() {
+        _editing = null;
+        _replyTo = null;
+      });
+      if (editing != null) {
+        await room.sendTextEvent(text, editEventId: editing.eventId);
+      } else {
+        await room.sendTextEvent(text, inReplyTo: replyTo);
+      }
     }
   }
 
   void _startEdit(Event e) {
-    final body = e.getDisplayEvent(_timeline!).calcLocalizedBodyFallback(
-          const MatrixDefaultLocalizations(),
-        );
+    final body = e.getDisplayEvent(_timeline!).calcLocalizedBodyFallback(const MatrixDefaultLocalizations());
     setState(() {
       _editing = e;
       _replyTo = null;
+      _attachedFiles = [];
     });
     _input.text = body;
     _input.selection = TextSelection.collapsed(offset: _input.text.length);
@@ -153,24 +251,19 @@ class _ChatViewState extends State<ChatView> {
   static const _imgExts = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'};
 
   Future<void> _attach() async {
-    final room = _room;
-    if (room == null) return;
-    final res = await FilePicker.platform.pickFiles(withData: true);
+    final res = await FilePicker.platform.pickFiles(withData: true, allowMultiple: true);
     final files = res?.files ?? const [];
     if (files.isEmpty) return;
-    final f = files.first;
-    final bytes = f.bytes;
-    if (bytes == null) return;
-    final ext = (f.extension ?? '').toLowerCase();
-    final isImg = _imgExts.contains(ext);
-    final data = Uint8List.fromList(bytes);
-    final MatrixFile file = isImg
-        ? MatrixImageFile(
-            bytes: data, name: f.name, mimeType: 'image/$ext')
-        : MatrixFile(bytes: data, name: f.name);
-    final replyTo = _replyTo;
-    setState(() => _replyTo = null);
-    await room.sendFileEvent(file, inReplyTo: replyTo);
+    setState(() {
+      _attachedFiles.addAll(files);
+      _editing = null;
+    });
+  }
+
+  void _cancelAttachment(int index) {
+    setState(() {
+      _attachedFiles.removeAt(index);
+    });
   }
 
   void _insertEmoji(String emoji) {
@@ -192,7 +285,6 @@ class _ChatViewState extends State<ChatView> {
     if (room == null) return;
     await widget.matrix.acceptInvite(room);
     if (!mounted) return;
-    // После join открываем ленту напрямую — membership в кэше мог ещё не доехать.
     final timeline = await room.getTimeline(onUpdate: () {
       if (mounted) setState(() {});
     });
@@ -210,7 +302,6 @@ class _ChatViewState extends State<ChatView> {
     widget.matrix.call.start(widget.roomId, video: video);
     final isWide = MediaQuery.sizeOf(context).width >= 900;
     if (isWide) {
-      // На десктопе показываем звонок свёрнутой панелью над чатом.
       widget.matrix.call.minimize();
     } else {
       widget.matrix.call.expand();
@@ -237,7 +328,6 @@ class _ChatViewState extends State<ChatView> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    // Приглашение: вместо ленты — приём/отказ прямо в блоке чата.
     if (room.membership == Membership.invite && _timeline == null) {
       return _InviteView(
         matrix: widget.matrix,
@@ -254,77 +344,109 @@ class _ChatViewState extends State<ChatView> {
 
     final events = _timeline!.events
         .where((e) =>
-            (e.type == EventTypes.Message ||
-                e.type == EventTypes.Encrypted) &&
+            (e.type == EventTypes.Message || e.type == EventTypes.Encrypted) &&
             !e.redacted &&
             e.relationshipType != RelationshipTypes.edit)
         .toList();
+    
+    // Преобразуем плоский список в чистую presentation-модель ChatItem
+    _buildChatItems(events);
+
     final myId = widget.matrix.client.userID;
 
-    return Column(
-      children: [
-        _ChatHeader(
-          matrix: widget.matrix,
-          room: room,
-          onBack: widget.onBack,
-          onCall: _openCall,
-        ),
-        Divider(height: 1, color: OrexColors.copper.withValues(alpha: 0.12)),
-        Expanded(
-          child: ListView.builder(
-            controller: _scroll,
-            reverse: true, // новые снизу
-            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-            itemCount: events.length + (_loadingHistory ? 1 : 0),
-            itemBuilder: (_, i) {
-              if (i == events.length) {
-                return const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 16),
-                  child: Center(
-                    child: SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: OrexColors.copper,
+    return DropTarget(
+      onDragDone: (details) async {
+        if (details.files.isNotEmpty) {
+          final List<PlatformFile> loaded = [];
+          for (final file in details.files) {
+            final bytes = await file.readAsBytes();
+            final filename = file.name;
+            loaded.add(PlatformFile(name: filename, size: bytes.length, bytes: bytes));
+          }
+          setState(() {
+            _attachedFiles.addAll(loaded);
+            _editing = null;
+          });
+        }
+      },
+      child: Column(
+        children: [
+          _ChatHeader(matrix: widget.matrix, room: room, onBack: widget.onBack, onCall: _openCall),
+          Divider(height: 1, color: OrexColors.copper.withValues(alpha: 0.12)),
+          Expanded(
+            child: ListView.builder(
+              controller: _scroll,
+              reverse: true, 
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+              itemCount: _chatItems.length + (_loadingHistory ? 1 : 0),
+              itemBuilder: (_, i) {
+                if (i == _chatItems.length) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Center(
+                      child: SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: OrexColors.copper),
                       ),
                     ),
-                  ),
-                );
-              }
-              
-              final e = events[i];
-              return MessageBubble(
-                event: e,
-                isMine: e.senderId == myId,
-                showSender: !room.isDirectChat,
-                timeline: _timeline,
-                myUserId: myId,
-                onReact: (emoji) => room.sendReaction(e.eventId, emoji),
-                onRedact: (rid) => room.redactEvent(rid),
-                onEdit: () => _startEdit(e),
-                onDelete: () => room.redactEvent(e.eventId),
-                onReply: () => _startReply(e),
-              );
-            },
+                  );
+                }
+                
+                final item = _chatItems[i];
+
+                if (item is AlbumItem) {
+                  return MessageBubble(
+                    key: ValueKey(item.id),
+                    event: item.leader,
+                    isMine: item.leader.senderId == myId,
+                    showSender: !room.isDirectChat,
+                    timeline: _timeline,
+                    myUserId: myId,
+                    onReact: (emoji) => room.sendReaction(item.leader.eventId, emoji),
+                    onRedact: (rid) => room.redactEvent(rid),
+                    onEdit: () => _startEdit(item.leader),
+                    onDelete: () => room.redactEvent(item.leader.eventId),
+                    onReply: () => _startReply(item.leader),
+                    albumEvents: item.events, // Отрисовываем альбом внутри лидера
+                  );
+                } else if (item is SingleEventItem) {
+                  return MessageBubble(
+                    key: ValueKey(item.id),
+                    event: item.event,
+                    isMine: item.event.senderId == myId,
+                    showSender: !room.isDirectChat,
+                    timeline: _timeline,
+                    myUserId: myId,
+                    onReact: (emoji) => room.sendReaction(item.event.eventId, emoji),
+                    onRedact: (rid) => room.redactEvent(rid),
+                    onEdit: () => _startEdit(item.event),
+                    onDelete: () => room.redactEvent(item.event.eventId),
+                    onReply: () => _startReply(item.event),
+                  );
+                }
+                return const SizedBox.shrink();
+              },
+            ),
           ),
-        ),
-        _InputBar(
-          controller: _input,
-          onSend: _send,
-          editing: _editing != null,
-          onCancelEdit: _cancelEdit,
-          replyTo: _replyTo,
-          onCancelReply: _cancelReply,
-          onPickEmoji: _insertEmoji,
-          onAttach: _attach,
-        ),
-      ],
+          _InputBar(
+            controller: _input,
+            onSend: _send,
+            editing: _editing != null,
+            onCancelEdit: _cancelEdit,
+            replyTo: _replyTo,
+            onCancelReply: _cancelReply,
+            onPickEmoji: _insertEmoji,
+            onAttach: _attach,
+            attachedFiles: _attachedFiles,
+            onCancelAttachment: _cancelAttachment,
+          ),
+        ],
+      ),
     );
   }
 }
 
-/// Экран приглашения внутри блока чата: «вас пригласили» + Принять/Отклонить.
 class _InviteView extends StatelessWidget {
   const _InviteView({
     required this.matrix,
@@ -419,7 +541,7 @@ class _ChatHeader extends StatelessWidget {
 
   final MatrixService matrix;
   final Room room;
-  final ValueChanged<bool> onCall; // true = видео
+  final ValueChanged<bool> onCall; 
   final VoidCallback? onBack;
 
   @override
@@ -472,7 +594,6 @@ class _ChatHeader extends StatelessWidget {
   }
 }
 
-/// Подпись под именем: статус сети для личных чатов, число участников для групп.
 class _PresenceLine extends StatelessWidget {
   const _PresenceLine({required this.room});
   final Room room;
@@ -483,7 +604,6 @@ class _PresenceLine extends StatelessWidget {
     final dmId = room.directChatMatrixID;
 
     if (dmId == null) {
-      // Группа/канал — показываем количество участников.
       return Text('${room.summary.mJoinedMemberCount ?? 0} участников',
           style: style);
     }
@@ -513,6 +633,8 @@ class _InputBar extends StatelessWidget {
     this.onCancelReply,
     required this.onPickEmoji,
     required this.onAttach,
+    required this.attachedFiles,
+    required this.onCancelAttachment,
   });
   final TextEditingController controller;
   final VoidCallback onSend;
@@ -522,6 +644,8 @@ class _InputBar extends StatelessWidget {
   final VoidCallback? onCancelReply;
   final void Function(String emoji) onPickEmoji;
   final VoidCallback onAttach;
+  final List<PlatformFile> attachedFiles;
+  final ValueChanged<int> onCancelAttachment;
 
   static const _emojis = [
     '😀','😁','😂','🤣','😊','😍','😘','😎','🤩','🥳',
@@ -556,6 +680,7 @@ class _InputBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final reply = replyTo;
+    final files = attachedFiles;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -598,6 +723,65 @@ class _InputBar extends StatelessWidget {
               ],
             ),
           ),
+        if (files.isNotEmpty)
+          Container(
+            height: 80,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: files.length,
+              itemBuilder: (context, idx) {
+                final f = files[idx];
+                final isImg = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']
+                    .contains((f.extension ?? '').toLowerCase());
+                return Container(
+                  width: 72,
+                  margin: const EdgeInsets.only(right: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: OrexColors.copper.withValues(alpha: 0.25),
+                    ),
+                  ),
+                  child: Stack(
+                    children: [
+                      Center(
+                        child: isImg && f.bytes != null
+                            ? ClipRRect(
+                                borderRadius: BorderRadius.circular(9),
+                                child: Image.memory(
+                                  f.bytes!,
+                                  fit: BoxFit.cover,
+                                  width: 72,
+                                  height: 72,
+                                ),
+                              )
+                            : const Icon(Icons.insert_drive_file,
+                                color: OrexColors.copper),
+                      ),
+                      Positioned(
+                        right: 2,
+                        top: 2,
+                        child: GestureDetector(
+                          onTap: () => onCancelAttachment(idx),
+                          child: Container(
+                            decoration: const BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.black54,
+                            ),
+                            padding: const EdgeInsets.all(2),
+                            child: const Icon(Icons.close,
+                                size: 12, color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
           child: Row(
@@ -607,54 +791,54 @@ class _InputBar extends StatelessWidget {
                 icon: const Icon(Icons.attach_file),
                 color: OrexColors.copper,
               ),
-          Expanded(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              decoration: BoxDecoration(
-                color: (isDark ? Colors.black : Colors.white)
-                    .withValues(alpha: 0.28),
-                borderRadius: BorderRadius.circular(22),
-                border: Border.all(
-                  color: OrexColors.copper.withValues(alpha: 0.25),
-                ),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: controller,
-                      minLines: 1,
-                      maxLines: 5,
-                      textInputAction: TextInputAction.send,
-                      onSubmitted: (_) => onSend(),
-                      decoration: const InputDecoration(
-                        border: InputBorder.none,
-                        hintText: 'Сообщение',
-                      ),
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  decoration: BoxDecoration(
+                    color: (isDark ? Colors.black : Colors.white)
+                        .withValues(alpha: 0.28),
+                    borderRadius: BorderRadius.circular(22),
+                    border: Border.all(
+                      color: OrexColors.copper.withValues(alpha: 0.25),
                     ),
                   ),
-                  GestureDetector(
-                    onTap: () => _openEmoji(context),
-                    child: Icon(Icons.emoji_emotions_outlined,
-                        color: OrexColors.copper.withValues(alpha: 0.8)),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: controller,
+                          minLines: 1,
+                          maxLines: 5,
+                          textInputAction: TextInputAction.send,
+                          onSubmitted: (_) => onSend(),
+                          decoration: InputDecoration(
+                            border: InputBorder.none,
+                            hintText: files.isNotEmpty ? 'Добавить подпись…' : 'Сообщение',
+                          ),
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: () => _openEmoji(context),
+                        child: Icon(Icons.emoji_emotions_outlined,
+                            color: OrexColors.copper.withValues(alpha: 0.8)),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          GestureDetector(
-            onTap: onSend,
-            child: Container(
-              width: 46,
-              height: 46,
-              decoration: const BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: OrexColors.copperGradient,
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: onSend,
+                child: Container(
+                  width: 46,
+                  height: 46,
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: OrexColors.copperGradient,
+                  ),
+                  child: const Icon(Icons.send, color: OrexColors.cream, size: 20),
+                ),
               ),
-              child: const Icon(Icons.send, color: OrexColors.cream, size: 20),
-            ),
-          ),
             ],
           ),
         ),
