@@ -27,6 +27,7 @@ class CallSession extends ChangeNotifier {
   String? cameraError; // камера не запустилась (звонок при этом идёт со звуком)
   lk.Room? _room;
   lk.Room? get room => _room;
+  bool _disposed = false;
 
   bool get micOn => _room?.localParticipant?.isMicrophoneEnabled() ?? false;
   bool get camOn => _room?.localParticipant?.isCameraEnabled() ?? false;
@@ -58,24 +59,36 @@ class CallSession extends ChangeNotifier {
         }
       }
 
+      if (_disposed) {
+        // Сессию закрыли, пока подключались — сворачиваем комнату.
+        await room.disconnect();
+        await room.dispose();
+        return;
+      }
       _room = room;
       room.addListener(_onRoom);
       status = CallStatus.connected;
       notifyListeners();
     } catch (e) {
+      if (_disposed) return;
       error = '$e';
       status = CallStatus.failed;
       notifyListeners();
     }
   }
 
-  void _onRoom() => notifyListeners();
+  void _onRoom() {
+    // Livekit при teardown комнаты шлёт события уже после dispose() — иначе
+    // получаем «CallSession used after being disposed».
+    if (_disposed) return;
+    notifyListeners();
+  }
 
   Future<void> toggleMic() async {
     final lp = _room?.localParticipant;
     if (lp == null) return;
     await lp.setMicrophoneEnabled(!lp.isMicrophoneEnabled());
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   Future<void> toggleCam() async {
@@ -87,15 +100,24 @@ class CallSession extends ChangeNotifier {
     } catch (e) {
       cameraError = '$e';
     }
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   Future<void> hangUp() async {
     status = CallStatus.ended;
-    await _room?.disconnect();
-    await _room?.dispose();
+    final room = _room;
     _room = null;
-    notifyListeners();
+    if (room != null) {
+      // Снимаем слушатель ДО teardown, чтобы события закрытия не дёргали нас.
+      room.removeListener(_onRoom);
+      try {
+        await room.disconnect();
+      } catch (_) {}
+      try {
+        await room.dispose();
+      } catch (_) {}
+    }
+    if (!_disposed) notifyListeners();
   }
 
   // OpenID-токен Matrix -> lk-jwt-service /sfu/get -> {url, jwt}
@@ -126,8 +148,10 @@ class CallSession extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _room?.removeListener(_onRoom);
     _room?.dispose();
+    _room = null;
     super.dispose();
   }
 }
