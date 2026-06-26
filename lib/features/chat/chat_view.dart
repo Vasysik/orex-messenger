@@ -217,10 +217,7 @@ class _ChatViewState extends State<ChatView> {
         _noMoreHistory = false; 
         _buildChatItems(timeline.events);
       });
-
-      if (timeline.events.length < 15) {
-        Future.delayed(const Duration(milliseconds: 300), _loadMoreHistory);
-      }
+      _loadMoreHistory(); 
     }
   }
 
