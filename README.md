@@ -15,10 +15,10 @@ layout, список чатов с папками, переписка, **нас�
 
 | Слой     | Решение                               | Заметки |
 |----------|---------------------------------------|---------|
-| UI       | Flutter 3.24+, Material 3             | Glassmorphism, орехово-медная гамма |
+| UI       | Flutter 3.24+, Material 3             | Glassmorphism, тёплая медная гамма |
 | Протокол | Matrix CS API (Synapse 1.155+)        | Логин, sync, сообщения, профиль, устройства |
 | Клиент   | `matrix` (Famedly) 7.3.x              | Классический `/sync` + локальный кэш |
-| E2EE     | `flutter_vodozemac` 0.5.x (vodozemac) | Заменил olm |
+| E2EE     | `flutter_vodozemac` 0.5.x (vodozemac) | Заменил устаревший olm |
 | Звонки   | **livekit_client** (наш UI)           | Стек Element Call: ваш LiveKit + lk-jwt-service |
 | Кэш      | sqflite / ffi / IndexedDB             | Кроссплатформенно через conditional import |
 
@@ -26,21 +26,19 @@ layout, список чатов с папками, переписка, **нас�
 
 ## 2. Что реализовано
 
-- Авторизация по паролю, восстановление сессии из локальной БД.
-- Список чатов: поиск, папки, аватары (через аутентифицированные медиа),
-  превью, время, непрочитанные; адаптивный layout.
-- Переписка: статус сети/число участников, баблы, отправка, авто-пометка прочитанного.
-- **Новый чат**: поиск людей в директории сервера → личный чат; создание
-  **групп** и **каналов** (кнопка-карандаш в шапке списка).
-- E2EE: vodozemac до `client.init()`, дальше SDK сам шифрует зашифрованные комнаты.
-- **Проверка сессий по эмодзи (SAS)** — своя, как в Element: убирает
-  «зашифровано устройством, не проверенным владельцем». Принимает входящие
-  запросы (из Element X) и умеет запускать проверку своих сессий.
-- **Нативные звонки** на LiveKit в нашем интерфейсе (стек Element Call), без
-  встраивания call.element.io.
-- Настройки: профиль (аватар + имя), тема (сохраняется), устройства аккаунта
-  (переименование, удаление с паролём через UIA, проверка), Matrix ID, выход.
-- Иконка приложения: `assets/icon/app_icon.png` + `flutter_launcher_icons`.
+- **Авторизация и сессии:** Логин по паролю, восстановление сессии из локальной БД, корректная поддержка онлайн-бэкапа ключей (`loadAllKeys()`) [cite: 7.4.1].
+- **Список чатов:** Поиск, вкладки-папки, аватары (через аутентифицированное скачивание), превью, время, счетчик непрочитанных, адаптивный layout.
+- **Переписка:** Пресенс собеседника, баблы сообщений, отправка, автоматическая пометка прочитанного.
+- **Новый чат:** Поиск людей в директории сервера -> личный чат; создание **групп** и **каналов** (кнопка-карандаш в шапке списка).
+- **Пакетная отправка и альбомы (Presentation Models):** Плиточное прикрепление очереди файлов в строке ввода. При отправке медиа автоматически группируются в симметричную сетку-альбом (до 4-х плиток с заглушкой `+N` для скрытых файлов) [cite: 1.2.1, 1.2.2]. Описание выносится строго под медиаблок.
+- **Сверхбыстрая прокрутка (RAM-кэширование):** Глобальный оперативный кэш `_decryptedCache` предотвращает повторный ресурсоемкий запуск дешифрации WASM-вложений при скролле.
+- **Ленивая дешифрация (Экономия трафика):** Плашки в ленте чата запрашивают только легковесные превью-эскизы (`downloadAndDecryptThumbnail()`) [cite: 1.2.1]. Оригинальный медиафайл загружается по требованию только при переходе в галерею.
+- **Кастомный медиаплеер (Orex-style):** Собственный медный аудио-плеер в дизайне Orex на Flutter Web. Элемент видео принудительно останавливает фоновое воспроизведение при перелистывании слайдов или закрытии.
+- **Продвинутая галерея (Медиапросмотр):** Масштабирование щипком (pinch zoom/out до 0.5x с автовозвратом к 1.0x), навигационные стрелки для десктопа, удаление своих отправленных медиа. Панорамирование включается только при приближении, сохраняя нативные свайпы перелистывания страниц.
+- **Жесты под мобильные устройства:** Одиночный тап по сообщению открывает меню реакций на узких экранах [cite: 1.1.1, 1.1.2], а клик на пустой фон чата мгновенно сворачивает клавиатуру [cite: 1.2.1].
+- **E2EE:** Инициализация vodozemac до запуска клиента. Проверка сессий по эмодзи (SAS) — своя, убирает предупреждения о непроверенном владельце.
+- **Нативные звонки:** На LiveKit в нашем интерфейсе (стек Element Call), без встраивания iframe.
+- **Иконка приложения:** Сгенерирована под все платформы из `assets/icon/app_icon.png`.
 
 ---
 
@@ -48,23 +46,30 @@ layout, список чатов с папками, переписка, **нас�
 
 ```
 lib/
-├─ main.dart                 # vodozemac → тема → БД → Matrix → запуск
+├─ main.dart                 # OrexScrollBehavior -> БД -> Matrix -> запуск
 ├─ core/
-│  ├─ config.dart            # адреса бэкенда (homeserver, lk-jwt-service)
-│  ├─ matrix_service.dart    # логин, sync, профиль, устройства, E2EE-флаг
-│  ├─ database.dart / database_web.dart / database_io.dart
+│  ├─ config.dart            # homeserver, lk-jwt-service
+│  ├─ matrix_service.dart    # синхронизация ключей, бэкап, профиль, устройства
+│  ├─ file_helper.dart       # условный экспорт скачивания и открытия файлов
+│  ├─ file_helper_io.dart    # системный запуск файлов через open_app_file
+│  ├─ file_helper_web.dart    # blob-скачивание файлов через package:web
+│  └─ database.dart / database_web.dart / database_io.dart
 ├─ theme/ orex_theme.dart, glass.dart, theme_controller.dart
-├─ widgets/squirrel_mascot.dart
+├─ widgets/
+│  ├─ squirrel_mascot.dart   # маскот-заглушка
+│  ├─ media_gallery.dart     # интерактивный просмотрщик (PageView, жесты, удаление)
+│  ├─ media_player.dart      # условный экспорт плееров
+│  ├─ media_player_io.dart   # системный запуск видео/аудио
+│  └─ media_player_web.dart  # HTML5-видео/аудио плеер в дизайне Orex
 └─ features/
    ├─ auth/login_screen.dart
    ├─ home/home_shell.dart
    ├─ chat_list/chat_list_panel.dart
    ├─ chat/chat_view.dart, message_bubble.dart
-   ├─ settings/settings_screen.dart, devices_screen.dart
-   ├─ call/call_session.dart    # LiveKit-сессия (OpenID → lk-jwt → connect)
-   ├─ call/call_screen.dart     # наш экран звонка (сетка участников)
-   ├─ new_chat/new_chat_screen.dart  # поиск людей, группы, каналы
-   └─ settings/verification_screen.dart  # сверка эмодзи (SAS)
+   ├─ settings/settings_screen.dart, devices_screen.dart, key_storage_screen.dart
+   ├─ call/call_session.dart / call_screen.dart
+   ├─ new_chat/new_chat_screen.dart
+   └─ settings/verification_screen.dart
 ```
 
 ---
@@ -72,7 +77,7 @@ lib/
 ## 4. Шифрование (E2EE)
 
 vodozemac **обязан** инициализироваться до `client.init()` — иначе SDK не включит
-шифрование (это была причина, почему «шифрование не происходило»). В `main.dart`:
+шифрование. В `main.dart`:
 
 ```dart
 try { await vod.init(); } catch (e) { /* работаем без E2EE */ }
@@ -85,12 +90,9 @@ try { await vod.init(); } catch (e) { /* работаем без E2EE */ }
 ```bash
 ./tool/setup_web_vodozemac.sh          # bash / git-bash / WSL
 ```
-PowerShell-эквивалент (если нет bash) — см. шаги в скрипте; ключевая команда:
-`flutter_rust_bridge_codegen build-web --dart-root dart --rust-root <abs>/rust --release`,
-затем перенести получившийся `pkg/` в `web/pkg/`.
 
 После этого запускайте web с заголовками cross-origin isolation (нужно
-flutter_rust_bridge для разделяемой памяти):
+для разделяемой памяти):
 
 ```bash
 flutter run -d chrome \
@@ -98,43 +100,21 @@ flutter run -d chrome \
   --web-header=Cross-Origin-Embedder-Policy=require-corp
 ```
 
-> Если wasm не собран, `vod.init()` на web завис бы и блокировал запуск
-> (белый экран). В `main.dart` он теперь под таймаутом 6 c: при отсутствии wasm
-> приложение стартует **без** E2EE, а не зависает. Это и была причина, почему
-> «приложение не запускалось».
-
-Статус: Настройки → Безопасность → «Сквозное шифрование».
-
-> Проверка сессий (эмодзи/SAS) уже реализована — см. экран «Проверка сессии».
-> Дальше по E2EE: кросс-подпись/key backup setup (bootstrap) — намеренно не
-> трогаем вслепую, чтобы не потерять ключи; обычно это уже настроено в Element.
-
 ---
 
 ## 5. Звонки (нативно, стек Element Call)
 
 Мы **не встраиваем** call.element.io. Звонок реализован в нашем интерфейсе на
-`livekit_client`, а токен берётся у **вашего** `lk-jwt-service` по OpenID —
-это и есть стек Element Call (MatrixRTC):
+`livekit_client`, а токен берётся у **вашего** `lk-jwt-service` по OpenID:
 
 1. `client.requestOpenIdToken(...)` → OpenID-токен Matrix.
 2. `POST {lk-jwt-service}/sfu/get` с этим токеном и `room` → `{url, jwt}` LiveKit.
 3. `livekit_client` подключается к вашему SFU; рисуем сетку участников сами.
 
-Два клиента Orex, начавшие звонок в одной Matrix-комнате, получают одну и ту же
-LiveKit-комнату (она выводится из roomId) и встречаются в звонке.
-
 Настройка в `core/config.dart`:
 ```dart
 static const String jwtService = 'https://jwt.vasys.ru';
 ```
-
-> Что осталось для полноценного MatrixRTC-интероп с Element X: публикация
-> membership-события `com.famedly.call.member` в состоянии комнаты (сигналинг
-> «кто в звонке») и обмен ключами шифрования звонка. Сейчас реализовано
-> подключение к общей LiveKit-комнате + наш UI. В matrix SDK есть модуль
-> `VoIP`/`GroupCallSession` с LiveKit-бэкендом — следующий шаг перевести
-> сигналинг на него.
 
 ---
 
@@ -150,7 +130,7 @@ dart run flutter_launcher_icons   # генерит иконки для всех 
 ## 7. Сборка и запуск
 
 Репозиторий хранит только исходники (`lib/`, `pubspec.yaml`, `assets/`,
-`tool/`). Платформенные папки регенерируются (см. `.gitignore`):
+`tool/`). Платформенные папки регенерируются:
 
 ```bash
 flutter create --platforms=web,android,windows .   # воссоздать android/web/windows
@@ -184,7 +164,7 @@ flutter run -d chrome \
 
 ## 8. Дорожная карта
 
-E2EE UI (верификация, key backup) · вложения/reactions/ответы · пуши ·
+E2EE UI (верификация, key backup) · пуши ·
 Matrix Spaces вместо эвристики каналов · встроенный EC через webview ·
 маскот-Белочка как помощник · пагинация ленты · Riverpod/Bloc.
 
