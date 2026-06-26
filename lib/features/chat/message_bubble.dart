@@ -615,9 +615,12 @@ class _AttachmentImage extends StatefulWidget {
   State<_AttachmentImage> createState() => _AttachmentImageState();
 }
 
-class _AttachmentImageState extends State<_AttachmentImage> {
+class _AttachmentImageState extends State<_AttachmentImage> with AutomaticKeepAliveClientMixin {
   Uint8List? _bytes;
   bool _failed = false;
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -660,6 +663,7 @@ class _AttachmentImageState extends State<_AttachmentImage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final w = widget.width ?? 240.0;
     final h = widget.height ?? 200.0;
 
@@ -707,9 +711,12 @@ class _AttachmentMedia extends StatefulWidget {
   State<_AttachmentMedia> createState() => _AttachmentMediaState();
 }
 
-class _AttachmentMediaState extends State<_AttachmentMedia> {
+class _AttachmentMediaState extends State<_AttachmentMedia> with AutomaticKeepAliveClientMixin {
   Uint8List? _bytes;
   bool _failed = false;
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -752,6 +759,7 @@ class _AttachmentMediaState extends State<_AttachmentMedia> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final w = widget.width ?? 240.0;
     final h = widget.height ?? (widget.isVideo ? 150.0 : 54.0);
 

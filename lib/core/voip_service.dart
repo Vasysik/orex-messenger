@@ -206,23 +206,21 @@ class VoipService extends ChangeNotifier {
     }
 
     final backend = LiveKitBackend(
-      // Тот же lk-jwt-service, что мы отдаём livekit_client за токеном.
       livekitServiceUrl: OrexConfig.jwtService,
-      // Алиас LiveKit-комнаты = matrix roomId (как делает Element Call).
       livekitAlias: roomId,
-      e2eeEnabled: false,
+      e2eeEnabled: true, 
     );
 
     final gc = await voip.fetchOrCreateGroupCall(
-      roomId, // call_id = roomId → звонок на всю комнату
+      roomId, 
       room,
       backend,
       'm.call',
       'm.room',
-      preShareKey: false, // E2EE звонка выключен — ключи не рассылаем
+      preShareKey: false, 
     );
 
-    await gc.enter(); // публикует com.famedly.call.member
+    await gc.enter(); 
     active = gc;
     notifyListeners();
     return gc;

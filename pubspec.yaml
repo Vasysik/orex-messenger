@@ -34,6 +34,8 @@ dependencies:
 
   # Локальный кэш для «мгновенного» старта.
   path_provider: ^2.1.0
+  sqflite_sqlcipher: ^3.4.0
+  flutter_secure_storage: ^9.2.2
   sqflite: ^2.3.0
   sqflite_common_ffi: ^2.3.0
   web: ^1.1.1

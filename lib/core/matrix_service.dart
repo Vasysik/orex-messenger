@@ -30,14 +30,7 @@ class MatrixService extends ChangeNotifier {
   late final Client client = Client(
     'OrexMessenger',
     database: _database,
-    // По умолчанию SDK раздаёт ключи комнаты только устройствам, кросс-
-    // подписанным master-ключом (crossVerifiedIfEnabled). Пока сессии не
-    // кросс-подписаны, это давало «Could not decrypt message: No permission».
-    // ShareKeysWith.all раздаёт ключи всем устройствам участников (как и Element
-    // по умолчанию) — сообщения расшифровываются сразу, независимо от проверки.
-    shareKeysWith: ShareKeysWith.all,
-    // По умолчанию пусто → запрос проверки уходил с methods: [] и Element
-    // отвечал «несоответствие». Включаем SAS-эмодзи (числа — фолбэк).
+    shareKeysWith: ShareKeysWith.crossVerifiedIfEnabled,
     verificationMethods: const {
       KeyVerificationMethod.emoji,
       KeyVerificationMethod.numbers,

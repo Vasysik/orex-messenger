@@ -116,13 +116,19 @@ class _ChatViewState extends State<ChatView> {
     if (mounted) setState(() {});
   }
 
-  void _buildChatItems(List<Event> events) {
+  void _buildChatItems(List<Event> rawEvents) {
+    final events = rawEvents
+        .where((e) =>
+            (e.type == EventTypes.Message || e.type == EventTypes.Encrypted) &&
+            !e.redacted &&
+            e.relationshipType != RelationshipTypes.edit)
+        .toList();
+
     final List<ChatItem> items = [];
     int i = 0;
     while (i < events.length) {
       final current = events[i];
-      if (current.redacted || 
-          (current.messageType != MessageTypes.Image && current.messageType != MessageTypes.Video)) {
+      if (current.messageType != MessageTypes.Image && current.messageType != MessageTypes.Video) {
         items.add(SingleEventItem(current));
         i++;
         continue;
@@ -132,8 +138,7 @@ class _ChatViewState extends State<ChatView> {
       int j = i + 1;
       while (j < events.length) {
         final next = events[j];
-        if (!next.redacted &&
-            (next.messageType == MessageTypes.Image || next.messageType == MessageTypes.Video) &&
+        if ((next.messageType == MessageTypes.Image || next.messageType == MessageTypes.Video) &&
             next.senderId == current.senderId &&
             next.originServerTs.difference(current.originServerTs).abs().inMinutes < 1) {
           albumList.add(next);
@@ -171,6 +176,12 @@ class _ChatViewState extends State<ChatView> {
       await timeline.requestHistory(historyCount: 30);
       final afterLen = timeline.events.length;
       
+      if (mounted) {
+        setState(() {
+          _buildChatItems(timeline.events);
+        });
+      }
+
       if (beforeLen == afterLen) {
         _noMoreHistory = true;
       }
@@ -191,7 +202,11 @@ class _ChatViewState extends State<ChatView> {
       return;
     }
     final timeline = await room.getTimeline(onUpdate: () {
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {
+          _buildChatItems(_timeline?.events ?? []);
+        });
+      }
       _markRead(room);
     });
     await _markRead(room);
@@ -200,6 +215,7 @@ class _ChatViewState extends State<ChatView> {
         _room = room;
         _timeline = timeline;
         _noMoreHistory = false; 
+        _buildChatItems(timeline.events);
       });
 
       if (timeline.events.length < 15) {
@@ -472,16 +488,9 @@ class _ChatViewState extends State<ChatView> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    final events = _timeline!.events
-        .where((e) =>
-            (e.type == EventTypes.Message || e.type == EventTypes.Encrypted) &&
-            !e.redacted &&
-            e.relationshipType != RelationshipTypes.edit)
-        .toList();
-    
-    _buildChatItems(events);
-
     final myId = widget.matrix.client.userID;
+
+    _buildChatItems(_timeline!.events);
 
     return DropTarget(
       onDragDone: (details) async {
@@ -564,7 +573,6 @@ class _ChatViewState extends State<ChatView> {
                 },
               ),
             ),
-            // Строка ввода сообщений
             _InputBar(
               controller: _input,
               focusNode: _focusNode,
