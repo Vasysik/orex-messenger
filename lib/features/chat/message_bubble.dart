@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/gestures.dart' show PointerScrollEvent;
 import 'package:matrix/matrix.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import '../../theme/orex_theme.dart';
@@ -75,6 +76,8 @@ class MessageBubble extends StatelessWidget {
     final canModify = isMine && !event.redacted;
     final overlay =
         Overlay.of(context).context.findRenderObject() as RenderBox;
+    final scrollController = ScrollController(); // Контроллер для реакций
+
     final selected = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(
@@ -83,26 +86,41 @@ class MessageBubble extends StatelessWidget {
         overlay.size.width - pos.dx,
         overlay.size.height - pos.dy,
       ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
       items: [
         if (onReact != null)
           PopupMenuItem<String>(
             padding: EdgeInsets.zero,
             child: SizedBox(
               width: 280,
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: _quickEmojis
-                      .map((e) => InkWell(
-                            onTap: () => Navigator.pop(context, 'react:$e'),
-                            child: Padding(
-                              padding: const EdgeInsets.all(5),
-                              child: Text(e, style: const TextStyle(fontSize: 22)),
-                            ),
-                          ))
-                      .toList(),
+              child: Listener(
+                onPointerSignal: (pointerSignal) {
+                  if (pointerSignal is PointerScrollEvent) {
+                    final double delta = pointerSignal.scrollDelta.dy;
+                    scrollController.jumpTo(
+                      (scrollController.offset + delta).clamp(0.0, scrollController.position.maxScrollExtent),
+                    );
+                  }
+                },
+                child: SingleChildScrollView(
+                  controller: scrollController,
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: _quickEmojis
+                        .map((e) => InkWell(
+                              onTap: () => Navigator.pop(context, 'react:$e'),
+                              child: Padding(
+                                padding: const EdgeInsets.all(5),
+                                child: Text(e,
+                                    style: const TextStyle(fontSize: 22)),
+                              ),
+                            ))
+                        .toList(),
+                  ),
                 ),
               ),
             ),
@@ -125,7 +143,10 @@ class MessageBubble extends StatelessWidget {
         if (canModify && onDelete != null)
           const PopupMenuItem(
             value: 'delete',
-            child: _MenuRow(icon: Icons.delete_outline, label: 'Удалить', color: Color(0xFFCF6679)),
+            child: _MenuRow(
+                icon: Icons.delete_outline,
+                label: 'Удалить',
+                color: Color(0xFFCF6679)),
           ),
       ],
     );
@@ -185,11 +206,20 @@ class MessageBubble extends StatelessWidget {
         timeline != null &&
         event.hasAggregatedEvents(timeline!, RelationshipTypes.edit);
     
-    final body = redacted ? '' : displayEvent.body;
+    final body = redacted
+        ? ''
+        : (_isMedia
+            ? displayEvent.body
+            : displayEvent.calcLocalizedBodyFallback(
+                const MatrixDefaultLocalizations(),
+                hideReply: true,
+                hideEdit: true,
+              ));
     
     final ts = event.originServerTs;
     final reactions = _reactions();
     final replied = _repliedEvent();
+    final isWide = MediaQuery.sizeOf(context).width >= 900;
 
     return Align(
       alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
@@ -200,6 +230,9 @@ class MessageBubble extends StatelessWidget {
           GestureDetector(
             onSecondaryTapDown:
                 redacted ? null : (d) => _showMenu(context, d.globalPosition, body),
+            onTapDown: (!isWide && !redacted)
+                ? (d) => _showMenu(context, d.globalPosition, body)
+                : null,
             child: Container(
               margin: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
               padding: const EdgeInsets.fromLTRB(14, 9, 12, 7),

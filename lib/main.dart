@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -19,14 +20,19 @@ import 'widgets/squirrel_mascot.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  // На web отключаем нативное контекст-меню браузера, чтобы по правому клику
-  // показывалось наше меню сообщения, а не хромовское.
   if (kIsWeb) BrowserContextMenu.disableContextMenu();
-  // Показываем сплэш сразу, тяжёлую инициализацию делаем под ним.
   runApp(const OrexBootstrap());
 }
 
-/// Результат инициализации, который нужен приложению.
+class OrexScrollBehavior extends MaterialScrollBehavior {
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.trackpad,
+      };
+}
+
 class _Services {
   _Services(this.matrix, this.theme);
   final MatrixService matrix;
@@ -44,11 +50,6 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
   late final Future<_Services> _future = _init();
 
   Future<_Services> _init() async {
-    // 1) Шифрование. vodozemac ОБЯЗАН инициализироваться до client.init(),
-    //    иначе Matrix SDK не включит E2EE. На web нужен wasm в web/pkg/
-    //    (см. README / tool/setup_web_vodozemac.sh).
-    //    Если wasm нет, vod.init() ВИСНЕТ — поэтому таймаут: приложение
-    //    стартует без E2EE, а не зависает на белом экране.
     try {
       await vod.init().timeout(const Duration(seconds: 6));
     } catch (e) {
@@ -82,7 +83,6 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
   }
 }
 
-/// Минимальный MaterialApp-обёртка для сплэша/ошибки (до готовности темы).
 class _MiniApp extends StatelessWidget {
   const _MiniApp({required this.child});
   final Widget child;
@@ -177,8 +177,6 @@ class _OrexAppState extends State<OrexApp> {
     super.initState();
     widget.matrix.addListener(_onChanged);
     widget.theme.addListener(_onChanged);
-    // Входящие запросы на проверку (например, из Element X) → показываем
-    // экран сравнения эмодзи поверх текущего.
     _verificationSub = widget.matrix.incomingVerifications.listen((kv) {
       _navKey.currentState?.push(
         MaterialPageRoute(
@@ -186,16 +184,13 @@ class _OrexAppState extends State<OrexApp> {
                 VerificationScreen(request: kv, matrix: widget.matrix)),
       );
     });
-    // Входящие звонки (кто-то начал звонок в комнате) → окно входящего.
     _incomingCallSub = widget.matrix.voip?.onIncomingCall.listen((room) {
       final ctx = _navKey.currentContext;
       if (ctx == null || !ctx.mounted) return;
-      // Уже в этом звонке — не показываем.
       final call = widget.matrix.call;
       if (call.isActive && call.roomId == room.id) return;
       final isWide = MediaQuery.sizeOf(ctx).width >= 900;
       if (isWide) {
-        // Десктоп: компактное окно, не на весь экран.
         showDialog<void>(
           context: ctx,
           barrierDismissible: false,
@@ -229,6 +224,7 @@ class _OrexAppState extends State<OrexApp> {
     return MaterialApp(
       title: 'Orex Messenger',
       navigatorKey: _navKey,
+      scrollBehavior: OrexScrollBehavior(),
       debugShowCheckedModeBanner: false,
       theme: OrexTheme.light,
       darkTheme: OrexTheme.dark,
