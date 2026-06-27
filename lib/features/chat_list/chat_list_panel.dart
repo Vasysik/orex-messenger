@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 import '../../core/matrix_service.dart';
@@ -29,6 +31,70 @@ class ChatListPanel extends StatefulWidget {
 class _ChatListPanelState extends State<ChatListPanel> {
   OrexFolder _folder = OrexFolder.all;
   String _query = '';
+  Timer? _searchDebounce;
+  List<Profile> _globalResults = [];
+  bool _globalLoading = false;
+  bool _openingGlobal = false;
+  int _searchRun = 0;
+
+  void _onSearch(String value) {
+    final q = value.trim();
+    setState(() => _query = q);
+
+    _searchDebounce?.cancel();
+    if (q.isEmpty) {
+      _searchRun++;
+      setState(() {
+        _globalResults = [];
+        _globalLoading = false;
+      });
+      return;
+    }
+
+    _searchDebounce = Timer(
+      const Duration(milliseconds: 350),
+      () => _runGlobalSearch(q),
+    );
+  }
+
+  Future<void> _runGlobalSearch(String q) async {
+    final run = ++_searchRun;
+    setState(() => _globalLoading = true);
+    final results = await widget.matrix.searchUsers(q);
+    if (!mounted || run != _searchRun) return;
+
+    final knownDirectIds = widget.matrix.rooms
+        .where((room) => room.isDirectChat)
+        .map((room) => room.directChatMatrixID)
+        .whereType<String>()
+        .toSet();
+    final ownId = widget.matrix.client.userID;
+
+    setState(() {
+      _globalResults = results
+          .where((profile) => profile.userId != ownId)
+          .where((profile) => !knownDirectIds.contains(profile.userId))
+          .toList();
+      _globalLoading = false;
+    });
+  }
+
+  Future<void> _openGlobalUser(Profile profile) async {
+    if (_openingGlobal) return;
+    setState(() => _openingGlobal = true);
+    try {
+      final roomId = await widget.matrix.startDirectChat(profile.userId);
+      if (mounted) widget.onSelect(roomId);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось открыть чат: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _openingGlobal = false);
+    }
+  }
 
   // Приглашения теперь принимаются прямо в открытом чате (ChatView), поэтому
   // тап просто открывает комнату.
@@ -61,6 +127,12 @@ class _ChatListPanelState extends State<ChatListPanel> {
   }
 
   @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: widget.matrix,
@@ -69,14 +141,15 @@ class _ChatListPanelState extends State<ChatListPanel> {
         if (_query.isNotEmpty) {
           final q = _query.toLowerCase();
           rooms = rooms
-              .where((r) => r.getLocalizedDisplayname().toLowerCase().contains(q))
+              .where(
+                  (r) => r.getLocalizedDisplayname().toLowerCase().contains(q))
               .toList();
         }
 
         return Column(
           children: [
             _Header(
-              onSearch: (v) => setState(() => _query = v),
+              onSearch: _onSearch,
               onOpenSettings: widget.onOpenSettings,
               onNewChat: widget.onNewChat,
             ),
@@ -86,7 +159,7 @@ class _ChatListPanelState extends State<ChatListPanel> {
             ),
             const SizedBox(height: 4),
             Expanded(
-              child: rooms.isEmpty
+              child: rooms.isEmpty && _globalResults.isEmpty && !_globalLoading
                   ? const Center(
                       child: SquirrelMascot(
                         size: 110,
@@ -95,19 +168,76 @@ class _ChatListPanelState extends State<ChatListPanel> {
                     )
                   : ListView.builder(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
-                      itemCount: rooms.length,
-                      itemBuilder: (_, i) => _ChatTile(
-                        matrix: widget.matrix,
-                        room: rooms[i],
-                        selected: rooms[i].id == widget.selectedRoomId,
-                        onTap: () => widget.onSelect(rooms[i].id),
-                        onLongPress: () => _confirmDelete(rooms[i]),
-                      ),
+                      itemCount: rooms.length + _globalSectionItemCount,
+                      itemBuilder: (_, i) {
+                        if (i < rooms.length) {
+                          return _ChatTile(
+                            matrix: widget.matrix,
+                            room: rooms[i],
+                            selected: rooms[i].id == widget.selectedRoomId,
+                            onTap: () => widget.onSelect(rooms[i].id),
+                            onLongPress: () => _confirmDelete(rooms[i]),
+                          );
+                        }
+
+                        return _globalSearchItem(i - rooms.length);
+                      },
                     ),
             ),
           ],
         );
       },
+    );
+  }
+
+  int get _globalSectionItemCount {
+    if (_query.isEmpty) return 0;
+    if (_globalLoading) return 2;
+    if (_globalResults.isEmpty) return 0;
+    return _globalResults.length + 1;
+  }
+
+  Widget _globalSearchItem(int index) {
+    if (index == 0) {
+      return const _SectionHeader(title: 'Глобальный поиск');
+    }
+    if (_globalLoading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 18),
+        child: Center(
+          child: SizedBox.square(
+            dimension: 22,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+
+    final profile = _globalResults[index - 1];
+    return _GlobalUserTile(
+      matrix: widget.matrix,
+      profile: profile,
+      enabled: !_openingGlobal,
+      onTap: () => _openGlobalUser(profile),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({required this.title});
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 12, 10, 6),
+      child: Text(
+        title,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: OrexColors.copper,
+              fontWeight: FontWeight.w700,
+            ),
+      ),
     );
   }
 }
@@ -204,9 +334,8 @@ class _FolderTabs extends StatelessWidget {
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 decoration: BoxDecoration(
                   gradient: active ? OrexColors.copperGradient : null,
-                  color: active
-                      ? null
-                      : OrexColors.walnut.withValues(alpha: 0.10),
+                  color:
+                      active ? null : OrexColors.walnut.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
@@ -260,68 +389,74 @@ class _ChatTile extends StatelessWidget {
                       )));
     final unread = room.notificationCount;
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
-        onLongPress: onLongPress,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          margin: const EdgeInsets.symmetric(vertical: 2),
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: selected
-                ? OrexColors.copper.withValues(alpha: 0.16)
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Row(
-            children: [
-              MxcAvatar(matrix: matrix, name: name, mxc: room.avatar, size: 48),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleMedium,
+    return RepaintBoundary(
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onTap,
+          onLongPress: onLongPress,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            margin: const EdgeInsets.symmetric(vertical: 2),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: selected
+                  ? OrexColors.copper.withValues(alpha: 0.16)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Row(
+              children: [
+                MxcAvatar(
+                    matrix: matrix, name: name, mxc: room.avatar, size: 48),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
                           ),
-                        ),
-                        Text(
-                          _time(lastEvent?.originServerTs),
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 2),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            preview,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                  color: isInvite ? OrexColors.copper : null,
-                                  fontWeight:
-                                      isInvite ? FontWeight.w600 : null,
-                                ),
+                          Text(
+                            _time(lastEvent?.originServerTs),
+                            style: Theme.of(context).textTheme.bodySmall,
                           ),
-                        ),
-                        if (unread > 0) _UnreadBadge(count: unread),
-                      ],
-                    ),
-                  ],
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              preview,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: isInvite ? OrexColors.copper : null,
+                                    fontWeight:
+                                        isInvite ? FontWeight.w600 : null,
+                                  ),
+                            ),
+                          ),
+                          if (unread > 0) _UnreadBadge(count: unread),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -337,6 +472,70 @@ class _ChatTile extends StatelessWidget {
     }
     return '${ts.day.toString().padLeft(2, '0')}.'
         '${ts.month.toString().padLeft(2, '0')}';
+  }
+}
+
+class _GlobalUserTile extends StatelessWidget {
+  const _GlobalUserTile({
+    required this.matrix,
+    required this.profile,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final MatrixService matrix;
+  final Profile profile;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = profile.displayName ?? profile.userId;
+    return RepaintBoundary(
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: enabled ? onTap : null,
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Row(
+              children: [
+                MxcAvatar(
+                  matrix: matrix,
+                  name: name,
+                  mxc: profile.avatarUrl,
+                  size: 48,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        profile.userId,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: OrexColors.copperBright,
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

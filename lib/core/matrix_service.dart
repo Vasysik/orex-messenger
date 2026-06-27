@@ -1201,6 +1201,7 @@ class MatrixService extends ChangeNotifier {
   // ---------------------------------------------------------------------------
 
   final Map<String, Uint8List> _mediaCache = {};
+  final Map<String, Future<Uint8List?>> _mediaInflight = {};
 
   /// Скачивает содержимое mxc:// через аутентифицированный эндпоинт.
   /// Обычный <img>/NetworkImage на новых Synapse даёт 404, т.к. требуется
@@ -1210,6 +1211,20 @@ class MatrixService extends ChangeNotifier {
     final key = mxc.toString();
     final cached = _mediaCache[key];
     if (cached != null) return cached;
+
+    final inflight = _mediaInflight[key];
+    if (inflight != null) return inflight;
+
+    final request = _downloadMxcUncached(mxc, key);
+    _mediaInflight[key] = request;
+    try {
+      return await request;
+    } finally {
+      _mediaInflight.remove(key);
+    }
+  }
+
+  Future<Uint8List?> _downloadMxcUncached(Uri mxc, String key) async {
     try {
       final serverName = mxc.host;
       final mediaId = mxc.pathSegments.isNotEmpty ? mxc.pathSegments.last : '';

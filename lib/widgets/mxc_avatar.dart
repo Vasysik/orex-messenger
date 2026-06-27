@@ -28,17 +28,13 @@ class MxcAvatar extends StatefulWidget {
 
 class _MxcAvatarState extends State<MxcAvatar> {
   Uint8List? _bytes;
+  Uri? _loadingMxc;
 
   @override
   void initState() {
     super.initState();
     _load();
-    // Реагируем на sync/обновление профилей: если у человека сменился аватар
-    // (новый mxc) или сбросился кэш — подтянем картинку без перезагрузки.
-    widget.matrix.addListener(_onMatrix);
   }
-
-  void _onMatrix() => _load();
 
   @override
   void didUpdateWidget(MxcAvatar old) {
@@ -49,49 +45,48 @@ class _MxcAvatarState extends State<MxcAvatar> {
     }
   }
 
-  @override
-  void dispose() {
-    widget.matrix.removeListener(_onMatrix);
-    super.dispose();
-  }
-
   Future<void> _load() async {
     final mxc = widget.mxc;
     if (mxc == null) return;
+    if (_loadingMxc == mxc) return;
+    _loadingMxc = mxc;
     final data = await widget.matrix.downloadMxc(mxc);
-    // identical-проверка: кэш отдаёт ту же ссылку для неизменных аватаров —
-    // тогда не дёргаем setState (иначе перерисовка на каждый sync).
-    if (mounted && data != null && !identical(data, _bytes)) {
+    if (!mounted) return;
+    if (_loadingMxc == mxc) _loadingMxc = null;
+    if (widget.mxc != mxc) return;
+    _loadingMxc = null;
+    if (data != null && !identical(data, _bytes)) {
       setState(() => _bytes = data);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final initial = widget.name.isEmpty
-        ? '?'
-        : widget.name.characters.first.toUpperCase();
-    return Container(
-      width: widget.size,
-      height: widget.size,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: _bytes == null ? OrexColors.copperGradient : null,
-        image: _bytes != null
-            ? DecorationImage(image: MemoryImage(_bytes!), fit: BoxFit.cover)
+    final initial =
+        widget.name.isEmpty ? '?' : widget.name.characters.first.toUpperCase();
+    return RepaintBoundary(
+      child: Container(
+        width: widget.size,
+        height: widget.size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: _bytes == null ? OrexColors.copperGradient : null,
+          image: _bytes != null
+              ? DecorationImage(image: MemoryImage(_bytes!), fit: BoxFit.cover)
+              : null,
+        ),
+        alignment: Alignment.center,
+        child: _bytes == null
+            ? Text(
+                initial,
+                style: TextStyle(
+                  color: OrexColors.cream,
+                  fontWeight: FontWeight.w700,
+                  fontSize: widget.size * 0.4,
+                ),
+              )
             : null,
       ),
-      alignment: Alignment.center,
-      child: _bytes == null
-          ? Text(
-              initial,
-              style: TextStyle(
-                color: OrexColors.cream,
-                fontWeight: FontWeight.w700,
-                fontSize: widget.size * 0.4,
-              ),
-            )
-          : null,
     );
   }
 }
