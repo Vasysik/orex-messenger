@@ -104,26 +104,34 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     final isWide = MediaQuery.sizeOf(context).width >= _wideBreakpoint;
-    return AmbientBackground(
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        body: SafeArea(
-          child: ListenableBuilder(
-            listenable: widget.matrix.call,
-            builder: (context, _) {
-              return Column(
-                children: [
-                  if (widget.matrix.needsSessionVerification &&
-                      !_verifyBannerDismissed)
-                    _VerifyBanner(
-                      onTap: _openVerifySession,
-                      onClose: () =>
-                          setState(() => _verifyBannerDismissed = true),
-                    ),
-                  Expanded(child: isWide ? _buildWide() : _buildNarrow()),
-                ],
-              );
-            },
+    return PopScope(
+      canPop: _selectedRoomId == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _selectedRoomId != null) {
+          setState(() => _selectedRoomId = null);
+        }
+      },
+      child: AmbientBackground(
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: SafeArea(
+            child: ListenableBuilder(
+              listenable: widget.matrix.call,
+              builder: (context, _) {
+                return Column(
+                  children: [
+                    if (widget.matrix.needsSessionVerification &&
+                        !_verifyBannerDismissed)
+                      _VerifyBanner(
+                        onTap: _openVerifySession,
+                        onClose: () =>
+                            setState(() => _verifyBannerDismissed = true),
+                      ),
+                    Expanded(child: isWide ? _buildWide() : _buildNarrow()),
+                  ],
+                );
+              },
+            ),
           ),
         ),
       ),

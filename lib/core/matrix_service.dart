@@ -1139,7 +1139,10 @@ class MatrixService extends ChangeNotifier {
   /// с кем уже есть общая комната/публичные комнаты — поэтому новых знакомых не
   /// найти. Дополнительно пробуем точный MXID (`@localpart:server`) через
   /// профиль, чтобы можно было найти любого по имени.
-  Future<List<Profile>> searchUsers(String query) async {
+  Future<List<Profile>> searchUsers(
+    String query, {
+    bool includeMxidFallback = false,
+  }) async {
     final q = query.trim();
     if (q.isEmpty) return [];
 
@@ -1153,31 +1156,55 @@ class MatrixService extends ChangeNotifier {
       // директория может быть выключена/недоступна — не критично
     }
 
-    final candidate = _asMxid(q);
-    if (candidate != null && !byId.containsKey(candidate)) {
+    final normalizedDirectoryQuery = _directoryQuery(q);
+    if (normalizedDirectoryQuery != q) {
       try {
-        final prof = await client.getProfileFromUserId(candidate);
+        final res = await client.searchUserDirectory(normalizedDirectoryQuery, limit: 30);
+        for (final p in res.results) {
+          byId[p.userId] = p;
+        }
+      } catch (_) {
+        // Directory may be unavailable; exact MXID fallback below can still work.
+      }
+    }
+
+    final candidates =
+        includeMxidFallback ? _mxidCandidates(q) : const <String>[];
+    for (final candidate in candidates) {
+      if (byId.containsKey(candidate)) continue;
+      try {
+        final prof = await client.getUserProfile(candidate);
         byId[candidate] = Profile(
           userId: candidate,
-          displayName: prof.displayName,
+          displayName: prof.displayname,
           avatarUrl: prof.avatarUrl,
         );
       } catch (_) {
-        // нет такого пользователя — просто не добавляем
+        // Нет такого пользователя или сервер не разрешил профиль — не добавляем.
       }
     }
     return byId.values.toList();
   }
 
-  /// Привести введённое к виду `@localpart:server` (или null, если не похоже).
-  String? _asMxid(String q) {
-    if (q.contains(' ')) return null;
-    if (q.startsWith('@') && q.contains(':')) return q; // уже полный MXID
+  /// Прямые MXID-кандидаты для точного поиска: полный `@user:server`,
+  /// короткий `@user` или просто `user` на текущем homeserver.
+  String _directoryQuery(String q) {
+    var localpart = q;
+    if (localpart.startsWith('@')) localpart = localpart.substring(1);
+    if (localpart.contains(':')) localpart = localpart.split(':').first;
+    return localpart.isEmpty ? q : localpart;
+  }
+
+  List<String> _mxidCandidates(String q) {
+    if (q.contains(' ')) return const [];
+    if (q.startsWith('@') && q.contains(':')) return [q];
+
     final localpart = q.startsWith('@') ? q.substring(1) : q;
-    if (localpart.isEmpty || localpart.contains(':')) return null;
+    if (localpart.isEmpty || localpart.contains(':')) return const [];
+
     final server = client.userID?.split(':').last;
-    if (server == null) return null;
-    return '@$localpart:$server';
+    if (server == null || server.isEmpty) return const [];
+    return ['@$localpart:$server'];
   }
 
   /// Личный чат (создаёт или возвращает существующий).

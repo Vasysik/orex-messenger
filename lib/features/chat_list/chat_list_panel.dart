@@ -60,7 +60,7 @@ class _ChatListPanelState extends State<ChatListPanel> {
   Future<void> _runGlobalSearch(String q) async {
     final run = ++_searchRun;
     setState(() => _globalLoading = true);
-    final results = await widget.matrix.searchUsers(q);
+    final results = await widget.matrix.searchUsers(q, includeMxidFallback: true);
     if (!mounted || run != _searchRun) return;
 
     final knownDirectIds = widget.matrix.rooms
@@ -490,7 +490,7 @@ class _GlobalUserTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final name = profile.displayName ?? profile.userId;
+    final name = profile.displayName ?? _compactUserId(profile.userId);
     return RepaintBoundary(
       child: Material(
         color: Colors.transparent,
@@ -520,7 +520,7 @@ class _GlobalUserTile extends StatelessWidget {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        profile.userId,
+                        _compactUserId(profile.userId),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -536,6 +536,12 @@ class _GlobalUserTile extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _compactUserId(String userId) {
+    final server = matrix.client.userID?.split(':').last;
+    if (server == null || !userId.endsWith(':$server')) return userId;
+    return userId.substring(0, userId.length - server.length - 1);
   }
 }
 

@@ -36,7 +36,7 @@ class _NewChatScreenState extends State<NewChatScreen> {
       return;
     }
     setState(() => _loading = true);
-    final res = await widget.matrix.searchUsers(q);
+    final res = await widget.matrix.searchUsers(q, includeMxidFallback: true);
     if (mounted) {
       setState(() {
         _results = res;
