@@ -35,10 +35,20 @@ class _HomeShellState extends State<HomeShell> {
 
   static const double _wideBreakpoint = 900;
 
+  @override
+  void initState() {
+    super.initState();
+    final savedWidth = widget.matrix.savedChatListWidth;
+    if (savedWidth != null) {
+      _chatListWidth = savedWidth.clamp(260.0, 560.0);
+    }
+  }
+
   void _openSettings() {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => SettingsScreen(matrix: widget.matrix, theme: widget.theme),
+        builder: (_) =>
+            SettingsScreen(matrix: widget.matrix, theme: widget.theme),
       ),
     );
   }
@@ -149,6 +159,8 @@ class _HomeShellState extends State<HomeShell> {
             _chatListWidth = (_chatListWidth + d.delta.dx).clamp(260.0, 560.0);
           });
         },
+        onHorizontalDragEnd: (_) =>
+            widget.matrix.saveChatListWidth(_chatListWidth),
         child: Center(
           child: Container(
             width: 4,
@@ -282,7 +294,8 @@ class _VerifyBanner extends StatelessWidget {
                               color: OrexColors.cream,
                               fontWeight: FontWeight.w700)),
                       Text('Нажмите, чтобы подтвердить с другого устройства',
-                          style: TextStyle(color: OrexColors.cream, fontSize: 12)),
+                          style:
+                              TextStyle(color: OrexColors.cream, fontSize: 12)),
                     ],
                   ),
                 ),

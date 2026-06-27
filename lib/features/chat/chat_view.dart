@@ -9,6 +9,7 @@ import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
 import '../call/call_screen.dart';
 import 'message_bubble.dart';
+import 'room_settings_sheet.dart';
 
 abstract class ChatItem {
   String get id;
@@ -37,8 +38,9 @@ class OrexTimelineAdapter {
     int i = 0;
     while (i < events.length) {
       final current = events[i];
-      if (current.redacted || 
-          (current.messageType != MessageTypes.Image && current.messageType != MessageTypes.Video)) {
+      if (current.redacted ||
+          (current.messageType != MessageTypes.Image &&
+              current.messageType != MessageTypes.Video)) {
         items.add(SingleEventItem(current));
         i++;
         continue;
@@ -49,9 +51,14 @@ class OrexTimelineAdapter {
       while (j < events.length) {
         final next = events[j];
         if (!next.redacted &&
-            (next.messageType == MessageTypes.Image || next.messageType == MessageTypes.Video) &&
+            (next.messageType == MessageTypes.Image ||
+                next.messageType == MessageTypes.Video) &&
             next.senderId == current.senderId &&
-            next.originServerTs.difference(current.originServerTs).abs().inMinutes < 1) {
+            next.originServerTs
+                    .difference(current.originServerTs)
+                    .abs()
+                    .inMinutes <
+                1) {
           albumList.add(next);
           j++;
         } else {
@@ -61,7 +68,7 @@ class OrexTimelineAdapter {
 
       if (albumList.length > 1) {
         items.add(AlbumItem(leader: current, events: albumList));
-        i = j; 
+        i = j;
       } else {
         items.add(SingleEventItem(current));
         i++;
@@ -78,11 +85,17 @@ class ChatView extends StatefulWidget {
     required this.matrix,
     required this.roomId,
     this.onBack,
+    this.supergroupSpaceId,
+    this.supergroupChildIds,
+    this.onSupergroupChildSelected,
   });
 
   final MatrixService matrix;
   final String roomId;
   final VoidCallback? onBack;
+  final String? supergroupSpaceId;
+  final List<String>? supergroupChildIds;
+  final ValueChanged<String>? onSupergroupChildSelected;
 
   @override
   State<ChatView> createState() => _ChatViewState();
@@ -91,16 +104,17 @@ class ChatView extends StatefulWidget {
 class _ChatViewState extends State<ChatView> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
-  final FocusNode _focusNode = FocusNode(); 
-  
+  final FocusNode _focusNode = FocusNode();
+
   Timeline? _timeline;
   Room? _room;
-  Event? _editing; 
-  Event? _replyTo; 
-  bool _loadingHistory = false; 
-  bool _noMoreHistory = false; 
-  bool _showEmojiPicker = false; 
-  List<PlatformFile> _attachedFiles = []; 
+  Event? _editing;
+  Event? _replyTo;
+  bool _loadingHistory = false;
+  bool _noMoreHistory = false;
+  bool _showEmojiPicker = false;
+  List<PlatformFile> _attachedFiles = [];
+  String? _spaceChildId;
 
   List<ChatItem> _chatItems = [];
 
@@ -128,7 +142,8 @@ class _ChatViewState extends State<ChatView> {
     int i = 0;
     while (i < events.length) {
       final current = events[i];
-      if (current.messageType != MessageTypes.Image && current.messageType != MessageTypes.Video) {
+      if (current.messageType != MessageTypes.Image &&
+          current.messageType != MessageTypes.Video) {
         items.add(SingleEventItem(current));
         i++;
         continue;
@@ -138,9 +153,14 @@ class _ChatViewState extends State<ChatView> {
       int j = i + 1;
       while (j < events.length) {
         final next = events[j];
-        if ((next.messageType == MessageTypes.Image || next.messageType == MessageTypes.Video) &&
+        if ((next.messageType == MessageTypes.Image ||
+                next.messageType == MessageTypes.Video) &&
             next.senderId == current.senderId &&
-            next.originServerTs.difference(current.originServerTs).abs().inMinutes < 1) {
+            next.originServerTs
+                    .difference(current.originServerTs)
+                    .abs()
+                    .inMinutes <
+                1) {
           albumList.add(next);
           j++;
         } else {
@@ -160,9 +180,12 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _scrollListener() {
-    if (!mounted || _timeline == null || _loadingHistory || _noMoreHistory) return;
+    if (!mounted || _timeline == null || _loadingHistory || _noMoreHistory) {
+      return;
+    }
     final pos = _scroll.position;
-    if (pos.pixels >= pos.maxScrollExtent - 200 || (pos.outOfRange && pos.pixels > 0)) {
+    if (pos.pixels >= pos.maxScrollExtent - 200 ||
+        (pos.outOfRange && pos.pixels > 0)) {
       _loadMoreHistory();
     }
   }
@@ -170,18 +193,18 @@ class _ChatViewState extends State<ChatView> {
   Future<void> _loadMoreHistory() async {
     final timeline = _timeline;
     if (timeline == null || _loadingHistory || _noMoreHistory) return;
-    
+
     if (!timeline.canRequestHistory) {
       setState(() => _noMoreHistory = true);
       return;
     }
-    
+
     setState(() => _loadingHistory = true);
     try {
       final beforeLen = timeline.events.length;
       await timeline.requestHistory(historyCount: 30);
       final afterLen = timeline.events.length;
-      
+
       if (mounted) {
         setState(() {
           _buildChatItems(timeline.events);
@@ -207,6 +230,10 @@ class _ChatViewState extends State<ChatView> {
       if (mounted) setState(() => _room = room);
       return;
     }
+    if (room.isSpace) {
+      if (mounted) setState(() => _room = room);
+      return;
+    }
     final timeline = await room.getTimeline(onUpdate: () {
       if (mounted) {
         setState(() {
@@ -220,10 +247,10 @@ class _ChatViewState extends State<ChatView> {
       setState(() {
         _room = room;
         _timeline = timeline;
-        _noMoreHistory = false; 
+        _noMoreHistory = false;
         _buildChatItems(timeline.events);
       });
-      _loadMoreHistory(); 
+      _loadMoreHistory();
     }
   }
 
@@ -252,7 +279,7 @@ class _ChatViewState extends State<ChatView> {
         _showEmojiPicker = false;
       });
       _input.clear();
-      _focusNode.requestFocus(); 
+      _focusNode.requestFocus();
 
       for (var i = 0; i < attachedList.length; i++) {
         final attached = attachedList[i];
@@ -289,8 +316,8 @@ class _ChatViewState extends State<ChatView> {
       final editing = _editing;
       final replyTo = _replyTo;
       _input.clear();
-      _focusNode.requestFocus(); 
-      
+      _focusNode.requestFocus();
+
       setState(() {
         _editing = null;
         _replyTo = null;
@@ -305,7 +332,9 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _startEdit(Event e) {
-    final body = e.getDisplayEvent(_timeline!).calcLocalizedBodyFallback(const MatrixDefaultLocalizations());
+    final body = e
+        .getDisplayEvent(_timeline!)
+        .calcLocalizedBodyFallback(const MatrixDefaultLocalizations());
     setState(() {
       _editing = e;
       _replyTo = null;
@@ -340,7 +369,8 @@ class _ChatViewState extends State<ChatView> {
   static const _imgExts = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'};
 
   Future<void> _attach() async {
-    final res = await FilePicker.platform.pickFiles(withData: true, allowMultiple: true);
+    final res = await FilePicker.platform
+        .pickFiles(withData: true, allowMultiple: true);
     final files = res?.files ?? const [];
     if (files.isEmpty) return;
     setState(() {
@@ -369,7 +399,7 @@ class _ChatViewState extends State<ChatView> {
     } else {
       _input.text = text + emoji;
     }
-    _focusNode.requestFocus(); 
+    _focusNode.requestFocus();
   }
 
   void _toggleEmojiPicker() {
@@ -420,11 +450,20 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  void _openRoomSettings(Room room) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => RoomSettingsSheet(matrix: widget.matrix, room: room),
+    );
+  }
+
   /// Построение адаптивного окна смайликов под вводом
   Widget _buildResponsiveEmojiPicker(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final isWide = MediaQuery.sizeOf(context).width >= 900;
-    
+
     final double pickerHeight = isWide ? 250.0 : 280.0;
 
     return Container(
@@ -470,6 +509,69 @@ class _ChatViewState extends State<ChatView> {
     super.dispose();
   }
 
+  Widget _buildSupergroup(Room space) {
+    final children = widget.matrix.supergroupChildren(space);
+    if (children.isEmpty) {
+      return Column(
+        children: [
+          _ChatHeader(
+            matrix: widget.matrix,
+            room: space,
+            onBack: widget.onBack,
+            onCall: (_) {},
+            onSettings: _openRoomSettings,
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.hub, size: 46, color: OrexColors.copper),
+                    const SizedBox(height: 12),
+                    Text(
+                      'В супергруппе пока нет чатов',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 12),
+                    FilledButton.icon(
+                      onPressed: () => _openRoomSettings(space),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Добавить чат'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    var selectedId = _spaceChildId;
+    if (selectedId == null ||
+        !children.any((child) => child.id == selectedId)) {
+      selectedId = children.first.id;
+      _spaceChildId = selectedId;
+    }
+
+    final selectedChildId = selectedId;
+
+    return ChatView(
+      key: ValueKey('supergroup-$selectedChildId'),
+      matrix: widget.matrix,
+      roomId: selectedChildId,
+      onBack: widget.onBack,
+      supergroupSpaceId: space.id,
+      supergroupChildIds: children.map((child) => child.id).toList(),
+      onSupergroupChildSelected: (roomId) {
+        if (mounted) setState(() => _spaceChildId = roomId);
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final room = _room;
@@ -487,6 +589,10 @@ class _ChatViewState extends State<ChatView> {
       );
     }
 
+    if (room.isSpace) {
+      return _buildSupergroup(room);
+    }
+
     if (_timeline == null) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -502,7 +608,8 @@ class _ChatViewState extends State<ChatView> {
           for (final file in details.files) {
             final bytes = await file.readAsBytes();
             final filename = file.name;
-            loaded.add(PlatformFile(name: filename, size: bytes.length, bytes: bytes));
+            loaded.add(
+                PlatformFile(name: filename, size: bytes.length, bytes: bytes));
           }
           setState(() {
             _attachedFiles.addAll(loaded);
@@ -517,14 +624,26 @@ class _ChatViewState extends State<ChatView> {
         },
         child: Column(
           children: [
-            _ChatHeader(matrix: widget.matrix, room: room, onBack: widget.onBack, onCall: _openCall),
-            Divider(height: 1, color: OrexColors.copper.withValues(alpha: 0.12)),
+            _ChatHeader(
+              matrix: widget.matrix,
+              room: room,
+              onBack: widget.onBack,
+              onCall: _openCall,
+              onSettings: _openRoomSettings,
+              supergroupSpaceId: widget.supergroupSpaceId,
+              supergroupChildIds: widget.supergroupChildIds,
+              onSupergroupChildSelected: widget.onSupergroupChildSelected,
+            ),
+            Divider(
+                height: 1, color: OrexColors.copper.withValues(alpha: 0.12)),
             Expanded(
               child: ListView.builder(
                 controller: _scroll,
-                reverse: true, 
-                physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                reverse: true,
+                physics: const AlwaysScrollableScrollPhysics(
+                    parent: BouncingScrollPhysics()),
+                padding:
+                    const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
                 itemCount: _chatItems.length + (_loadingHistory ? 1 : 0),
                 itemBuilder: (_, i) {
                   if (i == _chatItems.length) {
@@ -534,12 +653,13 @@ class _ChatViewState extends State<ChatView> {
                         child: SizedBox(
                           width: 24,
                           height: 24,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: OrexColors.copper),
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: OrexColors.copper),
                         ),
                       ),
                     );
                   }
-                  
+
                   final item = _chatItems[i];
 
                   if (item is AlbumItem) {
@@ -550,7 +670,8 @@ class _ChatViewState extends State<ChatView> {
                       showSender: !room.isDirectChat,
                       timeline: _timeline,
                       myUserId: myId,
-                      onReact: (emoji) => room.sendReaction(item.leader.eventId, emoji),
+                      onReact: (emoji) =>
+                          room.sendReaction(item.leader.eventId, emoji),
                       onRedact: (rid) => room.redactEvent(rid),
                       onEdit: () => _startEdit(item.leader),
                       onDelete: () => room.redactEvent(item.leader.eventId),
@@ -563,7 +684,7 @@ class _ChatViewState extends State<ChatView> {
                           debugPrint('[Orex] Ошибка отмены отправки: $e');
                         }
                       },
-                      albumEvents: item.events, 
+                      albumEvents: item.events,
                     );
                   } else if (item is SingleEventItem) {
                     return MessageBubble(
@@ -573,7 +694,8 @@ class _ChatViewState extends State<ChatView> {
                       showSender: !room.isDirectChat,
                       timeline: _timeline,
                       myUserId: myId,
-                      onReact: (emoji) => room.sendReaction(item.event.eventId, emoji),
+                      onReact: (emoji) =>
+                          room.sendReaction(item.event.eventId, emoji),
                       onRedact: (rid) => room.redactEvent(rid),
                       onEdit: () => _startEdit(item.event),
                       onDelete: () => room.redactEvent(item.event.eventId),
@@ -645,7 +767,8 @@ class _InviteView extends StatelessWidget {
           child: Row(
             children: [
               if (onBack != null)
-                IconButton(onPressed: onBack, icon: const Icon(Icons.arrow_back)),
+                IconButton(
+                    onPressed: onBack, icon: const Icon(Icons.arrow_back)),
               MxcAvatar(matrix: matrix, name: name, mxc: room.avatar, size: 42),
               const SizedBox(width: 12),
               Expanded(
@@ -709,16 +832,32 @@ class _ChatHeader extends StatelessWidget {
     required this.matrix,
     required this.room,
     required this.onCall,
+    required this.onSettings,
     this.onBack,
+    this.supergroupSpaceId,
+    this.supergroupChildIds,
+    this.onSupergroupChildSelected,
   });
 
   final MatrixService matrix;
   final Room room;
-  final ValueChanged<bool> onCall; 
+  final ValueChanged<bool> onCall;
+  final ValueChanged<Room> onSettings;
   final VoidCallback? onBack;
+  final String? supergroupSpaceId;
+  final List<String>? supergroupChildIds;
+  final ValueChanged<String>? onSupergroupChildSelected;
 
   @override
   Widget build(BuildContext context) {
+    final spaceId = supergroupSpaceId;
+    final space = spaceId == null ? null : matrix.client.getRoomById(spaceId);
+    final childIds = supergroupChildIds ?? const <String>[];
+    final childRooms =
+        childIds.map(matrix.client.getRoomById).whereType<Room>().toList();
+    final inSupergroup = space != null && childRooms.isNotEmpty;
+    final titleRoom = inSupergroup ? space : room;
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 10, 12, 10),
       child: Row(
@@ -730,8 +869,8 @@ class _ChatHeader extends StatelessWidget {
             ),
           MxcAvatar(
             matrix: matrix,
-            name: room.getLocalizedDisplayname(),
-            mxc: room.avatar,
+            name: titleRoom.getLocalizedDisplayname(),
+            mxc: titleRoom.avatar,
             size: 42,
           ),
           const SizedBox(width: 12),
@@ -740,28 +879,107 @@ class _ChatHeader extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  room.getLocalizedDisplayname(),
+                  titleRoom.getLocalizedDisplayname(),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
-                _PresenceLine(room: room),
+                if (inSupergroup)
+                  _SupergroupChildPicker(
+                    matrix: matrix,
+                    room: room,
+                    children: childRooms,
+                    onChanged: onSupergroupChildSelected,
+                  )
+                else
+                  _PresenceLine(room: room),
               ],
             ),
           ),
+          if (space != null)
+            IconButton(
+              tooltip: 'Настройки супергруппы',
+              onPressed: () => onSettings(space),
+              icon: const Icon(Icons.hub),
+              color: OrexColors.copper,
+            ),
           IconButton(
-            tooltip: 'Аудиозвонок',
-            onPressed: () => onCall(false),
-            icon: const Icon(Icons.call),
+            tooltip: 'Настройки чата',
+            onPressed: () => onSettings(room),
+            icon: const Icon(Icons.info_outline),
             color: OrexColors.copper,
           ),
-          IconButton(
-            tooltip: 'Видеозвонок',
-            onPressed: () => onCall(true),
-            icon: const Icon(Icons.videocam),
-            color: OrexColors.copper,
-          ),
+          if (!room.isSpace) ...[
+            IconButton(
+              tooltip: 'Аудиозвонок',
+              onPressed: () => onCall(false),
+              icon: const Icon(Icons.call),
+              color: OrexColors.copper,
+            ),
+            IconButton(
+              tooltip: 'Видеозвонок',
+              onPressed: () => onCall(true),
+              icon: const Icon(Icons.videocam),
+              color: OrexColors.copper,
+            ),
+          ],
         ],
+      ),
+    );
+  }
+}
+
+class _SupergroupChildPicker extends StatelessWidget {
+  const _SupergroupChildPicker({
+    required this.matrix,
+    required this.room,
+    required this.children,
+    required this.onChanged,
+  });
+
+  final MatrixService matrix;
+  final Room room;
+  final List<Room> children;
+  final ValueChanged<String>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return DropdownButtonHideUnderline(
+      child: DropdownButton<String>(
+        value: room.id,
+        isDense: true,
+        isExpanded: true,
+        iconSize: 18,
+        items: children
+            .map(
+              (child) => DropdownMenuItem(
+                value: child.id,
+                child: Row(
+                  children: [
+                    Icon(
+                      matrix.isVoiceRoom(child)
+                          ? Icons.graphic_eq
+                          : Icons.forum,
+                      size: 16,
+                      color: OrexColors.copper,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        child.getLocalizedDisplayname(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+            .toList(),
+        onChanged: (value) {
+          if (value == null || value == room.id) return;
+          onChanged?.call(value);
+        },
       ),
     );
   }
@@ -814,7 +1032,7 @@ class _InputBar extends StatelessWidget {
     required this.onTapInput, // Колбек нажатия на поле ввода
   });
   final TextEditingController controller;
-  final FocusNode focusNode; 
+  final FocusNode focusNode;
   final VoidCallback onSend;
   final bool editing;
   final VoidCallback? onCancelEdit;
@@ -830,10 +1048,46 @@ class _InputBar extends StatelessWidget {
 
   // ИСПРАВЛЕНИЕ: Сделали массив смайликов публичным для доступа препроцессора
   static const emojis = [
-    '😀','😁','😂','🤣','😊','😍','😘','😎','🤩','🥳',
-    '🤔','😴','😭','😡','👍','👎','🙏','👏','🔥','❤️',
-    '🎉','✨','💯','✅','❌','⚡','🌟','😅','😉','🙃',
-    '🤝','💪','👀','🍀','☕','🚀','🐿️','💜','😇','🤗',
+    '😀',
+    '😁',
+    '😂',
+    '🤣',
+    '😊',
+    '😍',
+    '😘',
+    '😎',
+    '🤩',
+    '🥳',
+    '🤔',
+    '😴',
+    '😭',
+    '😡',
+    '👍',
+    '👎',
+    '🙏',
+    '👏',
+    '🔥',
+    '❤️',
+    '🎉',
+    '✨',
+    '💯',
+    '✅',
+    '❌',
+    '⚡',
+    '🌟',
+    '😅',
+    '😉',
+    '🙃',
+    '🤝',
+    '💪',
+    '👀',
+    '🍀',
+    '☕',
+    '🚀',
+    '🐿️',
+    '💜',
+    '😇',
+    '🤗',
   ];
 
   @override
@@ -895,7 +1149,7 @@ class _InputBar extends StatelessWidget {
                 final isImg = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']
                     .contains((f.extension ?? '').toLowerCase());
                 return Container(
-                  key: ValueKey(f.name + f.size.toString()), 
+                  key: ValueKey(f.name + f.size.toString()),
                   width: 72,
                   margin: const EdgeInsets.only(right: 8),
                   decoration: BoxDecoration(
@@ -968,22 +1222,27 @@ class _InputBar extends StatelessWidget {
                       Expanded(
                         child: TextField(
                           controller: controller,
-                          focusNode: focusNode, 
-                          onTap: onTapInput, // Сворачиваем смайлики при тапе по полю ввода
+                          focusNode: focusNode,
+                          onTap:
+                              onTapInput, // Сворачиваем смайлики при тапе по полю ввода
                           minLines: 1,
                           maxLines: 5,
                           textInputAction: TextInputAction.send,
                           onSubmitted: (_) => onSend(),
                           decoration: InputDecoration(
                             border: InputBorder.none,
-                            hintText: files.isNotEmpty ? 'Добавить подпись…' : 'Сообщение',
+                            hintText: files.isNotEmpty
+                                ? 'Добавить подпись…'
+                                : 'Сообщение',
                           ),
                         ),
                       ),
                       GestureDetector(
-                        onTap: onToggleEmojiPicker, 
+                        onTap: onToggleEmojiPicker,
                         child: Icon(
-                          showEmojiPicker ? Icons.keyboard_hide_outlined : Icons.emoji_emotions_outlined,
+                          showEmojiPicker
+                              ? Icons.keyboard_hide_outlined
+                              : Icons.emoji_emotions_outlined,
                           color: OrexColors.copper.withValues(alpha: 0.8),
                         ),
                       ),
@@ -1001,7 +1260,8 @@ class _InputBar extends StatelessWidget {
                     shape: BoxShape.circle,
                     gradient: OrexColors.copperGradient,
                   ),
-                  child: const Icon(Icons.send, color: OrexColors.cream, size: 20),
+                  child:
+                      const Icon(Icons.send, color: OrexColors.cream, size: 20),
                 ),
               ),
             ],

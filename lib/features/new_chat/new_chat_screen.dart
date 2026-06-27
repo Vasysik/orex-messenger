@@ -8,7 +8,9 @@ import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
 
-/// Экран «Новый чат»: поиск людей (→ личный чат), создание группы и канала.
+enum _NewRoomKind { group, channel, supergroup }
+
+/// Экран «Новый чат»: поиск людей, создание группы, канала и супергруппы.
 /// Возвращает roomId выбранного/созданного чата через Navigator.pop.
 class NewChatScreen extends StatefulWidget {
   const NewChatScreen({super.key, required this.matrix});
@@ -57,14 +59,25 @@ class _NewChatScreenState extends State<NewChatScreen> {
     }
   }
 
-  Future<void> _create({required bool channel}) async {
-    final name = await _askName(channel ? 'Название канала' : 'Название группы');
+  Future<void> _create(_NewRoomKind kind) async {
+    final channelConfig =
+        kind == _NewRoomKind.channel ? await _askChannel() : null;
+    if (kind == _NewRoomKind.channel && channelConfig == null) return;
+    final name = channelConfig?.name ??
+        await _askName(kind == _NewRoomKind.supergroup
+            ? 'Название супергруппы'
+            : 'Название группы');
     if (name == null || name.isEmpty) return;
     setState(() => _busy = true);
     try {
-      final roomId = channel
-          ? await widget.matrix.createChannel(name)
-          : await widget.matrix.createGroup(name);
+      final roomId = switch (kind) {
+        _NewRoomKind.group => await widget.matrix.createGroup(name),
+        _NewRoomKind.channel => await widget.matrix.createChannel(
+            name,
+            public: channelConfig?.public ?? false,
+          ),
+        _NewRoomKind.supergroup => await widget.matrix.createSupergroup(name),
+      };
       if (mounted) Navigator.of(context).pop(roomId);
     } catch (e) {
       _snack('Не удалось создать: $e');
@@ -92,10 +105,56 @@ class _NewChatScreenState extends State<NewChatScreen> {
     );
   }
 
+  Future<({String name, bool public})?> _askChannel() {
+    final c = TextEditingController();
+    var public = false;
+    return showDialog<({String name, bool public})>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Новый канал'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: c,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'Название'),
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: public,
+                title: const Text('Публичный канал'),
+                subtitle: Text(
+                  public ? 'Открыт для входа' : 'Вход только по приглашению',
+                ),
+                onChanged: (value) => setDialogState(() => public = value),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final name = c.text.trim();
+                if (name.isEmpty) return;
+                Navigator.pop(ctx, (name: name, public: public));
+              },
+              child: const Text('Создать'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _snack(String msg) {
     if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(msg)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     }
   }
 
@@ -123,13 +182,19 @@ class _NewChatScreenState extends State<NewChatScreen> {
               _action(
                 icon: Icons.group_add,
                 label: 'Новая группа',
-                onTap: () => _create(channel: false),
+                onTap: () => _create(_NewRoomKind.group),
               ),
               const SizedBox(height: 10),
               _action(
                 icon: Icons.campaign,
                 label: 'Новый канал',
-                onTap: () => _create(channel: true),
+                onTap: () => _create(_NewRoomKind.channel),
+              ),
+              const SizedBox(height: 10),
+              _action(
+                icon: Icons.hub,
+                label: 'Новая супергруппа',
+                onTap: () => _create(_NewRoomKind.supergroup),
               ),
               const SizedBox(height: 20),
               Text('НАЙТИ ЧЕЛОВЕКА',

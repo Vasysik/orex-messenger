@@ -29,7 +29,7 @@ class ChatListPanel extends StatefulWidget {
 }
 
 class _ChatListPanelState extends State<ChatListPanel> {
-  OrexFolder _folder = OrexFolder.all;
+  String _folderId = 'all';
   String _query = '';
   Timer? _searchDebounce;
   List<Profile> _globalResults = [];
@@ -60,7 +60,8 @@ class _ChatListPanelState extends State<ChatListPanel> {
   Future<void> _runGlobalSearch(String q) async {
     final run = ++_searchRun;
     setState(() => _globalLoading = true);
-    final results = await widget.matrix.searchUsers(q, includeMxidFallback: true);
+    final results =
+        await widget.matrix.searchUsers(q, includeMxidFallback: true);
     if (!mounted || run != _searchRun) return;
 
     final knownDirectIds = widget.matrix.rooms
@@ -126,6 +127,21 @@ class _ChatListPanelState extends State<ChatListPanel> {
     }
   }
 
+  Future<void> _openFolderSettings() async {
+    final folders = await showModalBottomSheet<List<OrexChatFolder>>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _FolderManager(initial: widget.matrix.chatFolders),
+    );
+    if (folders == null) return;
+    await widget.matrix.saveChatFolders(folders);
+    if (!mounted) return;
+    if (!folders.any((folder) => folder.id == _folderId)) {
+      setState(() => _folderId = folders.first.id);
+    }
+  }
+
   @override
   void dispose() {
     _searchDebounce?.cancel();
@@ -137,7 +153,12 @@ class _ChatListPanelState extends State<ChatListPanel> {
     return AnimatedBuilder(
       animation: widget.matrix,
       builder: (context, _) {
-        var rooms = widget.matrix.roomsForFolder(_folder);
+        final folders = widget.matrix.chatFolders;
+        final selectedFolder = folders.firstWhere(
+          (folder) => folder.id == _folderId,
+          orElse: () => folders.first,
+        );
+        var rooms = widget.matrix.roomsForFolder(selectedFolder);
         if (_query.isNotEmpty) {
           final q = _query.toLowerCase();
           rooms = rooms
@@ -154,8 +175,10 @@ class _ChatListPanelState extends State<ChatListPanel> {
               onNewChat: widget.onNewChat,
             ),
             _FolderTabs(
-              selected: _folder,
-              onChanged: (f) => setState(() => _folder = f),
+              folders: folders,
+              selected: selectedFolder,
+              onChanged: (folder) => setState(() => _folderId = folder.id),
+              onManage: _openFolderSettings,
             ),
             const SizedBox(height: 4),
             Expanded(
@@ -311,9 +334,17 @@ class _Header extends StatelessWidget {
 }
 
 class _FolderTabs extends StatelessWidget {
-  const _FolderTabs({required this.selected, required this.onChanged});
-  final OrexFolder selected;
-  final ValueChanged<OrexFolder> onChanged;
+  const _FolderTabs({
+    required this.folders,
+    required this.selected,
+    required this.onChanged,
+    required this.onManage,
+  });
+
+  final List<OrexChatFolder> folders;
+  final OrexChatFolder selected;
+  final ValueChanged<OrexChatFolder> onChanged;
+  final VoidCallback onManage;
 
   @override
   Widget build(BuildContext context) {
@@ -322,34 +353,251 @@ class _FolderTabs extends StatelessWidget {
       child: ListView(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12),
-        children: OrexFolder.values.map((f) {
-          final active = f == selected;
-          return Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: GestureDetector(
-              onTap: () => onChanged(f),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 180),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: BoxDecoration(
-                  gradient: active ? OrexColors.copperGradient : null,
-                  color:
-                      active ? null : OrexColors.walnut.withValues(alpha: 0.10),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  f.label,
-                  style: TextStyle(
-                    color: active ? OrexColors.cream : null,
-                    fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+        children: [
+          ...folders.map((folder) {
+            final active = folder.id == selected.id;
+            return Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: GestureDetector(
+                onTap: () => onChanged(folder),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    gradient: active ? OrexColors.copperGradient : null,
+                    color: active
+                        ? null
+                        : OrexColors.walnut.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    folder.label,
+                    style: TextStyle(
+                      color: active ? OrexColors.cream : null,
+                      fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                    ),
                   ),
                 ),
               ),
+            );
+          }),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: IconButton(
+              tooltip: 'Настроить папки',
+              onPressed: onManage,
+              icon: const Icon(Icons.tune),
+              color: OrexColors.copper,
             ),
-          );
-        }).toList(),
+          ),
+        ],
       ),
+    );
+  }
+}
+
+class _FolderManager extends StatefulWidget {
+  const _FolderManager({required this.initial});
+
+  final List<OrexChatFolder> initial;
+
+  @override
+  State<_FolderManager> createState() => _FolderManagerState();
+}
+
+class _FolderManagerState extends State<_FolderManager> {
+  late List<OrexChatFolder> _folders = List.of(widget.initial);
+
+  Future<void> _addFolder() async {
+    final folder = await _editFolder();
+    if (folder == null) return;
+    setState(() => _folders.add(folder));
+  }
+
+  Future<void> _editAt(int index) async {
+    final folder = await _editFolder(folder: _folders[index]);
+    if (folder == null) return;
+    setState(() => _folders[index] = folder);
+  }
+
+  Future<OrexChatFolder?> _editFolder({OrexChatFolder? folder}) async {
+    final controller = TextEditingController(text: folder?.label ?? '');
+    var filter = folder?.filter ?? OrexFolderFilter.all;
+    final result = await showDialog<OrexChatFolder>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          return AlertDialog(
+            title: Text(folder == null ? 'Новая папка' : 'Папка'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: 'Название'),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<OrexFolderFilter>(
+                  initialValue: filter,
+                  decoration:
+                      const InputDecoration(labelText: 'Что показывать'),
+                  items: OrexFolderFilter.values
+                      .map(
+                        (value) => DropdownMenuItem(
+                          value: value,
+                          child: Text(value.label),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) {
+                    if (value == null) return;
+                    setDialogState(() => filter = value);
+                  },
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Отмена'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  final label = controller.text.trim();
+                  Navigator.pop(
+                    ctx,
+                    OrexChatFolder(
+                      id: folder?.id ??
+                          DateTime.now().microsecondsSinceEpoch.toString(),
+                      label: label.isEmpty ? filter.label : label,
+                      filter: filter,
+                    ),
+                  );
+                },
+                child: const Text('Готово'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    controller.dispose();
+    return result;
+  }
+
+  void _reorder(int oldIndex, int newIndex) {
+    setState(() {
+      if (newIndex > oldIndex) newIndex--;
+      final folder = _folders.removeAt(oldIndex);
+      _folders.insert(newIndex, folder);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.72,
+      minChildSize: 0.45,
+      maxChildSize: 0.92,
+      builder: (context, controller) {
+        return Material(
+          color: Theme.of(context).colorScheme.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          child: SafeArea(
+            top: false,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 14, 8, 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Папки чатов',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Сбросить',
+                        onPressed: () => setState(
+                          () => _folders = List.of(OrexChatFolder.defaults),
+                        ),
+                        icon: const Icon(Icons.restart_alt),
+                      ),
+                      IconButton(
+                        tooltip: 'Добавить',
+                        onPressed: _addFolder,
+                        icon: const Icon(Icons.add),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: ReorderableListView.builder(
+                    scrollController: controller,
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    itemCount: _folders.length,
+                    onReorder: _reorder,
+                    itemBuilder: (context, index) {
+                      final folder = _folders[index];
+                      return ListTile(
+                        key: ValueKey(folder.id),
+                        leading: ReorderableDragStartListener(
+                          index: index,
+                          child: const Icon(Icons.drag_indicator),
+                        ),
+                        title: Text(folder.label),
+                        subtitle: Text(folder.filter.label),
+                        trailing: Wrap(
+                          spacing: 2,
+                          children: [
+                            IconButton(
+                              tooltip: 'Изменить',
+                              onPressed: () => _editAt(index),
+                              icon: const Icon(Icons.edit),
+                            ),
+                            IconButton(
+                              tooltip: 'Удалить',
+                              onPressed: _folders.length == 1
+                                  ? null
+                                  : () => setState(
+                                        () => _folders.removeAt(index),
+                                      ),
+                              icon: const Icon(Icons.delete_outline),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: const Text('Отмена'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: () => Navigator.pop(context, _folders),
+                          child: const Text('Сохранить'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
