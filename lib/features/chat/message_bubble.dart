@@ -23,7 +23,8 @@ class MessageBubble extends StatelessWidget {
     this.onEdit,
     this.onDelete,
     this.onReply,
-    this.albumEvents, 
+    this.albumEvents,
+    this.onCancelSend,
   });
 
   final Event event;
@@ -36,9 +37,10 @@ class MessageBubble extends StatelessWidget {
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
   final VoidCallback? onReply;
-  final List<Event>? albumEvents; 
+  final List<Event>? albumEvents;
+  final VoidCallback? onCancelSend;
 
-  static const _quickEmojis = ['👍', '❤️', '😂', '🎉', '😮', '😢', '🔥', '🙏'];
+  static const _quickEmojis = ['👍', '❤️', '😂', '🎉', '🤯', '😢', '🔥', '🙏', '🐿️'];
 
   Event? _repliedEvent() {
     final t = timeline;
@@ -74,9 +76,12 @@ class MessageBubble extends StatelessWidget {
 
   Future<void> _showMenu(BuildContext context, Offset pos, String body) async {
     final canModify = isMine && !event.redacted;
+    // Сообщение ещё не доставлено (отправляется или зависло с ошибкой)
+    final isUnsent = event.status == EventStatus.sending ||
+        event.status == EventStatus.error;
     final overlay =
         Overlay.of(context).context.findRenderObject() as RenderBox;
-    final scrollController = ScrollController(); // Контроллер для реакций
+    final scrollController = ScrollController();
 
     final selected = await showMenu<String>(
       context: context,
@@ -90,7 +95,8 @@ class MessageBubble extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
       ),
       items: [
-        if (onReact != null)
+        // Быстрые реакции — только для доставленных сообщений
+        if (onReact != null && !isUnsent)
           PopupMenuItem<String>(
             padding: EdgeInsets.zero,
             child: SizedBox(
@@ -125,22 +131,32 @@ class MessageBubble extends StatelessWidget {
               ),
             ),
           ),
-        if (onReply != null)
+        // Отмена отправки — только для недоставленных сообщений
+        if (isUnsent && onCancelSend != null)
+          const PopupMenuItem(
+            value: 'cancel_send',
+            child: _MenuRow(
+              icon: Icons.cancel_outlined,
+              label: 'Отменить отправку',
+              color: Color(0xFFCF6679),
+            ),
+          ),
+        if (onReply != null && !isUnsent)
           const PopupMenuItem(
             value: 'reply',
             child: _MenuRow(icon: Icons.reply, label: 'Ответить'),
           ),
-        if (!_isMedia)
+        if (!_isMedia && !isUnsent)
           const PopupMenuItem(
             value: 'copy',
             child: _MenuRow(icon: Icons.copy, label: 'Копировать'),
           ),
-        if (canModify && onEdit != null && !_isMedia && !_isCallSummary)
+        if (canModify && onEdit != null && !_isMedia && !_isCallSummary && !isUnsent)
           const PopupMenuItem(
             value: 'edit',
             child: _MenuRow(icon: Icons.edit, label: 'Изменить'),
           ),
-        if (canModify && onDelete != null)
+        if (canModify && onDelete != null && !isUnsent)
           const PopupMenuItem(
             value: 'delete',
             child: _MenuRow(
@@ -166,6 +182,8 @@ class MessageBubble extends StatelessWidget {
       onEdit?.call();
     } else if (selected == 'delete') {
       onDelete?.call();
+    } else if (selected == 'cancel_send') {
+      onCancelSend?.call();
     }
   }
 
@@ -403,7 +421,6 @@ class MessageBubble extends StatelessWidget {
     return mediaWidget;
   }
 
-  /// Плиточная сетка альбома (максимум 4 элемента)
   Widget _albumGrid(List<Event> album, BuildContext context) {
     final displayLength = album.length > 4 ? 4 : album.length;
     final cols = displayLength == 1 ? 1 : 2;
@@ -447,7 +464,6 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-  /// Отрисовка отдельной ячейки сетки альбома
   Widget _albumTile(int idx, List<Event> album, BuildContext context) {
     final ev = album[idx];
     final bubbleKey = ValueKey(ev.eventId);

@@ -170,6 +170,12 @@ class _ChatViewState extends State<ChatView> {
   Future<void> _loadMoreHistory() async {
     final timeline = _timeline;
     if (timeline == null || _loadingHistory || _noMoreHistory) return;
+    
+    if (!timeline.canRequestHistory) {
+      setState(() => _noMoreHistory = true);
+      return;
+    }
+    
     setState(() => _loadingHistory = true);
     try {
       final beforeLen = timeline.events.length;
@@ -182,11 +188,11 @@ class _ChatViewState extends State<ChatView> {
         });
       }
 
-      if (beforeLen == afterLen) {
-        _noMoreHistory = true;
+      if (beforeLen == afterLen && !timeline.canRequestHistory) {
+        setState(() => _noMoreHistory = true);
       }
     } catch (e) {
-      debugPrint('Ошибка загрузки истории: $e');
+      debugPrint('[Orex] Ошибка загрузки истории: $e');
     } finally {
       if (mounted) {
         setState(() => _loadingHistory = false);
@@ -549,6 +555,14 @@ class _ChatViewState extends State<ChatView> {
                       onEdit: () => _startEdit(item.leader),
                       onDelete: () => room.redactEvent(item.leader.eventId),
                       onReply: () => _startReply(item.leader),
+                      onCancelSend: () async {
+                        try {
+                          await item.leader.cancelSend();
+                          if (mounted) setState(() {});
+                        } catch (e) {
+                          debugPrint('[Orex] Ошибка отмены отправки: $e');
+                        }
+                      },
                       albumEvents: item.events, 
                     );
                   } else if (item is SingleEventItem) {
@@ -564,6 +578,14 @@ class _ChatViewState extends State<ChatView> {
                       onEdit: () => _startEdit(item.event),
                       onDelete: () => room.redactEvent(item.event.eventId),
                       onReply: () => _startReply(item.event),
+                      onCancelSend: () async {
+                        try {
+                          await item.event.cancelSend();
+                          if (mounted) setState(() {});
+                        } catch (e) {
+                          debugPrint('[Orex] Ошибка отмены отправки: $e');
+                        }
+                      },
                     );
                   }
                   return const SizedBox.shrink();

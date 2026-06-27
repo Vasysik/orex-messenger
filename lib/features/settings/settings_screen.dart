@@ -1,5 +1,6 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart';
 
 import '../../core/matrix_service.dart';
@@ -84,6 +85,226 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await _loadProfile(fresh: true);
   }
 
+  Future<String?> _askPassword(BuildContext context) {
+    final c = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Подтвердите паролем'),
+        content: TextField(
+          controller: c,
+          autofocus: true,
+          obscureText: true,
+          decoration: const InputDecoration(hintText: 'Пароль от аккаунта'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, c.text),
+            child: const Text('ОК'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Полный принудительный сброс настроек безопасности с сервера.
+  Future<void> _resetSecurityDialog() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Сбросить безопасность?'),
+        content: const Text(
+          'Это действие полностью удалит все текущие ключи шифрования, резервные копии и кросс-подпись на сервере.\n\n'
+          'Все остальные ваши сессии станут недоверенными. Будет сгенерирован совершенно новый ключ восстановления. Продолжить?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFCF6679)),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Сбросить'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+        child: CircularProgressIndicator(color: OrexColors.copper),
+      ),
+    );
+
+    try {
+      final newKey = await widget.matrix.resetSecurity(
+        askPassword: () => _askPassword(context),
+      );
+      if (mounted) {
+        Navigator.pop(context); // закрываем индикатор
+        await _showNewRecoveryKey(newKey);
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context); // закрываем индикатор
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка сброса: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _showNewRecoveryKey(String key) {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Новый ключ восстановления'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Настройки безопасности успешно сброшены. Создан новый ключ восстановления. '
+              'Запишите его и храните в надёжном месте. Без него расшифровать переписку на новых сессиях будет невозможно.',
+            ),
+            const SizedBox(height: 16),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.25),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: SelectableText(
+                key,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 15),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: key));
+              if (ctx.mounted) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(content: Text('Ключ скопирован в буфер обмена')),
+                );
+              }
+            },
+            child: const Text('Копировать'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Я сохранил'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Диалог смены пароля аккаунта с валидацией полей.
+  Future<void> _changePasswordDialog() async {
+    final oldCtrl = TextEditingController();
+    final newCtrl = TextEditingController();
+    final confirmCtrl = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Смена пароля'),
+        content: Form(
+          key: formKey,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextFormField(
+                  controller: oldCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: 'Текущий пароль'),
+                  validator: (v) =>
+                      (v == null || v.isEmpty) ? 'Введите текущий пароль' : null,
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: newCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: 'Новый пароль'),
+                  validator: (v) =>
+                      (v == null || v.length < 6) ? 'Пароль должен быть от 6 символов' : null,
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: confirmCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: 'Подтвердите пароль'),
+                  validator: (v) =>
+                      v != newCtrl.text ? 'Пароли не совпадают' : null,
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (formKey.currentState?.validate() ?? false) {
+                Navigator.pop(ctx, true);
+              }
+            },
+            child: const Text('Сменить'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+        child: CircularProgressIndicator(color: OrexColors.copper),
+      ),
+    );
+    try {
+      await widget.matrix.changePassword(
+        currentPassword: oldCtrl.text,
+        newPassword: newCtrl.text,
+      );
+      if (mounted) {
+        Navigator.pop(context); // закрываем индикатор
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Пароль изменён успешно')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context); // закрываем индикатор
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка смены пароля: $e')),
+        );
+      }
+    }
+  }
+
   Future<void> _logout() async {
     final ok = await showDialog<bool>(
       context: context,
@@ -158,8 +379,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     subtitle: widget.matrix.isThisSessionVerified
                         ? 'Другие клиенты доверяют этой сессии · открыть'
                         : 'Иначе другие клиенты считают её непроверенной',
-                    // Всегда доступно: даже если статус определился неточно,
-                    // отсюда можно подписать сессию ключом восстановления.
                     onTap: () => Navigator.of(context)
                         .push(
                           MaterialPageRoute(
@@ -211,6 +430,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   icon: Icons.alternate_email,
                   title: 'Matrix ID',
                   subtitle: widget.matrix.userId,
+                ),
+                _Tile(
+                  icon: Icons.lock_person,
+                  title: 'Сменить пароль',
+                  subtitle: 'Изменить текущий пароль от аккаунта',
+                  onTap: _changePasswordDialog,
+                ),
+                _Tile(
+                  icon: Icons.security_update_warning,
+                  title: 'Сбросить безопасность',
+                  subtitle: 'Полный сброс параметров шифрования на сервере',
+                  onTap: _resetSecurityDialog,
                 ),
                 _Tile(
                   icon: Icons.logout,

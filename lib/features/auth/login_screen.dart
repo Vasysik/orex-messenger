@@ -16,22 +16,60 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _user = TextEditingController();
   final _pass = TextEditingController();
+  final _inviteToken = TextEditingController();
+  bool _isRegistering = false;
   bool _busy = false;
   String? _error;
 
-  Future<void> _login() async {
+  Future<void> _submit() async {
+    final username = _user.text.trim();
+    final password = _pass.text;
+    final token = _inviteToken.text.trim();
+
+    if (username.isEmpty || password.isEmpty) {
+      setState(() => _error = 'Заполните все поля');
+      return;
+    }
+    if (_isRegistering && token.isEmpty) {
+      setState(() => _error = 'Введите код приглашения');
+      return;
+    }
+
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
-      await widget.matrix.login(
-        username: _user.text.trim(),
-        password: _pass.text,
-      );
+      if (_isRegistering) {
+        await widget.matrix.registerWithToken(
+          username: username,
+          password: password,
+          token: token,
+        );
+      } else {
+        await widget.matrix.login(
+          username: username,
+          password: password,
+        );
+      }
       widget.onLoggedIn();
     } catch (e) {
-      setState(() => _error = 'Не удалось войти: $e');
+      // Переводим сырые Matrix-коды в понятные сообщения.
+      String msg = e.toString();
+      if (msg.contains('M_USER_IN_USE')) {
+        msg = 'Это имя пользователя уже занято';
+      } else if (msg.contains('M_INVALID_USERNAME')) {
+        msg = 'Недопустимое имя пользователя (только латиница, цифры, _, -, .)';
+      } else if (msg.contains('M_FORBIDDEN')) {
+        msg = _isRegistering
+            ? 'Неверный или истёкший код приглашения'
+            : 'Неверный логин или пароль';
+      } else if (msg.contains('M_UNKNOWN_TOKEN') || msg.contains('M_MISSING_TOKEN')) {
+        msg = 'Недействительный токен приглашения';
+      } else if (msg.contains('SocketException') || msg.contains('Connection refused')) {
+        msg = 'Нет подключения к серверу. Проверьте интернет.';
+      }
+      setState(() => _error = msg);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -66,9 +104,14 @@ class _LoginScreenState extends State<LoginScreen> {
                     _Field(controller: _user, hint: 'Имя пользователя'),
                     const SizedBox(height: 12),
                     _Field(controller: _pass, hint: 'Пароль', obscure: true),
+                    if (_isRegistering) ...[
+                      const SizedBox(height: 12),
+                      _Field(controller: _inviteToken, hint: 'Код приглашения'),
+                    ],
                     if (_error != null) ...[
                       const SizedBox(height: 12),
                       Text(_error!,
+                          textAlign: TextAlign.center,
                           style: const TextStyle(color: Color(0xFFCF6679))),
                     ],
                     const SizedBox(height: 20),
@@ -83,7 +126,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             borderRadius: BorderRadius.circular(16),
                           ),
                         ),
-                        onPressed: _busy ? null : _login,
+                        onPressed: _busy ? null : _submit,
                         child: _busy
                             ? const SizedBox(
                                 width: 22,
@@ -93,7 +136,24 @@ class _LoginScreenState extends State<LoginScreen> {
                                   color: OrexColors.cream,
                                 ),
                               )
-                            : const Text('Войти'),
+                            : Text(_isRegistering ? 'Регистрация' : 'Войти'),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    TextButton(
+                      onPressed: _busy
+                          ? null
+                          : () {
+                              setState(() {
+                                _isRegistering = !_isRegistering;
+                                _error = null;
+                              });
+                            },
+                      child: Text(
+                        _isRegistering
+                            ? 'Уже есть аккаунт? Войти'
+                            : 'Ещё нет аккаунта? Зарегистрироваться',
+                        style: const TextStyle(color: OrexColors.copper),
                       ),
                     ),
                   ],
