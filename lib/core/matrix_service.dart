@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:matrix/encryption/key_manager.dart';
 import 'package:matrix/matrix.dart';
 import 'package:matrix/encryption/utils/key_verification.dart';
 import 'package:matrix/encryption/utils/bootstrap.dart';
@@ -12,10 +11,12 @@ import 'voip_service.dart';
 
 /// Модель аутентификации для регистрации через токен приглашения (MSC3231)
 class AuthenticationRegistrationToken extends AuthenticationData {
+  static const typeName = 'm.login.registration_token';
+
   AuthenticationRegistrationToken({
     required this.token,
     super.session,
-  }) : super(type: 'm.login.registration_token');
+  }) : super(type: typeName);
 
   final String token;
 
@@ -24,6 +25,10 @@ class AuthenticationRegistrationToken extends AuthenticationData {
         ...super.toJson(),
         'token': token,
       };
+}
+
+class AuthenticationDummy extends AuthenticationData {
+  AuthenticationDummy({super.session}) : super(type: AuthenticationTypes.dummy);
 }
 
 /// Тонкая обёртка над Famedly Matrix Dart SDK.
@@ -72,10 +77,10 @@ class MatrixService extends ChangeNotifier {
 
   bool _checkedServerBackup = false;
 
-  /// Флаг явного отключения бэкапа пользователем в этой сессии.
+  /// Флаг явного отключения бэкапа пользователем.
   /// Пока он true — sync не будет автоматически «переоткрывать» бэкап.
-  /// Сбрасывается при логауте/рестарте (тогда updateServerBackupVersion
-  /// снова честно проверит сервер).
+  /// Сохраняется локально, потому что после сброса/удаления серверный статус
+  /// может на короткое время выглядеть включённым из кэша SDK.
   bool _backupDisabledByUser = false;
 
   /// Инициализация: восстановление сессии из БД (если была) и подписка на sync.
@@ -88,16 +93,20 @@ class MatrixService extends ChangeNotifier {
     client.onSync.stream.listen((_) {
       // Проверяем версию бэкапа только один раз после логина,
       // и только если пользователь не выключал его вручную в этой сессии.
-      if (!_checkedServerBackup && client.isLogged() && !_backupDisabledByUser) {
+      if (!_checkedServerBackup &&
+          client.isLogged() &&
+          !_backupDisabledByUser) {
         updateServerBackupVersion();
       }
       notifyListeners();
     });
-    client.onLoginStateChanged.stream.listen((_) {
-      // При логауте/смене аккаунта сбрасываем все флаги бэкапа.
+    client.onLoginStateChanged.stream.listen((_) async {
+      // При логауте/смене аккаунта сбрасываем runtime-статус и перечитываем
+      // сохранённое намерение пользователя для текущего аккаунта.
       _checkedServerBackup = false;
       _serverBackupVersion = null;
       _backupDisabledByUser = false;
+      await _loadBackupPrefs();
       notifyListeners();
     });
     // Обновление профиля (имя/аватар) — сбрасываем кэш медиа и перерисовываем,
@@ -113,13 +122,14 @@ class MatrixService extends ChangeNotifier {
       debugPrint('VoipService init failed, calls disabled: $e');
     }
 
+    await _loadBackupPrefs();
+
     // Восстанавливаем ключи из бэкапа с задержкой — только если бэкап не выключен.
     for (final s in const [3, 8]) {
       Future.delayed(Duration(seconds: s), () {
         if (!_backupDisabledByUser) restoreKeyBackup();
       });
     }
-    await _loadBackupPrefs();
   }
 
   /// Логин по паролю: POST /_matrix/client/v3/login под капотом SDK.
@@ -139,11 +149,10 @@ class MatrixService extends ChangeNotifier {
 
   /// Регистрация нового аккаунта с использованием ключа приглашения (registration token).
   ///
-  /// Synapse всегда отвечает на первый POST /register кодом 401 + { session, flows } —
-  /// это штатный UIA-хендшейк (User-Interactive Auth), а не ошибка.
-  /// Алгоритм:
-  ///   Шаг 1: отправляем запрос БЕЗ auth → сервер возвращает session.
-  ///   Шаг 2: повторяем запрос С auth { type: registration_token, token, session }.
+  /// Synapse отвечает 401 + { session, flows }, пока не пройдены все UIA-шаги.
+  /// Для registration token это часто цепочка registration_token → dummy:
+  /// токен считается использованным уже после первого шага, поэтому нельзя
+  /// принимать следующую 401-стадию за ошибку регистрации.
   Future<void> registerWithToken({
     required String username,
     required String password,
@@ -151,37 +160,87 @@ class MatrixService extends ChangeNotifier {
   }) async {
     await client.checkHomeserver(homeserver);
 
-    // Шаг 1: «пустой» запрос — получаем session от сервера.
-    // Synapse отвечает 401 + { session, flows } — это нормально.
+    final normalizedUsername = username.trim();
+    final normalizedToken = token.trim();
     String? uiaSession;
-    try {
-      await client.register(
-        username: username.trim(),
-        password: password,
-        initialDeviceDisplayName: 'Orex',
-      );
-      // Если регистрация прошла без UIA — готово (редко, но возможно).
-      return;
-    } on MatrixException catch (e) {
-      if (e.requireAdditionalAuthentication) {
-        // Штатный случай: забираем session для шага 2.
-        uiaSession = e.session;
-      } else {
-        // Настоящая ошибка (M_USER_IN_USE, M_INVALID_USERNAME и т.д.)
-        rethrow;
+    AuthenticationData? auth;
+    final attemptedStages = <String>{};
+
+    for (var attempt = 0; attempt < 6; attempt++) {
+      try {
+        await client.register(
+          username: normalizedUsername,
+          password: password,
+          initialDeviceDisplayName: 'Orex',
+          auth: auth,
+        );
+        return;
+      } on MatrixException catch (e) {
+        if (!e.requireAdditionalAuthentication) rethrow;
+
+        uiaSession = e.session ?? uiaSession;
+        final nextAuth = _nextRegistrationAuth(
+          e,
+          token: normalizedToken,
+          session: uiaSession,
+          attemptedStages: attemptedStages,
+        );
+        if (nextAuth == null) {
+          // Если только что отправленный stage не был принят, это настоящая
+          // ошибка сервера: неверный токен, неподдерживаемая CAPTCHA и т.п.
+          rethrow;
+        }
+        auth = nextAuth;
       }
     }
 
-    // Шаг 2: повторяем с auth { type, token, session }.
-    await client.register(
-      username: username.trim(),
-      password: password,
-      initialDeviceDisplayName: 'Orex',
-      auth: AuthenticationRegistrationToken(
-        token: token.trim(),
-        session: uiaSession,
-      ),
+    throw StateError(
+        'Сервер не завершил регистрацию после нескольких шагов проверки');
+  }
+
+  AuthenticationData? _nextRegistrationAuth(
+    MatrixException e, {
+    required String token,
+    required String? session,
+    required Set<String> attemptedStages,
+  }) {
+    if (session == null || session.isEmpty) return null;
+
+    final completed = e.completedAuthenticationFlows.toSet();
+    final tokenComplete =
+        completed.contains(AuthenticationRegistrationToken.typeName);
+    final flows = e.authenticationFlows ?? const <AuthenticationFlow>[];
+    final usableFlows = flows.where(
+      (flow) =>
+          flow.stages.contains(AuthenticationRegistrationToken.typeName) ||
+          tokenComplete,
     );
+
+    for (final flow in usableFlows) {
+      for (final stage in flow.stages) {
+        if (completed.contains(stage)) continue;
+
+        if (stage == AuthenticationRegistrationToken.typeName) {
+          if (attemptedStages.contains(stage)) return null;
+          attemptedStages.add(stage);
+          return AuthenticationRegistrationToken(
+            token: token,
+            session: session,
+          );
+        }
+
+        if (stage == AuthenticationTypes.dummy && tokenComplete) {
+          if (attemptedStages.contains(stage)) return null;
+          attemptedStages.add(stage);
+          return AuthenticationDummy(session: session);
+        }
+
+        // В этом flow есть неподдерживаемый шаг; пробуем следующий flow.
+        break;
+      }
+    }
+
+    return null;
   }
 
   Future<void> logout() async {
@@ -205,9 +264,7 @@ class MatrixService extends ChangeNotifier {
       case OrexFolder.direct:
         return rooms.where((r) => r.isDirectChat).toList();
       case OrexFolder.groups:
-        return rooms
-            .where((r) => !r.isDirectChat && !_isBroadcast(r))
-            .toList();
+        return rooms.where((r) => !r.isDirectChat && !_isBroadcast(r)).toList();
       case OrexFolder.channels:
         return rooms.where(_isBroadcast).toList();
     }
@@ -282,7 +339,8 @@ class MatrixService extends ChangeNotifier {
 
   /// Дождаться, пока ключи устройств подгрузятся из БД/сети (иначе статусы ниже
   /// могут быть «ложно непроверенными» сразу после логина).
-  Future<void> ensureKeysLoaded() => client.userDeviceKeysLoading ?? Future.value();
+  Future<void> ensureKeysLoaded() =>
+      client.userDeviceKeysLoading ?? Future.value();
 
   /// Включено ли «хранилище ключей» (онлайн-бэкап ключей сообщений). Когда
   /// включено, история восстанавливается на новых устройствах после проверки —
@@ -313,7 +371,9 @@ class MatrixService extends ChangeNotifier {
   /// видны только сообщения за её собственное время.
   Future<void> restoreKeyBackup() async {
     final km = client.encryption?.keyManager;
-    if (km == null || _serverBackupVersion == null) return;
+    if (km == null || _serverBackupVersion == null || _backupDisabledByUser) {
+      return;
+    }
     try {
       if (await km.isCached()) {
         await km.loadAllKeys();
@@ -328,6 +388,7 @@ class MatrixService extends ChangeNotifier {
 
   static const _kLastBackup = 'orex_last_backup_ms';
   static const _kAutoBackup = 'orex_auto_backup';
+  static const _kBackupDisabledByUser = 'orex_backup_disabled_by_user';
 
   /// Когда в последний раз ключи выгружались в бэкап (для показа в настройках).
   DateTime? lastBackup;
@@ -340,14 +401,67 @@ class MatrixService extends ChangeNotifier {
 
   Timer? _autoBackupTimer;
 
+  String _accountPrefKey(String key) {
+    final userId = client.userID;
+    if (userId == null || userId.isEmpty) return key;
+    return '$key:$userId';
+  }
+
   Future<void> _loadBackupPrefs() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       autoBackup = prefs.getBool(_kAutoBackup) ?? false;
+      _backupDisabledByUser =
+          prefs.getBool(_accountPrefKey(_kBackupDisabledByUser)) ?? false;
       final ms = prefs.getInt(_kLastBackup);
       if (ms != null) lastBackup = DateTime.fromMillisecondsSinceEpoch(ms);
-      if (autoBackup) _startAutoBackup();
+      if (autoBackup && !_backupDisabledByUser) {
+        _startAutoBackup();
+      } else {
+        _autoBackupTimer?.cancel();
+      }
     } catch (_) {}
+  }
+
+  Future<void> _setBackupDisabledByUser(bool disabled) async {
+    _backupDisabledByUser = disabled;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_accountPrefKey(_kBackupDisabledByUser), disabled);
+    } catch (_) {}
+  }
+
+  Future<void> _setAutoBackupStored(bool on) async {
+    autoBackup = on;
+    if (!on) _autoBackupTimer?.cancel();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kAutoBackup, on);
+    } catch (_) {}
+  }
+
+  Future<void> _deleteCurrentServerKeyBackup() async {
+    try {
+      final currentBackup = await client.getRoomKeysVersionCurrent();
+      await client.deleteRoomKeysVersion(currentBackup.version);
+    } on MatrixException catch (e) {
+      if (e.errcode != 'M_NOT_FOUND') rethrow;
+    }
+
+    _serverBackupVersion = null;
+    try {
+      await client.encryption?.keyManager.getRoomKeysBackupInfo(false);
+    } catch (_) {}
+  }
+
+  Future<void> _refreshOwnSecurityState() async {
+    try {
+      await client.oneShotSync().timeout(const Duration(seconds: 8));
+      await ensureKeysLoaded().timeout(const Duration(seconds: 8));
+    } catch (e) {
+      debugPrint('refreshOwnSecurityState failed: $e');
+    }
+    notifyListeners();
   }
 
   void _startAutoBackup() {
@@ -360,17 +474,14 @@ class MatrixService extends ChangeNotifier {
 
   /// Включить/выключить автоматический бэкап.
   Future<void> setAutoBackup(bool on) async {
-    autoBackup = on;
+    if (on && !keyBackupEnabled) {
+      throw StateError('Сначала включите хранилище ключей');
+    }
+    await _setAutoBackupStored(on);
     notifyListeners();
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_kAutoBackup, on);
-    } catch (_) {}
     if (on) {
       _startAutoBackup();
       await _uploadKeys(record: true);
-    } else {
-      _autoBackupTimer?.cancel();
     }
   }
 
@@ -393,67 +504,29 @@ class MatrixService extends ChangeNotifier {
 
   Future<void> _uploadKeys({bool record = false}) async {
     final km = client.encryption?.keyManager;
-    if (km == null || !km.enabled || _serverBackupVersion == null) return;
+    if (km == null ||
+        !km.enabled ||
+        _serverBackupVersion == null ||
+        _backupDisabledByUser) {
+      return;
+    }
     try {
+      await client.getRoomKeysVersionCurrent();
       await km.uploadInboundGroupSessions();
       await _recordLastBackupTime(record);
     } on MatrixException catch (e) {
-      // Версия бэкапа на сервере исчезла (M_NOT_FOUND) — пробуем пересоздать
-      // тихо, без интерактивных запросов (UIA). Если нужен пароль — прерываем.
+      // Версия бэкапа на сервере исчезла. Не пересоздаём её фоном:
+      // хранилище ключей включается только явным действием пользователя.
       if (e.errcode == 'M_NOT_FOUND') {
-        await _tryRecreateBackupSilently(km, record);
+        _serverBackupVersion = null;
+        await _setAutoBackupStored(false);
+        await _setBackupDisabledByUser(true);
+        notifyListeners();
       } else {
         debugPrint('uploadInboundGroupSessions failed: $e');
       }
     } catch (e) {
       debugPrint('uploadInboundGroupSessions failed: $e');
-    }
-  }
-
-  /// Фоновая попытка пересоздать бэкап без участия пользователя.
-  /// Если bootstrap требует пароль или ключ — тихо прерываем.
-  Future<void> _tryRecreateBackupSilently(
-    KeyManager km,
-    bool record,
-  ) async {
-    try {
-      final completer = Completer<void>();
-      client.encryption?.bootstrap(
-        onUpdate: (b) async {
-          try {
-            switch (b.state) {
-              case BootstrapState.askSetupOnlineKeyBackup:
-                await b.askSetupOnlineKeyBackup(true);
-                break;
-              case BootstrapState.done:
-                if (!completer.isCompleted) completer.complete();
-                break;
-              case BootstrapState.error:
-                if (!completer.isCompleted) {
-                  completer.completeError(StateError('bootstrap_error'));
-                }
-                break;
-              case BootstrapState.loading:
-              case BootstrapState.askSetupCrossSigning:
-                break;
-              default:
-                // Любое другое состояние требует участия пользователя — прерываем тихо
-                if (!completer.isCompleted) {
-                  completer.completeError(StateError('interactive_required'));
-                }
-                break;
-            }
-          } catch (e) {
-            if (!completer.isCompleted) completer.completeError(e);
-          }
-        },
-      );
-      await completer.future;
-      await updateServerBackupVersion();
-      await km.uploadInboundGroupSessions();
-      await _recordLastBackupTime(record);
-    } catch (_) {
-      // Тихо: фоновая задача, пользователь не ждёт результата
     }
   }
 
@@ -485,8 +558,7 @@ class MatrixService extends ChangeNotifier {
       throw StateError('Шифрование не инициализировано');
     }
 
-    // Снимаем флаг явного отключения — пользователь хочет включить бэкап.
-    _backupDisabledByUser = false;
+    final wasBackupDisabled = _backupDisabledByUser;
 
     // Проверяем, есть ли уже бэкап на сервере.
     // Если есть — просто подключаемся к нему, не трогая SSSS и ключ восстановления.
@@ -494,6 +566,7 @@ class MatrixService extends ChangeNotifier {
       final existing = await client.getRoomKeysVersionCurrent();
       if (existing.version.isNotEmpty) {
         _serverBackupVersion = existing.version;
+        await _setBackupDisabledByUser(false);
         notifyListeners();
         await _uploadKeys(record: true);
         // null — новый ключ НЕ генерировался, диалог «сохраните ключ» не показываем.
@@ -505,12 +578,14 @@ class MatrixService extends ChangeNotifier {
 
     // Бэкапа нет — запускаем полный bootstrap для создания SSSS + бэкапа.
     final completer = Completer<String?>();
+    var createdNewSsss = false;
 
     // UIA: сервер может потребовать пароль при публикации сигнатуры бэкапа
     final uiaSub = client.onUiaRequest.stream.listen((uia) async {
       if (uia.state != UiaRequestState.waitForUser) return;
       if (!uia.nextStages.contains(AuthenticationTypes.password)) {
-        uia.cancel(Exception('Неподдерживаемый способ входа: ${uia.nextStages}'));
+        uia.cancel(
+            Exception('Неподдерживаемый способ входа: ${uia.nextStages}'));
         return;
       }
       final pw = await askPassword();
@@ -532,6 +607,7 @@ class MatrixService extends ChangeNotifier {
         try {
           switch (b.state) {
             case BootstrapState.askNewSsss:
+              createdNewSsss = true;
               await b.newSsss();
               break;
             case BootstrapState.askUseExistingSsss:
@@ -539,6 +615,22 @@ class MatrixService extends ChangeNotifier {
               b.useExistingSsss(true);
               break;
             case BootstrapState.openExistingSsss:
+              final key = recoveryKey?.trim();
+              final ssss = b.newSsssKey;
+              if (ssss != null && !ssss.isUnlocked) {
+                if (key == null || key.isEmpty) {
+                  if (!completer.isCompleted) {
+                    completer
+                        .completeError(StateError('recovery_key_required'));
+                  }
+                  break;
+                }
+                try {
+                  await ssss.unlock(recoveryKey: key);
+                } catch (_) {
+                  await ssss.unlock(passphrase: key);
+                }
+              }
               await b.openExistingSsss();
               break;
             case BootstrapState.askUnlockSsss:
@@ -571,16 +663,19 @@ class MatrixService extends ChangeNotifier {
                 completer.completeError(StateError('recovery_key_required'));
               }
               break;
-            // enableKeyBackup НЕ должен ничего сносить — прерываем.
             case BootstrapState.askWipeSsss:
+              // SSSS уже есть. Для включения backup используем его, а не
+              // пересоздаём всю безопасность аккаунта.
+              b.wipeSsss(false);
+              break;
             case BootstrapState.askWipeCrossSigning:
+              await b.wipeCrossSigning(false);
+              break;
             case BootstrapState.askWipeOnlineKeyBackup:
-              if (!completer.isCompleted) {
-                completer.completeError(StateError(
-                  'Обнаружены существующие данные безопасности. '
-                  'Используйте ключ восстановления для разблокировки.',
-                ));
-              }
+              // Серверного backup уже нет (мы проверили выше), но в SSSS мог
+              // остаться старый m.megolm_backup.v1. При явном включении
+              // создаём новую серверную версию и новый backup-secret.
+              b.wipeOnlineKeyBackup(true);
               break;
             case BootstrapState.askSetupCrossSigning:
               await b.askSetupCrossSigning(
@@ -594,14 +689,18 @@ class MatrixService extends ChangeNotifier {
               break;
             case BootstrapState.done:
               if (!completer.isCompleted) {
-                // Возвращаем новый ключ только если он был сгенерирован в этом bootstrap.
-                completer.complete(b.newSsssKey?.recoveryKey);
+                // Возвращаем ключ только если реально создали новый SSSS.
+                // При открытии существующего SSSS SDK тоже хранит его в
+                // newSsssKey, но это старый recovery key, а не новый.
+                completer.complete(
+                  createdNewSsss ? b.newSsssKey?.recoveryKey : null,
+                );
               }
               break;
             case BootstrapState.error:
               if (!completer.isCompleted) {
-                completer
-                    .completeError(StateError('Ошибка настройки резервной копии'));
+                completer.completeError(
+                    StateError('Ошибка настройки резервной копии'));
               }
               break;
             case BootstrapState.loading:
@@ -615,9 +714,13 @@ class MatrixService extends ChangeNotifier {
 
     try {
       final key = await completer.future;
+      await _setBackupDisabledByUser(false);
       await updateServerBackupVersion();
       return key;
     } finally {
+      if (_serverBackupVersion == null) {
+        await _setBackupDisabledByUser(wasBackupDisabled);
+      }
       await uiaSub.cancel();
     }
   }
@@ -629,39 +732,24 @@ class MatrixService extends ChangeNotifier {
   /// SSSS и кросс-подпись не затрагиваются.
   Future<void> disableKeyBackup() async {
     try {
-      final currentBackup = await client.getRoomKeysVersionCurrent();
-      await client.deleteRoomKeysVersion(currentBackup.version);
-    } on MatrixException catch (e) {
-      if (e.errcode != 'M_NOT_FOUND') {
-        rethrow;
-      }
+      await _deleteCurrentServerKeyBackup();
     } catch (e) {
       debugPrint('disableKeyBackup failed: $e');
       rethrow;
     }
 
     // Помечаем: пользователь сам отключил бэкап — sync не должен его «вернуть».
-    _backupDisabledByUser = true;
+    await _setBackupDisabledByUser(true);
     _serverBackupVersion = null;
 
     // Выключаем автобэкап, чтобы таймер не пытался грузить в несуществующий бэкап.
-    autoBackup = false;
-    _autoBackupTimer?.cancel();
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_kAutoBackup, false);
-    } catch (_) {}
-
-    // Сбрасываем локальный кэш инфо о бэкапе в SDK
-    try {
-      await client.encryption?.keyManager.getRoomKeysBackupInfo(false);
-    } catch (_) {}
+    await _setAutoBackupStored(false);
     notifyListeners();
   }
 
-  /// На аккаунте настроена кросс-подпись (обычно её включают в Element).
-  /// Если false — проверять нечем: сперва нужно настроить безопасность в Element
-  /// (или сделать bootstrap, что мы намеренно не делаем вслепую).
+  /// На аккаунте настроена кросс-подпись.
+  /// Если false — проверять нечем: сперва нужно настроить безопасность
+  /// или сделать первичную настройку проверки подлинности.
   bool get crossSigningAvailable =>
       client.encryption?.crossSigning.enabled ?? false;
 
@@ -707,15 +795,15 @@ class MatrixService extends ChangeNotifier {
       throw StateError('Шифрование не инициализировано');
     }
     await crossSigning.selfSign(keyOrPassphrase: keyOrPassphrase.trim());
-    notifyListeners();
+    await _refreshOwnSecurityState();
     // Ключ восстановления разблокировал SSSS → тянем всю историю из бэкапа.
     await restoreKeyBackup();
   }
 
-  /// ПЕРВИЧНАЯ настройка проверки подлинности (как «собачки» в Element при
-  /// регистрации): создаёт кросс-подпись (master/self/user-signing), ключ
-  /// восстановления (SSSS) и онлайн-бэкап ключей, после чего эта сессия
-  /// становится доверенной. Возвращает КЛЮЧ ВОССТАНОВЛЕНИЯ — его нужно
+  /// ПЕРВИЧНАЯ настройка проверки подлинности: создаёт кросс-подпись
+  /// (master/self/user-signing) и ключ восстановления (SSSS), после чего эта
+  /// сессия становится доверенной. Онлайн-хранилище ключей здесь не создаётся:
+  /// пользователь включает его отдельным действием. Возвращает КЛЮЧ ВОССТАНОВЛЕНИЯ — его нужно
   /// сохранить (это и есть тот самый ключ, которым потом подтверждают сессии).
   ///
   /// [askPassword] вызывается, когда серверу нужен пароль (UIA) для загрузки
@@ -747,7 +835,8 @@ class MatrixService extends ChangeNotifier {
     final uiaSub = client.onUiaRequest.stream.listen((uia) async {
       if (uia.state != UiaRequestState.waitForUser) return;
       if (!uia.nextStages.contains(AuthenticationTypes.password)) {
-        uia.cancel(Exception('Неподдерживаемый способ входа: ${uia.nextStages}'));
+        uia.cancel(
+            Exception('Неподдерживаемый способ входа: ${uia.nextStages}'));
         return;
       }
       final pw = await askPassword();
@@ -779,7 +868,7 @@ class MatrixService extends ChangeNotifier {
             );
             break;
           case BootstrapState.askSetupOnlineKeyBackup:
-            await b.askSetupOnlineKeyBackup(true);
+            await b.askSetupOnlineKeyBackup(false);
             break;
           case BootstrapState.done:
             if (!completer.isCompleted) {
@@ -798,7 +887,7 @@ class MatrixService extends ChangeNotifier {
               StateError(
                 'На аккаунте уже есть данные безопасности — не трогаю их, чтобы '
                 'не потерять ключи. Подтвердите эту сессию ключом восстановления '
-                'или сбросьте безопасность в Element.',
+                'или сбросьте безопасность в Orex.',
               ),
             );
         }
@@ -809,7 +898,9 @@ class MatrixService extends ChangeNotifier {
 
     try {
       final key = await completer.future;
-      notifyListeners();
+      _serverBackupVersion = null;
+      await _setBackupDisabledByUser(true);
+      await _refreshOwnSecurityState();
       return key;
     } finally {
       await uiaSub.cancel();
@@ -831,23 +922,24 @@ class MatrixService extends ChangeNotifier {
       throw StateError('Шифрование не инициализировано');
     }
 
+    final resetPassword = await askPassword();
+    if (resetPassword == null || resetPassword.isEmpty) {
+      throw StateError('Отменено пользователем');
+    }
+
     final completer = Completer<String>();
 
     final uiaSub = client.onUiaRequest.stream.listen((uia) async {
       if (uia.state != UiaRequestState.waitForUser) return;
       if (!uia.nextStages.contains(AuthenticationTypes.password)) {
-        uia.cancel(Exception('Неподдерживаемый способ входа: ${uia.nextStages}'));
-        return;
-      }
-      final pw = await askPassword();
-      if (pw == null || pw.isEmpty) {
-        uia.cancel(Exception('Отменено'));
+        uia.cancel(
+            Exception('Неподдерживаемый способ входа: ${uia.nextStages}'));
         return;
       }
       await uia.completeStage(
         AuthenticationPassword(
           identifier: AuthenticationUserIdentifier(user: client.userID!),
-          password: pw,
+          password: resetPassword,
           session: uia.session,
         ),
       );
@@ -909,22 +1001,17 @@ class MatrixService extends ChangeNotifier {
 
     try {
       final key = await completer.future;
+      await _deleteCurrentServerKeyBackup();
 
-      // После сброса бэкапа нет — сбрасываем локальный статус.
-      // _backupDisabledByUser = false: даём пользователю возможность
-      // включить бэкап заново через UI без перезагрузки приложения.
+      // После сброса бэкапа нет — фиксируем локально, что хранилище выключено.
+      // Пользователь сможет включить его заново нажатием на карточку в UI.
       _serverBackupVersion = null;
-      _backupDisabledByUser = false;
+      await _setBackupDisabledByUser(true);
 
       // Выключаем автобэкап — после сброса он теряет смысл до нового включения.
-      autoBackup = false;
-      _autoBackupTimer?.cancel();
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool(_kAutoBackup, false);
-      } catch (_) {}
+      await _setAutoBackupStored(false);
 
-      notifyListeners();
+      await _refreshOwnSecurityState();
       return key;
     } finally {
       await uiaSub.cancel();
@@ -940,7 +1027,8 @@ class MatrixService extends ChangeNotifier {
 
   /// Профиль. [fresh] — обойти кэш (нужно сразу после смены имени/аватара,
   /// иначе вернётся старое значение и придётся перезагружать вкладку).
-  Future<Profile> ownProfile({bool fresh = false}) => client.getProfileFromUserId(
+  Future<Profile> ownProfile({bool fresh = false}) =>
+      client.getProfileFromUserId(
         client.userID!,
         maxCacheAge: fresh ? Duration.zero : const Duration(days: 1),
       );

@@ -59,8 +59,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _editName() async {
-    final controller =
-        TextEditingController(text: _profile?.displayName ?? '');
+    final controller = TextEditingController(text: _profile?.displayName ?? '');
     final name = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -110,14 +109,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  /// Полный принудительный сброс настроек безопасности с сервера.
+  /// Полный принудительный сброс серверных настроек безопасности.
   Future<void> _resetSecurityDialog() async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Сбросить безопасность?'),
+        title: const Text('Сбросить серверные настройки безопасности?'),
         content: const Text(
-          'Это действие полностью удалит все текущие ключи шифрования, резервные копии и кросс-подпись на сервере.\n\n'
+          'Это действие удалит текущие серверные настройки безопасности: ключ восстановления, кросс-подпись и резервные копии ключей.\n\n'
           'Все остальные ваши сессии станут недоверенными. Будет сгенерирован совершенно новый ключ восстановления. Продолжить?',
         ),
         actions: [
@@ -126,15 +125,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: const Text('Отмена'),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFCF6679)),
+            style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFCF6679)),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Сбросить'),
+            child: const Text('Сбросить настройки'),
           ),
         ],
       ),
     );
 
     if (ok != true) return;
+    if (!mounted) return;
+
+    final password = await _askPassword(context);
+    if (password == null || password.isEmpty) return;
     if (!mounted) return;
 
     showDialog(
@@ -147,7 +151,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     try {
       final newKey = await widget.matrix.resetSecurity(
-        askPassword: () => _askPassword(context),
+        askPassword: () async => password,
       );
       if (mounted) {
         Navigator.pop(context); // закрываем индикатор
@@ -174,7 +178,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Настройки безопасности успешно сброшены. Создан новый ключ восстановления. '
+              'Серверные настройки безопасности успешно сброшены. Создан новый ключ восстановления. '
               'Запишите его и храните в надёжном месте. Без него расшифровать переписку на новых сессиях будет невозможно.',
             ),
             const SizedBox(height: 16),
@@ -198,7 +202,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               await Clipboard.setData(ClipboardData(text: key));
               if (ctx.mounted) {
                 ScaffoldMessenger.of(ctx).showSnackBar(
-                  const SnackBar(content: Text('Ключ скопирован в буфер обмена')),
+                  const SnackBar(
+                      content: Text('Ключ скопирован в буфер обмена')),
                 );
               }
             },
@@ -233,23 +238,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 TextFormField(
                   controller: oldCtrl,
                   obscureText: true,
-                  decoration: const InputDecoration(labelText: 'Текущий пароль'),
-                  validator: (v) =>
-                      (v == null || v.isEmpty) ? 'Введите текущий пароль' : null,
+                  decoration:
+                      const InputDecoration(labelText: 'Текущий пароль'),
+                  validator: (v) => (v == null || v.isEmpty)
+                      ? 'Введите текущий пароль'
+                      : null,
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: newCtrl,
                   obscureText: true,
                   decoration: const InputDecoration(labelText: 'Новый пароль'),
-                  validator: (v) =>
-                      (v == null || v.length < 6) ? 'Пароль должен быть от 6 символов' : null,
+                  validator: (v) => (v == null || v.length < 6)
+                      ? 'Пароль должен быть от 6 символов'
+                      : null,
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: confirmCtrl,
                   obscureText: true,
-                  decoration: const InputDecoration(labelText: 'Подтвердите пароль'),
+                  decoration:
+                      const InputDecoration(labelText: 'Подтвердите пароль'),
                   validator: (v) =>
                       v != newCtrl.text ? 'Пароли не совпадают' : null,
                 ),
@@ -310,13 +319,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Выйти из аккаунта?'),
-        content: const Text('Текущая сессия будет завершена на этом устройстве.'),
+        content:
+            const Text('Текущая сессия будет завершена на этом устройстве.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
               child: const Text('Отмена')),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFCF6679)),
+            style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFCF6679)),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Выйти'),
           ),
@@ -381,14 +392,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         : 'Иначе другие клиенты считают её непроверенной',
                     onTap: () => Navigator.of(context)
                         .push(
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                VerifySessionScreen(matrix: widget.matrix),
-                          ),
-                        )
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            VerifySessionScreen(matrix: widget.matrix),
+                      ),
+                    )
                         .then((_) {
-                          if (mounted) setState(() {});
-                        }),
+                      if (mounted) setState(() {});
+                    }),
                   ),
                 if (widget.matrix.encryptionEnabled)
                   _Tile(
@@ -401,14 +412,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         : 'Выключено — настройте, чтобы не терять переписку',
                     onTap: () => Navigator.of(context)
                         .push(
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                KeyStorageScreen(matrix: widget.matrix),
-                          ),
-                        )
+                      MaterialPageRoute(
+                        builder: (_) => KeyStorageScreen(matrix: widget.matrix),
+                      ),
+                    )
                         .then((_) {
-                          if (mounted) setState(() {});
-                        }),
+                      if (mounted) setState(() {});
+                    }),
                   ),
                 _Tile(
                   icon: Icons.devices,
@@ -439,8 +449,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 _Tile(
                   icon: Icons.security_update_warning,
-                  title: 'Сбросить безопасность',
-                  subtitle: 'Полный сброс параметров шифрования на сервере',
+                  title: 'Сбросить серверные настройки безопасности',
+                  subtitle:
+                      'Ключ восстановления, кросс-подпись и резервные копии',
                   onTap: _resetSecurityDialog,
                 ),
                 _Tile(
@@ -626,9 +637,8 @@ class _Tile extends StatelessWidget {
       leading: Icon(icon, color: color ?? OrexColors.copper),
       title: Text(title, style: TextStyle(color: color)),
       subtitle: subtitle != null ? Text(subtitle!) : null,
-      trailing: onTap != null
-          ? const Icon(Icons.chevron_right, size: 20)
-          : null,
+      trailing:
+          onTap != null ? const Icon(Icons.chevron_right, size: 20) : null,
       onTap: onTap,
     );
   }

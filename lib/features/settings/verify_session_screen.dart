@@ -89,7 +89,8 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
       Navigator.of(context).maybePop();
     } catch (e) {
       if (mounted) {
-        setState(() => _error = 'Не удалось: проверьте ключ восстановления.\n$e');
+        setState(
+            () => _error = 'Не удалось: проверьте ключ восстановления.\n$e');
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -283,7 +284,7 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
         const SizedBox(height: 8),
         Text(
           'На аккаунте ещё нет кросс-подписи и ключа восстановления. Создайте их '
-          'прямо здесь (аналог «Secure Backup» в Element): появится ключ '
+          'прямо здесь: появится ключ '
           'восстановления, а эта сессия станет доверенной — другие клиенты '
           'перестанут считать её непроверенной.',
           textAlign: TextAlign.center,
