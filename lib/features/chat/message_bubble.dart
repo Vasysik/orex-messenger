@@ -639,7 +639,7 @@ class _InviteNoticeData {
   final String? roomId;
   final String? alias;
 
-  String? get reference => roomId ?? alias;
+  String? get reference => alias ?? roomId;
 
   static _InviteNoticeData? tryParse(String body) {
     final normalized = body.trim();

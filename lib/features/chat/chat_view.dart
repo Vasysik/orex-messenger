@@ -170,16 +170,19 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _openRoomReference(String reference) {
-    final roomId = widget.matrix.roomIdForReference(reference);
-    OrexLog.d('Chat', 'open room reference ref=$reference resolved=$roomId from=${widget.roomId}');
-    if (roomId == null) {
+    OrexLog.d('Chat', 'open room reference ref=$reference from=${widget.roomId}');
+    final handler = widget.onOpenRoomReference;
+    if (handler == null) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Комната пока не найдена локально')),
+        const SnackBar(content: Text('Открытие комнат здесь недоступно')),
       );
       return;
     }
-    widget.onOpenRoomReference?.call(roomId);
+    // Не режем ссылку только локальным резолвером внутри ChatView.
+    // HomeShell знает, как открыть уже синкнутую комнату, invite-комнату,
+    // public preview или попробовать join по alias/roomId.
+    handler(reference);
   }
 
   Future<void> _openTimeline() async {

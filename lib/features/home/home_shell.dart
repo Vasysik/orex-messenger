@@ -269,6 +269,52 @@ class _HomeShellState extends State<HomeShell> {
     });
   }
 
+  void _openRoomReference(String reference) {
+    _openRoomReferenceAsync(reference);
+  }
+
+  Future<void> _openRoomReferenceAsync(String reference) async {
+    final ref = reference.trim();
+    if (ref.isEmpty) return;
+    OrexLog.d('Home', 'open room reference ref=$ref');
+
+    final localId = widget.matrix.roomIdForReference(ref);
+    if (localId != null) {
+      _selectRoom(localId, source: 'invite-card-local');
+      return;
+    }
+
+    final localPreview = widget.matrix.localPreviewForReference(ref);
+    if (localPreview != null) {
+      _openPublicRoomPreview(localPreview);
+      return;
+    }
+
+    try {
+      final publicPreview = await widget.matrix.publicPreviewForReference(ref);
+      if (!mounted) return;
+      if (publicPreview != null) {
+        _openPublicRoomPreview(publicPreview);
+        return;
+      }
+    } catch (e) {
+      OrexLog.d('Home', 'public preview lookup failed ref=$ref', e);
+    }
+
+    try {
+      final joinedId = await widget.matrix.joinRoomReference(ref);
+      if (!mounted) return;
+      _selectRoom(joinedId, source: 'invite-card-join');
+      return;
+    } catch (e) {
+      OrexLog.d('Home', 'open room reference failed ref=$ref', e);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось открыть приглашение: $e')),
+      );
+    }
+  }
+
   void _openVerifySession() {
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -442,7 +488,7 @@ class _HomeShellState extends State<HomeShell> {
       matrix: widget.matrix,
       roomId: roomId,
       onBack: onBack,
-      onOpenRoomReference: (id) => _selectRoom(id, source: 'message-reference'),
+      onOpenRoomReference: _openRoomReference,
     );
   }
 
