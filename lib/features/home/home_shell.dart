@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:matrix/matrix.dart';
 import '../../core/matrix_service.dart';
 import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
@@ -44,6 +45,7 @@ class _HomeShellState extends State<HomeShell> {
     _folders = ChatFolderController(matrix: widget.matrix)
       ..addListener(_onFolderPrefsChanged);
     _folders.load();
+    widget.matrix.addListener(_onMatrixChanged);
   }
 
   void _onFolderPrefsChanged() {
@@ -56,11 +58,21 @@ class _HomeShellState extends State<HomeShell> {
     }
   }
 
+  void _onMatrixChanged() {
+    final roomId = _selectedRoomId;
+    if (roomId == null || !mounted) return;
+    final room = widget.matrix.client.getRoomById(roomId);
+    if (room == null || room.membership == Membership.leave) {
+      setState(() => _selectedRoomId = null);
+    }
+  }
+
   @override
   void dispose() {
     _folders
       ..removeListener(_onFolderPrefsChanged)
       ..dispose();
+    widget.matrix.removeListener(_onMatrixChanged);
     super.dispose();
   }
 

@@ -7,7 +7,7 @@ import '../../core/matrix_service.dart';
 import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
-import '../../widgets/squirrel_mascot.dart';
+import '../../widgets/orex_loading_overlay.dart';
 
 enum _NewRoomKind { group, channel, supergroup }
 
@@ -271,7 +271,7 @@ class _NewChatScreenState extends State<NewChatScreen> {
                 ],
               ),
             ),
-            if (_busy) const _BusyOverlay(),
+            if (_busy) const OrexLoadingOverlay(caption: 'Создаём...'),
           ],
         ),
       ),
@@ -333,34 +333,6 @@ class _NewChatScreenState extends State<NewChatScreen> {
       title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Text(compactId, maxLines: 1, overflow: TextOverflow.ellipsis),
       onTap: () => _openDirect(p.userId),
-    );
-  }
-}
-
-class _BusyOverlay extends StatelessWidget {
-  const _BusyOverlay();
-
-  @override
-  Widget build(BuildContext context) {
-    return Positioned.fill(
-      child: Container(
-        color: Colors.black.withValues(alpha: 0.24),
-        alignment: Alignment.center,
-        child: const GlassPanel(
-          borderRadius: 20,
-          child: Padding(
-            padding: EdgeInsets.all(22),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SquirrelMascot(size: 96, caption: 'Создаём…'),
-                SizedBox(height: 12),
-                CircularProgressIndicator(color: OrexColors.copper),
-              ],
-            ),
-          ),
-        ),
-      ),
     );
   }
 }

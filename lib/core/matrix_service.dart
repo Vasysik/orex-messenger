@@ -88,6 +88,7 @@ class MatrixService extends ChangeNotifier {
   bool _backupDisabledByUser = false;
 
   static const _orexRoomKindEvent = 'ru.orex.room.kind';
+  final Map<String, bool> _roomPublicOverrides = {};
 
   /// Инициализация: восстановление сессии из БД (если была) и подписка на sync.
   Future<void> init() async {
@@ -291,7 +292,8 @@ class MatrixService extends ChangeNotifier {
   bool isSupergroup(Room room) => roomKind(room) == OrexRoomKind.supergroup;
   bool isVoiceRoom(Room room) => roomKind(room) == OrexRoomKind.voice;
 
-  bool isPublicRoom(Room room) => room.joinRules == JoinRules.public;
+  bool isPublicRoom(Room room) =>
+      _roomPublicOverrides[room.id] ?? room.joinRules == JoinRules.public;
 
   bool isSupergroupChild(Room room) {
     if (room.isSpace) return false;
@@ -1323,8 +1325,29 @@ class MatrixService extends ChangeNotifier {
     if (client.getRoomById(roomId) == null) {
       await client.waitForRoomInSync(roomId, join: true);
     }
+    final joined = client.getRoomById(roomId);
+    if (joined?.isSpace == true) {
+      await _joinVisibleSpaceChildren(joined!);
+    }
     notifyListeners();
     return roomId;
+  }
+
+  Future<void> _joinVisibleSpaceChildren(Room space) async {
+    for (final child in space.spaceChildren) {
+      final childId = child.roomId;
+      if (childId == null || childId.isEmpty) continue;
+      final local = client.getRoomById(childId);
+      if (local?.membership == Membership.join) continue;
+      try {
+        final joinedId = await client.joinRoom(childId, via: child.via);
+        if (client.getRoomById(joinedId) == null) {
+          await client.waitForRoomInSync(joinedId, join: true);
+        }
+      } catch (_) {
+        // Private or not-yet-visible child rooms are skipped; public spaces keep working.
+      }
+    }
   }
 
   /// Прямые MXID-кандидаты для точного поиска: полный `@user:server`,
@@ -1467,6 +1490,7 @@ class MatrixService extends ChangeNotifier {
     if (!public) {
       await _releaseRoomAlias(room);
     }
+    _roomPublicOverrides[room.id] = public;
   }
 
   Future<void> setRoomHistoryVisibility(

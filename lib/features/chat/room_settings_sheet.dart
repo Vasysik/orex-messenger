@@ -6,6 +6,7 @@ import '../../core/matrix_service.dart';
 import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
+import '../../widgets/orex_loading_overlay.dart';
 
 class RoomSettingsSheet extends StatefulWidget {
   const RoomSettingsSheet({
@@ -69,25 +70,36 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
 
   Future<void> _saveDetails() => _guard(
         () async {
-          await widget.matrix.updateRoomDetails(
-            widget.room,
-            name: _name.text,
-            topic: _topic.text,
-          );
+          final canChangeName =
+              widget.room.canChangeStateEvent(EventTypes.RoomName);
+          final canChangeTopic =
+              widget.room.canChangeStateEvent(EventTypes.RoomTopic);
+          if (canChangeName || canChangeTopic) {
+            await widget.matrix.updateRoomDetails(
+              widget.room,
+              name: canChangeName
+                  ? _name.text
+                  : widget.room.getLocalizedDisplayname(),
+              topic: canChangeTopic ? _topic.text : widget.room.topic,
+            );
+          }
 
-          final canChangeAccess = _canShowAccess(widget.matrix.roomKind(
-            widget.room,
-          ));
+          final canChangeAccess = _canShowAccess(
+                widget.matrix.roomKind(widget.room),
+              ) &&
+              widget.room.canChangeJoinRules;
           if (canChangeAccess) {
             await widget.matrix.setRoomPublic(widget.room, _public);
             if (_public && _alias.text.trim().isNotEmpty) {
               await widget.matrix.setRoomLocalAlias(widget.room, _alias.text);
             }
           }
-          await widget.matrix.setRoomHistoryVisibility(
-            widget.room,
-            _historyVisibility,
-          );
+          if (widget.room.canChangeHistoryVisibility) {
+            await widget.matrix.setRoomHistoryVisibility(
+              widget.room,
+              _historyVisibility,
+            );
+          }
         },
       );
 
@@ -145,15 +157,41 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
     }
   }
 
-  Future<void> _createChild({required bool voice}) async {
-    final name = await _askName(voice ? 'Голосовой канал' : 'Чат');
+  Future<void> _removeParticipant(User user) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить участника?'),
+        content: Text('Убрать ${user.calcDisplayname()} из комнаты?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFCF6679),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await _guard(user.kick);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _createChild() async {
+    final name = await _askName('Чат');
     if (name == null || name.isEmpty) return;
     await _guard(
       () => widget.matrix
           .createSupergroupChild(
             widget.room,
             name,
-            voice: voice,
+            voice: false,
             public: _public,
           )
           .then((_) {}),
@@ -193,19 +231,6 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
         name: name,
         topic: child.topic,
       ),
-    );
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _changeChildAvatar(Room child) async {
-    final res = await FilePicker.platform.pickFiles(
-      type: FileType.image,
-      withData: true,
-    );
-    final file = res?.files.single;
-    if (file?.bytes == null) return;
-    await _guard(
-      () => widget.matrix.setRoomAvatarBytes(child, file!.bytes!, file.name),
     );
     if (mounted) setState(() {});
   }
@@ -323,9 +348,19 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
     final room = widget.room;
     final kind = widget.matrix.roomKind(room);
     final isSupergroup = kind == OrexRoomKind.supergroup;
-    final canInvite = room.canInvite || room.isSpace;
-    final showAccess = _canShowAccess(kind);
     final childRoom = widget.matrix.isSupergroupChild(room);
+    final canChangeName = room.canChangeStateEvent(EventTypes.RoomName);
+    final canChangeTopic = room.canChangeStateEvent(EventTypes.RoomTopic);
+    final canChangeAvatar =
+        !childRoom && room.canChangeStateEvent(EventTypes.RoomAvatar);
+    final canEditProfile =
+        !childRoom && (canChangeName || canChangeTopic || canChangeAvatar);
+    final canInvite = room.canInvite;
+    final showAccess = _canShowAccess(kind) && room.canChangeJoinRules;
+    final showHistory = room.canChangeHistoryVisibility;
+    final showSave = canEditProfile || showAccess || showHistory;
+    final canManageSupergroupRooms =
+        isSupergroup && room.canChangeStateEvent(EventTypes.SpaceChild);
 
     return DraggableScrollableSheet(
       initialChildSize: 0.86,
@@ -340,220 +375,258 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
               color:
                   Theme.of(context).colorScheme.surface.withValues(alpha: 0.78),
               borderRadius: BorderRadius.circular(24),
-              child: AbsorbPointer(
-                absorbing: _busy,
-                child: ListView(
-                  controller: controller,
-                  padding: const EdgeInsets.fromLTRB(18, 16, 18, 24),
-                  children: [
-                    _Header(
-                      matrix: widget.matrix,
-                      room: room,
-                      busy: _savingAvatar,
-                      allowAvatar: !childRoom,
-                      onPickAvatar: _pickAvatar,
-                      onRemoveAvatar:
-                          room.avatar == null ? null : _removeAvatar,
-                      onClose: () => Navigator.pop(context),
-                    ),
-                    const SizedBox(height: 18),
-                    _SectionCard(
-                      title: 'Профиль',
+              child: Stack(
+                children: [
+                  AbsorbPointer(
+                    absorbing: _busy,
+                    child: ListView(
+                      controller: controller,
+                      padding: const EdgeInsets.fromLTRB(18, 16, 18, 24),
                       children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(14, 10, 14, 6),
-                          child: TextField(
-                            controller: _name,
-                            decoration: const InputDecoration(
-                              labelText: 'Название',
-                              prefixIcon: Icon(Icons.drive_file_rename_outline),
-                            ),
-                          ),
+                        _Header(
+                          matrix: widget.matrix,
+                          room: room,
+                          busy: _savingAvatar,
+                          allowAvatar: canChangeAvatar,
+                          onPickAvatar: _pickAvatar,
+                          onRemoveAvatar:
+                              room.avatar == null ? null : _removeAvatar,
+                          onClose: () => Navigator.pop(context),
                         ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(14, 6, 14, 14),
-                          child: TextField(
-                            controller: _topic,
-                            minLines: 1,
-                            maxLines: 3,
-                            decoration: const InputDecoration(
-                              labelText: 'Описание',
-                              prefixIcon: Icon(Icons.notes),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (showAccess) ...[
-                      const SizedBox(height: 18),
-                      _SectionCard(
-                        title: 'Доступ',
-                        children: [
-                          SwitchListTile(
-                            value: _public,
-                            onChanged: (value) =>
-                                setState(() => _public = value),
-                            contentPadding:
-                                const EdgeInsets.symmetric(horizontal: 14),
-                            secondary: Icon(
-                              _public ? Icons.public : Icons.lock_outline,
-                              color: OrexColors.copper,
-                            ),
-                            title: Text(_public ? 'Публичная' : 'Приватная'),
-                            subtitle: Text(
-                              _public
-                                  ? 'Можно войти по ID'
-                                  : 'Вход только по приглашению',
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-                            child: TextField(
-                              controller: _alias,
-                              enabled: _public,
-                              decoration: const InputDecoration(
-                                labelText: 'ID',
-                                hintText: 'naprimer-chat',
-                                prefixIcon: Icon(Icons.tag),
-                              ),
-                            ),
+                        if (canEditProfile) ...[
+                          const SizedBox(height: 18),
+                          _SectionCard(
+                            title: 'Профиль',
+                            children: [
+                              if (canChangeName)
+                                Padding(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(14, 10, 14, 6),
+                                  child: TextField(
+                                    controller: _name,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Название',
+                                      prefixIcon:
+                                          Icon(Icons.drive_file_rename_outline),
+                                    ),
+                                  ),
+                                ),
+                              if (canChangeTopic)
+                                Padding(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(14, 6, 14, 14),
+                                  child: TextField(
+                                    controller: _topic,
+                                    minLines: 1,
+                                    maxLines: 3,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Описание',
+                                      prefixIcon: Icon(Icons.notes),
+                                    ),
+                                  ),
+                                ),
+                            ],
                           ),
                         ],
-                      ),
-                    ],
-                    const SizedBox(height: 18),
-                    _SectionCard(
-                      title: 'История',
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
-                          child: DropdownButtonFormField<HistoryVisibility>(
-                            initialValue: _historyVisibility,
-                            decoration: const InputDecoration(
-                              labelText: 'Кто видит старые сообщения',
-                              prefixIcon: Icon(Icons.history),
-                            ),
-                            items: HistoryVisibility.values
-                                .map(
-                                  (value) => DropdownMenuItem(
-                                    value: value,
-                                    child: Text(_historyLabel(value)),
-                                  ),
-                                )
-                                .toList(),
-                            onChanged: (value) {
-                              if (value == null) return;
-                              setState(() => _historyVisibility = value);
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    _SaveBar(onSave: _saveDetails),
-                    const SizedBox(height: 18),
-                    _SectionCard(
-                      title: 'Участники',
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(14, 10, 14, 6),
-                          child: TextField(
-                            controller: _inviteSearch,
-                            enabled: canInvite,
-                            decoration: const InputDecoration(
-                              labelText: 'Найти пользователя',
-                              prefixIcon: Icon(Icons.person_add),
-                            ),
-                            onChanged: (_) => setState(() {}),
-                          ),
-                        ),
-                        _InvitePicker(
-                          matrix: widget.matrix,
-                          users: _localInviteCandidates(),
-                          selectedIds: _selectedInviteIds,
-                          enabled: canInvite,
-                          hasQuery: _inviteSearch.text.trim().isNotEmpty,
-                          onChanged: () => setState(() {}),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-                          child: OutlinedButton.icon(
-                            onPressed:
-                                canInvite && _selectedInviteIds.isNotEmpty
-                                    ? _inviteSelected
-                                    : null,
-                            icon: const Icon(Icons.send),
-                            label: Text(
-                              _selectedInviteIds.isEmpty
-                                  ? 'Выберите участников'
-                                  : 'Пригласить: ${_selectedInviteIds.length}',
-                            ),
-                          ),
-                        ),
-                        FutureBuilder<List<User>>(
-                          future: room.requestParticipants(
-                            const [Membership.join, Membership.invite],
-                          ),
-                          builder: (context, snap) {
-                            final users = snap.data;
-                            if (users == null) {
-                              return const Padding(
-                                padding: EdgeInsets.all(18),
-                                child: Center(
-                                  child: CircularProgressIndicator(),
+                        if (showAccess) ...[
+                          const SizedBox(height: 18),
+                          _SectionCard(
+                            title: 'Доступ',
+                            children: [
+                              SwitchListTile(
+                                value: _public,
+                                onChanged: (value) =>
+                                    setState(() => _public = value),
+                                contentPadding:
+                                    const EdgeInsets.symmetric(horizontal: 14),
+                                secondary: Icon(
+                                  _public ? Icons.public : Icons.lock_outline,
+                                  color: OrexColors.copper,
                                 ),
-                              );
-                            }
-                            return Column(
-                              children: users.take(80).map((user) {
-                                final name = user.calcDisplayname();
-                                final owner = widget.matrix
-                                    .isOwnerPowerLevel(user.powerLevel);
-                                return ListTile(
-                                  leading: MxcAvatar(
-                                    matrix: widget.matrix,
-                                    name: name,
-                                    mxc: user.avatarUrl,
-                                    size: 38,
+                                title:
+                                    Text(_public ? 'Публичная' : 'Приватная'),
+                                subtitle: Text(
+                                  _public
+                                      ? 'Можно войти по ID'
+                                      : 'Вход только по приглашению',
+                                ),
+                              ),
+                              Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                                child: TextField(
+                                  controller: _alias,
+                                  enabled: _public,
+                                  decoration: const InputDecoration(
+                                    labelText: 'ID',
+                                    hintText: 'naprimer-chat',
+                                    prefixIcon: Icon(Icons.tag),
                                   ),
-                                  title: Text(
-                                    name,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                        if (showHistory) ...[
+                          const SizedBox(height: 18),
+                          _SectionCard(
+                            title: 'История',
+                            children: [
+                              Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(14, 10, 14, 14),
+                                child:
+                                    DropdownButtonFormField<HistoryVisibility>(
+                                  initialValue: _historyVisibility,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Кто видит старые сообщения',
+                                    prefixIcon: Icon(Icons.history),
                                   ),
-                                  subtitle: Text(
-                                    widget.matrix.compactUserId(user.id),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
+                                  items: HistoryVisibility.values
+                                      .map(
+                                        (value) => DropdownMenuItem(
+                                          value: value,
+                                          child: Text(_historyLabel(value)),
+                                        ),
+                                      )
+                                      .toList(),
+                                  onChanged: (value) {
+                                    if (value == null) return;
+                                    setState(() => _historyVisibility = value);
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                        if (showSave) ...[
+                          const SizedBox(height: 12),
+                          _SaveBar(onSave: _saveDetails),
+                        ],
+                        const SizedBox(height: 18),
+                        _SectionCard(
+                          title: 'Участники',
+                          children: [
+                            if (canInvite) ...[
+                              Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(14, 10, 14, 6),
+                                child: TextField(
+                                  controller: _inviteSearch,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Найти пользователя',
+                                    prefixIcon: Icon(Icons.person_add),
                                   ),
-                                  trailing: owner
-                                      ? const _RoleChip('Владелец')
+                                  onChanged: (_) => setState(() {}),
+                                ),
+                              ),
+                              _InvitePicker(
+                                matrix: widget.matrix,
+                                users: _localInviteCandidates(),
+                                selectedIds: _selectedInviteIds,
+                                enabled: canInvite,
+                                hasQuery: _inviteSearch.text.trim().isNotEmpty,
+                                onChanged: () => setState(() {}),
+                              ),
+                              Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                                child: OutlinedButton.icon(
+                                  onPressed: _selectedInviteIds.isNotEmpty
+                                      ? _inviteSelected
                                       : null,
+                                  icon: const Icon(Icons.send),
+                                  label: Text(
+                                    _selectedInviteIds.isEmpty
+                                        ? 'Выберите участников'
+                                        : 'Пригласить: ${_selectedInviteIds.length}',
+                                  ),
+                                ),
+                              ),
+                            ],
+                            FutureBuilder<List<User>>(
+                              future: room.requestParticipants(
+                                const [Membership.join, Membership.invite],
+                              ),
+                              builder: (context, snap) {
+                                final users = snap.data;
+                                if (users == null) {
+                                  return const Padding(
+                                    padding: EdgeInsets.all(18),
+                                    child: Center(
+                                      child: CircularProgressIndicator(),
+                                    ),
+                                  );
+                                }
+                                return Column(
+                                  children: users.take(80).map((user) {
+                                    final name = user.calcDisplayname();
+                                    final owner = widget.matrix
+                                        .isOwnerPowerLevel(user.powerLevel);
+                                    final canRemove = user.canKick &&
+                                        user.id != widget.matrix.client.userID;
+                                    final trailing = <Widget>[
+                                      if (owner) const _RoleChip('Владелец'),
+                                      if (canRemove)
+                                        IconButton(
+                                          tooltip: 'Удалить участника',
+                                          onPressed: () =>
+                                              _removeParticipant(user),
+                                          icon: const Icon(Icons.person_remove),
+                                          color: const Color(0xFFCF6679),
+                                        ),
+                                    ];
+                                    return ListTile(
+                                      leading: MxcAvatar(
+                                        matrix: widget.matrix,
+                                        name: name,
+                                        mxc: user.avatarUrl,
+                                        size: 38,
+                                      ),
+                                      title: Text(
+                                        name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      subtitle: Text(
+                                        widget.matrix.compactUserId(user.id),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      trailing: trailing.isEmpty
+                                          ? null
+                                          : Wrap(
+                                              spacing: 6,
+                                              crossAxisAlignment:
+                                                  WrapCrossAlignment.center,
+                                              children: trailing,
+                                            ),
+                                    );
+                                  }).toList(),
                                 );
-                              }).toList(),
-                            );
-                          },
+                              },
+                            ),
+                          ],
                         ),
+                        if (canManageSupergroupRooms) ...[
+                          const SizedBox(height: 18),
+                          _SupergroupRoomsSection(
+                            matrix: widget.matrix,
+                            room: room,
+                            onAddChat: _createChild,
+                            onEditChild: _editChild,
+                            onDeleteChild: _deleteChild,
+                          ),
+                        ],
+                        if (widget.matrix.canFullyDeleteRoom(room)) ...[
+                          const SizedBox(height: 18),
+                          _DangerZone(onDeleteForEveryone: _deleteForEveryone),
+                        ],
                       ],
                     ),
-                    if (isSupergroup) ...[
-                      const SizedBox(height: 18),
-                      _SupergroupRoomsSection(
-                        matrix: widget.matrix,
-                        room: room,
-                        onAddChat: () => _createChild(voice: false),
-                        onAddVoice: () => _createChild(voice: true),
-                        onEditChild: _editChild,
-                        onAvatarChild: _changeChildAvatar,
-                        onDeleteChild: _deleteChild,
-                      ),
-                    ],
-                    if (widget.matrix.canFullyDeleteRoom(room)) ...[
-                      const SizedBox(height: 18),
-                      _DangerZone(onDeleteForEveryone: _deleteForEveryone),
-                    ],
-                  ],
-                ),
+                  ),
+                  if (_busy) const OrexLoadingOverlay(caption: 'Сохраняем...'),
+                ],
               ),
             ),
           ),
@@ -795,18 +868,14 @@ class _SupergroupRoomsSection extends StatelessWidget {
     required this.matrix,
     required this.room,
     required this.onAddChat,
-    required this.onAddVoice,
     required this.onEditChild,
-    required this.onAvatarChild,
     required this.onDeleteChild,
   });
 
   final MatrixService matrix;
   final Room room;
   final VoidCallback onAddChat;
-  final VoidCallback onAddVoice;
   final ValueChanged<Room> onEditChild;
-  final ValueChanged<Room> onAvatarChild;
   final ValueChanged<Room> onDeleteChild;
 
   @override
@@ -817,24 +886,13 @@ class _SupergroupRoomsSection extends StatelessWidget {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
-          child: Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: onAddChat,
-                  icon: const Icon(Icons.forum),
-                  label: const Text('Добавить чат'),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: onAddVoice,
-                  icon: const Icon(Icons.graphic_eq),
-                  label: const Text('Голосовой'),
-                ),
-              ),
-            ],
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: onAddChat,
+              icon: const Icon(Icons.forum),
+              label: const Text('Добавить чат'),
+            ),
           ),
         ),
         if (children.isEmpty)
@@ -848,11 +906,9 @@ class _SupergroupRoomsSection extends StatelessWidget {
         else
           ...children.map(
             (child) => ListTile(
-              leading: MxcAvatar(
-                matrix: matrix,
-                name: child.getLocalizedDisplayname(),
-                mxc: child.avatar,
-                size: 38,
+              leading: Icon(
+                matrix.isVoiceRoom(child) ? Icons.graphic_eq : Icons.forum,
+                color: OrexColors.copper,
               ),
               title: Text(
                 child.getLocalizedDisplayname(),
@@ -869,11 +925,6 @@ class _SupergroupRoomsSection extends StatelessWidget {
                     tooltip: 'Переименовать',
                     onPressed: () => onEditChild(child),
                     icon: const Icon(Icons.edit),
-                  ),
-                  IconButton(
-                    tooltip: 'Иконка',
-                    onPressed: () => onAvatarChild(child),
-                    icon: const Icon(Icons.image_outlined),
                   ),
                   IconButton(
                     tooltip: 'Удалить',
