@@ -4,6 +4,7 @@ import '../../core/matrix/matrix_service.dart';
 import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 import '../../theme/theme_controller.dart';
+import '../../widgets/orex_loading_overlay.dart';
 import '../../widgets/squirrel_mascot.dart';
 import '../call/call_screen.dart';
 import '../call/minimized_call_panel.dart';
@@ -39,6 +40,7 @@ class _HomeShellState extends State<HomeShell> {
   double _chatListWidth = 360; // ширина левой колонки (можно тянуть мышью)
   late final ChatFolderController _folders;
   bool _appliedSavedChatListWidth = false;
+  bool _creatingRoom = false;
 
   static const double _wideBreakpoint = 900;
 
@@ -134,6 +136,7 @@ class _HomeShellState extends State<HomeShell> {
   Future<void> _createRoom(_CreateRoomKind kind) async {
     final config = await _askRoom(kind);
     if (config == null || config.name.isEmpty) return;
+    if (mounted) setState(() => _creatingRoom = true);
     try {
       final roomId = switch (kind) {
         _CreateRoomKind.group => await widget.matrix.createGroup(
@@ -164,6 +167,8 @@ class _HomeShellState extends State<HomeShell> {
           SnackBar(content: Text('Не удалось создать: $e')),
         );
       }
+    } finally {
+      if (mounted) setState(() => _creatingRoom = false);
     }
   }
 
@@ -317,24 +322,29 @@ class _HomeShellState extends State<HomeShell> {
       child: AmbientBackground(
         child: Scaffold(
           backgroundColor: Colors.transparent,
-          body: SafeArea(
-            child: ListenableBuilder(
-              listenable: widget.matrix.call,
-              builder: (context, _) {
-                return Column(
-                  children: [
-                    if (widget.matrix.needsSessionVerification &&
-                        !_verifyBannerDismissed)
-                      _VerifyBanner(
-                        onTap: _openVerifySession,
-                        onClose: () =>
-                            setState(() => _verifyBannerDismissed = true),
-                      ),
-                    Expanded(child: isWide ? _buildWide() : _buildNarrow()),
-                  ],
-                );
-              },
-            ),
+          body: Stack(
+            children: [
+              SafeArea(
+                child: ListenableBuilder(
+                  listenable: widget.matrix.call,
+                  builder: (context, _) {
+                    return Column(
+                      children: [
+                        if (widget.matrix.needsSessionVerification &&
+                            !_verifyBannerDismissed)
+                          _VerifyBanner(
+                            onTap: _openVerifySession,
+                            onClose: () =>
+                                setState(() => _verifyBannerDismissed = true),
+                          ),
+                        Expanded(child: isWide ? _buildWide() : _buildNarrow()),
+                      ],
+                    );
+                  },
+                ),
+              ),
+              if (_creatingRoom) const OrexLoadingOverlay(),
+            ],
           ),
         ),
       ),

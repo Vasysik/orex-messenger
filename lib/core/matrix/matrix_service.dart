@@ -20,6 +20,7 @@ part 'matrix_media_api.dart';
 
 const _orexRoomKindEvent = 'ru.orex.room.kind';
 const _orexRoomIconEvent = 'ru.orex.room.icon';
+const _orexSpaceChildPreviewEvent = 'ru.orex.space.child.preview';
 
 const _kLastBackup = 'orex_last_backup_ms';
 const _kAutoBackup = 'orex_auto_backup';

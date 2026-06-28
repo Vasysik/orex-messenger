@@ -43,6 +43,7 @@ final class OrexRoomPreview {
     this.avatar,
     this.topic,
     this.memberCount,
+    this.iconKey,
     this.via = const <String>[],
     this.parentSpaceId,
   });
@@ -65,6 +66,7 @@ final class OrexRoomPreview {
   final Uri? avatar;
   final String? topic;
   final int? memberCount;
+  final String? iconKey;
   final List<String>? via;
   final String? parentSpaceId;
 

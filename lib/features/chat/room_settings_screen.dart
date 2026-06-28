@@ -352,6 +352,12 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
           topic: child.topic,
         );
         await widget.matrix.setRoomIcon(child, result.icon);
+        await widget.matrix.updateSupergroupChildPreview(
+          widget.room,
+          child,
+          name: result.name,
+          icon: result.icon,
+        );
       },
     );
     if (mounted) setState(() {});
@@ -446,19 +452,23 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
     final kind = widget.matrix.roomKind(room);
     final isSupergroup = kind == OrexRoomKind.supergroup;
     final childRoom = widget.matrix.isSupergroupChild(room);
-    final canChangeName = room.canChangeStateEvent(EventTypes.RoomName);
-    final canChangeTopic = room.canChangeStateEvent(EventTypes.RoomTopic);
+    final canManage = widget.matrix.canManageRoomSettings(room);
+    final canChangeName =
+        canManage && room.canChangeStateEvent(EventTypes.RoomName);
+    final canChangeTopic =
+        canManage && room.canChangeStateEvent(EventTypes.RoomTopic);
     final canChangeAvatar =
-        !childRoom && room.canChangeStateEvent(EventTypes.RoomAvatar);
+        canManage && !childRoom && room.canChangeStateEvent(EventTypes.RoomAvatar);
     final canEditProfile =
         !childRoom && (canChangeName || canChangeTopic || canChangeAvatar);
-    final canInvite = room.canInvite;
-    final canChangeAccess = _canShowAccess(kind) && room.canChangeJoinRules;
-    final showHistory = room.canChangeHistoryVisibility;
+    final canInvite = canManage && room.canInvite;
+    final canChangeAccess =
+        canManage && _canShowAccess(kind) && room.canChangeJoinRules;
+    final showHistory = canManage && room.canChangeHistoryVisibility;
     final showAccess = canChangeAccess || showHistory;
     final showSave = canEditProfile || showAccess || showHistory;
     final canManageSupergroupRooms =
-        isSupergroup && room.canChangeStateEvent(EventTypes.SpaceChild);
+        canManage && isSupergroup && room.canChangeStateEvent(EventTypes.SpaceChild);
 
     return AmbientBackground(
       child: Scaffold(
@@ -604,7 +614,8 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
                               final name = user.calcDisplayname();
                               final owner = widget.matrix
                                   .isOwnerPowerLevel(user.powerLevel);
-                              final canRemove = user.canKick &&
+                              final canRemove = canManage &&
+                                  user.canKick &&
                                   user.id != widget.matrix.client.userID;
                               final trailing = <Widget>[
                                 if (owner) const _RoleChip('Владелец'),

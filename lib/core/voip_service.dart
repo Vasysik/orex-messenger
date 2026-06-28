@@ -164,6 +164,13 @@ class VoipService extends ChangeNotifier {
       if (_shown.contains(room.id) || _suppress.contains(room.id)) continue;
       final others = _callMembers(room).where((id) => id != myId);
       if (others.isEmpty) continue; // только моё членство — не входящий
+      if (!room.isDirectChat) {
+        // В группах, каналах и чатах супергруппы звонок — это голосовой канал:
+        // не показываем системный входящий вызов всем участникам. Комната всё
+        // равно помечается активной, поэтому UI покажет «Идёт звонок · Войти».
+        _suppress.add(room.id);
+        continue;
+      }
       if (firstScan) {
         _suppress.add(room.id); // активен на старте → не звоним (покажет панель «войти»)
         continue;

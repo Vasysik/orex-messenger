@@ -133,11 +133,8 @@ class _PublicRoomPreviewViewState extends State<PublicRoomPreviewView> {
           ),
         ),
         Divider(height: 1, color: OrexColors.copper.withValues(alpha: 0.12)),
-        _PreviewHeader(
-          matrix: widget.matrix,
-          preview: preview,
-          parentSpace: parent,
-        ),
+        if ((preview.topic ?? '').isNotEmpty)
+          _PreviewTopicPanel(topic: preview.topic!),
         Expanded(
           child: FutureBuilder<List<MatrixEvent>>(
             future: _events,
@@ -229,6 +226,10 @@ class _PreviewChildPicker extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
+                    if (_hasCall(child)) ...[
+                      const SizedBox(width: 6),
+                      const Icon(Icons.call, size: 14, color: OrexColors.online),
+                    ],
                   ],
                 ),
               ),
@@ -244,65 +245,40 @@ class _PreviewChildPicker extends StatelessWidget {
 
   IconData _icon(OrexRoomPreview child) {
     final local = matrix.client.getRoomById(child.roomId);
-    if (local == null) return Icons.forum;
+    if (local == null) return orexRoomIconData(child.iconKey ?? 'chat');
     return orexRoomIconData(matrix.roomIconKey(local));
+  }
+
+  bool _hasCall(OrexRoomPreview child) {
+    final local = matrix.client.getRoomById(child.roomId);
+    return local != null && matrix.roomHasActiveCall(local);
   }
 }
 
-class _PreviewHeader extends StatelessWidget {
-  const _PreviewHeader({
-    required this.matrix,
-    required this.preview,
-    required this.parentSpace,
-  });
+class _PreviewTopicPanel extends StatelessWidget {
+  const _PreviewTopicPanel({required this.topic});
 
-  final MatrixService matrix;
-  final OrexRoomPreview preview;
-  final Room? parentSpace;
+  final String topic;
 
   @override
   Widget build(BuildContext context) {
-    final topic = preview.topic;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
       child: GlassPanel(
-        borderRadius: 20,
-        opacity: 0.26,
+        borderRadius: 18,
+        opacity: 0.22,
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: Row(
             children: [
-              MxcAvatar(
-                matrix: matrix,
-                name: preview.name,
-                mxc: preview.avatar,
-                size: 54,
-              ),
-              const SizedBox(width: 12),
+              const Icon(Icons.notes, color: OrexColors.copper, size: 18),
+              const SizedBox(width: 10),
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      preview.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    Text(
-                      parentSpace == null
-                          ? 'Публичная комната'
-                          : 'Чат внутри супергруппы',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    if (topic != null && topic.isNotEmpty)
-                      Text(
-                        topic,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                  ],
+                child: Text(
+                  topic,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ),
             ],

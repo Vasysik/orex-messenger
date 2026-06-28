@@ -229,6 +229,10 @@ class _SupergroupChildPicker extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
+                    if (_hasCall(child)) ...[
+                      const SizedBox(width: 6),
+                      const Icon(Icons.call, size: 14, color: OrexColors.online),
+                    ],
                   ],
                 ),
               ),
@@ -244,8 +248,13 @@ class _SupergroupChildPicker extends StatelessWidget {
 
   IconData _childIcon(OrexRoomPreview child) {
     final local = matrix.client.getRoomById(child.roomId);
-    if (local == null) return Icons.forum;
+    if (local == null) return orexRoomIconData(child.iconKey ?? 'chat');
     return orexRoomIconData(matrix.roomIconKey(local));
+  }
+
+  bool _hasCall(OrexRoomPreview child) {
+    final local = matrix.client.getRoomById(child.roomId);
+    return local != null && matrix.roomHasActiveCall(local);
   }
 }
 

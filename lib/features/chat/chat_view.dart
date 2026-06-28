@@ -9,6 +9,7 @@ import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
 import '../../widgets/room_icon.dart';
 import '../call/call_screen.dart';
+import '../call/minimized_call_panel.dart';
 import 'message_bubble.dart';
 import 'public_room_preview_view.dart';
 import 'room_settings_screen.dart';
@@ -639,6 +640,17 @@ class _ChatViewState extends State<ChatView> {
             ),
             Divider(
                 height: 1, color: OrexColors.copper.withValues(alpha: 0.12)),
+            if (widget.supergroupSpaceId != null &&
+                !widget.matrix.call.isActive &&
+                widget.matrix.roomHasActiveCall(room))
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                child: JoinCallPanel(
+                  matrix: widget.matrix,
+                  room: room,
+                  onJoin: () => _openCall(false),
+                ),
+              ),
             Expanded(
               child: ListView.builder(
                 controller: _scroll,
