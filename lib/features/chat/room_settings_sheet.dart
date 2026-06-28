@@ -7,6 +7,7 @@ import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
 import '../../widgets/orex_loading_overlay.dart';
+import '../../widgets/orex_settings_components.dart';
 import '../../widgets/room_icon.dart';
 
 class RoomSettingsSheet extends StatefulWidget {
@@ -467,12 +468,13 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
             padding: widget.fullScreen
                 ? EdgeInsets.zero
                 : const EdgeInsets.fromLTRB(10, 0, 10, 10),
-            child: Material(
-              color:
-                  Theme.of(context).colorScheme.surface.withValues(alpha: 0.78),
+            child: ClipRRect(
               borderRadius: BorderRadius.circular(widget.fullScreen ? 0 : 24),
-              child: Stack(
-                children: [
+              child: AmbientBackground(
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: Stack(
+                    children: [
                   AbsorbPointer(
                     absorbing: _busy,
                     child: ListView(
@@ -491,7 +493,7 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                         ),
                         if (canEditProfile) ...[
                           const SizedBox(height: 18),
-                          _SectionCard(
+                          OrexSettingsSection(
                             title: 'Профиль',
                             children: [
                               if (canChangeName)
@@ -526,7 +528,7 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                         ],
                         if (showAccess) ...[
                           const SizedBox(height: 18),
-                          _SectionCard(
+                          OrexSettingsSection(
                             title: 'Доступ',
                             children: [
                               if (canChangeAccess) ...[
@@ -595,10 +597,10 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                         ],
                         if (showSave) ...[
                           const SizedBox(height: 12),
-                          _SaveBar(onSave: _saveDetails),
+                          OrexSettingsSaveBar(onSave: _saveDetails),
                         ],
                         const SizedBox(height: 18),
-                        _SectionCard(
+                        OrexSettingsSection(
                           title: 'Участники',
                           children: [
                             FutureBuilder<List<User>>(
@@ -721,7 +723,9 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                     ),
                   ),
                   if (_busy) const OrexLoadingOverlay(),
-                ],
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
@@ -818,24 +822,6 @@ class _Header extends StatelessWidget {
     );
   }
 }
-
-class _SaveBar extends StatelessWidget {
-  const _SaveBar({required this.onSave});
-  final VoidCallback onSave;
-
-  @override
-  Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerRight,
-      child: FilledButton.icon(
-        onPressed: onSave,
-        icon: const Icon(Icons.save),
-        label: const Text('Сохранить'),
-      ),
-    );
-  }
-}
-
 class _InvitePicker extends StatelessWidget {
   const _InvitePicker({
     required this.matrix,
@@ -937,7 +923,7 @@ class _DangerZone extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _SectionCard(
+    return OrexSettingsSection(
       title: 'Опасная зона',
       children: [
         ListTile(
@@ -976,7 +962,7 @@ class _SupergroupRoomsSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final children = matrix.supergroupChildren(room);
-    return _SectionCard(
+    return OrexSettingsSection(
       title: 'Чаты супергруппы',
       children: [
         Padding(
@@ -1031,37 +1017,6 @@ class _SupergroupRoomsSection extends StatelessWidget {
               ),
             ),
           ),
-      ],
-    );
-  }
-}
-
-class _SectionCard extends StatelessWidget {
-  const _SectionCard({required this.title, required this.children});
-
-  final String title;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(left: 8, bottom: 8),
-          child: Text(
-            title.toUpperCase(),
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  letterSpacing: 1.1,
-                  color: OrexColors.copper,
-                  fontWeight: FontWeight.w700,
-                ),
-          ),
-        ),
-        GlassPanel(
-          borderRadius: 20,
-          child: Column(children: children),
-        ),
       ],
     );
   }

@@ -8,6 +8,7 @@ import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 import '../../theme/theme_controller.dart';
 import '../../widgets/mxc_avatar.dart';
+import '../../widgets/orex_settings_components.dart';
 import 'devices_screen.dart';
 import 'key_storage_screen.dart';
 import 'verify_session_screen.dart';
@@ -360,17 +361,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onName: _editName,
             ),
             const SizedBox(height: 16),
-            _SectionCard(
+            OrexSettingsSection(
               title: 'Оформление',
               children: [
                 _ThemeSelector(theme: widget.theme),
               ],
             ),
             const SizedBox(height: 16),
-            _SectionCard(
+            OrexSettingsSection(
               title: 'Безопасность',
               children: [
-                _Tile(
+                OrexSettingsTile(
                   icon: widget.matrix.encryptionEnabled
                       ? Icons.lock
                       : Icons.lock_open,
@@ -380,7 +381,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       : 'Недоступно — vodozemac не инициализирован',
                 ),
                 if (widget.matrix.encryptionEnabled)
-                  _Tile(
+                  OrexSettingsTile(
                     icon: widget.matrix.isThisSessionVerified
                         ? Icons.verified_user
                         : Icons.gpp_maybe,
@@ -402,7 +403,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     }),
                   ),
                 if (widget.matrix.encryptionEnabled)
-                  _Tile(
+                  OrexSettingsTile(
                     icon: widget.matrix.keyBackupEnabled
                         ? Icons.cloud_done
                         : Icons.cloud_off,
@@ -420,7 +421,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       if (mounted) setState(() {});
                     }),
                   ),
-                _Tile(
+                OrexSettingsTile(
                   icon: Icons.devices,
                   title: 'Устройства аккаунта',
                   subtitle: 'Просмотр и управление сессиями',
@@ -433,28 +434,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
             const SizedBox(height: 16),
-            _SectionCard(
+            OrexSettingsSection(
               title: 'Аккаунт',
               children: [
-                _Tile(
+                OrexSettingsTile(
                   icon: Icons.alternate_email,
                   title: 'Matrix ID',
                   subtitle: widget.matrix.userId,
                 ),
-                _Tile(
+                OrexSettingsTile(
                   icon: Icons.lock_person,
                   title: 'Сменить пароль',
                   subtitle: 'Изменить текущий пароль от аккаунта',
                   onTap: _changePasswordDialog,
                 ),
-                _Tile(
+                OrexSettingsTile(
                   icon: Icons.security_update_warning,
                   title: 'Сбросить серверные настройки безопасности',
                   subtitle:
                       'Ключ восстановления, кросс-подпись и резервные копии',
                   onTap: _resetSecurityDialog,
                 ),
-                _Tile(
+                OrexSettingsTile(
                   icon: Icons.logout,
                   title: 'Выйти',
                   danger: true,
@@ -583,63 +584,6 @@ class _ThemeSelector extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _SectionCard extends StatelessWidget {
-  const _SectionCard({required this.title, required this.children});
-  final String title;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(left: 8, bottom: 8),
-          child: Text(title.toUpperCase(),
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    letterSpacing: 1.1,
-                    color: OrexColors.copper,
-                    fontWeight: FontWeight.w700,
-                  )),
-        ),
-        GlassPanel(
-          borderRadius: 20,
-          child: Column(children: children),
-        ),
-      ],
-    );
-  }
-}
-
-class _Tile extends StatelessWidget {
-  const _Tile({
-    required this.icon,
-    required this.title,
-    this.subtitle,
-    this.onTap,
-    this.danger = false,
-  });
-
-  final IconData icon;
-  final String title;
-  final String? subtitle;
-  final VoidCallback? onTap;
-  final bool danger;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = danger ? const Color(0xFFCF6679) : null;
-    return ListTile(
-      leading: Icon(icon, color: color ?? OrexColors.copper),
-      title: Text(title, style: TextStyle(color: color)),
-      subtitle: subtitle != null ? Text(subtitle!) : null,
-      trailing:
-          onTap != null ? const Icon(Icons.chevron_right, size: 20) : null,
-      onTap: onTap,
     );
   }
 }
