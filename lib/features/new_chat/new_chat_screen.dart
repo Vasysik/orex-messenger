@@ -21,7 +21,8 @@ class NewChatScreen extends StatefulWidget {
 class _NewChatScreenState extends State<NewChatScreen> {
   final _search = TextEditingController();
   Timer? _debounce;
-  List<Profile> _results = [];
+  List<Profile> _people = [];
+  List<PublishedRoomsChunk> _publicRooms = [];
   bool _loading = false;
   bool _busy = false;
 
@@ -31,18 +32,28 @@ class _NewChatScreenState extends State<NewChatScreen> {
   }
 
   Future<void> _run(String q) async {
-    if (q.trim().isEmpty) {
-      setState(() => _results = []);
-      return;
-    }
-    setState(() => _loading = true);
-    final res = await widget.matrix.searchUsers(q, includeMxidFallback: true);
-    if (mounted) {
+    final query = q.trim();
+    if (query.isEmpty) {
       setState(() {
-        _results = res;
+        _people = [];
+        _publicRooms = [];
         _loading = false;
       });
+      return;
     }
+
+    setState(() => _loading = true);
+    final peopleFuture =
+        widget.matrix.searchUsers(query, includeMxidFallback: true);
+    final roomsFuture = widget.matrix.searchPublicRooms(query);
+    final people = await peopleFuture;
+    final rooms = await roomsFuture;
+    if (!mounted || _search.text.trim() != query) return;
+    setState(() {
+      _people = people;
+      _publicRooms = rooms;
+      _loading = false;
+    });
   }
 
   Future<void> _openDirect(String userId) async {
@@ -52,6 +63,18 @@ class _NewChatScreenState extends State<NewChatScreen> {
       if (mounted) Navigator.of(context).pop(roomId);
     } catch (e) {
       _snack('Не удалось открыть чат: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _joinPublicRoom(PublishedRoomsChunk room) async {
+    setState(() => _busy = true);
+    try {
+      final roomId = await widget.matrix.joinPublicRoom(room);
+      if (mounted) Navigator.of(context).pop(roomId);
+    } catch (e) {
+      _snack('Не удалось войти: $e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -207,20 +230,13 @@ class _NewChatScreenState extends State<NewChatScreen> {
                 onTap: () => _create(_NewRoomKind.supergroup),
               ),
               const SizedBox(height: 20),
-              Text(
-                'НАЙТИ ЧЕЛОВЕКА',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      letterSpacing: 1.1,
-                      color: OrexColors.copper,
-                      fontWeight: FontWeight.w700,
-                    ),
-              ),
+              _sectionTitle(context, 'ПОИСК'),
               const SizedBox(height: 8),
               TextField(
                 controller: _search,
                 onChanged: _onQuery,
                 decoration: InputDecoration(
-                  hintText: 'Имя или @user',
+                  hintText: 'Имя, @user или публичный ID',
                   prefixIcon: const Icon(Icons.search),
                   filled: true,
                   fillColor: Colors.white.withValues(alpha: 0.10),
@@ -236,12 +252,34 @@ class _NewChatScreenState extends State<NewChatScreen> {
                   padding: EdgeInsets.all(20),
                   child: Center(child: CircularProgressIndicator()),
                 )
-              else
-                ..._results.map(_userTile),
+              else ...[
+                if (_publicRooms.isNotEmpty) ...[
+                  _sectionTitle(context, 'ПУБЛИЧНЫЕ КОМНАТЫ'),
+                  const SizedBox(height: 4),
+                  ..._publicRooms.map(_publicRoomTile),
+                  const SizedBox(height: 10),
+                ],
+                if (_people.isNotEmpty) ...[
+                  _sectionTitle(context, 'ЛЮДИ'),
+                  const SizedBox(height: 4),
+                  ..._people.map(_userTile),
+                ],
+              ],
             ],
           ),
         ),
       ),
+    );
+  }
+
+  Widget _sectionTitle(BuildContext context, String title) {
+    return Text(
+      title,
+      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            letterSpacing: 1.1,
+            color: OrexColors.copper,
+            fontWeight: FontWeight.w700,
+          ),
     );
   }
 
@@ -258,6 +296,23 @@ class _NewChatScreenState extends State<NewChatScreen> {
           onTap: onTap,
         ),
       );
+
+  Widget _publicRoomTile(PublishedRoomsChunk room) {
+    final name = room.name ?? room.canonicalAlias ?? room.roomId;
+    final subtitle = room.canonicalAlias ?? room.topic ?? room.roomId;
+    return ListTile(
+      leading: MxcAvatar(
+        matrix: widget.matrix,
+        name: name,
+        mxc: room.avatarUrl,
+        size: 44,
+      ),
+      title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+      trailing: const Icon(Icons.login, color: OrexColors.copper),
+      onTap: () => _joinPublicRoom(room),
+    );
+  }
 
   Widget _userTile(Profile p) {
     final compactId = widget.matrix.compactUserId(p.userId);

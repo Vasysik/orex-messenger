@@ -269,6 +269,7 @@ class _ChatViewState extends State<ChatView> {
     final text = _input.text.trim();
     final room = _room;
     if (room == null) return;
+    if (!room.canSendDefaultMessages) return;
 
     final attachedList = List<PlatformFile>.from(_attachedFiles);
     if (attachedList.isNotEmpty) {
@@ -717,6 +718,7 @@ class _ChatViewState extends State<ChatView> {
             _InputBar(
               controller: _input,
               focusNode: _focusNode,
+              canSend: room.canSendDefaultMessages,
               onSend: _send,
               editing: _editing != null,
               onCancelEdit: _cancelEdit,
@@ -1018,6 +1020,7 @@ class _InputBar extends StatelessWidget {
   const _InputBar({
     required this.controller,
     required this.focusNode,
+    required this.canSend,
     required this.onSend,
     this.editing = false,
     this.onCancelEdit,
@@ -1033,6 +1036,7 @@ class _InputBar extends StatelessWidget {
   });
   final TextEditingController controller;
   final FocusNode focusNode;
+  final bool canSend;
   final VoidCallback onSend;
   final bool editing;
   final VoidCallback? onCancelEdit;
@@ -1202,7 +1206,7 @@ class _InputBar extends StatelessWidget {
           child: Row(
             children: [
               IconButton(
-                onPressed: onAttach,
+                onPressed: canSend ? onAttach : null,
                 icon: const Icon(Icons.attach_file),
                 color: OrexColors.copper,
               ),
@@ -1223,27 +1227,30 @@ class _InputBar extends StatelessWidget {
                         child: TextField(
                           controller: controller,
                           focusNode: focusNode,
-                          onTap:
-                              onTapInput, // Сворачиваем смайлики при тапе по полю ввода
+                          readOnly: !canSend,
+                          onTap: canSend ? onTapInput : null,
                           minLines: 1,
                           maxLines: 5,
                           textInputAction: TextInputAction.send,
-                          onSubmitted: (_) => onSend(),
+                          onSubmitted: canSend ? (_) => onSend() : null,
                           decoration: InputDecoration(
                             border: InputBorder.none,
-                            hintText: files.isNotEmpty
-                                ? 'Добавить подпись…'
-                                : 'Сообщение',
+                            hintText: canSend
+                                ? (files.isNotEmpty
+                                    ? 'Добавить подпись…'
+                                    : 'Сообщение')
+                                : 'Только чтение',
                           ),
                         ),
                       ),
                       GestureDetector(
-                        onTap: onToggleEmojiPicker,
+                        onTap: canSend ? onToggleEmojiPicker : null,
                         child: Icon(
                           showEmojiPicker
                               ? Icons.keyboard_hide_outlined
                               : Icons.emoji_emotions_outlined,
-                          color: OrexColors.copper.withValues(alpha: 0.8),
+                          color: OrexColors.copper
+                              .withValues(alpha: canSend ? 0.8 : 0.32),
                         ),
                       ),
                     ],
@@ -1252,16 +1259,24 @@ class _InputBar extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               GestureDetector(
-                onTap: onSend,
+                onTap: canSend ? onSend : null,
                 child: Container(
                   width: 46,
                   height: 46,
-                  decoration: const BoxDecoration(
+                  decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    gradient: OrexColors.copperGradient,
+                    gradient: canSend ? OrexColors.copperGradient : null,
+                    color: canSend
+                        ? null
+                        : OrexColors.walnut.withValues(alpha: 0.18),
                   ),
-                  child:
-                      const Icon(Icons.send, color: OrexColors.cream, size: 20),
+                  child: Icon(
+                    Icons.send,
+                    color: canSend
+                        ? OrexColors.cream
+                        : OrexColors.copper.withValues(alpha: 0.36),
+                    size: 20,
+                  ),
                 ),
               ),
             ],

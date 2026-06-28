@@ -171,19 +171,25 @@ class _ChatListPanelState extends State<ChatListPanel> {
       }
     }
 
-    if (_tabsScroll.hasClients) {
-      final target = (next * 116.0)
-          .clamp(
-            _tabsScroll.position.minScrollExtent,
-            _tabsScroll.position.maxScrollExtent,
-          )
-          .toDouble();
-      _tabsScroll.animateTo(
-        target,
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutCubic,
-      );
-    }
+    _centerFolderTab(next);
+  }
+
+  void _centerFolderTab(int index) {
+    if (!_tabsScroll.hasClients) return;
+    const estimatedTabWidth = 116.0;
+    final viewport = _tabsScroll.position.viewportDimension;
+    final target =
+        (index * estimatedTabWidth - (viewport - estimatedTabWidth) / 2)
+            .clamp(
+              _tabsScroll.position.minScrollExtent,
+              _tabsScroll.position.maxScrollExtent,
+            )
+            .toDouble();
+    _tabsScroll.animateTo(
+      target,
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   List<Room> _roomsForFolder(OrexChatFolder folder) {
@@ -244,7 +250,10 @@ class _ChatListPanelState extends State<ChatListPanel> {
               child: PageView.builder(
                 controller: _pageController,
                 itemCount: folders.length,
-                onPageChanged: (index) => setState(() => _folderIndex = index),
+                onPageChanged: (index) {
+                  setState(() => _folderIndex = index);
+                  _centerFolderTab(index);
+                },
                 itemBuilder: (context, index) {
                   final folder = folders[index];
                   final rooms = _roomsForFolder(folder);

@@ -376,6 +376,7 @@ class MatrixService extends ChangeNotifier {
 
   /// Удалить чат у себя: выйти из комнаты и «забыть» её.
   Future<void> deleteRoom(Room room) async {
+    await _releaseRoomAlias(room);
     try {
       if (room.membership != Membership.leave) await room.leave();
     } catch (_) {}
@@ -1246,6 +1247,33 @@ class MatrixService extends ChangeNotifier {
     return byId.values.toList();
   }
 
+  Future<List<PublishedRoomsChunk>> searchPublicRooms(String query) async {
+    final q = query.trim();
+    if (q.isEmpty) return const [];
+    try {
+      final res = await client.queryPublicRooms(
+        limit: 30,
+        includeAllNetworks: false,
+        filter: PublicRoomQueryFilter(genericSearchTerm: q),
+      );
+      return res.chunk;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<String> joinPublicRoom(PublishedRoomsChunk room) async {
+    final idOrAlias = (room.canonicalAlias?.isNotEmpty ?? false)
+        ? room.canonicalAlias!
+        : room.roomId;
+    final roomId = await client.joinRoom(idOrAlias);
+    if (client.getRoomById(roomId) == null) {
+      await client.waitForRoomInSync(roomId, join: true);
+    }
+    notifyListeners();
+    return roomId;
+  }
+
   /// Прямые MXID-кандидаты для точного поиска: полный `@user:server`,
   /// короткий `@user` или просто `user` на текущем homeserver.
   String _directoryQuery(String q) {
@@ -1330,13 +1358,49 @@ class MatrixService extends ChangeNotifier {
   Future<void> setRoomLocalAlias(Room room, String? localAlias) async {
     final alias = _fullRoomAlias(localAlias);
     if (alias == null) return;
+    final oldAlias = room.canonicalAlias;
+    if (oldAlias.isNotEmpty && oldAlias != alias) {
+      try {
+        await client.deleteRoomAlias(oldAlias);
+      } catch (_) {}
+    }
     await room.setCanonicalAlias(alias);
     notifyListeners();
   }
 
+  Future<void> clearRoomLocalAlias(Room room) async {
+    await _releaseRoomAlias(room);
+    notifyListeners();
+  }
+
+  Future<void> _releaseRoomAlias(Room room) async {
+    final alias = room.canonicalAlias;
+    if (alias.isEmpty) return;
+    try {
+      await client.deleteRoomAlias(alias);
+    } catch (_) {}
+    try {
+      await client.setRoomStateWithKey(
+        room.id,
+        EventTypes.RoomCanonicalAlias,
+        '',
+        <String, Object?>{},
+      );
+    } catch (_) {}
+  }
+
   Future<void> _applyRoomVisibility(Room room, bool public) async {
-    if (room.canChangeJoinRules) {
+    try {
       await room.setJoinRules(public ? JoinRules.public : JoinRules.invite);
+    } catch (_) {
+      try {
+        await client.setRoomStateWithKey(
+          room.id,
+          EventTypes.RoomJoinRules,
+          '',
+          {'join_rule': public ? JoinRules.public.name : JoinRules.invite.name},
+        );
+      } catch (_) {}
     }
     try {
       await client.setRoomVisibilityOnDirectory(
@@ -1346,11 +1410,14 @@ class MatrixService extends ChangeNotifier {
     } catch (_) {
       // Some homeservers allow changing join rules but restrict directory writes.
     }
-    if (room.canChangeHistoryVisibility) {
+    try {
       await room.setHistoryVisibility(HistoryVisibility.shared);
-    }
-    if (room.canChangeGuestAccess) {
+    } catch (_) {}
+    try {
       await room.setGuestAccess(GuestAccess.forbidden);
+    } catch (_) {}
+    if (!public) {
+      await _releaseRoomAlias(room);
     }
   }
 
@@ -1428,14 +1495,7 @@ class MatrixService extends ChangeNotifier {
       if (public) await setRoomLocalAlias(space, localAlias);
       await createSupergroupChild(
         space,
-        'Общий чат',
-        public: public,
-        invite: invite,
-      );
-      await createSupergroupChild(
-        space,
-        'Голосовой',
-        voice: true,
+        'Основной чат',
         public: public,
         invite: invite,
       );
@@ -1492,8 +1552,11 @@ class MatrixService extends ChangeNotifier {
   }
 
   Future<void> inviteUsers(Room room, Iterable<String> userIds) async {
-    final ids =
-        userIds.map(normalizeLocalUserId).where((id) => id.isNotEmpty).toList();
+    final ids = userIds
+        .map(normalizeLocalUserId)
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList();
     for (final id in ids) {
       await room.invite(id);
       if (room.isSpace) {
@@ -1501,8 +1564,24 @@ class MatrixService extends ChangeNotifier {
           if (child.canInvite) await child.invite(id);
         }
       }
+      await _sendInviteNotice(room, id);
     }
     notifyListeners();
+  }
+
+  Future<void> _sendInviteNotice(Room room, String userId) async {
+    if (userId == client.userID) return;
+    try {
+      final dmId = await client.startDirectChat(userId);
+      final dm = client.getRoomById(dmId);
+      if (dm == null) return;
+      final alias = room.canonicalAlias;
+      final idLine = alias.isEmpty ? '' : '\nID: $alias';
+      await dm.sendTextEvent(
+        'Приглашение в «${room.getLocalizedDisplayname()}».$idLine\n'
+        'Откройте приглашения, чтобы войти.',
+      );
+    } catch (_) {}
   }
 
   Future<void> setRoomPublic(Room room, bool public) async {

@@ -27,7 +27,8 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
   late final TextEditingController _topic =
       TextEditingController(text: widget.room.topic);
   late final TextEditingController _alias = TextEditingController(
-      text: widget.matrix.roomAliasLocalpart(widget.room));
+    text: widget.matrix.roomAliasLocalpart(widget.room),
+  );
   final _inviteSearch = TextEditingController();
   final Set<String> _selectedInviteIds = {};
   bool _busy = false;
@@ -71,11 +72,25 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
             name: _name.text,
             topic: _topic.text,
           );
-          if (_public && _alias.text.trim().isNotEmpty) {
-            await widget.matrix.setRoomLocalAlias(widget.room, _alias.text);
+
+          final canChangeAccess = _canShowAccess(widget.matrix.roomKind(
+            widget.room,
+          ));
+          if (canChangeAccess) {
+            await widget.matrix.setRoomPublic(widget.room, _public);
+            if (_public && _alias.text.trim().isNotEmpty) {
+              await widget.matrix.setRoomLocalAlias(widget.room, _alias.text);
+            }
           }
         },
       );
+
+  bool _canShowAccess(OrexRoomKind kind) {
+    if (widget.matrix.isSupergroupChild(widget.room)) return false;
+    return kind == OrexRoomKind.group ||
+        kind == OrexRoomKind.channel ||
+        kind == OrexRoomKind.supergroup;
+  }
 
   Future<void> _pickAvatar() async {
     if (_savingAvatar) return;
@@ -124,14 +139,6 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
     }
   }
 
-  Future<void> _setPublic(bool value) => _guard(() async {
-        await widget.matrix.setRoomPublic(widget.room, value);
-        if (value && _alias.text.trim().isNotEmpty) {
-          await widget.matrix.setRoomLocalAlias(widget.room, _alias.text);
-        }
-        if (mounted) setState(() => _public = value);
-      });
-
   Future<void> _createChild({required bool voice}) async {
     final name = await _askName(voice ? 'Голосовой канал' : 'Чат');
     if (name == null || name.isEmpty) return;
@@ -145,6 +152,43 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
           )
           .then((_) {}),
     );
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _editChild(Room child) async {
+    final controller =
+        TextEditingController(text: child.getLocalizedDisplayname());
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Переименовать чат'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Название'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (name == null || name.isEmpty) return;
+    await _guard(
+      () => widget.matrix.updateRoomDetails(
+        child,
+        name: name,
+        topic: child.topic,
+      ),
+    );
+    if (mounted) setState(() {});
   }
 
   Future<String?> _askName(String title) {
@@ -173,6 +217,9 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
   }
 
   List<User> _localInviteCandidates() {
+    final q = _inviteSearch.text.trim().toLowerCase();
+    if (q.isEmpty) return const [];
+
     final existing = widget.room
         .getParticipants(const [Membership.join, Membership.invite])
         .map((user) => user.id)
@@ -187,9 +234,7 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
         usersById[user.id] = user;
       }
     }
-    final q = _inviteSearch.text.trim().toLowerCase();
     final users = usersById.values.where((user) {
-      if (q.isEmpty) return true;
       final name = user.calcDisplayname().toLowerCase();
       final id = widget.matrix.compactUserId(user.id).toLowerCase();
       return name.contains(q) || id.contains(q);
@@ -204,9 +249,8 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
     final kind = widget.matrix.roomKind(room);
     final isSupergroup = kind == OrexRoomKind.supergroup;
     final canInvite = room.canInvite || room.isSpace;
-    final showPublicControls = kind == OrexRoomKind.group ||
-        kind == OrexRoomKind.channel ||
-        kind == OrexRoomKind.supergroup;
+    final showAccess = _canShowAccess(kind);
+    final childRoom = widget.matrix.isSupergroupChild(room);
 
     return DraggableScrollableSheet(
       initialChildSize: 0.86,
@@ -231,6 +275,7 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                       matrix: widget.matrix,
                       room: room,
                       busy: _savingAvatar,
+                      allowAvatar: !childRoom,
                       onPickAvatar: _pickAvatar,
                       onRemoveAvatar:
                           room.avatar == null ? null : _removeAvatar,
@@ -262,24 +307,17 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                             ),
                           ),
                         ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-                          child: FilledButton.icon(
-                            onPressed: _saveDetails,
-                            icon: const Icon(Icons.save),
-                            label: const Text('Сохранить'),
-                          ),
-                        ),
                       ],
                     ),
-                    if (showPublicControls) ...[
+                    if (showAccess) ...[
                       const SizedBox(height: 18),
                       _SectionCard(
                         title: 'Доступ',
                         children: [
                           SwitchListTile(
                             value: _public,
-                            onChanged: _setPublic,
+                            onChanged: (value) =>
+                                setState(() => _public = value),
                             contentPadding:
                                 const EdgeInsets.symmetric(horizontal: 14),
                             secondary: Icon(
@@ -289,7 +327,7 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                             title: Text(_public ? 'Публичная' : 'Приватная'),
                             subtitle: Text(
                               _public
-                                  ? 'Можно войти по ID, сообщения остаются с E2EE'
+                                  ? 'Можно войти по ID; сообщения остаются в E2EE-чатах'
                                   : 'Вход только по приглашению',
                             ),
                           ),
@@ -303,12 +341,13 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                                 hintText: 'naprimer-chat',
                                 prefixIcon: Icon(Icons.tag),
                               ),
-                              onSubmitted: (_) => _saveDetails(),
                             ),
                           ),
                         ],
                       ),
                     ],
+                    const SizedBox(height: 12),
+                    _SaveBar(onSave: _saveDetails),
                     const SizedBox(height: 18),
                     _SectionCard(
                       title: 'Участники',
@@ -330,6 +369,7 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                           users: _localInviteCandidates(),
                           selectedIds: _selectedInviteIds,
                           enabled: canInvite,
+                          hasQuery: _inviteSearch.text.trim().isNotEmpty,
                           onChanged: () => setState(() {}),
                         ),
                         Padding(
@@ -390,32 +430,12 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                     ),
                     if (isSupergroup) ...[
                       const SizedBox(height: 18),
-                      _SectionCard(
-                        title: 'Супергруппа',
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  child: OutlinedButton.icon(
-                                    onPressed: () => _createChild(voice: false),
-                                    icon: const Icon(Icons.forum),
-                                    label: const Text('Добавить чат'),
-                                  ),
-                                ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: OutlinedButton.icon(
-                                    onPressed: () => _createChild(voice: true),
-                                    icon: const Icon(Icons.graphic_eq),
-                                    label: const Text('Голосовой'),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
+                      _SupergroupRoomsSection(
+                        matrix: widget.matrix,
+                        room: room,
+                        onAddChat: () => _createChild(voice: false),
+                        onAddVoice: () => _createChild(voice: true),
+                        onEditChild: _editChild,
                       ),
                     ],
                   ],
@@ -434,6 +454,7 @@ class _Header extends StatelessWidget {
     required this.matrix,
     required this.room,
     required this.busy,
+    required this.allowAvatar,
     required this.onPickAvatar,
     required this.onRemoveAvatar,
     required this.onClose,
@@ -442,6 +463,7 @@ class _Header extends StatelessWidget {
   final MatrixService matrix;
   final Room room;
   final bool busy;
+  final bool allowAvatar;
   final VoidCallback onPickAvatar;
   final VoidCallback? onRemoveAvatar;
   final VoidCallback onClose;
@@ -454,27 +476,28 @@ class _Header extends StatelessWidget {
         Stack(
           children: [
             MxcAvatar(matrix: matrix, name: name, mxc: room.avatar, size: 64),
-            Positioned.fill(
-              child: Material(
-                color: Colors.black.withValues(alpha: 0.18),
-                borderRadius: BorderRadius.circular(20),
-                child: InkWell(
+            if (allowAvatar)
+              Positioned.fill(
+                child: Material(
+                  color: Colors.black.withValues(alpha: 0.18),
                   borderRadius: BorderRadius.circular(20),
-                  onTap: busy ? null : onPickAvatar,
-                  child: Center(
-                    child: busy
-                        ? const SizedBox.square(
-                            dimension: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(
-                            Icons.photo_camera_outlined,
-                            color: OrexColors.cream,
-                          ),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(20),
+                    onTap: busy ? null : onPickAvatar,
+                    child: Center(
+                      child: busy
+                          ? const SizedBox.square(
+                              dimension: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(
+                              Icons.photo_camera_outlined,
+                              color: OrexColors.cream,
+                            ),
+                    ),
                   ),
                 ),
               ),
-            ),
           ],
         ),
         const SizedBox(width: 12),
@@ -490,8 +513,10 @@ class _Header extends StatelessWidget {
               ),
               const SizedBox(height: 2),
               Text(
-                'Шифрование включено для новых групп и каналов',
-                maxLines: 1,
+                room.isSpace
+                    ? 'Сама супергруппа не хранит сообщения; шифруются её чаты'
+                    : 'Новые группы и каналы создаются с шифрованием',
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: OrexColors.copper,
@@ -501,11 +526,12 @@ class _Header extends StatelessWidget {
             ],
           ),
         ),
-        IconButton(
-          tooltip: 'Убрать аватар',
-          onPressed: onRemoveAvatar,
-          icon: const Icon(Icons.no_photography_outlined),
-        ),
+        if (allowAvatar)
+          IconButton(
+            tooltip: 'Убрать аватар',
+            onPressed: onRemoveAvatar,
+            icon: const Icon(Icons.no_photography_outlined),
+          ),
         IconButton(
           tooltip: 'Закрыть',
           onPressed: onClose,
@@ -516,12 +542,30 @@ class _Header extends StatelessWidget {
   }
 }
 
+class _SaveBar extends StatelessWidget {
+  const _SaveBar({required this.onSave});
+  final VoidCallback onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerRight,
+      child: FilledButton.icon(
+        onPressed: onSave,
+        icon: const Icon(Icons.save),
+        label: const Text('Сохранить'),
+      ),
+    );
+  }
+}
+
 class _InvitePicker extends StatelessWidget {
   const _InvitePicker({
     required this.matrix,
     required this.users,
     required this.selectedIds,
     required this.enabled,
+    required this.hasQuery,
     required this.onChanged,
   });
 
@@ -529,6 +573,7 @@ class _InvitePicker extends StatelessWidget {
   final List<User> users;
   final Set<String> selectedIds;
   final bool enabled;
+  final bool hasQuery;
   final VoidCallback onChanged;
 
   @override
@@ -542,6 +587,7 @@ class _InvitePicker extends StatelessWidget {
         ),
       );
     }
+    if (!hasQuery) return const SizedBox.shrink();
     if (users.isEmpty) {
       return const Padding(
         padding: EdgeInsets.fromLTRB(14, 4, 14, 14),
@@ -580,6 +626,84 @@ class _InvitePicker extends StatelessWidget {
           ),
         );
       }).toList(),
+    );
+  }
+}
+
+class _SupergroupRoomsSection extends StatelessWidget {
+  const _SupergroupRoomsSection({
+    required this.matrix,
+    required this.room,
+    required this.onAddChat,
+    required this.onAddVoice,
+    required this.onEditChild,
+  });
+
+  final MatrixService matrix;
+  final Room room;
+  final VoidCallback onAddChat;
+  final VoidCallback onAddVoice;
+  final ValueChanged<Room> onEditChild;
+
+  @override
+  Widget build(BuildContext context) {
+    final children = matrix.supergroupChildren(room);
+    return _SectionCard(
+      title: 'Чаты супергруппы',
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: onAddChat,
+                  icon: const Icon(Icons.forum),
+                  label: const Text('Добавить чат'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: onAddVoice,
+                  icon: const Icon(Icons.graphic_eq),
+                  label: const Text('Голосовой'),
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (children.isEmpty)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(14, 4, 14, 14),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Пока нет отдельных чатов'),
+            ),
+          )
+        else
+          ...children.map(
+            (child) => ListTile(
+              leading: Icon(
+                matrix.isVoiceRoom(child) ? Icons.graphic_eq : Icons.forum,
+                color: OrexColors.copper,
+              ),
+              title: Text(
+                child.getLocalizedDisplayname(),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                matrix.isVoiceRoom(child) ? 'Голосовой канал' : 'Текстовый чат',
+              ),
+              trailing: IconButton(
+                tooltip: 'Переименовать',
+                onPressed: () => onEditChild(child),
+                icon: const Icon(Icons.edit),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
