@@ -100,8 +100,27 @@ extension MatrixRoomsApi on MatrixService {
     return null;
   }
 
-  Future<void> sendText(Room room, String text) =>
-      room.sendTextEvent(text.trim());
+  bool canSendMessages(Room room) {
+    if (room.canSendDefaultMessages) return true;
+    // После создания канала локальный SDK иногда ещё не успел пересчитать
+    // power-levels, хотя сервер уже разрешает писать создателю/админу.
+    return isChannel(room) && canManageRoomSettings(room);
+  }
+
+  Future<void> ensureCanSendToChannel(Room room) async {
+    if (!isChannel(room)) return;
+    if (!canManageRoomSettings(room)) return;
+    try {
+      await _applyChannelPowerLevels(room);
+    } catch (e) {
+      _log('Rooms', 'ensure channel send rights failed room=${room.id}', e);
+    }
+  }
+
+  Future<void> sendText(Room room, String text) async {
+    await ensureCanSendToChannel(room);
+    await room.sendTextEvent(text.trim());
+  }
 
   // ---------------------------------------------------------------------------
   // Приглашения в чаты
@@ -361,11 +380,53 @@ extension MatrixRoomsApi on MatrixService {
   ) {
     final optimistic = _spaceChildPreviewOverrides[space.id]?[childId];
     if (optimistic != null) return optimistic;
+
+    // Primary persisted source: metadata embedded directly into m.space.child.
+    // This is what the UI already has while rendering space children, so names
+    // and icons are available before the user joins the child room and even if
+    // a separate custom state event is not indexed by the SDK yet.
+    final embedded = _embeddedSpaceChildPreviewContent(space, childId);
+    if (embedded != null) return embedded;
+
+    // Compatibility with previous builds that stored preview in a separate
+    // custom state event keyed by child room id.
     try {
       final content =
           space.getState(_orexSpaceChildPreviewEvent, childId)?.content;
       if (content == null) return null;
       return Map<String, Object?>.from(content);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Map<String, Object?>? _embeddedSpaceChildPreviewContent(
+    Room space,
+    String childId,
+  ) {
+    try {
+      final content = space.getState(EventTypes.SpaceChild, childId)?.content;
+      if (content == null) return null;
+      final rawPreview = content['ru.orex.preview'];
+      if (rawPreview is Map) {
+        return Map<String, Object?>.from(
+          rawPreview.map((key, value) => MapEntry(key.toString(), value)),
+        );
+      }
+      final name = content['ru.orex.name'] ?? content['name'];
+      final icon = content['ru.orex.icon'] ?? content['icon'];
+      final avatar = content['ru.orex.avatar_url'] ?? content['avatar_url'];
+      final topic = content['ru.orex.topic'] ?? content['topic'];
+      if (name == null && icon == null && avatar == null && topic == null) {
+        return null;
+      }
+      return <String, Object?>{
+        if (name != null) 'name': name,
+        if (icon != null) 'icon': icon,
+        if (avatar != null) 'avatar_url': avatar,
+        if (topic != null) 'topic': topic,
+        'version': 1,
+      };
     } catch (_) {
       return null;
     }
@@ -395,6 +456,52 @@ extension MatrixRoomsApi on MatrixService {
     );
     if (!order.contains(childId)) order.add(childId);
     return content;
+  }
+
+  String? _serverNameFromRoomId(String roomId) {
+    final idx = roomId.indexOf(':');
+    if (idx < 0 || idx == roomId.length - 1) return null;
+    return roomId.substring(idx + 1);
+  }
+
+  List<String> _viaForChild(String childId) {
+    final servers = <String>{
+      if (_localServerName != null) _localServerName!,
+      if (_serverNameFromRoomId(childId) != null) _serverNameFromRoomId(childId)!,
+    };
+    return servers.where((server) => server.isNotEmpty).toList();
+  }
+
+  Future<void> _attachSupergroupChild(
+    Room space, {
+    required String childId,
+    required String order,
+    required Map<String, Object?> preview,
+  }) async {
+    final name = preview['name']?.toString();
+    final icon = preview['icon']?.toString();
+    final avatar = preview['avatar_url']?.toString();
+    final topic = preview['topic']?.toString();
+    await client.setRoomStateWithKey(
+      space.id,
+      EventTypes.SpaceChild,
+      childId,
+      <String, Object?>{
+        'via': _viaForChild(childId),
+        'order': order,
+        'suggested': true,
+        // Кастомные поля дублируют отдельный preview-event, чтобы UI мог
+        // показать название/иконку child-чата из m.space.child сразу, без
+        // ожидания вступления в сам child-room.
+        if (name != null && name.isNotEmpty) 'name': name,
+        if (icon != null && icon.isNotEmpty) 'icon': icon,
+        if (name != null && name.isNotEmpty) 'ru.orex.name': name,
+        if (icon != null && icon.isNotEmpty) 'ru.orex.icon': icon,
+        if (avatar != null && avatar.isNotEmpty) 'ru.orex.avatar_url': avatar,
+        if (topic != null && topic.isNotEmpty) 'ru.orex.topic': topic,
+        'ru.orex.preview': preview,
+      },
+    );
   }
 
   void _forgetSupergroupChildPreview(Room space, String childId) {
@@ -481,21 +588,6 @@ extension MatrixRoomsApi on MatrixService {
         type: _orexRoomIconEvent,
         content: {'icon': icon, 'version': 1},
       );
-
-  Map<String, Object?> _channelPowerLevelOverride() {
-    final ownId = client.userID;
-    return <String, Object?>{
-      'users_default': 0,
-      'events_default': 0,
-      'state_default': 50,
-      'events': <String, Object?>{
-        EventTypes.Message: 50,
-        EventTypes.Encrypted: 50,
-      },
-      if (ownId != null && ownId.isNotEmpty)
-        'users': <String, Object?>{ownId: 100},
-    };
-  }
 
   Future<void> _setRoomKind(Room room, OrexRoomKind kind) async {
     await client.setRoomStateWithKey(
@@ -667,11 +759,21 @@ extension MatrixRoomsApi on MatrixService {
       users[ownId] = 100;
     }
 
+    events[EventTypes.RoomName] = 50;
+    events[EventTypes.RoomTopic] = 50;
+    events[EventTypes.RoomAvatar] = 50;
+    events[EventTypes.RoomCanonicalAlias] = 50;
+    events[EventTypes.RoomPowerLevels] = 100;
+
     current['events'] = events;
     current['users'] = users;
-    current['events_default'] ??= 0;
-    current['state_default'] ??= 50;
-    current['users_default'] ??= 0;
+    current['events_default'] = 50;
+    current['state_default'] = 50;
+    current['users_default'] = 0;
+    current['invite'] = 50;
+    current['kick'] = 50;
+    current['ban'] = 50;
+    current['redact'] = 50;
     _log('Rooms', 'apply channel power levels room=${room.id} own=$ownId');
     await client.setRoomStateWithKey(
       room.id,
@@ -720,6 +822,19 @@ extension MatrixRoomsApi on MatrixService {
       'Rooms',
       'set child preview space=${space.id} child=$childId name=$name icon=$icon',
     );
+    final index = _supergroupChildIds(space).indexOf(childId);
+    if (index >= 0) {
+      try {
+        await _attachSupergroupChild(
+          space,
+          childId: childId,
+          order: index.toString().padLeft(3, '0'),
+          preview: content,
+        );
+      } catch (e) {
+        _log('Rooms', 'persist embedded child preview failed child=$childId', e);
+      }
+    }
     await client.setRoomStateWithKey(
       space.id,
       _orexSpaceChildPreviewEvent,
@@ -769,7 +884,6 @@ extension MatrixRoomsApi on MatrixService {
       groupName: name,
       invite: invite,
       groupCall: true,
-      powerLevelContentOverride: _channelPowerLevelOverride(),
       preset:
           public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
       visibility: public ? Visibility.public : Visibility.private,
@@ -859,21 +973,23 @@ extension MatrixRoomsApi on MatrixService {
     if (childRoom != null) {
       await _applySupergroupChildAccess(space, childRoom);
     }
-    final order = supergroupChildren(space).length.toString().padLeft(3, '0');
+    final order = _supergroupChildIds(space).length.toString().padLeft(3, '0');
+    final preview = _rememberSupergroupChildPreview(
+      space,
+      childId: roomId,
+      name: name,
+      icon: icon,
+      avatar: childRoom?.avatar,
+      topic: childRoom?.topic,
+    );
+    _emitChange();
     try {
-      await _setSupergroupChildPreview(
+      await _attachSupergroupChild(
         space,
         childId: roomId,
-        name: name,
-        icon: icon,
-        avatar: childRoom?.avatar,
-        topic: childRoom?.topic,
+        order: order,
+        preview: preview,
       );
-    } catch (e) {
-      _log('Rooms', 'persist child preview failed child=$roomId', e);
-    }
-    try {
-      await space.setSpaceChild(roomId, order: order, suggested: true);
       _log('Rooms', 'attached child room=$roomId to space=${space.id} order=$order');
     } catch (e) {
       _forgetSupergroupChildPreview(space, roomId);
@@ -881,16 +997,58 @@ extension MatrixRoomsApi on MatrixService {
       _log('Rooms', 'attach child failed room=$roomId space=${space.id}', e);
       rethrow;
     }
+    try {
+      await client.setRoomStateWithKey(
+        space.id,
+        _orexSpaceChildPreviewEvent,
+        roomId,
+        preview,
+      );
+    } catch (e) {
+      _log('Rooms', 'persist child preview compatibility event failed child=$roomId', e);
+    }
     _emitChange();
     return roomId;
   }
 
   Future<void> ensureSupergroupChildrenAccess(Room space) async {
     if (!space.isSpace) return;
+    var changed = false;
     for (final child in supergroupChildren(space)) {
       await _applySupergroupChildAccess(space, child);
+      final existing = _supergroupChildPreviewContent(space, child.id);
+      final existingName = existing?['name']?.toString().trim();
+      final existingIcon = existing?['icon']?.toString().trim();
+      if (existingName?.isNotEmpty == true && existingIcon?.isNotEmpty == true) {
+        continue;
+      }
+      final name = child.getLocalizedDisplayname();
+      final icon = roomIconKey(child);
+      final preview = _rememberSupergroupChildPreview(
+        space,
+        childId: child.id,
+        name: name == child.id ? (existingName ?? name) : name,
+        icon: icon,
+        avatar: child.avatar,
+        topic: child.topic,
+      );
+      try {
+        await _attachSupergroupChild(
+          space,
+          childId: child.id,
+          order: _supergroupChildIds(space)
+              .indexOf(child.id)
+              .clamp(0, 999)
+              .toString()
+              .padLeft(3, '0'),
+          preview: preview,
+        );
+      } catch (e) {
+        _log('Rooms', 'repair child preview failed child=${child.id}', e);
+      }
+      changed = true;
     }
-    _emitChange();
+    if (changed) _emitChange();
   }
 
   Future<void> removeSupergroupChild(Room space, Room child) async {

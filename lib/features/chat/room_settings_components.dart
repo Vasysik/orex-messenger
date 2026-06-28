@@ -276,9 +276,11 @@ class _SupergroupRoomsSection extends StatelessWidget {
         else
           ...previews.map((preview) {
             final local = matrix.client.getRoomById(preview.roomId);
-            final iconKey = local == null
-                ? (preview.iconKey ?? 'chat')
-                : matrix.roomIconKey(local);
+            final iconKey = preview.iconKey?.isNotEmpty == true
+                ? preview.iconKey!
+                : local == null
+                    ? 'chat'
+                    : matrix.roomIconKey(local);
             final subtitle = local == null
                 ? 'Чат супергруппы · предпросмотр'
                 : matrix.isPublicRoom(local)

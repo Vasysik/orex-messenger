@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 import '../../core/matrix/matrix_service.dart';
+import '../../core/orex_logger.dart';
 import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 import '../../theme/theme_controller.dart';
@@ -137,7 +138,7 @@ class _HomeShellState extends State<HomeShell> {
     final config = await _askRoom(kind);
     if (config == null || config.name.isEmpty) return;
     if (mounted) setState(() => _creatingRoom = true);
-    debugPrint('[Orex][Home] create room kind=$kind name=${config.name} public=${config.public} alias=${config.localAlias}');
+    OrexLog.d('Home', 'create room kind=$kind name=${config.name} public=${config.public} alias=${config.localAlias}');
     try {
       final roomId = switch (kind) {
         _CreateRoomKind.group => await widget.matrix.createGroup(
@@ -163,7 +164,7 @@ class _HomeShellState extends State<HomeShell> {
         });
       }
     } catch (e) {
-      debugPrint('[Orex][Home] create room failed kind=$kind name=${config.name}: $e');
+      OrexLog.d('Home', 'create room failed kind=$kind name=${config.name}', e);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Не удалось создать: $e')),

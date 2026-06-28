@@ -7,7 +7,7 @@ import 'package:matrix/encryption/utils/bootstrap.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../call_controller.dart';
-import '../config.dart';
+import '../orex_logger.dart';
 import '../room_metadata.dart';
 import '../voip_service.dart';
 
@@ -166,11 +166,8 @@ class MatrixService extends ChangeNotifier {
   /// [notifyListeners] остаётся внутри [MatrixService].
   void _emitChange() => notifyListeners();
 
-  void _log(String area, String message, [Object? error]) {
-    if (!OrexConfig.debugLogs) return;
-    final suffix = error == null ? '' : ' | $error';
-    debugPrint('[Orex][$area] $message$suffix');
-  }
+  void _log(String area, String message, [Object? error]) =>
+      OrexLog.d(area, message, error);
 
   @override
   void dispose() {

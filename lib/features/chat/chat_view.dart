@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import '../../core/matrix/matrix_service.dart';
+import '../../core/orex_logger.dart';
 import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
 import '../../widgets/room_icon.dart';
@@ -156,7 +157,7 @@ class _ChatViewState extends State<ChatView> {
         setState(() => _noMoreHistory = true);
       }
     } catch (e) {
-      debugPrint('[Orex] Ошибка загрузки истории: $e');
+      OrexLog.d('Chat', 'history load failed room=${widget.roomId}', e);
     } finally {
       if (mounted) {
         setState(() => _loadingHistory = false);
@@ -210,7 +211,8 @@ class _ChatViewState extends State<ChatView> {
     final text = _input.text.trim();
     final room = _room;
     if (room == null) return;
-    if (!room.canSendDefaultMessages) return;
+    if (!widget.matrix.canSendMessages(room)) return;
+    await widget.matrix.ensureCanSendToChannel(room);
 
     final attachedList = List<PlatformFile>.from(_attachedFiles);
     if (attachedList.isNotEmpty) {
@@ -703,7 +705,7 @@ class _ChatViewState extends State<ChatView> {
                           await item.leader.cancelSend();
                           if (mounted) setState(() {});
                         } catch (e) {
-                          debugPrint('[Orex] Ошибка отмены отправки: $e');
+                          OrexLog.d('Chat', 'cancel send failed room=${room.id}', e);
                         }
                       },
                       albumEvents: item.events,
@@ -727,7 +729,7 @@ class _ChatViewState extends State<ChatView> {
                           await item.event.cancelSend();
                           if (mounted) setState(() {});
                         } catch (e) {
-                          debugPrint('[Orex] Ошибка отмены отправки: $e');
+                          OrexLog.d('Chat', 'cancel send failed room=${room.id}', e);
                         }
                       },
                     );
@@ -739,7 +741,7 @@ class _ChatViewState extends State<ChatView> {
             _InputBar(
               controller: _input,
               focusNode: _focusNode,
-              canSend: room.canSendDefaultMessages,
+              canSend: widget.matrix.canSendMessages(room),
               onSend: _send,
               editing: _editing != null,
               onCancelEdit: _cancelEdit,
