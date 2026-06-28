@@ -8,7 +8,7 @@ import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
 
 import 'core/config.dart';
 import 'core/database.dart';
-import 'core/matrix_service.dart';
+import 'core/matrix/matrix_service.dart';
 import 'features/auth/login_screen.dart';
 import 'features/call/incoming_call_screen.dart';
 import 'features/home/home_shell.dart';

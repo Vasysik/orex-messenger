@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../features/call/call_session.dart';
-import 'matrix_service.dart';
+import 'matrix/matrix_service.dart';
 
 /// Долгоживущий «активный звонок»: владеет медиа-сессией ([CallSession]) и
 /// сигналингом ([VoipService]), чтобы звонок переживал сворачивание экрана.

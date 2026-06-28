@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../../core/matrix_service.dart';
+import '../../core/matrix/matrix_service.dart';
 import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 import '../../widgets/squirrel_mascot.dart';

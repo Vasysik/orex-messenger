@@ -4,13 +4,13 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 import 'package:desktop_drop/desktop_drop.dart';
-import '../../core/matrix_service.dart';
+import '../../core/matrix/matrix_service.dart';
 import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
 import '../../widgets/room_icon.dart';
 import '../call/call_screen.dart';
 import 'message_bubble.dart';
-import 'room_settings_sheet.dart';
+import 'room_settings_screen.dart';
 
 abstract class ChatItem {
   String get id;
@@ -453,15 +453,13 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _openRoomSettings(Room room) {
-    final isWide = MediaQuery.sizeOf(context).width >= 900;
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => RoomSettingsSheet(
-        matrix: widget.matrix,
-        room: room,
-        fullScreen: !isWide,
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => RoomSettingsScreen(
+          matrix: widget.matrix,
+          room: room,
+        ),
       ),
     );
   }

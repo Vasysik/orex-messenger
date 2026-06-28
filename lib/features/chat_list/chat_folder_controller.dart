@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../../core/matrix_service.dart';
+import '../../core/matrix/matrix_service.dart';
 
 enum OrexFolderFilter { all, direct, groups, channels, invites, custom }
 

@@ -3,7 +3,7 @@ import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:matrix/matrix.dart' hide CallSession;
 
 import '../../core/call_controller.dart';
-import '../../core/matrix_service.dart';
+import '../../core/matrix/matrix_service.dart';
 import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
 import 'call_session.dart';

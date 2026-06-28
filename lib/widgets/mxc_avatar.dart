@@ -2,7 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-import '../core/matrix_service.dart';
+import '../core/matrix/matrix_service.dart';
 import '../theme/orex_theme.dart';
 
 /// Круглый аватар. Если есть mxc-ссылка — качает байты через

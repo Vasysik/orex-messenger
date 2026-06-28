@@ -7,11 +7,11 @@ import 'package:matrix/encryption/utils/bootstrap.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../call_controller.dart';
-import 'orex_room_kind.dart';
+import '../rooms/orex_room_kind.dart';
 import 'room_alias.dart';
 import '../voip_service.dart';
 
-export 'orex_room_kind.dart';
+export '../rooms/orex_room_kind.dart';
 
 part 'matrix_auth_api.dart';
 part 'matrix_rooms_api.dart';

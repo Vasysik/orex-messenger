@@ -83,8 +83,8 @@ class OrexSettingsSaveBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerRight,
+    return SizedBox(
+      width: double.infinity,
       child: FilledButton.icon(
         onPressed: onSave,
         icon: const Icon(Icons.save),
