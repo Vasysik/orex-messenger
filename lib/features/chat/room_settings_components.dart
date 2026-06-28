@@ -250,7 +250,7 @@ class _SupergroupRoomsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final children = matrix.supergroupChildren(room);
+    final previews = matrix.supergroupChildPreviews(room);
     return OrexSettingsSection(
       title: 'Чаты супергруппы',
       children: [
@@ -265,7 +265,7 @@ class _SupergroupRoomsSection extends StatelessWidget {
             ),
           ),
         ),
-        if (children.isEmpty)
+        if (previews.isEmpty)
           const Padding(
             padding: EdgeInsets.fromLTRB(14, 4, 14, 14),
             child: Align(
@@ -274,40 +274,48 @@ class _SupergroupRoomsSection extends StatelessWidget {
             ),
           )
         else
-          ...children.map(
-            (child) => ListTile(
+          ...previews.map((preview) {
+            final local = matrix.client.getRoomById(preview.roomId);
+            final iconKey = local == null
+                ? (preview.iconKey ?? 'chat')
+                : matrix.roomIconKey(local);
+            final subtitle = local == null
+                ? 'Чат супергруппы · предпросмотр'
+                : matrix.isPublicRoom(local)
+                    ? 'Публичный чат супергруппы'
+                    : 'Чат супергруппы';
+
+            return ListTile(
               leading: Icon(
-                orexRoomIconData(matrix.roomIconKey(child)),
+                orexRoomIconData(iconKey),
                 color: OrexColors.copper,
               ),
               title: Text(
-                child.getLocalizedDisplayname(),
+                preview.name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-              subtitle: Text(
-                matrix.isPublicRoom(child)
-                    ? 'Публичный чат супергруппы'
-                    : 'Чат супергруппы',
-              ),
-              trailing: Wrap(
-                spacing: 2,
-                children: [
-                  IconButton(
-                    tooltip: 'Переименовать',
-                    onPressed: () => onEditChild(child),
-                    icon: const Icon(Icons.edit),
-                  ),
-                  IconButton(
-                    tooltip: 'Удалить',
-                    onPressed: () => onDeleteChild(child),
-                    icon: const Icon(Icons.delete_outline),
-                    color: const Color(0xFFCF6679),
-                  ),
-                ],
-              ),
-            ),
-          ),
+              subtitle: Text(subtitle),
+              trailing: local == null
+                  ? const Icon(Icons.visibility_outlined, size: 20)
+                  : Wrap(
+                      spacing: 2,
+                      children: [
+                        IconButton(
+                          tooltip: 'Переименовать',
+                          onPressed: () => onEditChild(local),
+                          icon: const Icon(Icons.edit),
+                        ),
+                        IconButton(
+                          tooltip: 'Удалить',
+                          onPressed: () => onDeleteChild(local),
+                          icon: const Icon(Icons.delete_outline),
+                          color: const Color(0xFFCF6679),
+                        ),
+                      ],
+                    ),
+            );
+          }),
       ],
     );
   }

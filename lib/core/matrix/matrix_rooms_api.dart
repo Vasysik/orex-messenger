@@ -58,13 +58,25 @@ extension MatrixRoomsApi on MatrixService {
 
   List<Room> supergroupChildren(Room space) {
     if (!space.isSpace) return const [];
-    return space.spaceChildren
-        .map((child) => child.roomId)
-        .whereType<String>()
+    return _supergroupChildIds(space)
         .map(client.getRoomById)
         .whereType<Room>()
         .where((room) => room.membership != Membership.leave)
         .toList();
+  }
+
+  List<String> _supergroupChildIds(Room space) {
+    final ids = <String>[];
+    for (final child in space.spaceChildren) {
+      final childId = child.roomId;
+      if (childId != null && childId.isNotEmpty && !ids.contains(childId)) {
+        ids.add(childId);
+      }
+    }
+    for (final childId in _spaceChildOrderOverrides[space.id] ?? const <String>[]) {
+      if (childId.isNotEmpty && !ids.contains(childId)) ids.add(childId);
+    }
+    return ids;
   }
 
   bool _isBroadcastByPowerLevels(Room room) {
@@ -295,10 +307,15 @@ extension MatrixRoomsApi on MatrixService {
 
   List<OrexRoomPreview> supergroupChildPreviews(Room space) {
     if (!space.isSpace) return const [];
-    return space.spaceChildren
-        .map((child) {
-          final childId = child.roomId;
-          if (childId == null || childId.isEmpty) return null;
+    final byId = <String, dynamic>{};
+    for (final child in space.spaceChildren) {
+      final childId = child.roomId;
+      if (childId != null && childId.isNotEmpty) byId[childId] = child;
+    }
+
+    return _supergroupChildIds(space)
+        .map((childId) {
+          final child = byId[childId];
           final meta = _supergroupChildPreviewContent(space, childId);
           final metaName = meta?['name']?.toString().trim();
           final metaIcon = meta?['icon']?.toString().trim();
@@ -320,7 +337,7 @@ extension MatrixRoomsApi on MatrixService {
                   : local.topic,
               memberCount: local.summary.mJoinedMemberCount,
               iconKey: matrixRoomIconKey(local, metaIcon),
-              via: child.via,
+              via: child?.via,
               parentSpaceId: space.id,
             );
           }
@@ -330,7 +347,7 @@ extension MatrixRoomsApi on MatrixService {
             avatar: _parseMxc(metaAvatar),
             topic: metaTopic?.isNotEmpty == true ? metaTopic : null,
             iconKey: metaIcon?.isNotEmpty == true ? metaIcon : 'chat',
-            via: child.via,
+            via: child?.via,
             parentSpaceId: space.id,
           );
         })
@@ -342,13 +359,47 @@ extension MatrixRoomsApi on MatrixService {
     Room space,
     String childId,
   ) {
+    final optimistic = _spaceChildPreviewOverrides[space.id]?[childId];
+    if (optimistic != null) return optimistic;
     try {
-      final content = space.getState(_orexSpaceChildPreviewEvent, childId)?.content;
+      final content =
+          space.getState(_orexSpaceChildPreviewEvent, childId)?.content;
       if (content == null) return null;
       return Map<String, Object?>.from(content);
     } catch (_) {
       return null;
     }
+  }
+
+  Map<String, Object?> _rememberSupergroupChildPreview(
+    Room space, {
+    required String childId,
+    required String name,
+    required String icon,
+    Uri? avatar,
+    String? topic,
+  }) {
+    final content = <String, Object?>{
+      'name': name,
+      'icon': icon,
+      'version': 1,
+      if (avatar != null) 'avatar_url': avatar.toString(),
+      if (topic != null && topic.isNotEmpty) 'topic': topic,
+    };
+    _spaceChildPreviewOverrides
+        .putIfAbsent(space.id, () => <String, Map<String, Object?>>{})[childId] =
+        content;
+    final order = _spaceChildOrderOverrides.putIfAbsent(
+      space.id,
+      () => <String>[],
+    );
+    if (!order.contains(childId)) order.add(childId);
+    return content;
+  }
+
+  void _forgetSupergroupChildPreview(Room space, String childId) {
+    _spaceChildPreviewOverrides[space.id]?.remove(childId);
+    _spaceChildOrderOverrides[space.id]?.remove(childId);
   }
 
   Uri? _parseMxc(String? value) {
@@ -430,6 +481,21 @@ extension MatrixRoomsApi on MatrixService {
         type: _orexRoomIconEvent,
         content: {'icon': icon, 'version': 1},
       );
+
+  Map<String, Object?> _channelPowerLevelOverride() {
+    final ownId = client.userID;
+    return <String, Object?>{
+      'users_default': 0,
+      'events_default': 0,
+      'state_default': 50,
+      'events': <String, Object?>{
+        EventTypes.Message: 50,
+        EventTypes.Encrypted: 50,
+      },
+      if (ownId != null && ownId.isNotEmpty)
+        'users': <String, Object?>{ownId: 100},
+    };
+  }
 
   Future<void> _setRoomKind(Room room, OrexRoomKind kind) async {
     await client.setRoomStateWithKey(
@@ -590,10 +656,23 @@ extension MatrixRoomsApi on MatrixService {
         : <String, Object?>{};
     events[EventTypes.Message] = 50;
     events[EventTypes.Encrypted] = 50;
+    final rawUsers = current['users'];
+    final users = rawUsers is Map
+        ? Map<String, Object?>.from(
+            rawUsers.map((key, value) => MapEntry(key.toString(), value)),
+          )
+        : <String, Object?>{};
+    final ownId = client.userID;
+    if (ownId != null && ownId.isNotEmpty) {
+      users[ownId] = 100;
+    }
+
     current['events'] = events;
+    current['users'] = users;
     current['events_default'] ??= 0;
     current['state_default'] ??= 50;
     current['users_default'] ??= 0;
+    _log('Rooms', 'apply channel power levels room=${room.id} own=$ownId');
     await client.setRoomStateWithKey(
       room.id,
       EventTypes.RoomPowerLevels,
@@ -628,17 +707,24 @@ extension MatrixRoomsApi on MatrixService {
     Uri? avatar,
     String? topic,
   }) async {
+    final content = _rememberSupergroupChildPreview(
+      space,
+      childId: childId,
+      name: name,
+      icon: icon,
+      avatar: avatar,
+      topic: topic,
+    );
+    _emitChange();
+    _log(
+      'Rooms',
+      'set child preview space=${space.id} child=$childId name=$name icon=$icon',
+    );
     await client.setRoomStateWithKey(
       space.id,
       _orexSpaceChildPreviewEvent,
       childId,
-      <String, Object?>{
-        'name': name,
-        'icon': icon,
-        'version': 1,
-        if (avatar != null) 'avatar_url': avatar.toString(),
-        if (topic != null && topic.isNotEmpty) 'topic': topic,
-      },
+      content,
     );
   }
 
@@ -648,6 +734,7 @@ extension MatrixRoomsApi on MatrixService {
     String? localAlias,
     List<String> invite = const [],
   }) async {
+    _log('Rooms', 'create group name=$name public=$public invite=${invite.length}');
     final roomId = await client.createGroupChat(
       groupName: name,
       invite: invite,
@@ -677,10 +764,12 @@ extension MatrixRoomsApi on MatrixService {
     String? localAlias,
     List<String> invite = const [],
   }) async {
+    _log('Rooms', 'create channel name=$name public=$public invite=${invite.length}');
     final roomId = await client.createGroupChat(
       groupName: name,
       invite: invite,
       groupCall: true,
+      powerLevelContentOverride: _channelPowerLevelOverride(),
       preset:
           public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
       visibility: public ? Visibility.public : Visibility.private,
@@ -691,10 +780,22 @@ extension MatrixRoomsApi on MatrixService {
     );
     final room = await _createdRoom(roomId);
     if (room != null) {
-      await _setRoomKind(room, OrexRoomKind.channel);
-      await _applyChannelPowerLevels(room);
-      await _applyRoomVisibility(room, public);
-      if (public) await setRoomLocalAlias(room, localAlias);
+      try {
+        await _setRoomKind(room, OrexRoomKind.channel);
+      } catch (e) {
+        _log('Rooms', 'set channel kind failed room=$roomId', e);
+      }
+      try {
+        await _applyChannelPowerLevels(room);
+      } catch (e) {
+        _log('Rooms', 'apply channel power levels failed room=$roomId', e);
+      }
+      try {
+        await _applyRoomVisibility(room, public);
+        if (public) await setRoomLocalAlias(room, localAlias);
+      } catch (e) {
+        _log('Rooms', 'apply channel visibility/alias failed room=$roomId', e);
+      }
     }
     _emitChange();
     return roomId;
@@ -706,6 +807,7 @@ extension MatrixRoomsApi on MatrixService {
     String? localAlias,
     List<String> invite = const [],
   }) async {
+    _log('Rooms', 'create supergroup name=$name public=$public invite=${invite.length}');
     final spaceId = await client.createSpace(
       name: name,
       visibility: public ? Visibility.public : Visibility.private,
@@ -718,11 +820,7 @@ extension MatrixRoomsApi on MatrixService {
       await _setRoomKind(space, OrexRoomKind.supergroup);
       await _applyRoomVisibility(space, public);
       if (public) await setRoomLocalAlias(space, localAlias);
-      await createSupergroupChild(
-        space,
-        'Основной чат',
-        public: public,
-      );
+      _log('Rooms', 'created supergroup without default child space=$spaceId');
     }
     _emitChange();
     return spaceId;
@@ -736,6 +834,7 @@ extension MatrixRoomsApi on MatrixService {
     List<String> invite = const [],
   }) async {
     if (!space.isSpace) throw StateError('Room is not a supergroup space');
+    _log('Rooms', 'create supergroup child space=${space.id} name=$name icon=$icon public=$public');
     // Дочерние чаты супергруппы не рассылают инвайты каждому участнику.
     // Участник видит их внутри супергруппы, открывает preview и вступает сам.
     final roomId = await client.createGroupChat(
@@ -761,15 +860,27 @@ extension MatrixRoomsApi on MatrixService {
       await _applySupergroupChildAccess(space, childRoom);
     }
     final order = supergroupChildren(space).length.toString().padLeft(3, '0');
-    await _setSupergroupChildPreview(
-      space,
-      childId: roomId,
-      name: name,
-      icon: icon,
-      avatar: childRoom?.avatar,
-      topic: childRoom?.topic,
-    );
-    await space.setSpaceChild(roomId, order: order, suggested: true);
+    try {
+      await _setSupergroupChildPreview(
+        space,
+        childId: roomId,
+        name: name,
+        icon: icon,
+        avatar: childRoom?.avatar,
+        topic: childRoom?.topic,
+      );
+    } catch (e) {
+      _log('Rooms', 'persist child preview failed child=$roomId', e);
+    }
+    try {
+      await space.setSpaceChild(roomId, order: order, suggested: true);
+      _log('Rooms', 'attached child room=$roomId to space=${space.id} order=$order');
+    } catch (e) {
+      _forgetSupergroupChildPreview(space, roomId);
+      _emitChange();
+      _log('Rooms', 'attach child failed room=$roomId space=${space.id}', e);
+      rethrow;
+    }
     _emitChange();
     return roomId;
   }
@@ -787,6 +898,7 @@ extension MatrixRoomsApi on MatrixService {
     try {
       await space.removeSpaceChild(child.id);
     } catch (_) {}
+    _forgetSupergroupChildPreview(space, child.id);
     if (canFullyDeleteRoom(child)) {
       await deleteRoomForEveryone(child);
     } else {

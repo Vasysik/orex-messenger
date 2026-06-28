@@ -10,6 +10,17 @@ class OrexConfig {
   /// Для локальной отладки можно временно поставить false, но не коммитить так.
   static const bool requireVodozemac = true;
 
+
+  /// Подробные dev-логи продуктовых Matrix-flow: создание комнат, metadata,
+  /// права каналов, preview супергрупп.
+  ///
+  /// Отключение для release/dev-build:
+  /// `--dart-define=OREX_DEBUG_LOGS=false`.
+  static const bool debugLogs = bool.fromEnvironment(
+    'OREX_DEBUG_LOGS',
+    defaultValue: true,
+  );
+
   // LiveKit (wss://lk.vasys.ru) бэкенд возвращает сам через lk-jwt-service.
 
   /// Базовый адрес Element Call.

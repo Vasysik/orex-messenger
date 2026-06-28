@@ -518,11 +518,18 @@ class _ChatViewState extends State<ChatView> {
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const SizedBox(height: 12),
-                    FilledButton.icon(
-                      onPressed: () => _openRoomSettings(space),
-                      icon: const Icon(Icons.add),
-                      label: const Text('Добавить чат'),
-                    ),
+                    if (widget.matrix.canManageRoomSettings(space))
+                      FilledButton.icon(
+                        onPressed: () => _openRoomSettings(space),
+                        icon: const Icon(Icons.add),
+                        label: const Text('Добавить чат'),
+                      )
+                    else
+                      Text(
+                        'Администраторы ещё не добавили чаты',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                        textAlign: TextAlign.center,
+                      ),
                   ],
                 ),
               ),

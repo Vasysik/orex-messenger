@@ -7,6 +7,7 @@ import 'package:matrix/encryption/utils/bootstrap.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../call_controller.dart';
+import '../config.dart';
 import '../room_metadata.dart';
 import '../voip_service.dart';
 
@@ -77,6 +78,13 @@ class MatrixService extends ChangeNotifier {
   bool _backupDisabledByUser = false;
 
   final Map<String, bool> _roomPublicOverrides = {};
+
+  /// Optimistic metadata для child-комнат супергруппы. Matrix state/event sync
+  /// может прийти через несколько секунд, а UI должен показать название и
+  /// иконку сразу после создания, без закрытия настроек и переоткрытия чата.
+  final Map<String, Map<String, Map<String, Object?>>>
+      _spaceChildPreviewOverrides = {};
+  final Map<String, List<String>> _spaceChildOrderOverrides = {};
 
   /// Когда в последний раз ключи выгружались в бэкап (для показа в настройках).
   DateTime? lastBackup;
@@ -157,6 +165,12 @@ class MatrixService extends ChangeNotifier {
   /// Все разнесённые Matrix API дергают этот private wrapper, а сам
   /// [notifyListeners] остаётся внутри [MatrixService].
   void _emitChange() => notifyListeners();
+
+  void _log(String area, String message, [Object? error]) {
+    if (!OrexConfig.debugLogs) return;
+    final suffix = error == null ? '' : ' | $error';
+    debugPrint('[Orex][$area] $message$suffix');
+  }
 
   @override
   void dispose() {

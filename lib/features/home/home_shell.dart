@@ -137,6 +137,7 @@ class _HomeShellState extends State<HomeShell> {
     final config = await _askRoom(kind);
     if (config == null || config.name.isEmpty) return;
     if (mounted) setState(() => _creatingRoom = true);
+    debugPrint('[Orex][Home] create room kind=$kind name=${config.name} public=${config.public} alias=${config.localAlias}');
     try {
       final roomId = switch (kind) {
         _CreateRoomKind.group => await widget.matrix.createGroup(
@@ -162,6 +163,7 @@ class _HomeShellState extends State<HomeShell> {
         });
       }
     } catch (e) {
+      debugPrint('[Orex][Home] create room failed kind=$kind name=${config.name}: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Не удалось создать: $e')),

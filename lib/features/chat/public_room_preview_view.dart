@@ -244,8 +244,12 @@ class _PreviewChildPicker extends StatelessWidget {
   }
 
   IconData _icon(OrexRoomPreview child) {
+    final previewIcon = child.iconKey;
+    if (previewIcon != null && previewIcon.isNotEmpty) {
+      return orexRoomIconData(previewIcon);
+    }
     final local = matrix.client.getRoomById(child.roomId);
-    if (local == null) return orexRoomIconData(child.iconKey ?? 'chat');
+    if (local == null) return orexRoomIconData('chat');
     return orexRoomIconData(matrix.roomIconKey(local));
   }
 

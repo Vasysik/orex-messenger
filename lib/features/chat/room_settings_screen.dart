@@ -62,6 +62,7 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
         );
       }
     } catch (e) {
+      debugPrint('[Orex][RoomSettings] action failed room=${widget.room.id}: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Не удалось выполнить действие: $e')),
@@ -135,6 +136,7 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
         );
       }
     } catch (e) {
+      debugPrint('[Orex][RoomSettings] action failed room=${widget.room.id}: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Не удалось обновить аватар: $e')),
@@ -194,6 +196,7 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
   Future<void> _createChild() async {
     final details = await _askChildDetails();
     if (details == null || details.name.isEmpty) return;
+    debugPrint('[Orex][RoomSettings] create child name=${details.name} icon=${details.icon} space=${widget.room.id}');
     await _guard(
       () => widget.matrix
           .createSupergroupChild(
