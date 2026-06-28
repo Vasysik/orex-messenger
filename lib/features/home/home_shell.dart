@@ -7,6 +7,7 @@ import '../../widgets/squirrel_mascot.dart';
 import '../call/call_screen.dart';
 import '../call/minimized_call_panel.dart';
 import '../chat/chat_view.dart';
+import '../chat_list/chat_folder_controller.dart';
 import '../chat_list/chat_list_panel.dart';
 import '../new_chat/new_chat_screen.dart';
 import '../settings/settings_screen.dart';
@@ -32,16 +33,35 @@ class _HomeShellState extends State<HomeShell> {
   String? _selectedRoomId;
   bool _verifyBannerDismissed = false;
   double _chatListWidth = 360; // ширина левой колонки (можно тянуть мышью)
+  late final ChatFolderController _folders;
+  bool _appliedSavedChatListWidth = false;
 
   static const double _wideBreakpoint = 900;
 
   @override
   void initState() {
     super.initState();
-    final savedWidth = widget.matrix.savedChatListWidth;
-    if (savedWidth != null) {
-      _chatListWidth = savedWidth.clamp(260.0, 560.0);
+    _folders = ChatFolderController(matrix: widget.matrix)
+      ..addListener(_onFolderPrefsChanged);
+    _folders.load();
+  }
+
+  void _onFolderPrefsChanged() {
+    final savedWidth = _folders.savedChatListWidth;
+    if (!_appliedSavedChatListWidth && savedWidth != null && mounted) {
+      _appliedSavedChatListWidth = true;
+      setState(() {
+        _chatListWidth = savedWidth.clamp(260.0, 560.0);
+      });
     }
+  }
+
+  @override
+  void dispose() {
+    _folders
+      ..removeListener(_onFolderPrefsChanged)
+      ..dispose();
+    super.dispose();
   }
 
   void _openSettings() {
@@ -159,8 +179,7 @@ class _HomeShellState extends State<HomeShell> {
             _chatListWidth = (_chatListWidth + d.delta.dx).clamp(260.0, 560.0);
           });
         },
-        onHorizontalDragEnd: (_) =>
-            widget.matrix.saveChatListWidth(_chatListWidth),
+        onHorizontalDragEnd: (_) => _folders.saveChatListWidth(_chatListWidth),
         child: Center(
           child: Container(
             width: 4,
@@ -182,6 +201,7 @@ class _HomeShellState extends State<HomeShell> {
         onSelect: (id) => setState(() => _selectedRoomId = id),
         onOpenSettings: _openSettings,
         onNewChat: _openNewChat,
+        folders: _folders,
       );
 
   Widget _buildWide() {

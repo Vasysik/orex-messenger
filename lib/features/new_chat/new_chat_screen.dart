@@ -10,8 +10,6 @@ import '../../widgets/mxc_avatar.dart';
 
 enum _NewRoomKind { group, channel, supergroup }
 
-/// Экран «Новый чат»: поиск людей, создание группы, канала и супергруппы.
-/// Возвращает roomId выбранного/созданного чата через Navigator.pop.
 class NewChatScreen extends StatefulWidget {
   const NewChatScreen({super.key, required this.matrix});
   final MatrixService matrix;
@@ -60,23 +58,26 @@ class _NewChatScreenState extends State<NewChatScreen> {
   }
 
   Future<void> _create(_NewRoomKind kind) async {
-    final channelConfig =
-        kind == _NewRoomKind.channel ? await _askChannel() : null;
-    if (kind == _NewRoomKind.channel && channelConfig == null) return;
-    final name = channelConfig?.name ??
-        await _askName(kind == _NewRoomKind.supergroup
-            ? 'Название супергруппы'
-            : 'Название группы');
-    if (name == null || name.isEmpty) return;
+    final config = await _askRoom(kind);
+    if (config == null || config.name.isEmpty) return;
     setState(() => _busy = true);
     try {
       final roomId = switch (kind) {
-        _NewRoomKind.group => await widget.matrix.createGroup(name),
-        _NewRoomKind.channel => await widget.matrix.createChannel(
-            name,
-            public: channelConfig?.public ?? false,
+        _NewRoomKind.group => await widget.matrix.createGroup(
+            config.name,
+            public: config.public,
+            localAlias: config.localAlias,
           ),
-        _NewRoomKind.supergroup => await widget.matrix.createSupergroup(name),
+        _NewRoomKind.channel => await widget.matrix.createChannel(
+            config.name,
+            public: config.public,
+            localAlias: config.localAlias,
+          ),
+        _NewRoomKind.supergroup => await widget.matrix.createSupergroup(
+            config.name,
+            public: config.public,
+            localAlias: config.localAlias,
+          ),
       };
       if (mounted) Navigator.of(context).pop(roomId);
     } catch (e) {
@@ -86,52 +87,48 @@ class _NewChatScreenState extends State<NewChatScreen> {
     }
   }
 
-  Future<String?> _askName(String title) {
-    final c = TextEditingController();
-    return showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: TextField(controller: c, autofocus: true),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, c.text.trim()),
-            child: const Text('Создать'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<({String name, bool public})?> _askChannel() {
-    final c = TextEditingController();
+  Future<({String name, bool public, String? localAlias})?> _askRoom(
+    _NewRoomKind kind,
+  ) {
+    final name = TextEditingController();
+    final alias = TextEditingController();
     var public = false;
-    return showDialog<({String name, bool public})>(
+    return showDialog<({String name, bool public, String? localAlias})>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
-          title: const Text('Новый канал'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: c,
-                autofocus: true,
-                decoration: const InputDecoration(labelText: 'Название'),
-              ),
-              const SizedBox(height: 8),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                value: public,
-                title: const Text('Публичный канал'),
-                subtitle: Text(
-                  public ? 'Открыт для входа' : 'Вход только по приглашению',
+          title: Text(_dialogTitle(kind)),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: name,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: 'Название'),
                 ),
-                onChanged: (value) => setDialogState(() => public = value),
-              ),
-            ],
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: public,
+                  title: const Text('Публичная'),
+                  subtitle: Text(
+                    public ? 'Вход по ID' : 'Только по приглашению',
+                  ),
+                  onChanged: (value) => setDialogState(() => public = value),
+                ),
+                TextField(
+                  controller: alias,
+                  enabled: public,
+                  decoration: const InputDecoration(
+                    labelText: 'ID',
+                    hintText: 'team-news',
+                    prefixIcon: Icon(Icons.tag),
+                  ),
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(
@@ -140,9 +137,16 @@ class _NewChatScreenState extends State<NewChatScreen> {
             ),
             FilledButton(
               onPressed: () {
-                final name = c.text.trim();
-                if (name.isEmpty) return;
-                Navigator.pop(ctx, (name: name, public: public));
+                final roomName = name.text.trim();
+                if (roomName.isEmpty) return;
+                Navigator.pop(
+                  ctx,
+                  (
+                    name: roomName,
+                    public: public,
+                    localAlias: public ? alias.text.trim() : null,
+                  ),
+                );
               },
               child: const Text('Создать'),
             ),
@@ -151,6 +155,12 @@ class _NewChatScreenState extends State<NewChatScreen> {
       ),
     );
   }
+
+  String _dialogTitle(_NewRoomKind kind) => switch (kind) {
+        _NewRoomKind.group => 'Новая группа',
+        _NewRoomKind.channel => 'Новый канал',
+        _NewRoomKind.supergroup => 'Новая супергруппа',
+      };
 
   void _snack(String msg) {
     if (mounted) {
@@ -197,18 +207,20 @@ class _NewChatScreenState extends State<NewChatScreen> {
                 onTap: () => _create(_NewRoomKind.supergroup),
               ),
               const SizedBox(height: 20),
-              Text('НАЙТИ ЧЕЛОВЕКА',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        letterSpacing: 1.1,
-                        color: OrexColors.copper,
-                        fontWeight: FontWeight.w700,
-                      )),
+              Text(
+                'НАЙТИ ЧЕЛОВЕКА',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      letterSpacing: 1.1,
+                      color: OrexColors.copper,
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
               const SizedBox(height: 8),
               TextField(
                 controller: _search,
                 onChanged: _onQuery,
                 decoration: InputDecoration(
-                  hintText: 'Имя или @user:vasys.ru',
+                  hintText: 'Имя или @user',
                   prefixIcon: const Icon(Icons.search),
                   filled: true,
                   fillColor: Colors.white.withValues(alpha: 0.10),
@@ -248,7 +260,8 @@ class _NewChatScreenState extends State<NewChatScreen> {
       );
 
   Widget _userTile(Profile p) {
-    final name = p.displayName ?? p.userId;
+    final compactId = widget.matrix.compactUserId(p.userId);
+    final name = p.displayName ?? compactId;
     return ListTile(
       leading: MxcAvatar(
         matrix: widget.matrix,
@@ -257,7 +270,7 @@ class _NewChatScreenState extends State<NewChatScreen> {
         size: 44,
       ),
       title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(p.userId, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(compactId, maxLines: 1, overflow: TextOverflow.ellipsis),
       onTap: () => _openDirect(p.userId),
     );
   }

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
@@ -8,7 +7,11 @@ import 'package:matrix/encryption/utils/bootstrap.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'call_controller.dart';
+import 'matrix/orex_room_kind.dart';
+import 'matrix/room_alias.dart';
 import 'voip_service.dart';
+
+export 'matrix/orex_room_kind.dart';
 
 /// Модель аутентификации для регистрации через токен приглашения (MSC3231)
 class AuthenticationRegistrationToken extends AuthenticationData {
@@ -85,14 +88,6 @@ class MatrixService extends ChangeNotifier {
   bool _backupDisabledByUser = false;
 
   static const _orexRoomKindEvent = 'ru.orex.room.kind';
-  static const _chatFoldersPrefsKey = 'orex.chat_folders.v1';
-  static const _chatListWidthPrefsKey = 'orex.chat_list_width.v1';
-
-  List<OrexChatFolder> _chatFolders = OrexChatFolder.defaults;
-  double? _savedChatListWidth;
-
-  List<OrexChatFolder> get chatFolders => List.unmodifiable(_chatFolders);
-  double? get savedChatListWidth => _savedChatListWidth;
 
   /// Инициализация: восстановление сессии из БД (если была) и подписка на sync.
   Future<void> init() async {
@@ -118,7 +113,6 @@ class MatrixService extends ChangeNotifier {
       _serverBackupVersion = null;
       _backupDisabledByUser = false;
       await _loadBackupPrefs();
-      await _loadUiPrefs();
       notifyListeners();
     });
     // Обновление профиля (имя/аватар) — сбрасываем кэш медиа и перерисовываем,
@@ -135,7 +129,6 @@ class MatrixService extends ChangeNotifier {
     }
 
     await _loadBackupPrefs();
-    await _loadUiPrefs();
 
     // Восстанавливаем ключи из бэкапа с задержкой — только если бэкап не выключен.
     for (final s in const [3, 8]) {
@@ -262,78 +255,12 @@ class MatrixService extends ChangeNotifier {
   }
 
   /// Список комнат, отсортированный как в Telegram — по последней активности.
-  String _scopedPrefsKey(String key) {
-    final scope = client.userID ?? homeserver.host;
-    return '$key.$scope';
-  }
-
-  Future<void> _loadUiPrefs() async {
-    final prefs = await SharedPreferences.getInstance();
-    _savedChatListWidth =
-        prefs.getDouble(_scopedPrefsKey(_chatListWidthPrefsKey));
-
-    final raw = prefs.getString(_scopedPrefsKey(_chatFoldersPrefsKey));
-    if (raw == null || raw.isEmpty) {
-      _chatFolders = OrexChatFolder.defaults;
-      return;
-    }
-
-    try {
-      final decoded = jsonDecode(raw) as List<dynamic>;
-      final folders = decoded
-          .whereType<Map<String, Object?>>()
-          .map(OrexChatFolder.fromJson)
-          .where((folder) => folder.label.trim().isNotEmpty)
-          .toList();
-      _chatFolders = folders.isEmpty ? OrexChatFolder.defaults : folders;
-    } catch (_) {
-      _chatFolders = OrexChatFolder.defaults;
-    }
-  }
-
-  Future<void> saveChatFolders(List<OrexChatFolder> folders) async {
-    _chatFolders = folders.isEmpty ? OrexChatFolder.defaults : List.of(folders);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _scopedPrefsKey(_chatFoldersPrefsKey),
-      jsonEncode(_chatFolders.map((folder) => folder.toJson()).toList()),
-    );
-    notifyListeners();
-  }
-
-  Future<void> saveChatListWidth(double width) async {
-    _savedChatListWidth = width;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble(_scopedPrefsKey(_chatListWidthPrefsKey), width);
-  }
-
   List<Room> get rooms {
     final list =
         client.rooms.where((room) => !isSupergroupChild(room)).toList();
     list.sort((a, b) =>
         b.latestEventReceivedTime.compareTo(a.latestEventReceivedTime));
     return list;
-  }
-
-  /// Фильтрация под «папки»: Все / Личные / Группы / Каналы.
-  List<Room> roomsForFolder(OrexChatFolder folder) {
-    switch (folder.filter) {
-      case OrexFolderFilter.all:
-        return rooms;
-      case OrexFolderFilter.direct:
-        return rooms
-            .where((room) => roomKind(room) == OrexRoomKind.direct)
-            .toList();
-      case OrexFolderFilter.groups:
-        return rooms.where((room) {
-          final kind = roomKind(room);
-          return kind == OrexRoomKind.group || kind == OrexRoomKind.supergroup;
-        }).toList();
-      case OrexFolderFilter.channels:
-        return rooms.where(isChannel).toList();
-      case OrexFolderFilter.invites:
-        return rooms.where(isInvite).toList();
-    }
   }
 
   // Каналы в Matrix — это комнаты, где обычный участник не может писать
@@ -1328,6 +1255,35 @@ class MatrixService extends ChangeNotifier {
     return localpart.isEmpty ? q : localpart;
   }
 
+  String? get _localServerName {
+    final userId = client.userID;
+    if (userId != null && userId.contains(':')) {
+      return userId.split(':').last;
+    }
+    return homeserver.host.isEmpty ? null : homeserver.host;
+  }
+
+  String compactUserId(String userId) {
+    final server = _localServerName;
+    if (server == null || !userId.endsWith(':$server')) return userId;
+    return userId.substring(0, userId.length - server.length - 1);
+  }
+
+  String normalizeLocalUserId(String input) {
+    final q = input.trim();
+    if (q.isEmpty) return q;
+    if (q.startsWith('@') && q.contains(':')) return q;
+
+    var localpart = q.startsWith('@') ? q.substring(1) : q;
+    if (localpart.contains(':')) return q.startsWith('@') ? q : '@$q';
+
+    final server = _localServerName;
+    if (server == null || server.isEmpty) {
+      return q.startsWith('@') ? q : '@$q';
+    }
+    return '@$localpart:$server';
+  }
+
   List<String> _mxidCandidates(String q) {
     if (q.contains(' ')) return const [];
     if (q.startsWith('@') && q.contains(':')) return [q];
@@ -1335,7 +1291,7 @@ class MatrixService extends ChangeNotifier {
     final localpart = q.startsWith('@') ? q.substring(1) : q;
     if (localpart.isEmpty || localpart.contains(':')) return const [];
 
-    final server = client.userID?.split(':').last;
+    final server = _localServerName;
     if (server == null || server.isEmpty) return const [];
     return ['@$localpart:$server'];
   }
@@ -1359,52 +1315,128 @@ class MatrixService extends ChangeNotifier {
     );
   }
 
-  Future<String> createGroup(String name, {List<String> invite = const []}) =>
-      client.createGroupChat(
-        groupName: name,
-        invite: invite,
-        groupCall: true,
-        initialState: [_kindState(OrexRoomKind.group)],
+  String? _roomAliasLocalpart(String? alias) {
+    return OrexRoomAlias.normalizeLocalpart(alias);
+  }
+
+  String? _fullRoomAlias(String? localAlias) {
+    return OrexRoomAlias.fullAlias(localAlias, _localServerName);
+  }
+
+  String roomAliasLocalpart(Room room) {
+    return OrexRoomAlias.localpartFromRoom(room);
+  }
+
+  Future<void> setRoomLocalAlias(Room room, String? localAlias) async {
+    final alias = _fullRoomAlias(localAlias);
+    if (alias == null) return;
+    await room.setCanonicalAlias(alias);
+    notifyListeners();
+  }
+
+  Future<void> _applyRoomVisibility(Room room, bool public) async {
+    if (room.canChangeJoinRules) {
+      await room.setJoinRules(public ? JoinRules.public : JoinRules.invite);
+    }
+    try {
+      await client.setRoomVisibilityOnDirectory(
+        room.id,
+        visibility: public ? Visibility.public : Visibility.private,
       );
+    } catch (_) {
+      // Some homeservers allow changing join rules but restrict directory writes.
+    }
+    if (room.canChangeHistoryVisibility) {
+      await room.setHistoryVisibility(HistoryVisibility.shared);
+    }
+    if (room.canChangeGuestAccess) {
+      await room.setGuestAccess(GuestAccess.forbidden);
+    }
+  }
+
+  Future<String> createGroup(
+    String name, {
+    bool public = false,
+    String? localAlias,
+    List<String> invite = const [],
+  }) async {
+    final roomId = await client.createGroupChat(
+      groupName: name,
+      invite: invite,
+      groupCall: true,
+      preset:
+          public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
+      visibility: public ? Visibility.public : Visibility.private,
+      historyVisibility: HistoryVisibility.shared,
+      enableEncryption: true,
+      initialState: [_kindState(OrexRoomKind.group)],
+    );
+    final room = client.getRoomById(roomId);
+    if (room != null) {
+      await _applyRoomVisibility(room, public);
+      if (public) await setRoomLocalAlias(room, localAlias);
+    }
+    notifyListeners();
+    return roomId;
+  }
 
   /// Создать канал: группа, где обычные участники не могут писать
   /// (events_default поднят) — совпадает с эвристикой папки «Каналы».
   Future<String> createChannel(
     String name, {
     bool public = false,
+    String? localAlias,
     List<String> invite = const [],
-  }) =>
-      client.createGroupChat(
-        groupName: name,
-        invite: invite,
-        preset:
-            public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
-        visibility: public ? Visibility.public : Visibility.private,
-        historyVisibility:
-            public ? HistoryVisibility.worldReadable : HistoryVisibility.shared,
-        enableEncryption: public ? false : null,
-        initialState: [_kindState(OrexRoomKind.channel)],
-        powerLevelContentOverride: const {'events_default': 50},
-      );
+  }) async {
+    final roomId = await client.createGroupChat(
+      groupName: name,
+      invite: invite,
+      preset:
+          public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
+      visibility: public ? Visibility.public : Visibility.private,
+      historyVisibility: HistoryVisibility.shared,
+      enableEncryption: true,
+      initialState: [_kindState(OrexRoomKind.channel)],
+      powerLevelContentOverride: const {'events_default': 50},
+    );
+    final room = client.getRoomById(roomId);
+    if (room != null) {
+      await _applyRoomVisibility(room, public);
+      if (public) await setRoomLocalAlias(room, localAlias);
+    }
+    notifyListeners();
+    return roomId;
+  }
 
   Future<String> createSupergroup(
     String name, {
+    bool public = false,
+    String? localAlias,
     List<String> invite = const [],
   }) async {
     final spaceId = await client.createSpace(
       name: name,
-      visibility: Visibility.private,
+      visibility: public ? Visibility.public : Visibility.private,
+      spaceAliasName: public ? _roomAliasLocalpart(localAlias) : null,
       invite: invite,
       waitForSync: true,
     );
     final space = client.getRoomById(spaceId);
     if (space != null) {
       await _setRoomKind(space, OrexRoomKind.supergroup);
-      await createSupergroupChild(space, 'Общий чат', invite: invite);
+      await _applyRoomVisibility(space, public);
+      if (public) await setRoomLocalAlias(space, localAlias);
+      await createSupergroupChild(
+        space,
+        'Общий чат',
+        public: public,
+        invite: invite,
+      );
       await createSupergroupChild(
         space,
         'Голосовой',
         voice: true,
+        public: public,
         invite: invite,
       );
     }
@@ -1416,6 +1448,7 @@ class MatrixService extends ChangeNotifier {
     Room space,
     String name, {
     bool voice = false,
+    bool public = false,
     List<String> invite = const [],
   }) async {
     if (!space.isSpace) throw StateError('Room is not a supergroup space');
@@ -1423,10 +1456,19 @@ class MatrixService extends ChangeNotifier {
       groupName: name,
       invite: invite,
       groupCall: true,
+      preset:
+          public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
+      visibility: public ? Visibility.public : Visibility.private,
+      historyVisibility: HistoryVisibility.shared,
+      enableEncryption: true,
       initialState: [
         _kindState(voice ? OrexRoomKind.voice : OrexRoomKind.group),
       ],
     );
+    final childRoom = client.getRoomById(roomId);
+    if (childRoom != null) {
+      await _applyRoomVisibility(childRoom, public);
+    }
     final order = supergroupChildren(space).length.toString().padLeft(3, '0');
     await space.setSpaceChild(roomId, order: order, suggested: !voice);
     notifyListeners();
@@ -1450,7 +1492,8 @@ class MatrixService extends ChangeNotifier {
   }
 
   Future<void> inviteUsers(Room room, Iterable<String> userIds) async {
-    final ids = userIds.map((id) => id.trim()).where((id) => id.isNotEmpty);
+    final ids =
+        userIds.map(normalizeLocalUserId).where((id) => id.isNotEmpty).toList();
     for (final id in ids) {
       await room.invite(id);
       if (room.isSpace) {
@@ -1462,21 +1505,36 @@ class MatrixService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setChannelPublic(Room room, bool public) async {
-    await _setRoomKind(room, OrexRoomKind.channel);
-    if (room.canChangeJoinRules) {
-      await room.setJoinRules(public ? JoinRules.public : JoinRules.invite);
+  Future<void> setRoomPublic(Room room, bool public) async {
+    if (isChannel(room)) {
+      await _setRoomKind(room, OrexRoomKind.channel);
+    } else if (isSupergroup(room)) {
+      await _setRoomKind(room, OrexRoomKind.supergroup);
+    } else if (!room.isDirectChat) {
+      await _setRoomKind(room, OrexRoomKind.group);
     }
-    if (room.canChangeHistoryVisibility) {
-      await room.setHistoryVisibility(
-        public ? HistoryVisibility.worldReadable : HistoryVisibility.shared,
-      );
-    }
-    if (room.canChangeGuestAccess) {
-      await room.setGuestAccess(
-        public ? GuestAccess.canJoin : GuestAccess.forbidden,
-      );
-    }
+    await _applyRoomVisibility(room, public);
+    notifyListeners();
+  }
+
+  Future<void> setChannelPublic(Room room, bool public) =>
+      setRoomPublic(room, public);
+
+  Future<void> setRoomAvatarBytes(
+    Room room,
+    List<int> bytes,
+    String filename,
+  ) async {
+    await room.setAvatar(
+      MatrixFile(bytes: Uint8List.fromList(bytes), name: filename),
+    );
+    _mediaCache.clear();
+    notifyListeners();
+  }
+
+  Future<void> removeRoomAvatar(Room room) async {
+    await room.setAvatar(null);
+    _mediaCache.clear();
     notifyListeners();
   }
 
@@ -1525,90 +1583,5 @@ class MatrixService extends ChangeNotifier {
     _autoBackupTimer?.cancel();
     client.dispose();
     super.dispose();
-  }
-}
-
-enum OrexRoomKind { direct, group, channel, supergroup, voice }
-
-enum OrexFolderFilter { all, direct, groups, channels, invites }
-
-extension OrexFolderFilterLabel on OrexFolderFilter {
-  String get label => switch (this) {
-        OrexFolderFilter.all => 'Все',
-        OrexFolderFilter.direct => 'Личные',
-        OrexFolderFilter.groups => 'Группы',
-        OrexFolderFilter.channels => 'Каналы',
-        OrexFolderFilter.invites => 'Приглашения',
-      };
-}
-
-class OrexChatFolder {
-  const OrexChatFolder({
-    required this.id,
-    required this.label,
-    required this.filter,
-  });
-
-  final String id;
-  final String label;
-  final OrexFolderFilter filter;
-
-  static const defaults = [
-    OrexChatFolder(
-      id: 'all',
-      label: 'Все',
-      filter: OrexFolderFilter.all,
-    ),
-    OrexChatFolder(
-      id: 'direct',
-      label: 'Личные',
-      filter: OrexFolderFilter.direct,
-    ),
-    OrexChatFolder(
-      id: 'groups',
-      label: 'Группы',
-      filter: OrexFolderFilter.groups,
-    ),
-    OrexChatFolder(
-      id: 'channels',
-      label: 'Каналы',
-      filter: OrexFolderFilter.channels,
-    ),
-    OrexChatFolder(
-      id: 'invites',
-      label: 'Инвайты',
-      filter: OrexFolderFilter.invites,
-    ),
-  ];
-
-  OrexChatFolder copyWith({
-    String? id,
-    String? label,
-    OrexFolderFilter? filter,
-  }) =>
-      OrexChatFolder(
-        id: id ?? this.id,
-        label: label ?? this.label,
-        filter: filter ?? this.filter,
-      );
-
-  Map<String, Object?> toJson() => {
-        'id': id,
-        'label': label,
-        'filter': filter.name,
-      };
-
-  factory OrexChatFolder.fromJson(Map<String, Object?> json) {
-    final filterName = json['filter']?.toString();
-    final filter = OrexFolderFilter.values.firstWhere(
-      (value) => value.name == filterName,
-      orElse: () => OrexFolderFilter.all,
-    );
-    return OrexChatFolder(
-      id: json['id']?.toString() ??
-          DateTime.now().microsecondsSinceEpoch.toString(),
-      label: json['label']?.toString() ?? filter.label,
-      filter: filter,
-    );
   }
 }
