@@ -26,18 +26,15 @@ class _PublicRoomPreviewScreenState extends State<PublicRoomPreviewScreen> {
   bool _joining = false;
 
   Future<List<MatrixEvent>> _loadEvents() async {
-    if (!widget.room.worldReadable) return const [];
     try {
-      final res = await widget.matrix.client.peekEvents(
-        roomId: widget.room.roomId,
-        timeout: 0,
+      final res = await widget.matrix.client.getRoomEvents(
+        widget.room.roomId,
+        Direction.b,
+        limit: 30,
       );
-      return (res.chunk ?? const <MatrixEvent>[])
+      return res.chunk
           .where((event) => event.type == EventTypes.Message)
           .where((event) => event.content['body'] is String)
-          .toList()
-          .reversed
-          .take(30)
           .toList();
     } catch (_) {
       return const [];
