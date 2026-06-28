@@ -204,7 +204,12 @@ class _ChatListPanelState extends State<ChatListPanel> {
   }
 
   List<Room> _roomsForFolder(OrexChatFolder folder) {
-    if (_query.isEmpty) return widget.folders.roomsForFolder(folder);
+    if (_query.isEmpty) {
+      return widget.folders
+          .roomsForFolder(folder)
+          .where((room) => !widget.matrix.isSupergroupChild(room))
+          .toList();
+    }
 
     final q = _query.toLowerCase();
     final byId = <String, Room>{};
@@ -361,7 +366,10 @@ class _RoomListPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (rooms.isEmpty && globalItemCount == 0) {
+    final visibleRooms = rooms
+        .where((room) => !matrix.isSupergroupChild(room))
+        .toList();
+    if (visibleRooms.isEmpty && globalItemCount == 0) {
       return const Center(
         child: SquirrelMascot(
           size: 110,
@@ -371,10 +379,10 @@ class _RoomListPage extends StatelessWidget {
     }
     return ListView.builder(
       padding: const EdgeInsets.symmetric(horizontal: 8),
-      itemCount: rooms.length + globalItemCount,
+      itemCount: visibleRooms.length + globalItemCount,
       itemBuilder: (_, i) {
-        if (i < rooms.length) {
-          final room = rooms[i];
+        if (i < visibleRooms.length) {
+          final room = visibleRooms[i];
           return _ChatTile(
             matrix: matrix,
             room: room,
@@ -384,7 +392,7 @@ class _RoomListPage extends StatelessWidget {
           );
         }
 
-        return globalItemBuilder(i - rooms.length);
+        return globalItemBuilder(i - visibleRooms.length);
       },
     );
   }

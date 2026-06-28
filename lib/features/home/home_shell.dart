@@ -254,9 +254,18 @@ class _HomeShellState extends State<HomeShell> {
       };
 
   void _openPublicRoomPreview(OrexRoomPreview preview) {
+    OrexLog.d('Home', 'open public preview room=${preview.roomId} name=${preview.name}');
     setState(() {
       _selectedRoomId = null;
       _previewRoom = preview;
+    });
+  }
+
+  void _selectRoom(String roomId, {String source = 'unknown'}) {
+    OrexLog.d('Home', 'select room source=$source room=$roomId');
+    setState(() {
+      _previewRoom = null;
+      _selectedRoomId = roomId;
     });
   }
 
@@ -279,6 +288,7 @@ class _HomeShellState extends State<HomeShell> {
   /// Начать/присоединиться к звонку. На десктопе показываем сразу свёрнутой
   /// панелью над чатом (не на весь экран); на узком экране — полноэкранно.
   void _startCall(String roomId, bool video) {
+    OrexLog.d('Home', 'start/join call room=$roomId video=$video');
     widget.matrix.call.start(roomId, video: video);
     final isWide = MediaQuery.sizeOf(context).width >= _wideBreakpoint;
     if (isWide) {
@@ -295,18 +305,34 @@ class _HomeShellState extends State<HomeShell> {
     if (call.isActive) {
       return MinimizedCallPanel(call: call, onExpand: _openCallFullScreen);
     }
-    final roomId = _selectedRoomId;
-    if (roomId != null) {
-      final room = widget.matrix.client.getRoomById(roomId);
-      if (room != null && widget.matrix.roomHasActiveCall(room)) {
-        return JoinCallPanel(
-          matrix: widget.matrix,
-          room: room,
-          onJoin: () => _startCall(roomId, false),
-        );
-      }
+    final room = _roomWithVisibleCall();
+    if (room != null) {
+      return JoinCallPanel(
+        matrix: widget.matrix,
+        room: room,
+        onJoin: () => _startCall(room.id, false),
+      );
     }
     return const SizedBox.shrink();
+  }
+
+  Room? _roomWithVisibleCall() {
+    final roomId = _selectedRoomId;
+    if (roomId == null) return null;
+    final room = widget.matrix.client.getRoomById(roomId);
+    if (room == null) return null;
+
+    if (room.isSpace) {
+      for (final child in widget.matrix.supergroupChildPreviews(room)) {
+        final local = widget.matrix.client.getRoomById(child.roomId);
+        if (local != null && widget.matrix.roomHasActiveCall(local)) {
+          return local;
+        }
+      }
+      return null;
+    }
+
+    return widget.matrix.roomHasActiveCall(room) ? room : null;
   }
 
   @override
@@ -329,7 +355,7 @@ class _HomeShellState extends State<HomeShell> {
             children: [
               SafeArea(
                 child: ListenableBuilder(
-                  listenable: widget.matrix.call,
+                  listenable: Listenable.merge([widget.matrix, widget.matrix.call]),
                   builder: (context, _) {
                     return Column(
                       children: [
@@ -384,10 +410,7 @@ class _HomeShellState extends State<HomeShell> {
   Widget _chatList({required bool showSelection}) => ChatListPanel(
         matrix: widget.matrix,
         selectedRoomId: showSelection ? _selectedRoomId : null,
-        onSelect: (id) => setState(() {
-          _previewRoom = null;
-          _selectedRoomId = id;
-        }),
+        onSelect: (id) => _selectRoom(id, source: 'chat-list'),
         onOpenPublicRoomPreview: _openPublicRoomPreview,
         onOpenSettings: _openSettings,
         onNewChat: _openNewChat,
@@ -419,6 +442,7 @@ class _HomeShellState extends State<HomeShell> {
       matrix: widget.matrix,
       roomId: roomId,
       onBack: onBack,
+      onOpenRoomReference: (id) => _selectRoom(id, source: 'message-reference'),
     );
   }
 

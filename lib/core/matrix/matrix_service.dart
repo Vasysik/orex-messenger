@@ -141,7 +141,7 @@ class MatrixService extends ChangeNotifier {
     try {
       voip = VoipService(client);
     } catch (e) {
-      debugPrint('VoipService init failed, calls disabled: $e');
+      _log('Voip', 'init failed, calls disabled', e);
     }
 
     await _loadBackupPrefs();

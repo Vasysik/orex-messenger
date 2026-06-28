@@ -9,6 +9,7 @@ import 'package:matrix/matrix.dart';
 import 'package:webrtc_interface/webrtc_interface.dart';
 
 import 'config.dart';
+import 'orex_logger.dart';
 
 /// MatrixRTC-сигналинг звонков (стек Element Call).
 ///
@@ -69,9 +70,9 @@ class VoipService extends ChangeNotifier {
       if (active != null && active!.room.id == room.id) continue; // реально в звонке
       try {
         await room.removeFamedlyCallMemberEvent(room.id, voip);
-        debugPrint('Removed phantom call membership in ${room.id}');
+        OrexLog.d('Voip', 'removed phantom call membership room=${room.id}');
       } catch (e) {
-        debugPrint('cleanup stale membership failed: $e');
+        OrexLog.d('Voip', 'cleanup stale membership failed', e);
       }
     }
   }
@@ -109,7 +110,7 @@ class VoipService extends ChangeNotifier {
         },
       );
     } catch (e) {
-      debugPrint('notifyRejected failed: $e');
+      OrexLog.d('Voip', 'notify rejected failed room=$roomId', e);
     }
   }
 
@@ -201,7 +202,7 @@ class VoipService extends ChangeNotifier {
         },
       );
     } catch (e) {
-      debugPrint('markCallHandled failed: $e');
+      OrexLog.d('Voip', 'mark call handled failed room=$roomId call=$callId', e);
     }
   }
 
@@ -244,7 +245,7 @@ class VoipService extends ChangeNotifier {
       try {
         await gc.leave();
       } catch (e) {
-        debugPrint('VoipService.leaveCurrent failed: $e');
+        OrexLog.d('Voip', 'leave current failed', e);
       }
       // Подстраховка: гарантированно убираем своё членство (если leave() не
       // справился) — иначе остаёмся «фантомом» в звонке для остальных.

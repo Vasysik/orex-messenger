@@ -200,6 +200,7 @@ class ChatFolderController extends ChangeNotifier {
         .map(matrix.client.getRoomById)
         .whereType<Room>()
         .where((room) => room.membership != Membership.leave)
+        .where((room) => !matrix.isSupergroupChild(room))
         .toList();
   }
 }

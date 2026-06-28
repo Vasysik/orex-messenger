@@ -9,6 +9,7 @@ import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
 import 'core/config.dart';
 import 'core/database.dart';
 import 'core/matrix/matrix_service.dart';
+import 'core/orex_logger.dart';
 import 'features/auth/login_screen.dart';
 import 'features/call/incoming_call_screen.dart';
 import 'features/home/home_shell.dart';
@@ -60,7 +61,7 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
           'чтобы не открыть защищённый мессенджер без E2EE: $e',
         );
       }
-      debugPrint('vodozemac init skipped/failed, E2EE disabled: $e');
+      OrexLog.d('Bootstrap', 'vodozemac init skipped/failed, E2EE disabled', e);
     }
 
     final theme = await ThemeController.load();

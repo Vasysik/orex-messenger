@@ -29,6 +29,8 @@ class ChatView extends StatefulWidget {
     this.supergroupSpaceId,
     this.supergroupChildren,
     this.onSupergroupChildSelected,
+    this.onOpenRoomReference,
+    this.showInlineCallPanel = true,
   });
 
   final MatrixService matrix;
@@ -37,6 +39,8 @@ class ChatView extends StatefulWidget {
   final String? supergroupSpaceId;
   final List<OrexRoomPreview>? supergroupChildren;
   final ValueChanged<String>? onSupergroupChildSelected;
+  final ValueChanged<String>? onOpenRoomReference;
+  final bool showInlineCallPanel;
 
   @override
   State<ChatView> createState() => _ChatViewState();
@@ -165,6 +169,19 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  void _openRoomReference(String reference) {
+    final roomId = widget.matrix.roomIdForReference(reference);
+    OrexLog.d('Chat', 'open room reference ref=$reference resolved=$roomId from=${widget.roomId}');
+    if (roomId == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Комната пока не найдена локально')),
+      );
+      return;
+    }
+    widget.onOpenRoomReference?.call(roomId);
+  }
+
   Future<void> _openTimeline() async {
     final room = widget.matrix.client.getRoomById(widget.roomId);
     if (room == null) return;
@@ -213,6 +230,7 @@ class _ChatViewState extends State<ChatView> {
     if (room == null) return;
     if (!widget.matrix.canSendMessages(room)) return;
     await widget.matrix.ensureCanSendToChannel(room);
+    OrexLog.d('Chat', 'send message room=${room.id} text=${text.length} files=${_attachedFiles.length}');
 
     final attachedList = List<PlatformFile>.from(_attachedFiles);
     if (attachedList.isNotEmpty) {
@@ -582,6 +600,8 @@ class _ChatViewState extends State<ChatView> {
       supergroupSpaceId: space.id,
       supergroupChildren: childPreviews,
       onSupergroupChildSelected: selectChild,
+      onOpenRoomReference: widget.onOpenRoomReference,
+      showInlineCallPanel: false,
     );
   }
 
@@ -649,7 +669,8 @@ class _ChatViewState extends State<ChatView> {
             ),
             Divider(
                 height: 1, color: OrexColors.copper.withValues(alpha: 0.12)),
-            if (widget.supergroupSpaceId != null &&
+            if (widget.showInlineCallPanel &&
+                widget.supergroupSpaceId != null &&
                 !widget.matrix.call.isActive &&
                 widget.matrix.roomHasActiveCall(room))
               Padding(
@@ -700,6 +721,7 @@ class _ChatViewState extends State<ChatView> {
                       onEdit: () => _startEdit(item.leader),
                       onDelete: () => room.redactEvent(item.leader.eventId),
                       onReply: () => _startReply(item.leader),
+                      onOpenRoomReference: _openRoomReference,
                       onCancelSend: () async {
                         try {
                           await item.leader.cancelSend();
@@ -724,6 +746,7 @@ class _ChatViewState extends State<ChatView> {
                       onEdit: () => _startEdit(item.event),
                       onDelete: () => room.redactEvent(item.event.eventId),
                       onReply: () => _startReply(item.event),
+                      onOpenRoomReference: _openRoomReference,
                       onCancelSend: () async {
                         try {
                           await item.event.cancelSend();

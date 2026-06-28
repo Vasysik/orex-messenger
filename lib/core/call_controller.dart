@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../features/call/call_session.dart';
 import 'matrix/matrix_service.dart';
+import 'orex_logger.dart';
 
 /// Долгоживущий «активный звонок»: владеет медиа-сессией ([CallSession]) и
 /// сигналингом ([VoipService]), чтобы звонок переживал сворачивание экрана.
@@ -42,7 +43,7 @@ class CallController extends ChangeNotifier {
     try {
       await matrix.voip?.enterCall(roomId);
     } catch (e) {
-      debugPrint('Сигналинг звонка не удался: $e');
+      OrexLog.d('Call', 'signaling failed room=$roomId', e);
     }
     await s.connect(video: video);
   }
@@ -108,7 +109,7 @@ class CallController extends ChangeNotifier {
         'com.orex.call_outcome': outcome,
       });
     } catch (e) {
-      debugPrint('postCallSummary failed: $e');
+      OrexLog.d('Call', 'post call summary failed room=$roomId', e);
     }
   }
 

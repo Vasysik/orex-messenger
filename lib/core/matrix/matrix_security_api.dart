@@ -50,7 +50,7 @@ extension MatrixSecurityApi on MatrixService {
         await km.loadAllKeys();
       }
     } catch (e) {
-      debugPrint('Не удалось загрузить ключи из бэкапа: $e');
+      _log('Security', 'load keys from backup failed', e);
     }
     _emitChange();
   }
@@ -115,7 +115,7 @@ extension MatrixSecurityApi on MatrixService {
       await client.oneShotSync().timeout(const Duration(seconds: 8));
       await ensureKeysLoaded().timeout(const Duration(seconds: 8));
     } catch (e) {
-      debugPrint('refreshOwnSecurityState failed: $e');
+      _log('Security', 'refresh own security state failed', e);
     }
     _emitChange();
   }
@@ -151,7 +151,7 @@ extension MatrixSecurityApi on MatrixService {
           .timeout(const Duration(seconds: 10));
       await _uploadKeys(record: true).timeout(const Duration(seconds: 10));
     } catch (e) {
-      debugPrint('backupNow failed: $e');
+      _log('Security', 'backup now failed', e);
     } finally {
       backupInProgress = false;
       _emitChange();
@@ -179,10 +179,10 @@ extension MatrixSecurityApi on MatrixService {
         await _setBackupDisabledByUser(true);
         _emitChange();
       } else {
-        debugPrint('uploadInboundGroupSessions failed: $e');
+        _log('Security', 'upload inbound group sessions failed', e);
       }
     } catch (e) {
-      debugPrint('uploadInboundGroupSessions failed: $e');
+      _log('Security', 'upload inbound group sessions failed', e);
     }
   }
 
@@ -390,7 +390,7 @@ extension MatrixSecurityApi on MatrixService {
     try {
       await _deleteCurrentServerKeyBackup();
     } catch (e) {
-      debugPrint('disableKeyBackup failed: $e');
+      _log('Security', 'disable key backup failed', e);
       rethrow;
     }
 

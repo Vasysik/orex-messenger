@@ -28,6 +28,7 @@ class MessageBubble extends StatelessWidget {
     this.onReply,
     this.albumEvents,
     this.onCancelSend,
+    this.onOpenRoomReference,
   });
 
   final Event event;
@@ -42,6 +43,7 @@ class MessageBubble extends StatelessWidget {
   final VoidCallback? onReply;
   final List<Event>? albumEvents;
   final VoidCallback? onCancelSend;
+  final ValueChanged<String>? onOpenRoomReference;
 
   static const _quickEmojis = ['👍', '❤️', '😂', '🎉', '🤯', '😢', '🔥', '🙏', '🐿️'];
 
@@ -358,6 +360,17 @@ class MessageBubble extends StatelessWidget {
       );
     }
 
+    final invite = _InviteNoticeData.tryParse(body);
+    if (invite != null) {
+      return _InviteNoticeCard(
+        data: invite,
+        textColor: textColor,
+        onTap: invite.reference == null
+            ? null
+            : () => onOpenRoomReference?.call(invite.reference!),
+      );
+    }
+
     final t = timeline;
     if (t == null) return const SizedBox.shrink();
 
@@ -610,6 +623,119 @@ class _MenuRow extends StatelessWidget {
         const SizedBox(width: 12),
         Text(label, style: TextStyle(color: color)),
       ],
+    );
+  }
+}
+
+
+class _InviteNoticeData {
+  const _InviteNoticeData({
+    required this.title,
+    this.roomId,
+    this.alias,
+  });
+
+  final String title;
+  final String? roomId;
+  final String? alias;
+
+  String? get reference => roomId ?? alias;
+
+  static _InviteNoticeData? tryParse(String body) {
+    final normalized = body.trim();
+    if (!normalized.startsWith('Приглашение в «')) return null;
+
+    final titleMatch = RegExp(r'Приглашение в «([^»]+)»').firstMatch(normalized);
+    final roomMatch = RegExp(r'Комната:\s*(!\S+:\S+)').firstMatch(normalized);
+    final aliasMatch = RegExp(r'Alias:\s*(#\S+:\S+)').firstMatch(normalized);
+
+    return _InviteNoticeData(
+      title: titleMatch?.group(1) ?? 'Комната',
+      roomId: roomMatch?.group(1),
+      alias: aliasMatch?.group(1),
+    );
+  }
+}
+
+class _InviteNoticeCard extends StatelessWidget {
+  const _InviteNoticeCard({
+    required this.data,
+    required this.textColor,
+    required this.onTap,
+  });
+
+  final _InviteNoticeData data;
+  final Color textColor;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final subtitle = data.alias ?? data.roomId ?? 'Откройте приглашение';
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: onTap,
+      child: Container(
+        constraints: const BoxConstraints(minWidth: 240, maxWidth: 330),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: OrexColors.copper.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: OrexColors.copper.withValues(alpha: 0.35)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: const BoxDecoration(
+                gradient: OrexColors.copperGradient,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.mark_email_unread, color: OrexColors.cream, size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Приглашение',
+                    style: TextStyle(
+                      color: textColor.withValues(alpha: 0.72),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    data.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: textColor,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: textColor.withValues(alpha: 0.65),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Icon(Icons.chevron_right, color: OrexColors.copper.withValues(alpha: 0.9)),
+          ],
+        ),
+      ),
     );
   }
 }

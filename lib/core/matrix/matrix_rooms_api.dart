@@ -49,11 +49,39 @@ extension MatrixRoomsApi on MatrixService {
 
   bool isSupergroupChild(Room room) {
     if (room.isSpace) return false;
+    if (_isKnownSupergroupChildId(room.id)) return true;
     return room.spaceParents.any((parent) {
       final parentId = parent.roomId;
       if (parentId == null) return false;
       return client.getRoomById(parentId)?.isSpace == true;
     });
+  }
+
+  bool _isKnownSupergroupChildId(String roomId) {
+    if (roomId.isEmpty) return false;
+    for (final space in client.rooms.where((room) => room.isSpace)) {
+      if (_supergroupChildIds(space).contains(roomId)) return true;
+    }
+    return false;
+  }
+
+  String? roomIdForReference(String reference) {
+    final ref = reference.trim();
+    if (ref.isEmpty) return null;
+    final byId = client.getRoomById(ref);
+    if (byId != null && byId.membership != Membership.leave) return byId.id;
+
+    for (final room in client.rooms) {
+      if (room.membership == Membership.leave) continue;
+      if (room.id == ref) return room.id;
+      if (room.canonicalAlias == ref) return room.id;
+      final aliasState = room.getState(EventTypes.RoomCanonicalAlias)?.content;
+      final altAliases = aliasState?['alt_aliases'];
+      if (altAliases is List && altAliases.map((e) => e.toString()).contains(ref)) {
+        return room.id;
+      }
+    }
+    return null;
   }
 
   List<Room> supergroupChildren(Room space) {
@@ -1126,12 +1154,16 @@ extension MatrixRoomsApi on MatrixService {
       final dm = client.getRoomById(dmId);
       if (dm == null) return;
       final alias = room.canonicalAlias;
-      final idLine = alias.isEmpty ? '' : '\nID: $alias';
+      final aliasLine = alias.isEmpty ? '' : '\nAlias: $alias';
       await dm.sendTextEvent(
-        'Приглашение в «${room.getLocalizedDisplayname()}».$idLine\n'
-        'Откройте приглашения, чтобы войти.',
+        'Приглашение в «${room.getLocalizedDisplayname()}»\n'
+        'Комната: ${room.id}$aliasLine\n'
+        'Нажмите на карточку, чтобы открыть.',
       );
-    } catch (_) {}
+      _log('Rooms', 'sent invite notice room=${room.id} to=$userId');
+    } catch (e) {
+      _log('Rooms', 'send invite notice failed room=${room.id} to=$userId', e);
+    }
   }
 
   Future<void> setRoomPublic(Room room, bool public) async {
