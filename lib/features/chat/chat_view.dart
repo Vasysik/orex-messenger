@@ -7,6 +7,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import '../../core/matrix_service.dart';
 import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
+import '../../widgets/room_icon.dart';
 import '../call/call_screen.dart';
 import 'message_bubble.dart';
 import 'room_settings_sheet.dart';
@@ -452,11 +453,16 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _openRoomSettings(Room room) {
+    final isWide = MediaQuery.sizeOf(context).width >= 900;
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => RoomSettingsSheet(matrix: widget.matrix, room: room),
+      builder: (_) => RoomSettingsSheet(
+        matrix: widget.matrix,
+        room: room,
+        fullScreen: !isWide,
+      ),
     );
   }
 
@@ -898,14 +904,14 @@ class _ChatHeader extends StatelessWidget {
               ],
             ),
           ),
-          if (space != null)
+          if (space != null && matrix.canManageRoomSettings(space))
             IconButton(
               tooltip: 'Настройки супергруппы',
               onPressed: () => onSettings(space),
               icon: const Icon(Icons.hub),
               color: OrexColors.copper,
             ),
-          if (space == null)
+          if (space == null && matrix.canManageRoomSettings(room))
             IconButton(
               tooltip: 'Настройки чата',
               onPressed: () => onSettings(room),
@@ -960,9 +966,7 @@ class _SupergroupChildPicker extends StatelessWidget {
                 child: Row(
                   children: [
                     Icon(
-                      matrix.isVoiceRoom(child)
-                          ? Icons.graphic_eq
-                          : Icons.forum,
+                      orexRoomIconData(matrix.roomIconKey(child)),
                       size: 16,
                       color: OrexColors.copper,
                     ),

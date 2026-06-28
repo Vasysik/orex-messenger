@@ -8,6 +8,7 @@ import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
 import '../../widgets/orex_loading_overlay.dart';
+import 'public_room_preview_screen.dart';
 
 enum _NewRoomKind { group, channel, supergroup }
 
@@ -70,15 +71,15 @@ class _NewChatScreenState extends State<NewChatScreen> {
   }
 
   Future<void> _joinPublicRoom(PublishedRoomsChunk room) async {
-    setState(() => _busy = true);
-    try {
-      final roomId = await widget.matrix.joinPublicRoom(room);
-      if (mounted) Navigator.of(context).pop(roomId);
-    } catch (e) {
-      _snack('Не удалось войти: $e');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
+    final roomId = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => PublicRoomPreviewScreen(
+          matrix: widget.matrix,
+          room: room,
+        ),
+      ),
+    );
+    if (roomId != null && mounted) Navigator.of(context).pop(roomId);
   }
 
   Future<void> _create(_NewRoomKind kind) async {
@@ -271,7 +272,7 @@ class _NewChatScreenState extends State<NewChatScreen> {
                 ],
               ),
             ),
-            if (_busy) const OrexLoadingOverlay(caption: 'Создаём...'),
+            if (_busy) const OrexLoadingOverlay(),
           ],
         ),
       ),

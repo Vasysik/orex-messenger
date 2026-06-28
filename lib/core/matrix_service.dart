@@ -88,6 +88,7 @@ class MatrixService extends ChangeNotifier {
   bool _backupDisabledByUser = false;
 
   static const _orexRoomKindEvent = 'ru.orex.room.kind';
+  static const _orexRoomIconEvent = 'ru.orex.room.icon';
   final Map<String, bool> _roomPublicOverrides = {};
 
   /// Инициализация: восстановление сессии из БД (если была) и подписка на sync.
@@ -294,6 +295,28 @@ class MatrixService extends ChangeNotifier {
 
   bool isPublicRoom(Room room) =>
       _roomPublicOverrides[room.id] ?? room.joinRules == JoinRules.public;
+
+  String roomIconKey(Room room) {
+    final explicitIcon =
+        room.getState(_orexRoomIconEvent)?.content['icon']?.toString().trim();
+    if (explicitIcon != null && explicitIcon.isNotEmpty) return explicitIcon;
+    if (isVoiceRoom(room)) return 'voice';
+    if (isChannel(room)) return 'announce';
+    return 'chat';
+  }
+
+  bool canManageRoomSettings(Room room) {
+    if (canFullyDeleteRoom(room)) return true;
+    return room.canInvite ||
+        room.canKick ||
+        room.canChangeJoinRules ||
+        room.canChangeHistoryVisibility ||
+        room.canChangeStateEvent(EventTypes.RoomName) ||
+        room.canChangeStateEvent(EventTypes.RoomTopic) ||
+        room.canChangeStateEvent(EventTypes.RoomAvatar) ||
+        room.canChangeStateEvent(_orexRoomIconEvent) ||
+        (room.isSpace && room.canChangeStateEvent(EventTypes.SpaceChild));
+  }
 
   bool isSupergroupChild(Room room) {
     if (room.isSpace) return false;
@@ -1410,6 +1433,11 @@ class MatrixService extends ChangeNotifier {
         content: {'kind': kind.name, 'version': 1},
       );
 
+  StateEvent _iconState(String icon) => StateEvent(
+        type: _orexRoomIconEvent,
+        content: {'icon': icon, 'version': 1},
+      );
+
   Future<void> _setRoomKind(Room room, OrexRoomKind kind) async {
     await client.setRoomStateWithKey(
       room.id,
@@ -1508,6 +1536,16 @@ class MatrixService extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setRoomIcon(Room room, String icon) async {
+    await client.setRoomStateWithKey(
+      room.id,
+      _orexRoomIconEvent,
+      '',
+      {'icon': icon, 'version': 1},
+    );
+    notifyListeners();
+  }
+
   Future<String> createGroup(
     String name, {
     bool public = false,
@@ -1521,7 +1559,8 @@ class MatrixService extends ChangeNotifier {
       preset:
           public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
       visibility: public ? Visibility.public : Visibility.private,
-      historyVisibility: HistoryVisibility.shared,
+      historyVisibility:
+          public ? HistoryVisibility.worldReadable : HistoryVisibility.shared,
       enableEncryption: !public,
       initialState: [_kindState(OrexRoomKind.group)],
     );
@@ -1548,7 +1587,8 @@ class MatrixService extends ChangeNotifier {
       preset:
           public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
       visibility: public ? Visibility.public : Visibility.private,
-      historyVisibility: HistoryVisibility.shared,
+      historyVisibility:
+          public ? HistoryVisibility.worldReadable : HistoryVisibility.shared,
       enableEncryption: !public,
       initialState: [_kindState(OrexRoomKind.channel)],
       powerLevelContentOverride: const {'events_default': 50},
@@ -1595,21 +1635,29 @@ class MatrixService extends ChangeNotifier {
     Room space,
     String name, {
     bool voice = false,
+    String icon = 'chat',
     bool public = false,
     List<String> invite = const [],
   }) async {
     if (!space.isSpace) throw StateError('Room is not a supergroup space');
+    final currentMemberIds = await _supergroupMemberIds(space);
+    final effectiveInvite = {
+      ...invite.map(normalizeLocalUserId),
+      ...currentMemberIds,
+    }..remove(client.userID);
     final roomId = await client.createGroupChat(
       groupName: name,
-      invite: invite,
+      invite: effectiveInvite.where((id) => id.isNotEmpty).toList(),
       groupCall: true,
       preset:
           public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
       visibility: public ? Visibility.public : Visibility.private,
-      historyVisibility: HistoryVisibility.shared,
+      historyVisibility:
+          public ? HistoryVisibility.worldReadable : HistoryVisibility.shared,
       enableEncryption: !public,
       initialState: [
         _kindState(voice ? OrexRoomKind.voice : OrexRoomKind.group),
+        _iconState(voice ? 'voice' : icon),
       ],
     );
     final childRoom = client.getRoomById(roomId);
@@ -1620,6 +1668,20 @@ class MatrixService extends ChangeNotifier {
     await space.setSpaceChild(roomId, order: order, suggested: !voice);
     notifyListeners();
     return roomId;
+  }
+
+  Future<Set<String>> _supergroupMemberIds(Room space) async {
+    try {
+      final users = await space.requestParticipants(
+        const [Membership.join, Membership.invite],
+      );
+      return users.map((user) => user.id).toSet();
+    } catch (_) {
+      return space
+          .getParticipants(const [Membership.join, Membership.invite])
+          .map((user) => user.id)
+          .toSet();
+    }
   }
 
   Future<void> removeSupergroupChild(Room space, Room child) async {
