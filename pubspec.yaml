@@ -1,7 +1,7 @@
 name: orex_messenger
 description: "Orex Messenger — тёплый ореховый мессенджер на Matrix + Element Call."
 publish_to: "none"
-version: 0.2.1+1
+version: 0.2.2+1
 
 environment:
   sdk: ">=3.4.0 <4.0.0"

@@ -29,6 +29,8 @@ class ChatView extends StatefulWidget {
     this.supergroupSpaceId,
     this.supergroupChildren,
     this.onSupergroupChildSelected,
+    this.selectedSupergroupChildId,
+    this.onSupergroupChildVisibleChanged,
     this.onOpenRoomReference,
     this.showInlineCallPanel = true,
   });
@@ -39,6 +41,8 @@ class ChatView extends StatefulWidget {
   final String? supergroupSpaceId;
   final List<OrexRoomPreview>? supergroupChildren;
   final ValueChanged<String>? onSupergroupChildSelected;
+  final String? selectedSupergroupChildId;
+  final void Function(String spaceId, String childId)? onSupergroupChildVisibleChanged;
   final ValueChanged<String>? onOpenRoomReference;
   final bool showInlineCallPanel;
 
@@ -61,6 +65,7 @@ class _ChatViewState extends State<ChatView> {
   List<PlatformFile> _attachedFiles = [];
   String? _spaceChildId;
   String? _accessRepairedSpaceId;
+  String? _lastReportedSupergroupChildId;
 
   List<ChatItem> _chatItems = [];
 
@@ -495,6 +500,15 @@ class _ChatViewState extends State<ChatView> {
     );
   }
 
+  void _reportVisibleSupergroupChild(String spaceId, String childId) {
+    if (_lastReportedSupergroupChildId == childId) return;
+    _lastReportedSupergroupChildId = childId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      widget.onSupergroupChildVisibleChanged?.call(spaceId, childId);
+    });
+  }
+
   @override
   void dispose() {
     widget.matrix.removeListener(_onMatrix);
@@ -562,12 +576,19 @@ class _ChatViewState extends State<ChatView> {
       );
     }
 
-    var selectedId = _spaceChildId;
+    // Внутренний выбор должен быть главным источником правды для dropdown.
+    // HomeShell хранит выбранный child только для верхней панели звонка; если
+    // отдавать ему приоритет, post-frame репорт старого child может откатить
+    // ручное переключение и dropdown будто перестаёт работать.
+    var selectedId = _spaceChildId ?? widget.selectedSupergroupChildId;
     if (selectedId == null ||
         !childPreviews.any((child) => child.roomId == selectedId)) {
       selectedId = childPreviews.first.roomId;
+    }
+    if (_spaceChildId != selectedId) {
       _spaceChildId = selectedId;
     }
+    _reportVisibleSupergroupChild(space.id, selectedId);
 
     final selectedChildId = selectedId;
     final selectedPreview = childPreviews.firstWhere(
@@ -577,7 +598,9 @@ class _ChatViewState extends State<ChatView> {
     final selectedRoom = widget.matrix.client.getRoomById(selectedChildId);
 
     void selectChild(String roomId) {
-      if (mounted) setState(() => _spaceChildId = roomId);
+      if (!mounted) return;
+      setState(() => _spaceChildId = roomId);
+      _reportVisibleSupergroupChild(space.id, roomId);
     }
 
     if (selectedRoom == null || selectedRoom.membership != Membership.join) {

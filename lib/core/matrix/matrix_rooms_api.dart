@@ -373,18 +373,48 @@ extension MatrixRoomsApi on MatrixService {
   }
 
   Future<List<PublishedRoomsChunk>> searchPublicRooms(String query) async {
+    final terms = _publicRoomSearchTerms(query);
+    if (terms.isEmpty) return const [];
+
+    final byId = <String, PublishedRoomsChunk>{};
+    for (final term in terms) {
+      try {
+        _log('Rooms', 'search public rooms term=$term');
+        final res = await client.queryPublicRooms(
+          limit: 30,
+          includeAllNetworks: false,
+          filter: PublicRoomQueryFilter(genericSearchTerm: term),
+        );
+        for (final room in res.chunk) {
+          byId.putIfAbsent(room.roomId, () => room);
+        }
+      } catch (e) {
+        _log('Rooms', 'search public rooms failed term=$term', e);
+      }
+    }
+    return byId.values.toList();
+  }
+
+  List<String> _publicRoomSearchTerms(String query) {
     final q = query.trim();
     if (q.isEmpty) return const [];
-    try {
-      final res = await client.queryPublicRooms(
-        limit: 30,
-        includeAllNetworks: false,
-        filter: PublicRoomQueryFilter(genericSearchTerm: q),
-      );
-      return res.chunk;
-    } catch (_) {
-      return const [];
-    }
+
+    final terms = <String>[q];
+
+    // Synapse public-room directory часто ищет alias по localpart, но не по
+    // строке с ведущим '#'. Поэтому глобальный поиск '#orex' должен дополнительно
+    // искать 'orex', иначе комната '#orex:server' находится только без решётки.
+    var aliasLike = q;
+    if (aliasLike.startsWith('#')) aliasLike = aliasLike.substring(1);
+    if (aliasLike.contains(':')) aliasLike = aliasLike.split(':').first;
+    aliasLike = aliasLike.trim();
+    if (aliasLike.isNotEmpty && aliasLike != q) terms.add(aliasLike);
+
+    return terms
+        .map((term) => term.trim())
+        .where((term) => term.isNotEmpty)
+        .toSet()
+        .toList();
   }
 
   Future<List<OrexRoomPreview>> searchPublicRoomPreviews(String query) async {

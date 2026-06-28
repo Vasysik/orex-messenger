@@ -42,6 +42,7 @@ class _HomeShellState extends State<HomeShell> {
   late final ChatFolderController _folders;
   bool _appliedSavedChatListWidth = false;
   bool _creatingRoom = false;
+  final Map<String, String> _visibleSupergroupChildBySpace = <String, String>{};
 
   static const double _wideBreakpoint = 900;
 
@@ -369,13 +370,11 @@ class _HomeShellState extends State<HomeShell> {
     if (room == null) return null;
 
     if (room.isSpace) {
-      for (final child in widget.matrix.supergroupChildPreviews(room)) {
-        final local = widget.matrix.client.getRoomById(child.roomId);
-        if (local != null && widget.matrix.roomHasActiveCall(local)) {
-          return local;
-        }
-      }
-      return null;
+      final visibleChildId = _visibleSupergroupChildBySpace[room.id];
+      if (visibleChildId == null) return null;
+      final visibleChild = widget.matrix.client.getRoomById(visibleChildId);
+      if (visibleChild == null) return null;
+      return widget.matrix.roomHasActiveCall(visibleChild) ? visibleChild : null;
     }
 
     return widget.matrix.roomHasActiveCall(room) ? room : null;
@@ -463,6 +462,12 @@ class _HomeShellState extends State<HomeShell> {
         folders: _folders,
       );
 
+  void _onVisibleSupergroupChildChanged(String spaceId, String childId) {
+    if (!mounted || _visibleSupergroupChildBySpace[spaceId] == childId) return;
+    OrexLog.d('Home', 'visible supergroup child space=$spaceId child=$childId');
+    setState(() => _visibleSupergroupChildBySpace[spaceId] = childId);
+  }
+
   Widget _conversationPane({VoidCallback? onBack}) {
     final preview = _previewRoom;
     if (preview != null) {
@@ -488,6 +493,8 @@ class _HomeShellState extends State<HomeShell> {
       matrix: widget.matrix,
       roomId: roomId,
       onBack: onBack,
+      selectedSupergroupChildId: _visibleSupergroupChildBySpace[roomId],
+      onSupergroupChildVisibleChanged: _onVisibleSupergroupChildChanged,
       onOpenRoomReference: _openRoomReference,
     );
   }
