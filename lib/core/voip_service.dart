@@ -20,8 +20,9 @@ import 'config.dart';
 /// по-прежнему гонится вашим `livekit_client` (см. CallSession) — SDK медиа для
 /// LiveKit-бэкенда намеренно не трогает.
 ///
-/// E2EE самого звонка (sframe-ключи) пока ВЫКЛЮЧЕН (`e2eeEnabled: false` +
-/// `keyProvider == null`) — это следующий шаг к полному интеропу с Element Call.
+/// ВАЖНО: MatrixRTC-сигналинг помечен как e2ee-capable, но фактическое
+/// шифрование медиапотока зависит от конфигурации LiveKit/key-provider в
+/// [CallSession]. Это нужно держать отдельным security-инвариантом.
 class VoipService extends ChangeNotifier {
   VoipService(this.client) {
     voip = VoIP(client, _OrexCallDelegate(this));
@@ -206,7 +207,7 @@ class VoipService extends ChangeNotifier {
     }
 
     final backend = LiveKitBackend(
-      livekitServiceUrl: OrexConfig.jwtService,
+      livekitServiceUrl: OrexConfig.jwtServiceUri.toString(),
       livekitAlias: roomId,
       e2eeEnabled: true, 
     );

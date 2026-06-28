@@ -279,37 +279,59 @@ extension MatrixRoomsApi on MatrixService {
     }
   }
 
-  Future<String> joinPublicRoom(PublishedRoomsChunk room) async {
-    final idOrAlias = (room.canonicalAlias?.isNotEmpty ?? false)
-        ? room.canonicalAlias!
-        : room.roomId;
-    final roomId = await client.joinRoom(idOrAlias);
+  Future<List<OrexRoomPreview>> searchPublicRoomPreviews(String query) async {
+    final rooms = await searchPublicRooms(query);
+    return rooms.map(OrexRoomPreview.fromPublicRoom).toList();
+  }
+
+  Future<String> joinPublicRoom(PublishedRoomsChunk room) =>
+      joinRoomPreview(OrexRoomPreview.fromPublicRoom(room));
+
+  Future<String> joinRoomPreview(OrexRoomPreview preview) async {
+    final parentSpaceId = preview.parentSpaceId;
+    if (parentSpaceId != null) {
+      final parent = client.getRoomById(parentSpaceId);
+      if (parent?.membership != Membership.join) {
+        throw StateError('Сначала нужно вступить в супергруппу');
+      }
+    }
+
+    final roomId = await client.joinRoom(preview.idOrAlias, via: preview.via);
     if (client.getRoomById(roomId) == null) {
       await client.waitForRoomInSync(roomId, join: true);
-    }
-    final joined = client.getRoomById(roomId);
-    if (joined?.isSpace == true) {
-      await _joinVisibleSpaceChildren(joined!);
     }
     _emitChange();
     return roomId;
   }
 
-  Future<void> _joinVisibleSpaceChildren(Room space) async {
-    for (final child in space.spaceChildren) {
-      final childId = child.roomId;
-      if (childId == null || childId.isEmpty) continue;
-      final local = client.getRoomById(childId);
-      if (local?.membership == Membership.join) continue;
-      try {
-        final joinedId = await client.joinRoom(childId, via: child.via);
-        if (client.getRoomById(joinedId) == null) {
-          await client.waitForRoomInSync(joinedId, join: true);
-        }
-      } catch (_) {
-        // Private or not-yet-visible child rooms are skipped; public spaces keep working.
-      }
-    }
+  List<OrexRoomPreview> supergroupChildPreviews(Room space) {
+    if (!space.isSpace) return const [];
+    return space.spaceChildren
+        .map((child) {
+          final childId = child.roomId;
+          if (childId == null || childId.isEmpty) return null;
+          final local = client.getRoomById(childId);
+          if (local != null && local.membership != Membership.leave) {
+            return OrexRoomPreview(
+              roomId: local.id,
+              name: local.getLocalizedDisplayname(),
+              alias: local.canonicalAlias.isEmpty ? null : local.canonicalAlias,
+              avatar: local.avatar,
+              topic: local.topic.isEmpty ? null : local.topic,
+              memberCount: local.summary.mJoinedMemberCount,
+              via: child.via,
+              parentSpaceId: space.id,
+            );
+          }
+          return OrexRoomPreview(
+            roomId: childId,
+            name: childId,
+            via: child.via,
+            parentSpaceId: space.id,
+          );
+        })
+        .whereType<OrexRoomPreview>()
+        .toList();
   }
 
   /// Прямые MXID-кандидаты для точного поиска: полный `@user:server`,
@@ -460,6 +482,36 @@ extension MatrixRoomsApi on MatrixService {
     _roomPublicOverrides[room.id] = public;
   }
 
+  Future<void> _applySupergroupChildAccess(Room space, Room child) async {
+    try {
+      await client.setRoomStateWithKey(
+        child.id,
+        EventTypes.RoomJoinRules,
+        '',
+        {
+          'join_rule': 'restricted',
+          'allow': [
+            {'type': 'm.room_membership', 'room_id': space.id},
+          ],
+        },
+      );
+    } catch (_) {
+      try {
+        await child.setJoinRules(JoinRules.invite);
+      } catch (_) {}
+    }
+    try {
+      await client.setRoomVisibilityOnDirectory(
+        child.id,
+        visibility: Visibility.private,
+      );
+    } catch (_) {}
+    try {
+      await child.setGuestAccess(GuestAccess.forbidden);
+    } catch (_) {}
+    _roomPublicOverrides[child.id] = false;
+  }
+
   Future<void> setRoomHistoryVisibility(
     Room room,
     HistoryVisibility visibility,
@@ -564,7 +616,6 @@ extension MatrixRoomsApi on MatrixService {
         space,
         'Основной чат',
         public: public,
-        invite: invite,
       );
     }
     _emitChange();
@@ -579,14 +630,15 @@ extension MatrixRoomsApi on MatrixService {
     List<String> invite = const [],
   }) async {
     if (!space.isSpace) throw StateError('Room is not a supergroup space');
-    final currentMemberIds = await _supergroupMemberIds(space);
-    final effectiveInvite = {
-      ...invite.map(normalizeLocalUserId),
-      ...currentMemberIds,
-    }..remove(client.userID);
+    // Дочерние чаты супергруппы не рассылают инвайты каждому участнику.
+    // Участник должен видеть их из супергруппы, предпросматривать и вступать
+    // осознанно. Переданные invite оставляем только для явных редких кейсов.
     final roomId = await client.createGroupChat(
       groupName: name,
-      invite: effectiveInvite.where((id) => id.isNotEmpty).toList(),
+      invite: invite
+          .map(normalizeLocalUserId)
+          .where((id) => id.isNotEmpty)
+          .toList(),
       groupCall: true,
       preset:
           public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
@@ -601,7 +653,7 @@ extension MatrixRoomsApi on MatrixService {
     );
     final childRoom = client.getRoomById(roomId);
     if (childRoom != null) {
-      await _applyRoomVisibility(childRoom, public);
+      await _applySupergroupChildAccess(space, childRoom);
     }
     final order = supergroupChildren(space).length.toString().padLeft(3, '0');
     await space.setSpaceChild(roomId, order: order, suggested: true);
@@ -609,18 +661,12 @@ extension MatrixRoomsApi on MatrixService {
     return roomId;
   }
 
-  Future<Set<String>> _supergroupMemberIds(Room space) async {
-    try {
-      final users = await space.requestParticipants(
-        const [Membership.join, Membership.invite],
-      );
-      return users.map((user) => user.id).toSet();
-    } catch (_) {
-      return space
-          .getParticipants(const [Membership.join, Membership.invite])
-          .map((user) => user.id)
-          .toSet();
+  Future<void> ensureSupergroupChildrenAccess(Room space) async {
+    if (!space.isSpace) return;
+    for (final child in supergroupChildren(space)) {
+      await _applySupergroupChildAccess(space, child);
     }
+    _emitChange();
   }
 
   Future<void> removeSupergroupChild(Room space, Room child) async {
@@ -682,11 +728,9 @@ extension MatrixRoomsApi on MatrixService {
         .toList();
     for (final id in ids) {
       await room.invite(id);
-      if (room.isSpace) {
-        for (final child in supergroupChildren(room)) {
-          if (child.canInvite) await child.invite(id);
-        }
-      }
+      // Для супергруппы инвайтим только в сам space. Дочерние чаты не должны
+      // прилетать отдельными приглашениями: участник сам увидит их внутри
+      // супергруппы и зайдёт в нужные.
       await _sendInviteNotice(room, id);
     }
     _emitChange();
@@ -718,7 +762,7 @@ extension MatrixRoomsApi on MatrixService {
     await _applyRoomVisibility(room, public);
     if (room.isSpace) {
       for (final child in supergroupChildren(room)) {
-        await _applyRoomVisibility(child, public);
+        await _applySupergroupChildAccess(room, child);
       }
     }
     _emitChange();
@@ -735,13 +779,13 @@ extension MatrixRoomsApi on MatrixService {
     await room.setAvatar(
       MatrixFile(bytes: Uint8List.fromList(bytes), name: filename),
     );
-    _mediaCache.clear();
+    _clearMxcCache();
     _emitChange();
   }
 
   Future<void> removeRoomAvatar(Room room) async {
     await room.setAvatar(null);
-    _mediaCache.clear();
+    _clearMxcCache();
     _emitChange();
   }
 

@@ -89,7 +89,12 @@ class MatrixService extends ChangeNotifier {
   Timer? _autoBackupTimer;
 
   final Map<String, Uint8List> _mediaCache = {};
+  final Map<String, DateTime> _mediaCachedAt = {};
   final Map<String, Future<Uint8List?>> _mediaInflight = {};
+  int _mediaCacheBytes = 0;
+
+  static const Duration _mediaCacheTtl = Duration(hours: 12);
+  static const int _mediaCacheMaxBytes = 32 * 1024 * 1024;
 
   /// Инициализация: восстановление сессии из БД (если была) и подписка на sync.
   Future<void> init() async {
@@ -117,10 +122,10 @@ class MatrixService extends ChangeNotifier {
       await _loadBackupPrefs();
       notifyListeners();
     });
-    // Обновление профиля (имя/аватар) — сбрасываем кэш медиа и перерисовываем,
-    // чтобы новый аватар появился без перезагрузки вкладки.
+    // Обновление профиля меняет сам MXC URI. Не чистим весь media-cache на
+    // каждый sync/profile-event: иначе аватарки моргают и постоянно refetch-ятся.
+    // Если URI реально поменялся, MxcAvatar сам подхватит новые байты.
     client.onUserProfileUpdate.stream.listen((_) {
-      _mediaCache.clear();
       notifyListeners();
     });
     // VoIP-сигналинг (звонки). Изолируем сбой, чтобы он не ронял запуск.

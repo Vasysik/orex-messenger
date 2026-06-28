@@ -50,16 +50,23 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
   late final Future<_Services> _future = _init();
 
   Future<_Services> _init() async {
+    OrexConfig.validateSecurity();
     try {
       await vod.init().timeout(const Duration(seconds: 6));
     } catch (e) {
+      if (OrexConfig.requireVodozemac) {
+        throw StateError(
+          'Не удалось инициализировать vodozemac. Запуск остановлен, '
+          'чтобы не открыть защищённый мессенджер без E2EE: $e',
+        );
+      }
       debugPrint('vodozemac init skipped/failed, E2EE disabled: $e');
     }
 
     final theme = await ThemeController.load();
     final database = await buildOrexDatabase();
     final matrix = MatrixService(
-      homeserver: Uri.parse(OrexConfig.homeserver),
+      homeserver: OrexConfig.homeserverUri,
       database: database,
     );
     await matrix.init();

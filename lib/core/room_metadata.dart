@@ -33,3 +33,41 @@ final class OrexRoomAlias {
     return alias.substring(1).split(':').first;
   }
 }
+
+
+final class OrexRoomPreview {
+  const OrexRoomPreview({
+    required this.roomId,
+    required this.name,
+    this.alias,
+    this.avatar,
+    this.topic,
+    this.memberCount,
+    this.via = const <String>[],
+    this.parentSpaceId,
+  });
+
+  factory OrexRoomPreview.fromPublicRoom(PublishedRoomsChunk room) {
+    final name = room.name ?? room.canonicalAlias ?? room.roomId;
+    return OrexRoomPreview(
+      roomId: room.roomId,
+      name: name,
+      alias: room.canonicalAlias,
+      avatar: room.avatarUrl,
+      topic: room.topic,
+      memberCount: room.numJoinedMembers,
+    );
+  }
+
+  final String roomId;
+  final String name;
+  final String? alias;
+  final Uri? avatar;
+  final String? topic;
+  final int? memberCount;
+  final List<String>? via;
+  final String? parentSpaceId;
+
+  String get idOrAlias => alias?.isNotEmpty == true ? alias! : roomId;
+  bool get isSupergroupChild => parentSpaceId != null;
+}

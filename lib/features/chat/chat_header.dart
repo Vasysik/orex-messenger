@@ -93,7 +93,7 @@ class _ChatHeader extends StatelessWidget {
     required this.onSettings,
     this.onBack,
     this.supergroupSpaceId,
-    this.supergroupChildIds,
+    this.supergroupChildren,
     this.onSupergroupChildSelected,
   });
 
@@ -103,17 +103,15 @@ class _ChatHeader extends StatelessWidget {
   final ValueChanged<Room> onSettings;
   final VoidCallback? onBack;
   final String? supergroupSpaceId;
-  final List<String>? supergroupChildIds;
+  final List<OrexRoomPreview>? supergroupChildren;
   final ValueChanged<String>? onSupergroupChildSelected;
 
   @override
   Widget build(BuildContext context) {
     final spaceId = supergroupSpaceId;
     final space = spaceId == null ? null : matrix.client.getRoomById(spaceId);
-    final childIds = supergroupChildIds ?? const <String>[];
-    final childRooms =
-        childIds.map(matrix.client.getRoomById).whereType<Room>().toList();
-    final inSupergroup = space != null && childRooms.isNotEmpty;
+    final childPreviews = supergroupChildren ?? const <OrexRoomPreview>[];
+    final inSupergroup = space != null && childPreviews.isNotEmpty;
     final titleRoom = inSupergroup ? space : room;
 
     return Padding(
@@ -146,7 +144,7 @@ class _ChatHeader extends StatelessWidget {
                   _SupergroupChildPicker(
                     matrix: matrix,
                     room: room,
-                    children: childRooms,
+                    children: childPreviews,
                     onChanged: onSupergroupChildSelected,
                   )
                 else
@@ -198,32 +196,35 @@ class _SupergroupChildPicker extends StatelessWidget {
 
   final MatrixService matrix;
   final Room room;
-  final List<Room> children;
+  final List<OrexRoomPreview> children;
   final ValueChanged<String>? onChanged;
 
   @override
   Widget build(BuildContext context) {
+    final value = children.any((child) => child.roomId == room.id)
+        ? room.id
+        : children.first.roomId;
     return DropdownButtonHideUnderline(
       child: DropdownButton<String>(
-        value: room.id,
+        value: value,
         isDense: true,
         isExpanded: true,
         iconSize: 18,
         items: children
             .map(
               (child) => DropdownMenuItem(
-                value: child.id,
+                value: child.roomId,
                 child: Row(
                   children: [
                     Icon(
-                      orexRoomIconData(matrix.roomIconKey(child)),
+                      _childIcon(child),
                       size: 16,
                       color: OrexColors.copper,
                     ),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        child.getLocalizedDisplayname(),
+                        child.name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -233,12 +234,18 @@ class _SupergroupChildPicker extends StatelessWidget {
               ),
             )
             .toList(),
-        onChanged: (value) {
-          if (value == null || value == room.id) return;
-          onChanged?.call(value);
+        onChanged: (next) {
+          if (next == null || next == value) return;
+          onChanged?.call(next);
         },
       ),
     );
+  }
+
+  IconData _childIcon(OrexRoomPreview child) {
+    final local = matrix.client.getRoomById(child.roomId);
+    if (local == null) return Icons.forum;
+    return orexRoomIconData(matrix.roomIconKey(local));
   }
 }
 

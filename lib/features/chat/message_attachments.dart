@@ -1,6 +1,30 @@
 part of 'message_bubble.dart';
 
-final Map<String, Uint8List> _decryptedCache = {};
+final LinkedHashMap<String, Uint8List> _decryptedCache = LinkedHashMap();
+int _decryptedCacheBytes = 0;
+const int _decryptedCacheMaxBytes = 96 * 1024 * 1024;
+
+Uint8List? _getDecryptedCache(String eventId) {
+  final bytes = _decryptedCache.remove(eventId);
+  if (bytes == null) return null;
+  _decryptedCache[eventId] = bytes;
+  return bytes;
+}
+
+void _putDecryptedCache(String eventId, Uint8List bytes) {
+  if (eventId.isEmpty || bytes.lengthInBytes > _decryptedCacheMaxBytes) return;
+  final old = _decryptedCache.remove(eventId);
+  if (old != null) _decryptedCacheBytes -= old.lengthInBytes;
+  _decryptedCache[eventId] = bytes;
+  _decryptedCacheBytes += bytes.lengthInBytes;
+  while (_decryptedCacheBytes > _decryptedCacheMaxBytes &&
+      _decryptedCache.isNotEmpty) {
+    final firstKey = _decryptedCache.keys.first;
+    final removed = _decryptedCache.remove(firstKey);
+    if (removed != null) _decryptedCacheBytes -= removed.lengthInBytes;
+  }
+  if (_decryptedCacheBytes < 0) _decryptedCacheBytes = 0;
+}
 
 class _AttachmentImage extends StatefulWidget {
   const _AttachmentImage({
@@ -36,19 +60,19 @@ class _AttachmentImageState extends State<_AttachmentImage> with AutomaticKeepAl
   }
 
   Future<void> _load() async {
-    final cached = _decryptedCache[widget.event.eventId];
+    final cached = _getDecryptedCache(widget.event.eventId);
     if (cached != null) {
       if (mounted) setState(() => _bytes = cached);
       return;
     }
     try {
       final file = await widget.event.downloadAndDecryptAttachment(getThumbnail: true);
-      _decryptedCache[widget.event.eventId] = file.bytes;
+      _putDecryptedCache(widget.event.eventId, file.bytes);
       if (mounted) setState(() => _bytes = file.bytes);
     } catch (_) {
       try {
         final file = await widget.event.downloadAndDecryptAttachment();
-        _decryptedCache[widget.event.eventId] = file.bytes;
+        _putDecryptedCache(widget.event.eventId, file.bytes);
         if (mounted) setState(() => _bytes = file.bytes);
       } catch (_) {
         if (mounted) setState(() => _failed = true);
@@ -132,19 +156,19 @@ class _AttachmentMediaState extends State<_AttachmentMedia> with AutomaticKeepAl
   }
 
   Future<void> _load() async {
-    final cached = _decryptedCache[widget.event.eventId];
+    final cached = _getDecryptedCache(widget.event.eventId);
     if (cached != null) {
       if (mounted) setState(() => _bytes = cached);
       return;
     }
     try {
       final file = await widget.event.downloadAndDecryptAttachment(getThumbnail: true);
-      _decryptedCache[widget.event.eventId] = file.bytes;
+      _putDecryptedCache(widget.event.eventId, file.bytes);
       if (mounted) setState(() => _bytes = file.bytes);
     } catch (_) {
       try {
         final file = await widget.event.downloadAndDecryptAttachment();
-        _decryptedCache[widget.event.eventId] = file.bytes;
+        _putDecryptedCache(widget.event.eventId, file.bytes);
         if (mounted) setState(() => _bytes = file.bytes);
       } catch (_) {
         if (mounted) setState(() => _failed = true);

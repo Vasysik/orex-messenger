@@ -8,9 +8,9 @@ import '../../widgets/squirrel_mascot.dart';
 import '../call/call_screen.dart';
 import '../call/minimized_call_panel.dart';
 import '../chat/chat_view.dart';
+import '../chat/public_room_preview_view.dart';
 import '../chat_list/chat_folder_controller.dart';
 import '../chat_list/chat_list_panel.dart';
-import '../new_chat/new_chat_screen.dart';
 import '../settings/settings_screen.dart';
 import '../settings/verify_session_screen.dart';
 
@@ -30,8 +30,11 @@ class HomeShell extends StatefulWidget {
   State<HomeShell> createState() => _HomeShellState();
 }
 
+enum _CreateRoomKind { group, channel, supergroup }
+
 class _HomeShellState extends State<HomeShell> {
   String? _selectedRoomId;
+  OrexRoomPreview? _previewRoom;
   bool _verifyBannerDismissed = false;
   double _chatListWidth = 360; // ширина левой колонки (можно тянуть мышью)
   late final ChatFolderController _folders;
@@ -86,12 +89,167 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   Future<void> _openNewChat() async {
-    final roomId = await Navigator.of(context).push<String>(
-      MaterialPageRoute(
-        builder: (_) => NewChatScreen(matrix: widget.matrix),
+    final kind = await showModalBottomSheet<_CreateRoomKind>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: GlassPanel(
+            borderRadius: 24,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _CreateRoomChoice(
+                    icon: Icons.group_add,
+                    title: 'Новая группа',
+                    subtitle: 'Обычный чат с участниками и звонком',
+                    onTap: () => Navigator.pop(ctx, _CreateRoomKind.group),
+                  ),
+                  _CreateRoomChoice(
+                    icon: Icons.campaign,
+                    title: 'Новый канал',
+                    subtitle: 'Комната, где пишут админы',
+                    onTap: () => Navigator.pop(ctx, _CreateRoomKind.channel),
+                  ),
+                  _CreateRoomChoice(
+                    icon: Icons.hub,
+                    title: 'Новая супергруппа',
+                    subtitle: 'Space с внутренними чатами',
+                    onTap: () => Navigator.pop(ctx, _CreateRoomKind.supergroup),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
-    if (roomId != null && mounted) setState(() => _selectedRoomId = roomId);
+    if (kind == null || !mounted) return;
+    await _createRoom(kind);
+  }
+
+  Future<void> _createRoom(_CreateRoomKind kind) async {
+    final config = await _askRoom(kind);
+    if (config == null || config.name.isEmpty) return;
+    try {
+      final roomId = switch (kind) {
+        _CreateRoomKind.group => await widget.matrix.createGroup(
+            config.name,
+            public: config.public,
+            localAlias: config.localAlias,
+          ),
+        _CreateRoomKind.channel => await widget.matrix.createChannel(
+            config.name,
+            public: config.public,
+            localAlias: config.localAlias,
+          ),
+        _CreateRoomKind.supergroup => await widget.matrix.createSupergroup(
+            config.name,
+            public: config.public,
+            localAlias: config.localAlias,
+          ),
+      };
+      if (mounted) {
+        setState(() {
+          _previewRoom = null;
+          _selectedRoomId = roomId;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось создать: $e')),
+        );
+      }
+    }
+  }
+
+  Future<({String name, bool public, String? localAlias})?> _askRoom(
+    _CreateRoomKind kind,
+  ) {
+    final name = TextEditingController();
+    final alias = TextEditingController();
+    var public = false;
+    return showDialog<({String name, bool public, String? localAlias})>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text(_createDialogTitle(kind)),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: name,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: 'Название'),
+                ),
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: public,
+                  title: const Text('Публичная'),
+                  subtitle: Text(
+                    public ? 'Видна в публичных комнатах' : 'Только по приглашению',
+                  ),
+                  onChanged: (value) => setDialogState(() => public = value),
+                ),
+                TextField(
+                  controller: alias,
+                  enabled: public,
+                  decoration: const InputDecoration(
+                    labelText: 'ID',
+                    hintText: 'team-news',
+                    prefixIcon: Icon(Icons.tag),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final roomName = name.text.trim();
+                if (roomName.isEmpty) return;
+                Navigator.pop(
+                  ctx,
+                  (
+                    name: roomName,
+                    public: public,
+                    localAlias: public ? alias.text.trim() : null,
+                  ),
+                );
+              },
+              child: const Text('Создать'),
+            ),
+          ],
+        ),
+      ),
+    ).whenComplete(() {
+      name.dispose();
+      alias.dispose();
+    });
+  }
+
+  String _createDialogTitle(_CreateRoomKind kind) => switch (kind) {
+        _CreateRoomKind.group => 'Новая группа',
+        _CreateRoomKind.channel => 'Новый канал',
+        _CreateRoomKind.supergroup => 'Новая супергруппа',
+      };
+
+  void _openPublicRoomPreview(OrexRoomPreview preview) {
+    setState(() {
+      _selectedRoomId = null;
+      _previewRoom = preview;
+    });
   }
 
   void _openVerifySession() {
@@ -147,9 +305,12 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final isWide = MediaQuery.sizeOf(context).width >= _wideBreakpoint;
     return PopScope(
-      canPop: _selectedRoomId == null,
+      canPop: _selectedRoomId == null && _previewRoom == null,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && _selectedRoomId != null) {
+        if (didPop) return;
+        if (_previewRoom != null) {
+          setState(() => _previewRoom = null);
+        } else if (_selectedRoomId != null) {
           setState(() => _selectedRoomId = null);
         }
       },
@@ -210,11 +371,43 @@ class _HomeShellState extends State<HomeShell> {
   Widget _chatList({required bool showSelection}) => ChatListPanel(
         matrix: widget.matrix,
         selectedRoomId: showSelection ? _selectedRoomId : null,
-        onSelect: (id) => setState(() => _selectedRoomId = id),
+        onSelect: (id) => setState(() {
+          _previewRoom = null;
+          _selectedRoomId = id;
+        }),
+        onOpenPublicRoomPreview: _openPublicRoomPreview,
         onOpenSettings: _openSettings,
         onNewChat: _openNewChat,
         folders: _folders,
       );
+
+  Widget _conversationPane({VoidCallback? onBack}) {
+    final preview = _previewRoom;
+    if (preview != null) {
+      return PublicRoomPreviewView(
+        key: ValueKey('preview-${preview.roomId}'),
+        matrix: widget.matrix,
+        preview: preview,
+        onBack: onBack,
+        onJoined: (roomId) {
+          if (!mounted) return;
+          setState(() {
+            _previewRoom = null;
+            _selectedRoomId = roomId;
+          });
+        },
+      );
+    }
+
+    final roomId = _selectedRoomId;
+    if (roomId == null) return const _EmptyConversation();
+    return ChatView(
+      key: ValueKey(roomId),
+      matrix: widget.matrix,
+      roomId: roomId,
+      onBack: onBack,
+    );
+  }
 
   Widget _buildWide() {
     return Padding(
@@ -236,13 +429,7 @@ class _HomeShellState extends State<HomeShell> {
                 Expanded(
                   child: GlassPanel(
                     borderRadius: 24,
-                    child: _selectedRoomId == null
-                        ? const _EmptyConversation()
-                        : ChatView(
-                            key: ValueKey(_selectedRoomId),
-                            matrix: widget.matrix,
-                            roomId: _selectedRoomId!,
-                          ),
+                    child: _conversationPane(onBack: null),
                   ),
                 ),
               ],
@@ -254,7 +441,7 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   Widget _buildNarrow() {
-    if (_selectedRoomId == null) {
+    if (_selectedRoomId == null && _previewRoom == null) {
       return Padding(
         padding: const EdgeInsets.all(8),
         child: Column(
@@ -278,10 +465,11 @@ class _HomeShellState extends State<HomeShell> {
           Expanded(
             child: GlassPanel(
               borderRadius: 24,
-              child: ChatView(
-                matrix: widget.matrix,
-                roomId: _selectedRoomId!,
-                onBack: () => setState(() => _selectedRoomId = null),
+              child: _conversationPane(
+                onBack: () => setState(() {
+                  _previewRoom = null;
+                  _selectedRoomId = null;
+                }),
               ),
             ),
           ),
@@ -344,6 +532,31 @@ class _VerifyBanner extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _CreateRoomChoice extends StatelessWidget {
+  const _CreateRoomChoice({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: Icon(icon, color: OrexColors.copper),
+      title: Text(title),
+      subtitle: Text(subtitle),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: onTap,
     );
   }
 }

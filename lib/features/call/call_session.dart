@@ -130,24 +130,39 @@ class CallSession extends ChangeNotifier {
 
     final openId = await client.requestOpenIdToken(userId, <String, Object?>{});
 
-    final resp = await http.post(
-      Uri.parse(OrexConfig.jwtService).replace(path: '/sfu/get'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'room': matrixRoomId,
-        'openid_token': {
-          'access_token': openId.accessToken,
-          'token_type': openId.tokenType,
-          'matrix_server_name': openId.matrixServerName,
-        },
-        'device_id': client.deviceID ?? '',
-      }),
-    );
+    final resp = await http
+        .post(
+          OrexConfig.jwtServiceUri.replace(path: '/sfu/get'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'room': matrixRoomId,
+            'openid_token': {
+              'access_token': openId.accessToken,
+              'token_type': openId.tokenType,
+              'matrix_server_name': openId.matrixServerName,
+            },
+            'device_id': client.deviceID ?? '',
+          }),
+        )
+        .timeout(const Duration(seconds: 12));
     if (resp.statusCode != 200) {
-      throw Exception('lk-jwt-service ${resp.statusCode}: ${resp.body}');
+      // Не добавляем resp.body: backend-ошибки иногда содержат диагностические
+      // поля, которые не должны попадать в UI/log вместе с auth-контекстом.
+      throw Exception('lk-jwt-service ${resp.statusCode}');
     }
     final json = jsonDecode(resp.body) as Map<String, dynamic>;
-    return _Creds(url: json['url'] as String, jwt: json['jwt'] as String);
+    final url = json['url'] as String?;
+    final jwt = json['jwt'] as String?;
+    if (url == null || jwt == null || jwt.isEmpty) {
+      throw StateError('lk-jwt-service вернул неполные credentials');
+    }
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        uri.host.isEmpty ||
+        (uri.scheme != 'wss' && uri.scheme != 'https')) {
+      throw StateError('LiveKit URL должен быть wss:// или https://');
+    }
+    return _Creds(url: url, jwt: jwt);
   }
 
   @override

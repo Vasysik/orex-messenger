@@ -9,8 +9,12 @@ import 'package:sqflite_sqlcipher/sqflite.dart' as sqflite_cipher;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-/// Нативный билдер БД: мобильные устройства и macOS используют зашифрованную базу данных,
-/// а Windows/Linux — FFI с поддержкой PRAGMA-ключей шифрования.
+/// Нативный билдер БД.
+///
+/// Android/iOS/macOS открываются через sqflite_sqlcipher и получают реальное
+/// шифрование на диске. Windows/Linux сейчас используют обычный FFI SQLite,
+/// поэтому локальная БД на этих платформах НЕ должна считаться зашифрованной,
+/// пока проект не перейдёт на настоящую SQLCipher-сборку для desktop.
 Future<DatabaseApi> buildOrexDatabase() async {
   final dir = await getApplicationSupportDirectory();
   final path = p.join(dir.path, 'orex.sqlite');
@@ -34,10 +38,9 @@ Future<DatabaseApi> buildOrexDatabase() async {
       password: dbPassword, // База данных на диске зашифрована по алгоритму AES-256
     );
   } else {
-    // Windows / Linux: инициализируем FFI-движок
+    // Windows / Linux: обычный sqlite3 через FFI. Это НЕ SQLCipher.
     sqfliteFfiInit();
     db = await databaseFactoryFfi.openDatabase(path);
-    await db.execute("PRAGMA key = '$dbPassword';");
   }
 
   return MatrixSdkDatabase.init(

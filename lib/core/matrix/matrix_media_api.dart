@@ -5,16 +5,36 @@ extension MatrixMediaApi on MatrixService {
   // Медиа (аутентифицированные): качаем байты с токеном и кэшируем
   // ---------------------------------------------------------------------------
 
+  /// Мгновенно отдаёт уже скачанные байты без Future-прыжка. Это важно для
+  /// списков чатов: при rebuild аватар не должен сначала превращаться в букву,
+  /// а потом снова в картинку.
+  Uint8List? cachedMxc(Uri mxc) {
+    if (mxc.scheme != 'mxc') return null;
+    final key = mxc.toString();
+    final cached = _mediaCache[key];
+    if (cached == null) return null;
+
+    final cachedAt = _mediaCachedAt[key];
+    if (cachedAt == null) return cached;
+    if (DateTime.now().difference(cachedAt) > MatrixService._mediaCacheTtl) {
+      _removeMxcCache(key);
+      return null;
+    }
+    // Touch entry to keep recently used avatars/media alive when trimming.
+    _mediaCache.remove(key);
+    _mediaCache[key] = cached;
+    return cached;
+  }
 
   /// Скачивает содержимое mxc:// через аутентифицированный эндпоинт.
   /// Обычный <img>/NetworkImage на новых Synapse даёт 404, т.к. требуется
   /// заголовок авторизации — поэтому грузим сами.
   Future<Uint8List?> downloadMxc(Uri mxc) async {
     if (mxc.scheme != 'mxc') return null;
-    final key = mxc.toString();
-    final cached = _mediaCache[key];
+    final cached = cachedMxc(mxc);
     if (cached != null) return cached;
 
+    final key = mxc.toString();
     final inflight = _mediaInflight[key];
     if (inflight != null) return inflight;
 
@@ -32,12 +52,44 @@ extension MatrixMediaApi on MatrixService {
       final serverName = mxc.host;
       final mediaId = mxc.pathSegments.isNotEmpty ? mxc.pathSegments.last : '';
       final res = await client.getContent(serverName, mediaId);
-      _mediaCache[key] = res.data;
+      _putMxcCache(key, res.data);
       return res.data;
     } catch (_) {
       return null;
     }
   }
 
+  void _putMxcCache(String key, Uint8List bytes) {
+    if (bytes.lengthInBytes > MatrixService._mediaCacheMaxBytes) return;
+    _removeMxcCache(key);
+    _mediaCache[key] = bytes;
+    _mediaCachedAt[key] = DateTime.now();
+    _mediaCacheBytes += bytes.lengthInBytes;
+    _trimMxcCache();
+  }
 
+  void _trimMxcCache() {
+    while (_mediaCacheBytes > MatrixService._mediaCacheMaxBytes && _mediaCache.isNotEmpty) {
+      _removeMxcCache(_mediaCache.keys.first);
+    }
+  }
+
+  void _removeMxcCache(String key) {
+    final removed = _mediaCache.remove(key);
+    if (removed != null) {
+      _mediaCacheBytes -= removed.lengthInBytes;
+      if (_mediaCacheBytes < 0) _mediaCacheBytes = 0;
+    }
+    _mediaCachedAt.remove(key);
+  }
+
+  void _clearMxcCache([Uri? mxc]) {
+    if (mxc == null) {
+      _mediaCache.clear();
+      _mediaCachedAt.clear();
+      _mediaCacheBytes = 0;
+      return;
+    }
+    _removeMxcCache(mxc.toString());
+  }
 }

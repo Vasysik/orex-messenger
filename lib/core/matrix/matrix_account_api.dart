@@ -28,13 +28,13 @@ extension MatrixAccountApi on MatrixService {
     await client.setAvatar(
       MatrixFile(bytes: Uint8List.fromList(bytes), name: filename),
     );
-    _mediaCache.clear(); // сбросить кэш, чтобы новый аватар подтянулся сразу
+    _clearMxcCache(); // сбросить кэш, чтобы новый аватар подтянулся сразу
     _emitChange();
   }
 
   Future<void> removeAvatar() async {
     await client.setAvatar(null);
-    _mediaCache.clear();
+    _clearMxcCache();
     _emitChange();
   }
 

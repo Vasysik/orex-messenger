@@ -10,6 +10,7 @@ import '../../widgets/mxc_avatar.dart';
 import '../../widgets/room_icon.dart';
 import '../call/call_screen.dart';
 import 'message_bubble.dart';
+import 'public_room_preview_view.dart';
 import 'room_settings_screen.dart';
 
 part 'chat_timeline_items.dart';
@@ -24,7 +25,7 @@ class ChatView extends StatefulWidget {
     required this.roomId,
     this.onBack,
     this.supergroupSpaceId,
-    this.supergroupChildIds,
+    this.supergroupChildren,
     this.onSupergroupChildSelected,
   });
 
@@ -32,7 +33,7 @@ class ChatView extends StatefulWidget {
   final String roomId;
   final VoidCallback? onBack;
   final String? supergroupSpaceId;
-  final List<String>? supergroupChildIds;
+  final List<OrexRoomPreview>? supergroupChildren;
   final ValueChanged<String>? onSupergroupChildSelected;
 
   @override
@@ -53,6 +54,7 @@ class _ChatViewState extends State<ChatView> {
   bool _showEmojiPicker = false;
   List<PlatformFile> _attachedFiles = [];
   String? _spaceChildId;
+  String? _accessRepairedSpaceId;
 
   List<ChatItem> _chatItems = [];
 
@@ -306,17 +308,46 @@ class _ChatViewState extends State<ChatView> {
   }
 
   static const _imgExts = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'};
+  static const _maxAttachedFiles = 10;
+  static const _maxAttachmentBytes = 50 * 1024 * 1024;
+  static const _maxAttachmentBatchBytes = 100 * 1024 * 1024;
 
   Future<void> _attach() async {
     final res = await FilePicker.platform
         .pickFiles(withData: true, allowMultiple: true);
-    final files = res?.files ?? const [];
-    if (files.isEmpty) return;
-    setState(() {
-      _attachedFiles.addAll(files);
-      _editing = null;
-    });
-    _focusNode.requestFocus();
+    final picked = res?.files ?? const <PlatformFile>[];
+    if (picked.isEmpty) return;
+
+    final accepted = <PlatformFile>[];
+    var batchBytes = _attachedFiles.fold<int>(0, (sum, f) => sum + f.size);
+    var rejected = 0;
+    for (final file in picked) {
+      if (_attachedFiles.length + accepted.length >= _maxAttachedFiles ||
+          file.size > _maxAttachmentBytes ||
+          batchBytes + file.size > _maxAttachmentBatchBytes) {
+        rejected++;
+        continue;
+      }
+      accepted.add(file);
+      batchBytes += file.size;
+    }
+
+    if (accepted.isNotEmpty) {
+      setState(() {
+        _attachedFiles.addAll(accepted);
+        _editing = null;
+      });
+      _focusNode.requestFocus();
+    }
+    if (rejected > 0 && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Часть файлов не добавлена: максимум 10 файлов, 50 МБ на файл и 100 МБ за раз.',
+          ),
+        ),
+      );
+    }
   }
 
   void _cancelAttachment(int index) {
@@ -452,8 +483,16 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Widget _buildSupergroup(Room space) {
-    final children = widget.matrix.supergroupChildren(space);
-    if (children.isEmpty) {
+    if (_accessRepairedSpaceId != space.id) {
+      _accessRepairedSpaceId = space.id;
+      Future.microtask(() async {
+        try {
+          await widget.matrix.ensureSupergroupChildrenAccess(space);
+        } catch (_) {}
+      });
+    }
+    final childPreviews = widget.matrix.supergroupChildPreviews(space);
+    if (childPreviews.isEmpty) {
       return Column(
         children: [
           _ChatHeader(
@@ -494,12 +533,36 @@ class _ChatViewState extends State<ChatView> {
 
     var selectedId = _spaceChildId;
     if (selectedId == null ||
-        !children.any((child) => child.id == selectedId)) {
-      selectedId = children.first.id;
+        !childPreviews.any((child) => child.roomId == selectedId)) {
+      selectedId = childPreviews.first.roomId;
       _spaceChildId = selectedId;
     }
 
     final selectedChildId = selectedId;
+    final selectedPreview = childPreviews.firstWhere(
+      (child) => child.roomId == selectedChildId,
+      orElse: () => childPreviews.first,
+    );
+    final selectedRoom = widget.matrix.client.getRoomById(selectedChildId);
+
+    void selectChild(String roomId) {
+      if (mounted) setState(() => _spaceChildId = roomId);
+    }
+
+    if (selectedRoom == null || selectedRoom.membership != Membership.join) {
+      return PublicRoomPreviewView(
+        key: ValueKey('supergroup-preview-$selectedChildId'),
+        matrix: widget.matrix,
+        preview: selectedPreview,
+        onBack: widget.onBack,
+        parentSpace: space,
+        supergroupChildren: childPreviews,
+        onSupergroupChildSelected: selectChild,
+        onJoined: (roomId) {
+          if (mounted) setState(() => _spaceChildId = roomId);
+        },
+      );
+    }
 
     return ChatView(
       key: ValueKey('supergroup-$selectedChildId'),
@@ -507,10 +570,8 @@ class _ChatViewState extends State<ChatView> {
       roomId: selectedChildId,
       onBack: widget.onBack,
       supergroupSpaceId: space.id,
-      supergroupChildIds: children.map((child) => child.id).toList(),
-      onSupergroupChildSelected: (roomId) {
-        if (mounted) setState(() => _spaceChildId = roomId);
-      },
+      supergroupChildren: childPreviews,
+      onSupergroupChildSelected: selectChild,
     );
   }
 
@@ -573,7 +634,7 @@ class _ChatViewState extends State<ChatView> {
               onCall: _openCall,
               onSettings: _openRoomSettings,
               supergroupSpaceId: widget.supergroupSpaceId,
-              supergroupChildIds: widget.supergroupChildIds,
+              supergroupChildren: widget.supergroupChildren,
               onSupergroupChildSelected: widget.onSupergroupChildSelected,
             ),
             Divider(

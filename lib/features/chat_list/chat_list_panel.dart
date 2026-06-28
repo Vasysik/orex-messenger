@@ -18,6 +18,7 @@ class ChatListPanel extends StatefulWidget {
     required this.matrix,
     required this.selectedRoomId,
     required this.onSelect,
+    required this.onOpenPublicRoomPreview,
     required this.onOpenSettings,
     required this.onNewChat,
     required this.folders,
@@ -26,6 +27,7 @@ class ChatListPanel extends StatefulWidget {
   final MatrixService matrix;
   final String? selectedRoomId;
   final ValueChanged<String> onSelect;
+  final ValueChanged<OrexRoomPreview> onOpenPublicRoomPreview;
   final VoidCallback onOpenSettings;
   final VoidCallback onNewChat;
   final ChatFolderController folders;
@@ -40,7 +42,8 @@ class _ChatListPanelState extends State<ChatListPanel> {
   int _folderIndex = 0;
   String _query = '';
   Timer? _searchDebounce;
-  List<Profile> _globalResults = [];
+  List<Profile> _globalPeople = [];
+  List<OrexRoomPreview> _globalPublicRooms = [];
   bool _globalLoading = false;
   bool _openingGlobal = false;
   int _searchRun = 0;
@@ -53,7 +56,8 @@ class _ChatListPanelState extends State<ChatListPanel> {
     if (q.isEmpty) {
       _searchRun++;
       setState(() {
-        _globalResults = [];
+        _globalPeople = [];
+        _globalPublicRooms = [];
         _globalLoading = false;
       });
       return;
@@ -68,8 +72,11 @@ class _ChatListPanelState extends State<ChatListPanel> {
   Future<void> _runGlobalSearch(String q) async {
     final run = ++_searchRun;
     setState(() => _globalLoading = true);
-    final results =
-        await widget.matrix.searchUsers(q, includeMxidFallback: true);
+    final peopleFuture =
+        widget.matrix.searchUsers(q, includeMxidFallback: true);
+    final roomsFuture = widget.matrix.searchPublicRoomPreviews(q);
+    final results = await peopleFuture;
+    final publicRooms = await roomsFuture;
     if (!mounted || run != _searchRun) return;
 
     final knownDirectIds = widget.matrix.rooms
@@ -80,10 +87,14 @@ class _ChatListPanelState extends State<ChatListPanel> {
     final ownId = widget.matrix.client.userID;
 
     setState(() {
-      _globalResults = results
+      _globalPeople = results
           .where((profile) => profile.userId != ownId)
           .where((profile) => !knownDirectIds.contains(profile.userId))
           .toList();
+      _globalPublicRooms = publicRooms.where((preview) {
+        final local = widget.matrix.client.getRoomById(preview.roomId);
+        return local == null || local.membership != Membership.join;
+      }).toList();
       _globalLoading = false;
     });
   }
@@ -279,15 +290,14 @@ class _ChatListPanelState extends State<ChatListPanel> {
   int get _globalSectionItemCount {
     if (_query.isEmpty) return 0;
     if (_globalLoading) return 2;
-    if (_globalResults.isEmpty) return 0;
-    return _globalResults.length + 1;
+    final sections = (_globalPublicRooms.isNotEmpty ? 1 : 0) +
+        (_globalPeople.isNotEmpty ? 1 : 0);
+    return sections + _globalPublicRooms.length + _globalPeople.length;
   }
 
   Widget _globalSearchItem(int index) {
-    if (index == 0) {
-      return const _SectionHeader(title: 'Люди');
-    }
     if (_globalLoading) {
+      if (index == 0) return const _SectionHeader(title: 'Публичные комнаты');
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 18),
         child: Center(
@@ -299,13 +309,34 @@ class _ChatListPanelState extends State<ChatListPanel> {
       );
     }
 
-    final profile = _globalResults[index - 1];
-    return _GlobalUserTile(
-      matrix: widget.matrix,
-      profile: profile,
-      enabled: !_openingGlobal,
-      onTap: () => _openGlobalUser(profile),
-    );
+    var i = index;
+    if (_globalPublicRooms.isNotEmpty) {
+      if (i == 0) return const _SectionHeader(title: 'Публичные комнаты');
+      i--;
+      if (i < _globalPublicRooms.length) {
+        final preview = _globalPublicRooms[i];
+        return _GlobalPublicRoomTile(
+          matrix: widget.matrix,
+          preview: preview,
+          onTap: () => widget.onOpenPublicRoomPreview(preview),
+        );
+      }
+      i -= _globalPublicRooms.length;
+    }
+
+    if (_globalPeople.isNotEmpty) {
+      if (i == 0) return const _SectionHeader(title: 'Люди');
+      i--;
+      final profile = _globalPeople[i];
+      return _GlobalUserTile(
+        matrix: widget.matrix,
+        profile: profile,
+        enabled: !_openingGlobal,
+        onTap: () => _openGlobalUser(profile),
+      );
+    }
+
+    return const SizedBox.shrink();
   }
 }
 
@@ -1063,6 +1094,39 @@ class _ChatTile extends StatelessWidget {
     }
     return '${ts.day.toString().padLeft(2, '0')}.'
         '${ts.month.toString().padLeft(2, '0')}';
+  }
+}
+
+class _GlobalPublicRoomTile extends StatelessWidget {
+  const _GlobalPublicRoomTile({
+    required this.matrix,
+    required this.preview,
+    required this.onTap,
+  });
+
+  final MatrixService matrix;
+  final OrexRoomPreview preview;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final subtitle = preview.alias?.isNotEmpty == true
+        ? preview.alias!
+        : preview.topic?.isNotEmpty == true
+            ? preview.topic!
+            : preview.roomId;
+    return ListTile(
+      leading: MxcAvatar(
+        matrix: matrix,
+        name: preview.name,
+        mxc: preview.avatar,
+        size: 44,
+      ),
+      title: Text(preview.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+      trailing: const Icon(Icons.chevron_right, color: OrexColors.copper),
+      onTap: onTap,
+    );
   }
 }
 

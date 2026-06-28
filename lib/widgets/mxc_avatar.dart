@@ -33,6 +33,8 @@ class _MxcAvatarState extends State<MxcAvatar> {
   @override
   void initState() {
     super.initState();
+    final mxc = widget.mxc;
+    if (mxc != null) _bytes = widget.matrix.cachedMxc(mxc);
     _load();
   }
 
@@ -40,7 +42,8 @@ class _MxcAvatarState extends State<MxcAvatar> {
   void didUpdateWidget(MxcAvatar old) {
     super.didUpdateWidget(old);
     if (old.mxc != widget.mxc) {
-      _bytes = null;
+      final mxc = widget.mxc;
+      _bytes = mxc == null ? null : widget.matrix.cachedMxc(mxc);
       _load();
     }
   }
@@ -50,6 +53,15 @@ class _MxcAvatarState extends State<MxcAvatar> {
     if (mxc == null) return;
     if (_loadingMxc == mxc) return;
     _loadingMxc = mxc;
+    final cached = widget.matrix.cachedMxc(mxc);
+    if (cached != null) {
+      if (mounted && widget.mxc == mxc && !identical(cached, _bytes)) {
+        setState(() => _bytes = cached);
+      }
+      _loadingMxc = null;
+      return;
+    }
+
     final data = await widget.matrix.downloadMxc(mxc);
     if (!mounted) return;
     if (_loadingMxc == mxc) _loadingMxc = null;
