@@ -376,7 +376,60 @@ class MatrixService extends ChangeNotifier {
 
   /// Удалить чат у себя: выйти из комнаты и «забыть» её.
   Future<void> deleteRoom(Room room) async {
+    if (room.isSpace) {
+      final children = List<Room>.of(supergroupChildren(room));
+      for (final child in children) {
+        await deleteRoom(child);
+      }
+    }
     await _releaseRoomAlias(room);
+    try {
+      if (room.membership != Membership.leave) await room.leave();
+    } catch (_) {}
+    try {
+      await room.forget();
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  bool canFullyDeleteRoom(Room room) =>
+      room.ownPowerLevel.level >= PowerLevel.defaultAdminLevel;
+
+  bool isOwnerPowerLevel(PowerLevel powerLevel) =>
+      powerLevel.level >= PowerLevel.defaultAdminLevel;
+
+  Future<void> deleteRoomForEveryone(Room room) async {
+    if (!canFullyDeleteRoom(room)) {
+      throw StateError('Only the owner can delete this room for everyone');
+    }
+    if (room.isSpace) {
+      final children = List<Room>.of(supergroupChildren(room));
+      for (final child in children) {
+        if (canFullyDeleteRoom(child)) {
+          await deleteRoomForEveryone(child);
+        } else {
+          await deleteRoom(child);
+        }
+      }
+    }
+    await _releaseRoomAlias(room);
+    try {
+      await client.setRoomVisibilityOnDirectory(
+        room.id,
+        visibility: Visibility.private,
+      );
+    } catch (_) {}
+
+    final ownId = client.userID;
+    final users = await room.requestParticipants(
+      const [Membership.join, Membership.invite],
+    );
+    for (final user in users) {
+      if (user.id == ownId) continue;
+      try {
+        await room.kick(user.id);
+      } catch (_) {}
+    }
     try {
       if (room.membership != Membership.leave) await room.leave();
     } catch (_) {}
@@ -1393,14 +1446,12 @@ class MatrixService extends ChangeNotifier {
     try {
       await room.setJoinRules(public ? JoinRules.public : JoinRules.invite);
     } catch (_) {
-      try {
-        await client.setRoomStateWithKey(
-          room.id,
-          EventTypes.RoomJoinRules,
-          '',
-          {'join_rule': public ? JoinRules.public.name : JoinRules.invite.name},
-        );
-      } catch (_) {}
+      await client.setRoomStateWithKey(
+        room.id,
+        EventTypes.RoomJoinRules,
+        '',
+        {'join_rule': public ? JoinRules.public.text : JoinRules.invite.text},
+      );
     }
     try {
       await client.setRoomVisibilityOnDirectory(
@@ -1411,14 +1462,26 @@ class MatrixService extends ChangeNotifier {
       // Some homeservers allow changing join rules but restrict directory writes.
     }
     try {
-      await room.setHistoryVisibility(HistoryVisibility.shared);
-    } catch (_) {}
-    try {
       await room.setGuestAccess(GuestAccess.forbidden);
     } catch (_) {}
     if (!public) {
       await _releaseRoomAlias(room);
     }
+  }
+
+  Future<void> setRoomHistoryVisibility(
+    Room room,
+    HistoryVisibility visibility,
+  ) async {
+    await room.setHistoryVisibility(visibility);
+    if (room.isSpace) {
+      for (final child in supergroupChildren(room)) {
+        try {
+          await child.setHistoryVisibility(visibility);
+        } catch (_) {}
+      }
+    }
+    notifyListeners();
   }
 
   Future<String> createGroup(
@@ -1435,7 +1498,7 @@ class MatrixService extends ChangeNotifier {
           public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
       visibility: public ? Visibility.public : Visibility.private,
       historyVisibility: HistoryVisibility.shared,
-      enableEncryption: true,
+      enableEncryption: !public,
       initialState: [_kindState(OrexRoomKind.group)],
     );
     final room = client.getRoomById(roomId);
@@ -1462,7 +1525,7 @@ class MatrixService extends ChangeNotifier {
           public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
       visibility: public ? Visibility.public : Visibility.private,
       historyVisibility: HistoryVisibility.shared,
-      enableEncryption: true,
+      enableEncryption: !public,
       initialState: [_kindState(OrexRoomKind.channel)],
       powerLevelContentOverride: const {'events_default': 50},
     );
@@ -1520,7 +1583,7 @@ class MatrixService extends ChangeNotifier {
           public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
       visibility: public ? Visibility.public : Visibility.private,
       historyVisibility: HistoryVisibility.shared,
-      enableEncryption: true,
+      enableEncryption: !public,
       initialState: [
         _kindState(voice ? OrexRoomKind.voice : OrexRoomKind.group),
       ],
@@ -1533,6 +1596,19 @@ class MatrixService extends ChangeNotifier {
     await space.setSpaceChild(roomId, order: order, suggested: !voice);
     notifyListeners();
     return roomId;
+  }
+
+  Future<void> removeSupergroupChild(Room space, Room child) async {
+    if (!space.isSpace) throw StateError('Room is not a supergroup space');
+    try {
+      await space.removeSpaceChild(child.id);
+    } catch (_) {}
+    if (canFullyDeleteRoom(child)) {
+      await deleteRoomForEveryone(child);
+    } else {
+      await deleteRoom(child);
+    }
+    notifyListeners();
   }
 
   Future<void> updateRoomDetails(
@@ -1593,6 +1669,11 @@ class MatrixService extends ChangeNotifier {
       await _setRoomKind(room, OrexRoomKind.group);
     }
     await _applyRoomVisibility(room, public);
+    if (room.isSpace) {
+      for (final child in supergroupChildren(room)) {
+        await _applyRoomVisibility(child, public);
+      }
+    }
     notifyListeners();
   }
 

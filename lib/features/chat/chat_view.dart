@@ -905,12 +905,13 @@ class _ChatHeader extends StatelessWidget {
               icon: const Icon(Icons.hub),
               color: OrexColors.copper,
             ),
-          IconButton(
-            tooltip: 'Настройки чата',
-            onPressed: () => onSettings(room),
-            icon: const Icon(Icons.info_outline),
-            color: OrexColors.copper,
-          ),
+          if (space == null)
+            IconButton(
+              tooltip: 'Настройки чата',
+              onPressed: () => onSettings(room),
+              icon: const Icon(Icons.info_outline),
+              color: OrexColors.copper,
+            ),
           if (!room.isSpace) ...[
             IconButton(
               tooltip: 'Аудиозвонок',

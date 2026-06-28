@@ -34,6 +34,8 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
   bool _busy = false;
   bool _savingAvatar = false;
   late bool _public = widget.matrix.isPublicRoom(widget.room);
+  late HistoryVisibility _historyVisibility =
+      widget.room.historyVisibility ?? HistoryVisibility.shared;
 
   @override
   void dispose() {
@@ -82,6 +84,10 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
               await widget.matrix.setRoomLocalAlias(widget.room, _alias.text);
             }
           }
+          await widget.matrix.setRoomHistoryVisibility(
+            widget.room,
+            _historyVisibility,
+          );
         },
       );
 
@@ -189,6 +195,75 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
       ),
     );
     if (mounted) setState(() {});
+  }
+
+  Future<void> _changeChildAvatar(Room child) async {
+    final res = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      withData: true,
+    );
+    final file = res?.files.single;
+    if (file?.bytes == null) return;
+    await _guard(
+      () => widget.matrix.setRoomAvatarBytes(child, file!.bytes!, file.name),
+    );
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _deleteChild(Room child) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить чат?'),
+        content: Text(
+            '«${child.getLocalizedDisplayname()}» будет удалён из супергруппы.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFCF6679),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await _guard(() => widget.matrix.removeSupergroupChild(widget.room, child));
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _deleteForEveryone() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить для всех?'),
+        content: const Text(
+          'Владелец выйдет из комнаты, остальные участники будут удалены. '
+          'Для супергруппы это также затронет её чаты.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFCF6679),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await _guard(() => widget.matrix.deleteRoomForEveryone(widget.room));
+    if (mounted) Navigator.pop(context);
   }
 
   Future<String?> _askName(String title) {
@@ -327,7 +402,7 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                             title: Text(_public ? 'Публичная' : 'Приватная'),
                             subtitle: Text(
                               _public
-                                  ? 'Можно войти по ID; сообщения остаются в E2EE-чатах'
+                                  ? 'Можно войти по ID'
                                   : 'Вход только по приглашению',
                             ),
                           ),
@@ -346,6 +421,34 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                         ],
                       ),
                     ],
+                    const SizedBox(height: 18),
+                    _SectionCard(
+                      title: 'История',
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
+                          child: DropdownButtonFormField<HistoryVisibility>(
+                            initialValue: _historyVisibility,
+                            decoration: const InputDecoration(
+                              labelText: 'Кто видит старые сообщения',
+                              prefixIcon: Icon(Icons.history),
+                            ),
+                            items: HistoryVisibility.values
+                                .map(
+                                  (value) => DropdownMenuItem(
+                                    value: value,
+                                    child: Text(_historyLabel(value)),
+                                  ),
+                                )
+                                .toList(),
+                            onChanged: (value) {
+                              if (value == null) return;
+                              setState(() => _historyVisibility = value);
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 12),
                     _SaveBar(onSave: _saveDetails),
                     const SizedBox(height: 18),
@@ -404,6 +507,8 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                             return Column(
                               children: users.take(80).map((user) {
                                 final name = user.calcDisplayname();
+                                final owner = widget.matrix
+                                    .isOwnerPowerLevel(user.powerLevel);
                                 return ListTile(
                                   leading: MxcAvatar(
                                     matrix: widget.matrix,
@@ -421,6 +526,9 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                   ),
+                                  trailing: owner
+                                      ? const _RoleChip('Владелец')
+                                      : null,
                                 );
                               }).toList(),
                             );
@@ -436,7 +544,13 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
                         onAddChat: () => _createChild(voice: false),
                         onAddVoice: () => _createChild(voice: true),
                         onEditChild: _editChild,
+                        onAvatarChild: _changeChildAvatar,
+                        onDeleteChild: _deleteChild,
                       ),
+                    ],
+                    if (widget.matrix.canFullyDeleteRoom(room)) ...[
+                      const SizedBox(height: 18),
+                      _DangerZone(onDeleteForEveryone: _deleteForEveryone),
                     ],
                   ],
                 ),
@@ -448,6 +562,13 @@ class _RoomSettingsSheetState extends State<RoomSettingsSheet> {
     );
   }
 }
+
+String _historyLabel(HistoryVisibility visibility) => switch (visibility) {
+      HistoryVisibility.invited => 'С момента приглашения',
+      HistoryVisibility.joined => 'С момента входа',
+      HistoryVisibility.shared => 'С общей историей комнаты',
+      HistoryVisibility.worldReadable => 'Видна всем',
+    };
 
 class _Header extends StatelessWidget {
   const _Header({
@@ -510,18 +631,6 @@ class _Header extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.titleLarge,
-              ),
-              const SizedBox(height: 2),
-              Text(
-                room.isSpace
-                    ? 'Сама супергруппа не хранит сообщения; шифруются её чаты'
-                    : 'Новые группы и каналы создаются с шифрованием',
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: OrexColors.copper,
-                      fontWeight: FontWeight.w600,
-                    ),
               ),
             ],
           ),
@@ -630,6 +739,57 @@ class _InvitePicker extends StatelessWidget {
   }
 }
 
+class _RoleChip extends StatelessWidget {
+  const _RoleChip(this.label);
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: OrexColors.copper.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: OrexColors.copper.withValues(alpha: 0.22)),
+      ),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: OrexColors.copper,
+              fontWeight: FontWeight.w700,
+            ),
+      ),
+    );
+  }
+}
+
+class _DangerZone extends StatelessWidget {
+  const _DangerZone({required this.onDeleteForEveryone});
+  final VoidCallback onDeleteForEveryone;
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionCard(
+      title: 'Опасная зона',
+      children: [
+        ListTile(
+          leading: const Icon(
+            Icons.delete_forever,
+            color: Color(0xFFCF6679),
+          ),
+          title: const Text(
+            'Удалить для всех',
+            style: TextStyle(color: Color(0xFFCF6679)),
+          ),
+          subtitle: const Text('Доступно владельцу комнаты'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: onDeleteForEveryone,
+        ),
+      ],
+    );
+  }
+}
+
 class _SupergroupRoomsSection extends StatelessWidget {
   const _SupergroupRoomsSection({
     required this.matrix,
@@ -637,6 +797,8 @@ class _SupergroupRoomsSection extends StatelessWidget {
     required this.onAddChat,
     required this.onAddVoice,
     required this.onEditChild,
+    required this.onAvatarChild,
+    required this.onDeleteChild,
   });
 
   final MatrixService matrix;
@@ -644,6 +806,8 @@ class _SupergroupRoomsSection extends StatelessWidget {
   final VoidCallback onAddChat;
   final VoidCallback onAddVoice;
   final ValueChanged<Room> onEditChild;
+  final ValueChanged<Room> onAvatarChild;
+  final ValueChanged<Room> onDeleteChild;
 
   @override
   Widget build(BuildContext context) {
@@ -684,9 +848,11 @@ class _SupergroupRoomsSection extends StatelessWidget {
         else
           ...children.map(
             (child) => ListTile(
-              leading: Icon(
-                matrix.isVoiceRoom(child) ? Icons.graphic_eq : Icons.forum,
-                color: OrexColors.copper,
+              leading: MxcAvatar(
+                matrix: matrix,
+                name: child.getLocalizedDisplayname(),
+                mxc: child.avatar,
+                size: 38,
               ),
               title: Text(
                 child.getLocalizedDisplayname(),
@@ -696,10 +862,26 @@ class _SupergroupRoomsSection extends StatelessWidget {
               subtitle: Text(
                 matrix.isVoiceRoom(child) ? 'Голосовой канал' : 'Текстовый чат',
               ),
-              trailing: IconButton(
-                tooltip: 'Переименовать',
-                onPressed: () => onEditChild(child),
-                icon: const Icon(Icons.edit),
+              trailing: Wrap(
+                spacing: 2,
+                children: [
+                  IconButton(
+                    tooltip: 'Переименовать',
+                    onPressed: () => onEditChild(child),
+                    icon: const Icon(Icons.edit),
+                  ),
+                  IconButton(
+                    tooltip: 'Иконка',
+                    onPressed: () => onAvatarChild(child),
+                    icon: const Icon(Icons.image_outlined),
+                  ),
+                  IconButton(
+                    tooltip: 'Удалить',
+                    onPressed: () => onDeleteChild(child),
+                    icon: const Icon(Icons.delete_outline),
+                    color: const Color(0xFFCF6679),
+                  ),
+                ],
               ),
             ),
           ),
