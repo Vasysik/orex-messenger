@@ -24,11 +24,6 @@ const orexRoomIconChoices = <OrexRoomIconChoice>[
     icon: Icons.campaign,
   ),
   OrexRoomIconChoice(
-    key: 'voice',
-    label: 'Голос',
-    icon: Icons.graphic_eq,
-  ),
-  OrexRoomIconChoice(
     key: 'help',
     label: 'Помощь',
     icon: Icons.support_agent,

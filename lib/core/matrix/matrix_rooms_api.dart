@@ -23,8 +23,6 @@ extension MatrixRoomsApi on MatrixService {
         return OrexRoomKind.channel;
       case 'supergroup':
         return OrexRoomKind.supergroup;
-      case 'voice':
-        return OrexRoomKind.voice;
       case 'group':
         return OrexRoomKind.group;
     }
@@ -36,8 +34,6 @@ extension MatrixRoomsApi on MatrixService {
 
   bool isChannel(Room room) => roomKind(room) == OrexRoomKind.channel;
   bool isSupergroup(Room room) => roomKind(room) == OrexRoomKind.supergroup;
-  bool isVoiceRoom(Room room) => roomKind(room) == OrexRoomKind.voice;
-
   bool isPublicRoom(Room room) =>
       _roomPublicOverrides[room.id] ?? room.joinRules == JoinRules.public;
 
@@ -45,7 +41,6 @@ extension MatrixRoomsApi on MatrixService {
     final explicitIcon =
         room.getState(_orexRoomIconEvent)?.content['icon']?.toString().trim();
     if (explicitIcon != null && explicitIcon.isNotEmpty) return explicitIcon;
-    if (isVoiceRoom(room)) return 'voice';
     if (isChannel(room)) return 'announce';
     return 'chat';
   }
@@ -528,6 +523,7 @@ extension MatrixRoomsApi on MatrixService {
     final roomId = await client.createGroupChat(
       groupName: name,
       invite: invite,
+      groupCall: true,
       preset:
           public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
       visibility: public ? Visibility.public : Visibility.private,
@@ -578,7 +574,6 @@ extension MatrixRoomsApi on MatrixService {
   Future<String> createSupergroupChild(
     Room space,
     String name, {
-    bool voice = false,
     String icon = 'chat',
     bool public = false,
     List<String> invite = const [],
@@ -600,8 +595,8 @@ extension MatrixRoomsApi on MatrixService {
           public ? HistoryVisibility.worldReadable : HistoryVisibility.shared,
       enableEncryption: !public,
       initialState: [
-        _kindState(voice ? OrexRoomKind.voice : OrexRoomKind.group),
-        _iconState(voice ? 'voice' : icon),
+        _kindState(OrexRoomKind.group),
+        _iconState(icon),
       ],
     );
     final childRoom = client.getRoomById(roomId);
@@ -609,7 +604,7 @@ extension MatrixRoomsApi on MatrixService {
       await _applyRoomVisibility(childRoom, public);
     }
     final order = supergroupChildren(space).length.toString().padLeft(3, '0');
-    await space.setSpaceChild(roomId, order: order, suggested: !voice);
+    await space.setSpaceChild(roomId, order: order, suggested: true);
     _emitChange();
     return roomId;
   }
@@ -653,6 +648,28 @@ extension MatrixRoomsApi on MatrixService {
     }
     if (newTopic != room.topic) {
       await room.setDescription(newTopic);
+    }
+    _emitChange();
+  }
+
+  Future<void> removeUserFromRoom(Room room, User user) =>
+      removeUserFromRoomById(room, user.id);
+
+  Future<void> removeUserFromRoomById(Room room, String userId) async {
+    final normalized = normalizeLocalUserId(userId);
+    if (normalized.isEmpty) return;
+
+    if (room.isSpace) {
+      for (final child in supergroupChildren(room)) {
+        if (!child.canKick) continue;
+        try {
+          await child.kick(normalized);
+        } catch (_) {}
+      }
+    }
+
+    if (room.canKick) {
+      await room.kick(normalized);
     }
     _emitChange();
   }

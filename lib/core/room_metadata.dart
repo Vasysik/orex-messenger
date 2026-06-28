@@ -1,5 +1,7 @@
 import 'package:matrix/matrix.dart';
 
+enum OrexRoomKind { direct, group, channel, supergroup }
+
 final class OrexRoomAlias {
   const OrexRoomAlias._();
 

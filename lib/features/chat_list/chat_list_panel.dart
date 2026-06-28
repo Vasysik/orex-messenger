@@ -938,7 +938,6 @@ class _RoomPickerDialogState extends State<_RoomPickerDialog> {
         OrexRoomKind.channel =>
           matrix.isPublicRoom(room) ? 'Публичный канал' : 'Канал',
         OrexRoomKind.supergroup => 'Супергруппа',
-        OrexRoomKind.voice => 'Голосовой канал',
       };
 }
 
