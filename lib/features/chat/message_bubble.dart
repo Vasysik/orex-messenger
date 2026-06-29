@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import '../../theme/orex_theme.dart';
 import '../../widgets/media_player.dart';
 import '../../core/file_helper.dart';
+import '../../core/member_event_text.dart';
 import '../../widgets/media_gallery.dart';
 
 part 'message_attachments.dart';
@@ -214,6 +215,11 @@ class MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final memberNotice = OrexMembershipNotices.fromEvent(event);
+    if (memberNotice != null) {
+      return _MembershipNoticeCard(data: memberNotice);
+    }
+
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bg = isMine
         ? (isDark ? OrexColors.darkBubbleOut : OrexColors.lightBubbleOut)
@@ -603,6 +609,66 @@ class MessageBubble extends StatelessWidget {
             ),
           );
         }).toList(),
+      ),
+    );
+  }
+}
+
+
+class _MembershipNoticeCard extends StatelessWidget {
+  const _MembershipNoticeCard({required this.data});
+
+  final OrexMembershipNotice data;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final icon = switch (data.kind) {
+      OrexMembershipNoticeKind.joined => Icons.login,
+      OrexMembershipNoticeKind.left => Icons.logout,
+      OrexMembershipNoticeKind.invited => Icons.person_add_alt_1,
+      OrexMembershipNoticeKind.removed => Icons.person_remove_alt_1,
+      OrexMembershipNoticeKind.banned => Icons.block,
+    };
+    final color = switch (data.kind) {
+      OrexMembershipNoticeKind.joined => OrexColors.online,
+      OrexMembershipNoticeKind.left => OrexColors.ochre,
+      OrexMembershipNoticeKind.invited => OrexColors.copper,
+      OrexMembershipNoticeKind.removed => const Color(0xFFCF6679),
+      OrexMembershipNoticeKind.banned => const Color(0xFFCF6679),
+    };
+
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 7, horizontal: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: (isDark ? Colors.black : Colors.white).withValues(alpha: 0.18),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: color.withValues(alpha: 0.28)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 15, color: color),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                data.text,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.78),
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

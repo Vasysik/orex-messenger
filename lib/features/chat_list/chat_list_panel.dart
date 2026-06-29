@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 
 import '../../core/matrix/matrix_service.dart';
+import '../../core/member_event_text.dart';
 import '../../theme/glass.dart';
 import '../../theme/orex_theme.dart';
 import '../../widgets/mxc_avatar.dart';
@@ -214,9 +215,7 @@ class _ChatListPanelState extends State<ChatListPanel> {
     final q = _query.toLowerCase();
     final byId = <String, Room>{};
     for (final room in widget.matrix.rooms) {
-      final name = room.getLocalizedDisplayname().toLowerCase();
-      final topic = room.topic.toLowerCase();
-      if (name.contains(q) || topic.contains(q)) {
+      if (_matchesLocalRoomSearch(widget.matrix, room, q)) {
         byId[room.id] = room;
       }
     }
@@ -343,6 +342,73 @@ class _ChatListPanelState extends State<ChatListPanel> {
 
     return const SizedBox.shrink();
   }
+}
+
+
+Set<String> _searchForms(String query) {
+  final raw = query.trim().toLowerCase();
+  if (raw.isEmpty) return const {};
+
+  final forms = <String>{raw};
+  var normalized = raw;
+  if (normalized.startsWith('#') || normalized.startsWith('@')) {
+    normalized = normalized.substring(1);
+  }
+  if (normalized.isNotEmpty) forms.add(normalized);
+
+  final localpart = normalized.split(':').first;
+  if (localpart.isNotEmpty) forms.add(localpart);
+  return forms;
+}
+
+bool _matchesLocalRoomSearch(MatrixService matrix, Room room, String query) {
+  final needles = _searchForms(query);
+  if (needles.isEmpty) return true;
+
+  final terms = _localRoomSearchTerms(matrix, room);
+  return needles.any((needle) => terms.any((term) => term.contains(needle)));
+}
+
+
+String _roomKindSearchLabel(OrexRoomKind kind) => switch (kind) {
+      OrexRoomKind.direct => 'личный direct private личка',
+      OrexRoomKind.group => 'группа group чат',
+      OrexRoomKind.channel => 'канал channel',
+      OrexRoomKind.supergroup => 'супергруппа supergroup space',
+    };
+
+Set<String> _localRoomSearchTerms(MatrixService matrix, Room room) {
+  final terms = <String>{
+    room.getLocalizedDisplayname(),
+    room.topic,
+    room.id,
+    _roomKindSearchLabel(matrix.roomKind(room)),
+  };
+
+  void addAlias(String? value) {
+    final alias = value?.trim();
+    if (alias == null || alias.isEmpty) return;
+    terms.add(alias);
+    final withoutHash = alias.startsWith('#') ? alias.substring(1) : alias;
+    terms.add(withoutHash);
+    final localpart = withoutHash.split(':').first;
+    if (localpart.isNotEmpty) terms.add(localpart);
+  }
+
+  addAlias(room.canonicalAlias);
+  final aliasState = room.getState(EventTypes.RoomCanonicalAlias)?.content;
+  addAlias(aliasState?['alias']?.toString());
+  final altAliases = aliasState?['alt_aliases'];
+  if (altAliases is Iterable) {
+    for (final alias in altAliases) {
+      addAlias(alias?.toString());
+    }
+  }
+
+  return terms
+      .map((term) => term.trim().toLowerCase())
+      .where((term) => term.isNotEmpty)
+      .toSet();
 }
 
 class _RoomListPage extends StatelessWidget {
@@ -897,8 +963,7 @@ class _RoomPickerDialogState extends State<_RoomPickerDialog> {
     final q = _query.toLowerCase();
     final rooms = widget.matrix.rooms.where((room) {
       if (q.isEmpty) return true;
-      return room.getLocalizedDisplayname().toLowerCase().contains(q) ||
-          room.topic.toLowerCase().contains(q);
+      return _matchesLocalRoomSearch(widget.matrix, room, q);
     }).toList();
 
     return AlertDialog(
@@ -1000,9 +1065,13 @@ class _ChatTile extends StatelessWidget {
     final name = room.getLocalizedDisplayname();
     final isInvite = matrix.isInvite(room);
     final lastEvent = room.lastEvent;
+    final membershipNotice = lastEvent == null
+        ? null
+        : OrexMembershipNotices.fromEvent(lastEvent);
     final preview = isInvite
         ? 'Приглашение · нажмите, чтобы принять'
-        : (lastEvent == null
+        : (membershipNotice?.text ??
+            (lastEvent == null
             ? ''
             : (lastEvent.type == EventTypes.GroupCallMember
                 ? 'Звонок'
@@ -1012,7 +1081,7 @@ class _ChatTile extends StatelessWidget {
                         const MatrixDefaultLocalizations(),
                         hideReply: true,
                         hideEdit: true,
-                      )));
+                      ))));
     final unread = room.notificationCount;
 
     return RepaintBoundary(
