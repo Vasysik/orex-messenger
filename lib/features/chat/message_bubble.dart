@@ -8,7 +8,9 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import '../../theme/orex_theme.dart';
 import '../../widgets/media_player.dart';
 import '../../core/file_helper.dart';
+import '../../core/config.dart';
 import '../../core/member_event_text.dart';
+import '../../core/room_metadata.dart';
 import '../../widgets/media_gallery.dart';
 
 part 'message_attachments.dart';
@@ -713,12 +715,16 @@ class _InviteNoticeData {
 
     final titleMatch = RegExp(r'Приглашение в «([^»]+)»').firstMatch(normalized);
     final roomMatch = RegExp(r'Комната:\s*(!\S+:\S+)').firstMatch(normalized);
-    final aliasMatch = RegExp(r'Alias:\s*(#\S+:\S+)').firstMatch(normalized);
+    final aliasMatch = RegExp(r'Alias:\s*(#\S+)').firstMatch(normalized);
+    final rawAlias = aliasMatch?.group(1);
+    final alias = rawAlias == null || rawAlias.contains(':')
+        ? rawAlias
+        : '$rawAlias:${OrexConfig.homeserverHost}';
 
     return _InviteNoticeData(
       title: titleMatch?.group(1) ?? 'Комната',
       roomId: roomMatch?.group(1),
-      alias: aliasMatch?.group(1),
+      alias: alias,
     );
   }
 }
@@ -736,7 +742,10 @@ class _InviteNoticeCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final subtitle = data.alias ?? data.roomId ?? 'Откройте приглашение';
+    final displayAlias = OrexRoomAlias.displayAlias(data.alias);
+    final subtitle = displayAlias.isNotEmpty
+        ? displayAlias
+        : data.roomId ?? 'Откройте приглашение';
     return InkWell(
       borderRadius: BorderRadius.circular(16),
       onTap: onTap,

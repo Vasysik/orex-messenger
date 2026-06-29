@@ -37,7 +37,7 @@ class _RoomProfileCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final name = room.getLocalizedDisplayname();
-    final alias = room.canonicalAlias;
+    final alias = OrexRoomAlias.displayAlias(room.canonicalAlias);
     final address = alias.isNotEmpty ? alias : room.id;
 
     return GlassPanel(

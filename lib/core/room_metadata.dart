@@ -27,13 +27,28 @@ final class OrexRoomAlias {
     return '#$localpart:$serverName';
   }
 
+  static String displayAlias(String? alias) {
+    final value = alias?.trim() ?? '';
+    if (value.isEmpty) return '';
+    if (!value.startsWith('#')) return value;
+    final localpart = value.substring(1).split(':').first.trim();
+    return localpart.isEmpty ? value : '#$localpart';
+  }
+
+  static String displayUserId(String? userId) {
+    final value = userId?.trim() ?? '';
+    if (value.isEmpty) return '';
+    if (!value.startsWith('@')) return value;
+    final localpart = value.substring(1).split(':').first.trim();
+    return localpart.isEmpty ? value : '@$localpart';
+  }
+
   static String localpartFromRoom(Room room) {
     final alias = room.canonicalAlias;
     if (!alias.startsWith('#')) return '';
     return alias.substring(1).split(':').first;
   }
 }
-
 
 final class OrexRoomPreview {
   const OrexRoomPreview({
@@ -49,7 +64,9 @@ final class OrexRoomPreview {
   });
 
   factory OrexRoomPreview.fromPublicRoom(PublishedRoomsChunk room) {
-    final name = room.name ?? room.canonicalAlias ?? room.roomId;
+    final displayAlias = OrexRoomAlias.displayAlias(room.canonicalAlias);
+    final name =
+        room.name ?? (displayAlias.isNotEmpty ? displayAlias : room.roomId);
     return OrexRoomPreview(
       roomId: room.roomId,
       name: name,

@@ -181,8 +181,8 @@ class _PublicRoomPreviewViewState extends State<PublicRoomPreviewView> {
   String _subtitle(OrexRoomPreview preview) {
     final members = preview.memberCount;
     final memberLine = members == null ? null : '$members участников';
-    final alias = preview.alias;
-    return alias?.isNotEmpty == true
+    final alias = OrexRoomAlias.displayAlias(preview.alias);
+    return alias.isNotEmpty
         ? [alias, memberLine].whereType<String>().join(' · ')
         : memberLine ?? preview.roomId;
   }

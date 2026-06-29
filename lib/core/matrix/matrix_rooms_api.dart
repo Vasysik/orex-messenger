@@ -1243,7 +1243,7 @@ extension MatrixRoomsApi on MatrixService {
       final dmId = await client.startDirectChat(userId);
       final dm = client.getRoomById(dmId);
       if (dm == null) return;
-      final alias = room.canonicalAlias;
+      final alias = OrexRoomAlias.displayAlias(room.canonicalAlias);
       final aliasLine = alias.isEmpty ? '' : '\nAlias: $alias';
       await dm.sendTextEvent(
         'Приглашение в «${room.getLocalizedDisplayname()}»\n'

@@ -92,7 +92,8 @@ class _ChatListPanelState extends State<ChatListPanel> {
           .where((profile) => profile.userId != ownId)
           .where((profile) => !knownDirectIds.contains(profile.userId))
           .toList();
-      _globalPublicRooms = publicRooms.where((preview) {
+      _globalPublicRooms = publicRooms
+          .where((preview) {
         final local = widget.matrix.client.getRoomById(preview.roomId);
         return local == null || local.membership != Membership.join;
       }).toList();
@@ -377,7 +378,6 @@ bool _matchesLocalRoomSearch(MatrixService matrix, Room room, String query) {
   );
   return needles.any((needle) => terms.any((term) => term.contains(needle)));
 }
-
 
 String _roomKindSearchLabel(OrexRoomKind kind) => switch (kind) {
       OrexRoomKind.direct => 'личный direct private личка',
@@ -1203,8 +1203,9 @@ class _GlobalPublicRoomTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final subtitle = preview.alias?.isNotEmpty == true
-        ? preview.alias!
+    final displayAlias = OrexRoomAlias.displayAlias(preview.alias);
+    final subtitle = displayAlias.isNotEmpty
+        ? displayAlias
         : preview.topic?.isNotEmpty == true
             ? preview.topic!
             : preview.roomId;
