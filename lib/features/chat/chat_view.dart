@@ -84,7 +84,9 @@ class _ChatViewState extends State<ChatView> {
   void _buildChatItems(List<Event> rawEvents) {
     final events = rawEvents
         .where((e) =>
-            (e.type == EventTypes.Message || e.type == EventTypes.Encrypted) &&
+            (e.type == EventTypes.Message ||
+                e.type == EventTypes.Encrypted ||
+                e.type == EventTypes.RoomMember) &&
             !e.redacted &&
             e.relationshipType != RelationshipTypes.edit)
         .toList();

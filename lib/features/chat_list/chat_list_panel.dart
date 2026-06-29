@@ -361,11 +361,20 @@ Set<String> _searchForms(String query) {
   return forms;
 }
 
+bool _isStructuredRoomSearch(String query) {
+  final q = query.trim().toLowerCase();
+  return q.startsWith('#') || q.startsWith('!') || q.startsWith('@') || q.contains(':');
+}
+
 bool _matchesLocalRoomSearch(MatrixService matrix, Room room, String query) {
   final needles = _searchForms(query);
   if (needles.isEmpty) return true;
 
-  final terms = _localRoomSearchTerms(matrix, room);
+  final terms = _localRoomSearchTerms(
+    matrix,
+    room,
+    includeServerQualifiedTerms: _isStructuredRoomSearch(query),
+  );
   return needles.any((needle) => terms.any((term) => term.contains(needle)));
 }
 
@@ -377,20 +386,27 @@ String _roomKindSearchLabel(OrexRoomKind kind) => switch (kind) {
       OrexRoomKind.supergroup => 'супергруппа supergroup space',
     };
 
-Set<String> _localRoomSearchTerms(MatrixService matrix, Room room) {
+Set<String> _localRoomSearchTerms(
+  MatrixService matrix,
+  Room room, {
+  required bool includeServerQualifiedTerms,
+}) {
   final terms = <String>{
     room.getLocalizedDisplayname(),
     room.topic,
-    room.id,
     _roomKindSearchLabel(matrix.roomKind(room)),
   };
+
+  if (includeServerQualifiedTerms) {
+    terms.add(room.id);
+  }
 
   void addAlias(String? value) {
     final alias = value?.trim();
     if (alias == null || alias.isEmpty) return;
-    terms.add(alias);
+    if (includeServerQualifiedTerms) terms.add(alias);
     final withoutHash = alias.startsWith('#') ? alias.substring(1) : alias;
-    terms.add(withoutHash);
+    if (includeServerQualifiedTerms) terms.add(withoutHash);
     final localpart = withoutHash.split(':').first;
     if (localpart.isNotEmpty) terms.add(localpart);
   }
