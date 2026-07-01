@@ -2,14 +2,14 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 
-import '../../core/matrix/matrix_service.dart';
-import '../../core/orex_logger.dart';
-import '../../theme/glass.dart';
-import '../../theme/orex_theme.dart';
-import '../../widgets/mxc_avatar.dart';
-import '../../widgets/orex_loading_overlay.dart';
-import '../../widgets/orex_settings_components.dart';
-import '../../widgets/room_icon.dart';
+import '../../../core/matrix/matrix_service.dart';
+import '../../../core/logging/orex_logger.dart';
+import '../../../shared/theme/glass.dart';
+import '../../../shared/theme/orex_theme.dart';
+import '../../../shared/widgets/mxc_avatar.dart';
+import '../../../shared/widgets/orex_loading_overlay.dart';
+import '../../../shared/widgets/orex_settings_components.dart';
+import '../../../shared/widgets/room_icon.dart';
 
 part 'room_settings_components.dart';
 

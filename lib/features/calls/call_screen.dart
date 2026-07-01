@@ -3,13 +3,13 @@ import 'package:livekit_client/livekit_client.dart' as lk;
 // Прячем matrix-овский CallSession — у нас свой одноимённый класс (медиа).
 import 'package:matrix/matrix.dart' hide CallSession;
 
-import '../../core/call_controller.dart';
+import '../../core/voip/call_controller.dart';
 import '../../core/matrix/matrix_service.dart';
-import '../../theme/glass.dart';
-import '../../theme/orex_theme.dart';
-import '../../widgets/mxc_avatar.dart';
-import '../../widgets/squirrel_mascot.dart';
-import 'call_session.dart';
+import '../../shared/theme/glass.dart';
+import '../../shared/theme/orex_theme.dart';
+import '../../shared/widgets/mxc_avatar.dart';
+import '../../shared/widgets/squirrel_mascot.dart';
+import '../../core/voip/call_session.dart';
 
 /// Наш собственный экран звонка поверх LiveKit (стек Element Call / MatrixRTC).
 /// Сам звонок живёт в [CallController] (matrix.call) — экран лишь отображает его,

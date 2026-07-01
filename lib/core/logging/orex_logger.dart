@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 
-import 'config.dart';
+import '../config/orex_config.dart';
 
 /// Единая точка dev-логов Orex.
 ///

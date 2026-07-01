@@ -6,18 +6,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
 
-import 'core/config.dart';
-import 'core/database.dart';
+import 'core/config/orex_config.dart';
+import 'core/storage/database.dart';
 import 'core/matrix/matrix_service.dart';
-import 'core/orex_logger.dart';
+import 'core/logging/orex_logger.dart';
 import 'features/auth/login_screen.dart';
-import 'features/call/incoming_call_screen.dart';
+import 'features/calls/incoming_call_screen.dart';
 import 'features/home/home_shell.dart';
 import 'features/settings/verification_screen.dart';
-import 'theme/glass.dart';
-import 'theme/orex_theme.dart';
-import 'theme/theme_controller.dart';
-import 'widgets/squirrel_mascot.dart';
+import 'shared/theme/glass.dart';
+import 'shared/theme/orex_theme.dart';
+import 'shared/theme/theme_controller.dart';
+import 'shared/widgets/squirrel_mascot.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();

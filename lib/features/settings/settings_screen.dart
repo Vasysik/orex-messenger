@@ -4,11 +4,11 @@ import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart';
 
 import '../../core/matrix/matrix_service.dart';
-import '../../theme/glass.dart';
-import '../../theme/orex_theme.dart';
-import '../../theme/theme_controller.dart';
-import '../../widgets/mxc_avatar.dart';
-import '../../widgets/orex_settings_components.dart';
+import '../../shared/theme/glass.dart';
+import '../../shared/theme/orex_theme.dart';
+import '../../shared/theme/theme_controller.dart';
+import '../../shared/widgets/mxc_avatar.dart';
+import '../../shared/widgets/orex_settings_components.dart';
 import 'devices_screen.dart';
 import 'key_storage_screen.dart';
 import 'verify_session_screen.dart';

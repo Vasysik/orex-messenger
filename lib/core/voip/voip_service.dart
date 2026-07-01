@@ -8,8 +8,8 @@ import 'package:matrix/matrix.dart';
 // одноимённый MediaDevices, поэтому flutter_webrtc импортируем под префиксом.
 import 'package:webrtc_interface/webrtc_interface.dart';
 
-import 'config.dart';
-import 'orex_logger.dart';
+import '../config/orex_config.dart';
+import '../logging/orex_logger.dart';
 
 /// MatrixRTC-сигналинг звонков (стек Element Call).
 ///

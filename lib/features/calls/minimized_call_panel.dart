@@ -2,11 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:matrix/matrix.dart' hide CallSession;
 
-import '../../core/call_controller.dart';
+import '../../core/voip/call_controller.dart';
 import '../../core/matrix/matrix_service.dart';
-import '../../theme/orex_theme.dart';
-import '../../widgets/mxc_avatar.dart';
-import 'call_session.dart';
+import '../../shared/theme/orex_theme.dart';
+import '../../shared/widgets/mxc_avatar.dart';
+import '../../core/voip/call_session.dart';
 
 /// Свёрнутый звонок панелью над чатом (как в Discord): плитки участников +
 /// управление. Тап по плиткам — развернуть на весь экран. Высоту можно тянуть

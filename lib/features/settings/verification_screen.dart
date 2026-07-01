@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:matrix/encryption/utils/key_verification.dart';
 
 import '../../core/matrix/matrix_service.dart';
-import '../../theme/glass.dart';
-import '../../theme/orex_theme.dart';
+import '../../shared/theme/glass.dart';
+import '../../shared/theme/orex_theme.dart';
 
 /// Наш экран подтверждения сессии по эмодзи (SAS) — аналог проверки в Element,
 /// но свой. Убирает предупреждение «зашифровано устройством, не проверенным

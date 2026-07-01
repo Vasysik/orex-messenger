@@ -39,7 +39,9 @@
   внутри своей супергруппы.
 - **Глобальный поиск:** единая зона discovery в левой панели. Сейчас там ищутся
   **люди** и **публичные комнаты**, поэтому отдельный поиск внутри окна
-  «Новый чат» больше не нужен.
+  «Новый чат» больше не нужен. Серверный Matrix-поиск используется как есть:
+  если homeserver возвращает широкую выдачу по части домена, клиент не скрывает
+  эти результаты искусственными фильтрами.
 - **Создание комнат:** кнопка-карандаш не открывает отдельный экран, а показывает
   компактный выбор создаваемого типа: группа, канал, супергруппа.
 - **Переписка:** баблы сообщений, отправка текста и вложений, автоматическая
@@ -92,61 +94,80 @@
 
 ```
 lib/
-├─ main.dart                         # запуск: БД -> vodozemac -> Matrix -> UI
-├─ core/
-│  ├─ config.dart                    # homeserver, lk-jwt-service, Element Call URL
-│  ├─ orex_logger.dart               # единая точка dev-логов Orex ([Orex][Area])
-│  ├─ room_metadata.dart             # OrexRoomKind, OrexRoomAlias и доменная мета комнат
-│  ├─ member_event_text.dart         # человекочитаемые тексты m.room.member
-│  ├─ call_controller.dart           # состояние звонков на уровне приложения
-│  ├─ voip_service.dart              # входящие/исходящие вызовы и MatrixRTC-события
+├─ main.dart                         # bootstrap: vodozemac -> БД -> Matrix -> UI
+├─ core/                             # инфраструктура приложения, без Flutter-экранов
+│  ├─ config/
+│  │  └─ orex_config.dart            # homeserver, lk-jwt-service, security flags
+│  ├─ logging/
+│  │  └─ orex_logger.dart            # единая точка dev-логов Orex ([Orex][Area])
+│  ├─ storage/
+│  │  ├─ database.dart               # условный экспорт БД
+│  │  ├─ database_io.dart            # SQLite / SQLCipher для IO-платформ
+│  │  └─ database_web.dart           # IndexedDB/Web storage слой
+│  ├─ files/
+│  │  ├─ file_helper.dart            # условный экспорт скачивания/открытия файлов
+│  │  ├─ file_helper_io.dart         # системный запуск файлов
+│  │  └─ file_helper_web.dart        # blob-скачивание через package:web
 │  ├─ matrix/
 │  │  ├─ matrix_service.dart         # ядро MatrixService, lifecycle, sync, состояние
 │  │  ├─ matrix_auth_api.dart        # логин, регистрация, logout
-│  │  ├─ matrix_rooms_api.dart       # комнаты, spaces, discovery, join/invite/kick
+│  │  ├─ matrix_rooms_api.dart       # базовая классификация комнат и отправка
+│  │  ├─ matrix_room_reference_api.dart  # open/join по roomId, alias и preview
+│  │  ├─ matrix_room_discovery_api.dart  # поиск людей и публичных комнат
+│  │  ├─ matrix_supergroup_api.dart      # spaces, child-чаты, preview metadata
+│  │  ├─ matrix_room_identity_api.dart   # alias/MXID helpers single-homeserver UX
+│  │  ├─ matrix_room_creation_api.dart   # создание групп, каналов и супергрупп
+│  │  ├─ matrix_room_admin_api.dart      # права, visibility, invite/kick/delete
 │  │  ├─ matrix_security_api.dart    # E2EE, key backup, verification, security reset
 │  │  ├─ matrix_account_api.dart     # профиль, устройства, пароль
 │  │  └─ matrix_media_api.dart       # MXC download/cache
-│  ├─ database.dart                  # условный экспорт БД
-│  ├─ database_io.dart               # SQLite / SQLCipher для IO-платформ
-│  ├─ database_web.dart              # IndexedDB/Web storage слой
-│  ├─ file_helper.dart               # условный экспорт скачивания и открытия файлов
-│  ├─ file_helper_io.dart            # системный запуск файлов
-│  └─ file_helper_web.dart           # blob-скачивание файлов через package:web
-├─ theme/
-│  ├─ orex_theme.dart
-│  ├─ glass.dart
-│  └─ theme_controller.dart
-├─ widgets/
-│  ├─ mxc_avatar.dart                # аватары Matrix с кэшем MXC
-│  ├─ room_icon.dart                 # иконки комнат по доменному типу
-│  ├─ orex_settings_components.dart  # общие компоненты настроек
-│  ├─ orex_loading_overlay.dart
-│  ├─ media_gallery.dart
-│  ├─ media_player.dart
-│  ├─ media_player_io.dart
-│  ├─ media_player_web.dart
-│  └─ squirrel_mascot.dart
-└─ features/
+│  └─ voip/
+│     ├─ call_controller.dart        # состояние активного звонка на уровне приложения
+│     ├─ call_session.dart           # LiveKit session + lk-jwt-service handshake
+│     └─ voip_service.dart           # MatrixRTC-события и входящие вызовы
+├─ domain/                           # доменная модель Orex, независимая от UI
+│  └─ rooms/
+│     ├─ room_metadata.dart          # OrexRoomKind, OrexRoomAlias
+│     └─ member_event_text.dart      # человекочитаемые тексты m.room.member
+├─ shared/                           # переиспользуемый UI/тема, не привязан к feature
+│  ├─ theme/
+│  │  ├─ orex_theme.dart
+│  │  ├─ glass.dart
+│  │  └─ theme_controller.dart
+│  └─ widgets/
+│     ├─ mxc_avatar.dart             # аватары Matrix с кэшем MXC
+│     ├─ room_icon.dart              # иконки комнат по доменному типу
+│     ├─ orex_settings_components.dart
+│     ├─ orex_loading_overlay.dart
+│     ├─ media_gallery.dart
+│     ├─ media_player.dart
+│     ├─ media_player_io.dart
+│     ├─ media_player_web.dart
+│     └─ squirrel_mascot.dart
+└─ features/                         # продуктовые вертикали
    ├─ auth/
    │  └─ login_screen.dart
    ├─ home/
    │  └─ home_shell.dart             # двухпанельный shell: список слева, чат/preview справа
-   ├─ chat_list/
-   │  ├─ chat_list_panel.dart        # список чатов + глобальный поиск
-   │  └─ chat_folder_controller.dart
-   ├─ chat/
-   │  ├─ chat_view.dart              # основной экран переписки
-   │  ├─ chat_header.dart
-   │  ├─ chat_input_bar.dart
-   │  ├─ chat_timeline_items.dart
-   │  ├─ message_bubble.dart
-   │  ├─ message_attachments.dart
-   │  ├─ public_room_preview_view.dart
-   │  ├─ room_settings_screen.dart
-   │  └─ room_settings_components.dart
-   ├─ call/
-   │  ├─ call_session.dart
+   ├─ chats/
+   │  ├─ sidebar/
+   │  │  ├─ chat_list_panel.dart     # state левой панели и глобальный поиск
+   │  │  ├─ chat_list_layout_widgets.dart
+   │  │  ├─ chat_folder_manager_widgets.dart
+   │  │  ├─ chat_room_tile_widgets.dart
+   │  │  └─ chat_folder_controller.dart
+   │  └─ conversation/
+   │     ├─ chat_view.dart           # основной экран переписки
+   │     ├─ chat_header.dart
+   │     ├─ chat_input_bar.dart
+   │     ├─ chat_timeline_items.dart
+   │     ├─ message_bubble.dart
+   │     ├─ message_attachments.dart
+   │     ├─ message_system_cards.dart
+   │     ├─ public_room_preview_view.dart
+   │     ├─ room_settings_screen.dart
+   │     └─ room_settings_components.dart
+   ├─ calls/
    │  ├─ call_screen.dart
    │  ├─ incoming_call_screen.dart
    │  └─ minimized_call_panel.dart
@@ -158,10 +179,16 @@ lib/
       └─ verify_session_screen.dart
 ```
 
-Ключевая идея структуры: `core/matrix/` содержит интеграцию с Matrix SDK, а
-доменные сущности Orex лежат выше, например в `core/room_metadata.dart`.
-`voice` не является отдельным типом комнаты: голосовой канал — это возможность
-каждой комнаты, а не отдельная Matrix-сущность.
+Ключевая идея структуры: `core/` содержит инфраструктуру и интеграции,
+`domain/` — чистые доменные сущности Orex, `shared/` — переиспользуемую тему и
+виджеты, а `features/` — пользовательские сценарии. UI-фичи не лежат рядом с
+Matrix-интеграцией, а `core/matrix/` не знает про экраны.
+
+Matrix-room логика разделена на reference/discovery/supergroup/creation/admin
+слои, левая панель чатов разложена по sidebar-компонентам, а системные карточки
+сообщений вынесены из основного bubble. `voice` не является отдельным типом
+комнаты: голосовой канал — это возможность каждой комнаты, а не отдельная
+Matrix-сущность.
 
 ---
 
@@ -234,7 +261,7 @@ flutter run -d chrome \
 2. `POST {lk-jwt-service}/sfu/get` с этим токеном и `room` → `{url, jwt}` LiveKit.
 3. `livekit_client` подключается к вашему SFU; сетка участников рисуется внутри Orex.
 
-Настройка в `core/config.dart`:
+Настройка в `core/config/orex_config.dart`:
 
 ```dart
 static const String jwtService = 'https://jwt.vasys.ru';

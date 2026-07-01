@@ -4,9 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 
 import '../../core/matrix/matrix_service.dart';
-import '../../theme/glass.dart';
-import '../../theme/orex_theme.dart';
-import '../../widgets/mxc_avatar.dart';
+import '../../shared/theme/glass.dart';
+import '../../shared/theme/orex_theme.dart';
+import '../../shared/widgets/mxc_avatar.dart';
 import 'call_screen.dart';
 
 /// Входящий звонок. На узком экране — на весь экран; на десктопе показывается

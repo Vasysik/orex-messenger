@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import '../../core/matrix/matrix_service.dart';
-import '../../theme/glass.dart';
-import '../../theme/orex_theme.dart';
-import '../../widgets/squirrel_mascot.dart';
+import '../../shared/theme/glass.dart';
+import '../../shared/theme/orex_theme.dart';
+import '../../shared/widgets/squirrel_mascot.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key, required this.matrix, required this.onLoggedIn});

@@ -6,15 +6,21 @@ import 'package:matrix/encryption/utils/key_verification.dart';
 import 'package:matrix/encryption/utils/bootstrap.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../call_controller.dart';
-import '../orex_logger.dart';
-import '../room_metadata.dart';
-import '../voip_service.dart';
+import '../voip/call_controller.dart';
+import '../logging/orex_logger.dart';
+import '../../domain/rooms/room_metadata.dart';
+import '../voip/voip_service.dart';
 
-export '../room_metadata.dart';
+export '../../domain/rooms/room_metadata.dart';
 
 part 'matrix_auth_api.dart';
 part 'matrix_rooms_api.dart';
+part 'matrix_room_reference_api.dart';
+part 'matrix_room_discovery_api.dart';
+part 'matrix_supergroup_api.dart';
+part 'matrix_room_identity_api.dart';
+part 'matrix_room_creation_api.dart';
+part 'matrix_room_admin_api.dart';
 part 'matrix_security_api.dart';
 part 'matrix_account_api.dart';
 part 'matrix_media_api.dart';

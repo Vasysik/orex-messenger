@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:matrix/matrix.dart';
 
-import '../../core/config.dart';
+import '../config/orex_config.dart';
 
 enum CallStatus { connecting, connected, failed, ended }
 

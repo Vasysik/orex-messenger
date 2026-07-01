@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/matrix/matrix_service.dart';
-import '../../theme/glass.dart';
-import '../../theme/orex_theme.dart';
+import '../../shared/theme/glass.dart';
+import '../../shared/theme/orex_theme.dart';
 import 'verification_screen.dart';
 
 /// Экран подтверждения ТЕКУЩЕЙ сессии. Решает проблему «владелец не подтверждён»

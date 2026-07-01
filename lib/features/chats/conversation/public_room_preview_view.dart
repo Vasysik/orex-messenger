@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 
-import '../../core/matrix/matrix_service.dart';
-import '../../theme/glass.dart';
-import '../../theme/orex_theme.dart';
-import '../../widgets/mxc_avatar.dart';
-import '../../widgets/room_icon.dart';
+import '../../../core/matrix/matrix_service.dart';
+import '../../../shared/theme/glass.dart';
+import '../../../shared/theme/orex_theme.dart';
+import '../../../shared/widgets/mxc_avatar.dart';
+import '../../../shared/widgets/room_icon.dart';
 
 class PublicRoomPreviewView extends StatefulWidget {
   const PublicRoomPreviewView({
