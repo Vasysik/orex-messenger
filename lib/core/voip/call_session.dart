@@ -67,6 +67,7 @@ class CallSession extends ChangeNotifier {
   final Map<String, VoiceParticipantState> _voiceStates = <String, VoiceParticipantState>{};
   Timer? _reactionClearTimer;
   Timer? _voiceStateRefreshTimer;
+  Timer? _mediaRecoveryTimer;
   String? _lastAppliedInputDeviceId;
   String? _lastAppliedCameraDeviceId;
   rec.AudioRecorder? _voiceGateRecorder;
@@ -75,6 +76,8 @@ class CallSession extends ChangeNotifier {
   bool _voiceGateAppliedMuted = false;
   bool speakerMuted = false;
   bool _voiceGateTrackAccessFailed = false;
+  int _cameraCycleCursor = -1;
+  int _lastRemoteParticipantCount = 0;
   DateTime _lastVoiceAboveThreshold = DateTime.fromMillisecondsSinceEpoch(0);
 
   VoiceParticipantState voiceStateForUser(String userId) {
@@ -157,9 +160,29 @@ class CallSession extends ChangeNotifier {
     // Livekit при teardown комнаты шлёт события уже после dispose() — иначе
     // получаем «CallSession used after being disposed».
     if (_disposed) return;
-    if (_room?.remoteParticipants.isNotEmpty ?? false) sawRemote = true;
+    final remoteCount = _room?.remoteParticipants.length ?? 0;
+    final remoteCountChanged = remoteCount != _lastRemoteParticipantCount;
+    _lastRemoteParticipantCount = remoteCount;
+    if (remoteCount > 0) sawRemote = true;
     _applySpeakerMute();
+    _scheduleMediaRecovery(forceMicRestart: remoteCountChanged);
     notifyListeners();
+  }
+
+  void _scheduleMediaRecovery({bool forceMicRestart = false}) {
+    _mediaRecoveryTimer?.cancel();
+    _mediaRecoveryTimer = Timer(const Duration(milliseconds: 450), () async {
+      if (_disposed || status != CallStatus.connected) return;
+      try {
+        await applyAudioOutput();
+        await _restartMicIfInputChanged(force: forceMicRestart);
+        await _restartCameraIfInputChanged();
+        await _syncVoiceGate();
+        _applySpeakerMute();
+      } catch (e) {
+        OrexLog.d('Call', 'media recovery failed', e);
+      }
+    });
   }
 
 
@@ -263,19 +286,24 @@ class CallSession extends ChangeNotifier {
     await _syncVoiceGate();
   }
 
-  Future<void> _restartMicIfInputChanged() async {
+  Future<void> _restartMicIfInputChanged({bool force = false}) async {
     final lp = _room?.localParticipant;
     if (lp == null || !lp.isMicrophoneEnabled() || !canPublishMedia) return;
 
     final nextInputId = _normalizedInputDeviceId();
-    if (nextInputId == _lastAppliedInputDeviceId) return;
+    if (!force && nextInputId == _lastAppliedInputDeviceId) return;
 
     await _stopVoiceGate(resetTrack: true);
-    await lp.setMicrophoneEnabled(false);
-    await lp.setMicrophoneEnabled(
-      true,
-      audioCaptureOptions: _audioCaptureOptions(),
-    );
+    try {
+      await lp.setMicrophoneEnabled(false);
+      await Future<void>.delayed(const Duration(milliseconds: 90));
+      await lp.setMicrophoneEnabled(
+        true,
+        audioCaptureOptions: _audioCaptureOptions(),
+      );
+    } catch (e) {
+      error = 'Не удалось восстановить микрофон: $e';
+    }
     await _syncVoiceGate();
   }
 
@@ -929,39 +957,65 @@ class CallSession extends ChangeNotifier {
         : normalized;
   }
 
-  Future<void> _restartCameraIfInputChanged() async {
+  Future<void> _restartCameraIfInputChanged({bool force = false}) async {
     final lp = _room?.localParticipant;
     if (lp == null || !lp.isCameraEnabled() || !canPublishMedia) return;
 
     final nextCameraId = _normalizedCameraDeviceId();
-    if (nextCameraId == _lastAppliedCameraDeviceId) return;
+    if (!force && nextCameraId == _lastAppliedCameraDeviceId) return;
 
-    await lp.setCameraEnabled(false);
-    await lp.setCameraEnabled(
-      true,
-      cameraCaptureOptions: _cameraCaptureOptions(),
-    );
+    try {
+      await lp.setCameraEnabled(false);
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await lp.setCameraEnabled(
+        true,
+        cameraCaptureOptions: _cameraCaptureOptions(),
+      );
+      cameraError = null;
+    } catch (e) {
+      cameraError = '$e';
+    }
   }
 
   Future<void> selectCameraDevice(String? deviceId) async {
+    final normalized = deviceId?.trim();
+    _cameraCycleCursor = -1;
     final sink = cameraDeviceIdSink;
-    if (sink != null) await sink(deviceId);
-    await _restartCameraIfInputChanged();
+    if (sink != null) {
+      await sink(normalized == null || normalized.isEmpty ? null : normalized);
+    }
+    await _restartCameraIfInputChanged(force: true);
     if (!_disposed) notifyListeners();
   }
 
   Future<void> cycleCameraDevice(List<String> deviceIds) async {
-    if (deviceIds.isEmpty) return;
+    final ids = [
+      for (final id in deviceIds.map((id) => id.trim()))
+        if (id.isNotEmpty) id,
+    ];
+    if (ids.isEmpty) return;
     final current = _normalizedCameraDeviceId();
-    final currentIndex = current == null ? -1 : deviceIds.indexOf(current);
-    final next = deviceIds[(currentIndex + 1) % deviceIds.length];
-    await selectCameraDevice(next);
+    var index = current == null ? _cameraCycleCursor : ids.indexOf(current);
+    if (index < 0) {
+      // При системной камере LiveKit обычно уже использует первое устройство.
+      // Поэтому первый cycle должен перейти на следующее, а не включить то же самое.
+      index = ids.length == 1 ? 0 : 0;
+    }
+    final nextIndex = ids.length == 1 ? 0 : (index + 1) % ids.length;
+    _cameraCycleCursor = nextIndex;
+    final next = ids[nextIndex];
+    final sink = cameraDeviceIdSink;
+    if (sink != null) await sink(next);
+    await _restartCameraIfInputChanged(force: true);
+    if (!_disposed) notifyListeners();
   }
 
   Future<void> hangUp() async {
     status = CallStatus.ended;
     _voiceStateRefreshTimer?.cancel();
     _voiceStateRefreshTimer = null;
+    _mediaRecoveryTimer?.cancel();
+    _mediaRecoveryTimer = null;
     await _stopVoiceGate(resetTrack: true);
     final room = _room;
     _room = null;
@@ -1032,6 +1086,7 @@ class CallSession extends ChangeNotifier {
     _disposed = true;
     _reactionClearTimer?.cancel();
     _voiceStateRefreshTimer?.cancel();
+    _mediaRecoveryTimer?.cancel();
     _voiceGatePcmSub?.cancel();
     _voiceGateRecorder?.dispose();
     _room?.removeListener(_onRoom);

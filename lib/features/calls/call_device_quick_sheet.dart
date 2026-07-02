@@ -17,8 +17,6 @@ Future<void> showOrexInputQuickSheet(
   await _showDeviceSheet(
     context,
     title: 'Микрофон',
-    defaultTitle: 'Системный микрофон',
-    defaultIcon: Icons.mic,
     selectedId: matrix.audio.inputDeviceId,
     devices: devices.where((d) => d.isInput).toList(),
     iconFor: orexInputDeviceIcon,
@@ -35,15 +33,25 @@ Future<void> showOrexOutputQuickSheet(
   await _showDeviceSheet(
     context,
     title: 'Вывод звука',
-    defaultTitle: orexIsAndroidNativePlatform ? 'Динамик телефона' : 'Системный вывод',
-    defaultIcon: orexIsAndroidNativePlatform ? Icons.speaker : Icons.volume_up,
     selectedId: matrix.audio.outputDeviceId,
-    devices: devices
-        .where((d) => d.isOutput)
-        .where((d) => !(orexIsAndroidNativePlatform && d.category == 'speaker'))
-        .toList(),
+    devices: devices.where((d) => d.isOutput).toList(),
     iconFor: orexOutputDeviceIcon,
-    onSelect: matrix.audio.setOutputDeviceId,
+    isSelected: (device) {
+      final selectedId = matrix.audio.outputDeviceId?.trim();
+      if (orexIsAndroidNativePlatform &&
+          (selectedId == null || selectedId.isEmpty) &&
+          orexIsAndroidSpeakerOutputDeviceId(device.id)) {
+        return true;
+      }
+      return selectedId == device.id;
+    },
+    onSelect: (id) async {
+      // На Android speaker = дефолтный режим звонка. Не сохраняем конкретный
+      // route-id динамика, иначе после перезагрузки устройства id может устареть.
+      await matrix.audio.setOutputDeviceId(
+        orexIsAndroidSpeakerOutputDeviceId(id) ? null : id,
+      );
+    },
   );
 }
 
@@ -57,8 +65,6 @@ Future<void> showOrexCameraQuickSheet(
   await _showDeviceSheet(
     context,
     title: 'Камера',
-    defaultTitle: 'Системная камера',
-    defaultIcon: Icons.videocam,
     selectedId: matrix.audio.cameraDeviceId,
     devices: devices,
     iconFor: orexCameraDeviceIcon,
@@ -72,13 +78,17 @@ Future<void> showOrexCameraQuickSheet(
 Future<void> _showDeviceSheet(
   BuildContext context, {
   required String title,
-  required String defaultTitle,
-  required IconData defaultIcon,
   required String? selectedId,
   required List<OrexAudioDevice> devices,
   required IconData Function(OrexAudioDevice device) iconFor,
   required Future<void> Function(String? id) onSelect,
+  bool Function(OrexAudioDevice device)? isSelected,
 }) {
+  final normalizedSelected = selectedId?.trim();
+  final fallbackSelectedId = normalizedSelected == null || normalizedSelected.isEmpty
+      ? (devices.isEmpty ? null : devices.first.id)
+      : normalizedSelected;
+
   return showModalBottomSheet<void>(
     context: context,
     showDragHandle: true,
@@ -100,20 +110,12 @@ Future<void> _showDeviceSheet(
                       ),
                 ),
               ),
-              _DeviceOptionTile(
-                icon: defaultIcon,
-                title: defaultTitle,
-                selected: selectedId == null || selectedId.trim().isEmpty,
-                onTap: () async {
-                  Navigator.of(sheetContext).pop();
-                  await onSelect(null);
-                },
-              ),
               for (final device in devices)
                 _DeviceOptionTile(
                   icon: iconFor(device),
                   title: device.label,
-                  selected: selectedId == device.id,
+                  selected: isSelected?.call(device) ??
+                      (fallbackSelectedId != null && fallbackSelectedId == device.id),
                   onTap: () async {
                     Navigator.of(sheetContext).pop();
                     await onSelect(device.id);
@@ -123,7 +125,7 @@ Future<void> _showDeviceSheet(
                 const Padding(
                   padding: EdgeInsets.all(16),
                   child: Text(
-                    'Других устройств сейчас не найдено.',
+                    'Устройства сейчас не найдены. Проверьте разрешения и подключение.',
                     style: TextStyle(color: Colors.white54),
                   ),
                 ),

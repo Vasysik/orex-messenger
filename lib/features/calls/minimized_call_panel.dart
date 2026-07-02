@@ -145,13 +145,15 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
             ? people
             : people.where((p) => p.identity == focused).toList();
 
-        return Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.55),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Column(
+        return Stack(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.55),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               if (session.cameraError != null)
@@ -183,6 +185,17 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
               _resizeHandle(minH, maxH),
             ],
           ),
+            ),
+            Positioned(
+              left: 10,
+              top: 10,
+              child: _MiniTileCornerButton(
+                icon: Icons.open_in_full,
+                tooltip: 'Развернуть звонок',
+                onTap: widget.onExpand,
+              ),
+            ),
+          ],
         );
       },
     );
@@ -361,70 +374,76 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
     );
   }
 
-  Widget _controls(CallSession session) => Padding(
-        padding: const EdgeInsets.only(bottom: 8, top: 2, left: 8, right: 8),
-        child: Wrap(
-          alignment: WrapAlignment.center,
-          spacing: 10,
-          runSpacing: 8,
-          children: [
-            if (session.canPublishMedia) ...[
-              _btn(
-                icon: session.micOn ? Icons.mic : Icons.mic_off,
-                onTap: () { session.toggleMic(); },
-                onLongPress: () => showOrexInputQuickSheet(
-                  context,
-                  matrix: widget.call.matrix,
-                ),
-              ),
-              _btn(
-                icon: session.camOn ? Icons.videocam : Icons.videocam_off,
-                onTap: () { session.toggleCam(); },
-                onLongPress: () => showOrexCameraQuickSheet(
-                  context,
-                  matrix: widget.call.matrix,
-                  session: session,
-                ),
-              ),
-              _btn(
-                icon: session.screenShareOn
-                    ? Icons.stop_screen_share
-                    : Icons.screen_share,
-                selected: session.screenShareOn,
-                onTap: () { _toggleScreenShare(session); },
-              ),
-            ],
-            _btn(
-              icon: session.speakerMuted ? Icons.volume_off : Icons.volume_up,
-              selected: session.speakerMuted,
-              onTap: () { session.toggleSpeakerMute(); },
-              onLongPress: () => showOrexOutputQuickSheet(
-                context,
-                matrix: widget.call.matrix,
-              ),
-            ),
-            _btn(
-              icon: session.handRaised
-                  ? Icons.back_hand
-                  : Icons.back_hand_outlined,
-              selected: session.handRaised,
-              onTap: () { session.toggleHandRaised(); },
-            ),
-            _btn(
-              key: _reactionButtonKey,
-              icon: Icons.emoji_emotions,
-              onTap: () { _showReactions(session); },
-            ),
-            _btn(icon: Icons.open_in_full, onTap: widget.onExpand),
-            _btn(
-              icon: Icons.call_end,
-              bg: const Color(0xFFCF6679),
-              onTap: () { widget.call.hangUp(); },
-            ),
-          ],
+  Widget _controls(CallSession session) {
+    final controls = <Widget>[
+      if (session.canPublishMedia) ...[
+        _btn(
+          icon: session.micOn ? Icons.mic : Icons.mic_off,
+          selected: !session.micOn,
+          onTap: () { session.toggleMic(); },
+          onLongPress: () => showOrexInputQuickSheet(
+            context,
+            matrix: widget.call.matrix,
+          ),
         ),
-      );
+        _btn(
+          icon: session.camOn ? Icons.videocam : Icons.videocam_off,
+          selected: !session.camOn,
+          onTap: () { session.toggleCam(); },
+          onLongPress: () => showOrexCameraQuickSheet(
+            context,
+            matrix: widget.call.matrix,
+            session: session,
+          ),
+        ),
+      ],
+      _btn(
+        icon: session.speakerMuted ? Icons.volume_off : Icons.volume_up,
+        selected: session.speakerMuted,
+        onTap: () { session.toggleSpeakerMute(); },
+        onLongPress: () => showOrexOutputQuickSheet(
+          context,
+          matrix: widget.call.matrix,
+        ),
+      ),
+      if (session.canPublishMedia)
+        _btn(
+          icon: session.screenShareOn
+              ? Icons.stop_screen_share
+              : Icons.screen_share,
+          selected: session.screenShareOn,
+          onTap: () { _toggleScreenShare(session); },
+        ),
+      _btn(
+        icon: session.handRaised
+            ? Icons.back_hand
+            : Icons.back_hand_outlined,
+        selected: session.handRaised,
+        onTap: () { session.toggleHandRaised(); },
+      ),
+      _btn(
+        key: _reactionButtonKey,
+        icon: Icons.emoji_emotions,
+        onTap: () { _showReactions(session); },
+      ),
+      _btn(
+        icon: Icons.call_end,
+        bg: const Color(0xFFCF6679),
+        onTap: () { widget.call.hangUp(); },
+      ),
+    ];
 
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8, top: 2, left: 8, right: 8),
+      child: _MiniBalancedControlRows(
+        buttonCount: controls.length,
+        buttonExtent: 42,
+        spacing: 10,
+        runSpacing: 8,
+        children: controls,
+      ),
+    );
+  }
 
   Widget _btn({
     Key? key,
@@ -461,6 +480,69 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
       );
 }
 
+
+
+class _MiniBalancedControlRows extends StatelessWidget {
+  const _MiniBalancedControlRows({
+    required this.children,
+    required this.buttonCount,
+    required this.buttonExtent,
+    required this.spacing,
+    required this.runSpacing,
+  });
+
+  final List<Widget> children;
+  final int buttonCount;
+  final double buttonExtent;
+  final double spacing;
+  final double runSpacing;
+
+  @override
+  Widget build(BuildContext context) {
+    if (children.isEmpty) return const SizedBox.shrink();
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final oneRowWidth = buttonCount * buttonExtent +
+            (buttonCount - 1).clamp(0, buttonCount) * spacing;
+        if (oneRowWidth <= constraints.maxWidth) {
+          return Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: _withSpacing(children, spacing),
+          );
+        }
+        final topCount = (children.length + 1) ~/ 2;
+        final top = children.take(topCount).toList();
+        final bottom = children.skip(topCount).toList();
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: _withSpacing(top, spacing),
+            ),
+            SizedBox(height: runSpacing),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: _withSpacing(bottom, spacing),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  List<Widget> _withSpacing(List<Widget> items, double spacing) {
+    final result = <Widget>[];
+    for (var i = 0; i < items.length; i++) {
+      if (i > 0) result.add(SizedBox(width: spacing));
+      result.add(items[i]);
+    }
+    return result;
+  }
+}
 
 class _MiniPressableButton extends StatefulWidget {
   const _MiniPressableButton({
@@ -897,21 +979,19 @@ class _MiniVoiceBadges extends StatelessWidget {
         ],
         if (onGrantVoice != null) ...[
           if (handRaised || reaction != null) const SizedBox(width: 6),
-          _badge(
+          _MiniTileCornerButton(
             icon: Icons.record_voice_over,
             tooltip: 'Дать голос',
-            onTap: onGrantVoice,
-            accent: true,
+            onTap: onGrantVoice!,
           ),
         ],
         if (onRevokeVoice != null) ...[
           if (handRaised || reaction != null || onGrantVoice != null)
             const SizedBox(width: 6),
-          _badge(
+          _MiniTileCornerButton(
             icon: Icons.mic_off,
             tooltip: 'Забрать голос',
-            onTap: onRevokeVoice,
-            accent: true,
+            onTap: onRevokeVoice!,
           ),
         ],
       ],

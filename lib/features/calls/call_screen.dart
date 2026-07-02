@@ -396,75 +396,83 @@ class _CallScreenState extends State<CallScreen> {
         ),
       );
 
-  Widget _controls(CallSession session) => Padding(
-        padding: const EdgeInsets.only(bottom: 24, top: 8, left: 16, right: 16),
-        child: Wrap(
-          alignment: WrapAlignment.center,
-          spacing: 12,
-          runSpacing: 10,
-          children: [
-            if (session.canPublishMedia) ...[
-              _round(
-                tooltip: 'Микрофон · зажмите для выбора устройства',
-                icon: session.micOn ? Icons.mic : Icons.mic_off,
-                onTap: () { session.toggleMic(); },
-                onLongPress: () => showOrexInputQuickSheet(
-                  context,
-                  matrix: widget.matrix,
-                ),
-              ),
-              _round(
-                tooltip: 'Камера · зажмите для выбора устройства',
-                icon: session.camOn ? Icons.videocam : Icons.videocam_off,
-                onTap: () { session.toggleCam(); },
-                onLongPress: () => showOrexCameraQuickSheet(
-                  context,
-                  matrix: widget.matrix,
-                  session: session,
-                ),
-              ),
-              _round(
-                tooltip: 'Трансляция экрана',
-                icon: session.screenShareOn
-                    ? Icons.stop_screen_share
-                    : Icons.screen_share,
-                selected: session.screenShareOn,
-                onTap: () { _toggleScreenShare(session); },
-              ),
-            ],
-            _round(
-              tooltip: 'Звук · зажмите для выбора вывода',
-              icon: session.speakerMuted ? Icons.volume_off : Icons.volume_up,
-              selected: session.speakerMuted,
-              onTap: () { session.toggleSpeakerMute(); },
-              onLongPress: () => showOrexOutputQuickSheet(
-                context,
-                matrix: widget.matrix,
-              ),
-            ),
-            _round(
-              tooltip: session.handRaised ? 'Опустить руку' : 'Поднять руку',
-              icon: session.handRaised
-                  ? Icons.back_hand
-                  : Icons.back_hand_outlined,
-              selected: session.handRaised,
-              onTap: () { session.toggleHandRaised(); },
-            ),
-            _round(
-              key: _reactionButtonKey,
-              tooltip: 'Реакция',
-              icon: Icons.emoji_emotions,
-              onTap: () { _showReactions(session); },
-            ),
-            _round(
-              tooltip: 'Завершить',
-              icon: Icons.call_end,
-              background: const Color(0xFFCF6679),
-              onTap: () { _hangup(); },
-            ),
-          ],
+  Widget _controls(CallSession session) {
+    final controls = <Widget>[
+      if (session.canPublishMedia) ...[
+        _round(
+          tooltip: 'Микрофон · зажмите для выбора устройства',
+          icon: session.micOn ? Icons.mic : Icons.mic_off,
+          selected: !session.micOn,
+          onTap: () { session.toggleMic(); },
+          onLongPress: () => showOrexInputQuickSheet(
+            context,
+            matrix: widget.matrix,
+          ),
         ),
-      );
+        _round(
+          tooltip: 'Камера · зажмите для выбора устройства',
+          icon: session.camOn ? Icons.videocam : Icons.videocam_off,
+          selected: !session.camOn,
+          onTap: () { session.toggleCam(); },
+          onLongPress: () => showOrexCameraQuickSheet(
+            context,
+            matrix: widget.matrix,
+            session: session,
+          ),
+        ),
+      ],
+      _round(
+        tooltip: 'Звук · зажмите для выбора вывода',
+        icon: session.speakerMuted ? Icons.volume_off : Icons.volume_up,
+        selected: session.speakerMuted,
+        onTap: () { session.toggleSpeakerMute(); },
+        onLongPress: () => showOrexOutputQuickSheet(
+          context,
+          matrix: widget.matrix,
+        ),
+      ),
+      if (session.canPublishMedia)
+        _round(
+          tooltip: 'Трансляция экрана',
+          icon: session.screenShareOn
+              ? Icons.stop_screen_share
+              : Icons.screen_share,
+          selected: session.screenShareOn,
+          onTap: () { _toggleScreenShare(session); },
+        ),
+      _round(
+        tooltip: session.handRaised ? 'Опустить руку' : 'Поднять руку',
+        icon: session.handRaised
+            ? Icons.back_hand
+            : Icons.back_hand_outlined,
+        selected: session.handRaised,
+        onTap: () { session.toggleHandRaised(); },
+      ),
+      _round(
+        key: _reactionButtonKey,
+        tooltip: 'Реакция',
+        icon: Icons.emoji_emotions,
+        onTap: () { _showReactions(session); },
+      ),
+      _round(
+        tooltip: 'Завершить',
+        icon: Icons.call_end,
+        background: const Color(0xFFCF6679),
+        onTap: () { _hangup(); },
+      ),
+    ];
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 24, top: 8, left: 16, right: 16),
+      child: _BalancedControlRows(
+        buttonCount: controls.length,
+        buttonExtent: 54,
+        spacing: 12,
+        runSpacing: 10,
+        children: controls,
+      ),
+    );
+  }
 
   Widget _round({
     Key? key,
@@ -486,6 +494,70 @@ class _CallScreenState extends State<CallScreen> {
       onLongPress: onLongPress,
     );
     return tooltip == null ? child : Tooltip(message: tooltip, child: child);
+  }
+}
+
+
+class _BalancedControlRows extends StatelessWidget {
+  const _BalancedControlRows({
+    required this.children,
+    required this.buttonCount,
+    required this.buttonExtent,
+    required this.spacing,
+    required this.runSpacing,
+  });
+
+  final List<Widget> children;
+  final int buttonCount;
+  final double buttonExtent;
+  final double spacing;
+  final double runSpacing;
+
+  @override
+  Widget build(BuildContext context) {
+    if (children.isEmpty) return const SizedBox.shrink();
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final oneRowWidth = buttonCount * buttonExtent +
+            (buttonCount - 1).clamp(0, buttonCount) * spacing;
+        if (oneRowWidth <= constraints.maxWidth) {
+          return Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: _withSpacing(children, spacing),
+          );
+        }
+
+        final topCount = (children.length + 1) ~/ 2;
+        final top = children.take(topCount).toList();
+        final bottom = children.skip(topCount).toList();
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: _withSpacing(top, spacing),
+            ),
+            SizedBox(height: runSpacing),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: _withSpacing(bottom, spacing),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  List<Widget> _withSpacing(List<Widget> items, double spacing) {
+    final result = <Widget>[];
+    for (var i = 0; i < items.length; i++) {
+      if (i > 0) result.add(SizedBox(width: spacing));
+      result.add(items[i]);
+    }
+    return result;
   }
 }
 
@@ -902,21 +974,19 @@ class _VoiceStateBadges extends StatelessWidget {
         ],
         if (onGrantVoice != null) ...[
           if (handRaised || reaction != null) const SizedBox(width: 6),
-          _badge(
+          _TileCornerButton(
             icon: Icons.record_voice_over,
             tooltip: 'Дать голос',
-            onTap: onGrantVoice,
-            accent: true,
+            onTap: onGrantVoice!,
           ),
         ],
         if (onRevokeVoice != null) ...[
           if (handRaised || reaction != null || onGrantVoice != null)
             const SizedBox(width: 6),
-          _badge(
+          _TileCornerButton(
             icon: Icons.mic_off,
             tooltip: 'Забрать голос',
-            onTap: onRevokeVoice,
-            accent: true,
+            onTap: onRevokeVoice!,
           ),
         ],
       ],
