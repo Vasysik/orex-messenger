@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:async';
-import 'dart:typed_data';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -9,6 +8,7 @@ import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:record/record.dart' as rec;
 import 'package:matrix/matrix.dart';
 
+import '../audio/audio_cue_service.dart';
 import '../config/orex_config.dart';
 import '../logging/orex_logger.dart';
 
@@ -243,7 +243,13 @@ class CallSession extends ChangeNotifier {
       speakingThresholdEnabledProvider?.call() ?? false;
 
   double get _voiceGateThresholdDb =>
-      (speakingThresholdDbProvider?.call() ?? -50).clamp(-80, -20).toDouble();
+      (speakingThresholdDbProvider?.call() ??
+              AudioCueService.defaultSpeakingThresholdDb)
+          .clamp(
+            AudioCueService.minSpeakingThresholdDb,
+            AudioCueService.maxSpeakingThresholdDb,
+          )
+          .toDouble();
 
   Future<void> _syncVoiceGate() async {
     final lp = _room?.localParticipant;

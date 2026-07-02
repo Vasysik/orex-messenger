@@ -47,16 +47,15 @@ const _kBackupDisabledByUser = 'orex_backup_disabled_by_user';
 /// в Dart SDK на момент написания стабильно не выставлен публичным API —
 /// если ваша версия SDK его уже умеет, включайте отдельно и проверяйте.
 class MatrixService extends ChangeNotifier {
-  MatrixService({required this.homeserver, required DatabaseApi database})
-      : _database = database;
+  MatrixService({required this.homeserver, required this.database});
 
   /// Например: https://vasys.ru
   final Uri homeserver;
-  final DatabaseApi _database;
+  final DatabaseApi database;
 
   late final Client client = Client(
     'OrexMessenger',
-    database: _database,
+    database: database,
     // crossVerifiedIfEnabled гарантирует, что ключи шифрования будут уходить
     // только на проверенные (верифицированные) сессии.
     shareKeysWith: ShareKeysWith.crossVerifiedIfEnabled,

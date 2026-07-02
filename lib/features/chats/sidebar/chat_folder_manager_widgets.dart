@@ -127,9 +127,8 @@ class _FolderManagerState extends State<_FolderManager> {
     return result;
   }
 
-  void _reorder(int oldIndex, int newIndex) {
+  void _reorderItem(int oldIndex, int newIndex) {
     setState(() {
-      if (newIndex > oldIndex) newIndex--;
       final folder = _folders.removeAt(oldIndex);
       _folders.insert(newIndex, folder);
     });
@@ -180,7 +179,7 @@ class _FolderManagerState extends State<_FolderManager> {
                       scrollController: controller,
                       padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                       itemCount: _folders.length,
-                      onReorder: _reorder,
+                      onReorderItem: _reorderItem,
                       itemBuilder: (context, index) {
                         final folder = _folders[index];
                         return _FolderManagerTile(

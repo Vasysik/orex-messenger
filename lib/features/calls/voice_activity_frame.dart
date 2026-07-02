@@ -49,6 +49,25 @@ lk.VideoTrack? orexSelectVideoTrack(
       : (camera ?? screen ?? fallback);
 }
 
+
+bool orexHasCameraAndScreen(lk.Participant participant) {
+  var hasCamera = false;
+  var hasScreen = false;
+
+  for (final pub in participant.videoTrackPublications) {
+    if (pub.track == null || !pub.subscribed || pub.muted) continue;
+    if (pub.track is! lk.VideoTrack) continue;
+    if (pub.source == lk.TrackSource.screenShareVideo) {
+      hasScreen = true;
+    } else if (pub.source == lk.TrackSource.camera) {
+      hasCamera = true;
+    }
+    if (hasCamera && hasScreen) return true;
+  }
+
+  return false;
+}
+
 class OrexSpeakingFrame extends StatefulWidget {
   const OrexSpeakingFrame({
     super.key,

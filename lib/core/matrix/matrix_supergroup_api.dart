@@ -138,13 +138,12 @@ extension MatrixSupergroupApi on MatrixService {
       if (name == null && icon == null && avatar == null && topic == null) {
         return null;
       }
-      return <String, Object?>{
-        if (name != null) 'name': name,
-        if (icon != null) 'icon': icon,
-        if (avatar != null) 'avatar_url': avatar,
-        if (topic != null) 'topic': topic,
-        'version': 1,
-      };
+      final preview = <String, Object?>{'version': 1};
+      if (name != null) preview['name'] = name;
+      if (icon != null) preview['icon'] = icon;
+      if (avatar != null) preview['avatar_url'] = avatar;
+      if (topic != null) preview['topic'] = topic;
+      return preview;
     } catch (_) {
       return null;
     }
@@ -183,9 +182,11 @@ extension MatrixSupergroupApi on MatrixService {
   }
 
   List<String> _viaForChild(String childId) {
+    final localServerName = _localServerName;
+    final childServerName = _serverNameFromRoomId(childId);
     final servers = <String>{
-      if (_localServerName != null) _localServerName!,
-      if (_serverNameFromRoomId(childId) != null) _serverNameFromRoomId(childId)!,
+      if (localServerName != null) localServerName,
+      if (childServerName != null) childServerName,
     };
     return servers.where((server) => server.isNotEmpty).toList();
   }

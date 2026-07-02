@@ -182,7 +182,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                   _DeviceRadioTile(
                     icon: Icons.mic,
                     title: d.label,
-                    subtitle: d.id,
+                    subtitle: null,
                     selected: _inputId == d.id,
                     onTap: () => _selectInput(d.id),
                   ),
@@ -205,17 +205,15 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                 ),
                 for (final d in outputs)
                   _DeviceRadioTile(
-                    icon: d.id == AudioCueService.mobileSpeakerOutputId
-                        ? Icons.volume_up
-                        : Icons.hearing,
+                    icon: Icons.hearing,
                     title: d.label,
-                    subtitle: d.cached ? 'Сохранённое устройство' : d.id,
+                    subtitle: null,
                     selected: _outputId == d.id,
                     onTap: () => _selectOutput(d.id),
                   ),
                 if (!_loading && outputs.isEmpty)
                   const _EmptyDeviceHint(
-                    text: 'Сейчас доступен только системный вывод. Нажмите «Обновить список устройств» или откройте звонок и вернитесь сюда.',
+                    text: 'Сейчас доступен только системный вывод. На Android и iOS вывод выбирается системной аудиомаршрутизацией; на Windows/macOS/Linux/Web здесь появятся реальные WebRTC-устройства.',
                   ),
               ],
             ),

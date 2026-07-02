@@ -39,8 +39,17 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
 
   double? _tilesHeight; // null → дефолт = 1/3 высоты экрана
   final GlobalKey _reactionButtonKey = GlobalKey();
-  bool _preferScreenShare = true;
+  final Map<String, bool> _preferScreenShareByIdentity = <String, bool>{};
 
+  bool _preferScreenShareFor(lk.Participant participant) =>
+      _preferScreenShareByIdentity[participant.identity] ?? true;
+
+  void _toggleParticipantVideoSource(lk.Participant participant) {
+    setState(() {
+      _preferScreenShareByIdentity[participant.identity] =
+          !_preferScreenShareFor(participant);
+    });
+  }
 
   String _matrixUserId(String identity) {
     final m = RegExp(r'@[^:]+:[^:]+').firstMatch(identity);
@@ -80,13 +89,19 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
     );
   }
 
-  bool _canGrantVoice(Room? room, String userId, VoiceParticipantState state) {
-    if (room == null || !state.handRaised) return false;
-    if (userId == widget.call.matrix.client.userID) return false;
+  bool _canManageVoiceFor(Room? room, String userId) {
+    if (room == null || userId == widget.call.matrix.client.userID) return false;
     return widget.call.matrix.isChannel(room) &&
-        widget.call.matrix.canManageRoomSettings(room) &&
-        !widget.call.matrix.canSpeakInVoice(room, userId);
+        widget.call.matrix.canManageRoomSettings(room);
   }
+
+  bool _canGrantVoice(Room? room, String userId) =>
+      _canManageVoiceFor(room, userId) &&
+      !widget.call.matrix.canSpeakInVoice(room!, userId);
+
+  bool _canRevokeVoice(Room? room, String userId) =>
+      _canManageVoiceFor(room, userId) &&
+      widget.call.matrix.canSpeakInVoice(room!, userId);
 
   Future<void> _grantVoice(Room room, String userId) async {
     await widget.call.matrix.grantVoiceInChannel(room, userId);
@@ -94,6 +109,15 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Голос выдан')),
+    );
+  }
+
+  Future<void> _revokeVoice(Room room, String userId) async {
+    await widget.call.matrix.revokeVoiceInChannel(room, userId);
+    await widget.call.refreshVoicePermissions();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Голос забран')),
     );
   }
 
@@ -186,9 +210,15 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
             cornerIcon: Icons.close_fullscreen,
             cornerTooltip: 'Отменить приближение плитки',
             onCornerTap: () => widget.call.focusParticipant(null),
-            preferScreenShare: _preferScreenShare,
-            onGrantVoice: _canGrantVoice(room, userId, state)
+            preferScreenShare: _preferScreenShareFor(p),
+            onSwitchVideoSource: orexHasCameraAndScreen(p)
+                ? () => _toggleParticipantVideoSource(p)
+                : null,
+            onGrantVoice: _canGrantVoice(room, userId)
                 ? () => _grantVoice(room!, userId)
+                : null,
+            onRevokeVoice: _canRevokeVoice(room, userId)
+                ? () => _revokeVoice(room!, userId)
                 : null,
           ),
         ),
@@ -268,9 +298,15 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                     cornerTooltip: 'Приблизить плитку',
                     onCornerTap: () => widget.call.focusParticipant(p.identity),
                     onTap: () => widget.call.focusParticipant(p.identity),
-                    preferScreenShare: _preferScreenShare,
-                    onGrantVoice: _canGrantVoice(room, userId, state)
+                    preferScreenShare: _preferScreenShareFor(p),
+                    onSwitchVideoSource: orexHasCameraAndScreen(p)
+                        ? () => _toggleParticipantVideoSource(p)
+                        : null,
+                    onGrantVoice: _canGrantVoice(room, userId)
                         ? () => _grantVoice(room!, userId)
+                        : null,
+                    onRevokeVoice: _canRevokeVoice(room, userId)
+                        ? () => _revokeVoice(room!, userId)
                         : null,
                   ),
                 );
@@ -330,12 +366,6 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                 icon: session.camOn ? Icons.videocam : Icons.videocam_off,
                 onTap: () { session.toggleCam(); },
               ),
-              if (session.camOn && session.screenShareOn)
-                _btn(
-                  icon: _preferScreenShare ? Icons.videocam : Icons.screen_share,
-                  selected: true,
-                  onTap: () { setState(() => _preferScreenShare = !_preferScreenShare); },
-                ),
               _btn(
                 icon: session.screenShareOn
                     ? Icons.stop_screen_share
@@ -499,7 +529,9 @@ class _MiniTile extends StatelessWidget {
     this.cornerIcon,
     this.cornerTooltip,
     this.onCornerTap,
+    this.onSwitchVideoSource,
     this.onGrantVoice,
+    this.onRevokeVoice,
   });
 
   final lk.Participant participant;
@@ -512,7 +544,9 @@ class _MiniTile extends StatelessWidget {
   final IconData? cornerIcon;
   final String? cornerTooltip;
   final VoidCallback? onCornerTap;
+  final VoidCallback? onSwitchVideoSource;
   final VoidCallback? onGrantVoice;
+  final VoidCallback? onRevokeVoice;
 
   String get _userId {
     final m = RegExp(r'@[^:]+:[^:]+').firstMatch(participant.identity);
@@ -558,14 +592,32 @@ class _MiniTile extends StatelessWidget {
                 ),
               ),
             ),
-          if (cornerIcon != null && onCornerTap != null)
+          if ((cornerIcon != null && onCornerTap != null) ||
+              onSwitchVideoSource != null)
             Positioned(
               left: 8,
               top: 8,
-              child: _MiniTileCornerButton(
-                icon: cornerIcon!,
-                tooltip: cornerTooltip ?? '',
-                onTap: onCornerTap!,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (cornerIcon != null && onCornerTap != null)
+                    _MiniTileCornerButton(
+                      icon: cornerIcon!,
+                      tooltip: cornerTooltip ?? '',
+                      onTap: onCornerTap!,
+                    ),
+                  if (onSwitchVideoSource != null) ...[
+                    if (cornerIcon != null && onCornerTap != null)
+                      const SizedBox(height: 5),
+                    _MiniTileCornerButton(
+                      icon: preferScreenShare ? Icons.videocam : Icons.screen_share,
+                      tooltip: preferScreenShare
+                          ? 'Показать камеру участника'
+                          : 'Показать демонстрацию участника',
+                      onTap: onSwitchVideoSource!,
+                    ),
+                  ],
+                ],
               ),
             ),
           Positioned(
@@ -575,6 +627,7 @@ class _MiniTile extends StatelessWidget {
               handRaised: voiceState.handRaised,
               reaction: voiceState.reaction,
               onGrantVoice: onGrantVoice,
+              onRevokeVoice: onRevokeVoice,
             ),
           ),
           ],
@@ -706,11 +759,13 @@ class _MiniVoiceBadges extends StatelessWidget {
     required this.handRaised,
     required this.reaction,
     this.onGrantVoice,
+    this.onRevokeVoice,
   });
 
   final bool handRaised;
   final String? reaction;
   final VoidCallback? onGrantVoice;
+  final VoidCallback? onRevokeVoice;
 
   @override
   Widget build(BuildContext context) {
@@ -728,6 +783,16 @@ class _MiniVoiceBadges extends StatelessWidget {
             icon: Icons.record_voice_over,
             tooltip: 'Дать голос',
             onTap: onGrantVoice,
+            accent: true,
+          ),
+        ],
+        if (onRevokeVoice != null) ...[
+          if (handRaised || reaction != null || onGrantVoice != null)
+            const SizedBox(width: 6),
+          _badge(
+            icon: Icons.mic_off,
+            tooltip: 'Забрать голос',
+            onTap: onRevokeVoice,
             accent: true,
           ),
         ],

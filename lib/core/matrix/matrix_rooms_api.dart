@@ -89,8 +89,18 @@ extension MatrixRoomsApi on MatrixService {
     }
   }
 
-  Future<void> grantVoiceInChannel(Room room, String userId) async {
-    if (!canManageRoomSettings(room)) return;
+  Future<void> grantVoiceInChannel(Room room, String userId) =>
+      _setVoicePermissionInChannel(room, userId, allowed: true);
+
+  Future<void> revokeVoiceInChannel(Room room, String userId) =>
+      _setVoicePermissionInChannel(room, userId, allowed: false);
+
+  Future<void> _setVoicePermissionInChannel(
+    Room room,
+    String userId, {
+    required bool allowed,
+  }) async {
+    if (!isChannel(room) || !canManageRoomSettings(room)) return;
     final current = Map<String, Object?>.from(
       room.getState(_orexVoicePermissionsEvent)?.content ??
           const <String, Object?>{},
@@ -98,7 +108,11 @@ extension MatrixRoomsApi on MatrixService {
     final users = Map<String, Object?>.from(
       (current['users'] as Map?) ?? const <String, Object?>{},
     );
-    users[userId] = true;
+    if (allowed) {
+      users[userId] = true;
+    } else {
+      users.remove(userId);
+    }
     current['users'] = users;
     await client.setRoomStateWithKey(
       room.id,
@@ -106,7 +120,10 @@ extension MatrixRoomsApi on MatrixService {
       '',
       current,
     );
-    _log('Rooms', 'grant voice room=${room.id} user=$userId');
+    _log(
+      'Rooms',
+      '${allowed ? 'grant' : 'revoke'} voice room=${room.id} user=$userId',
+    );
     _emitChange();
   }
 

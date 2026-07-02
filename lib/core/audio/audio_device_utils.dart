@@ -1,12 +1,6 @@
-import 'dart:async';
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
-import 'package:record/record.dart' as rec;
-import 'package:shared_preferences/shared_preferences.dart';
 
-import 'audio_cue_service.dart';
 import '../logging/orex_logger.dart';
 
 class OrexAudioDevice {
@@ -14,26 +8,21 @@ class OrexAudioDevice {
     required this.id,
     required this.kind,
     required this.label,
-    this.nativeOnly = false,
-    this.cached = false,
   });
 
   final String id;
   final String kind;
   final String label;
 
-  /// true means the item is a platform route/device discovered outside WebRTC.
-  /// It can still be useful for UI/routing, but WebRTC deviceId matching may be
-  /// platform-dependent.
-  final bool nativeOnly;
-  final bool cached;
-
   bool get isInput => kind == 'audioinput';
   bool get isOutput => kind == 'audiooutput';
 }
 
-const _kAudioDeviceCacheKey = 'orex_audio_device_cache_v2';
-
+/// Returns only WebRTC devices that can be used by getUserMedia/LiveKit.
+///
+/// The settings screen renders its own "system default" rows, so synthetic
+/// WebRTC defaults, cached rows, Android AudioDeviceInfo ids and mobile speaker
+/// route pseudo-devices are intentionally not exposed here.
 Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
   bool requestPermission = false,
 }) async {
@@ -50,175 +39,43 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
   }
 
   try {
-    final merged = <String, OrexAudioDevice>{};
+    final rawDevices = await rtc.navigator.mediaDevices.enumerateDevices();
+    final byId = <String, OrexAudioDevice>{};
+    final seenLabels = <String>{};
 
-    void addDevice(OrexAudioDevice device, String source) {
-      final id = device.id.trim();
-      if (id.isEmpty) return;
-      // We render our own "system default" rows. Keeping default duplicates from
-      // WebRTC makes the settings look broken on platforms that hide labels.
-      if (id == 'default' || id == 'communications') return;
-      final key = '${device.kind}|$id';
-      merged[key] = device;
+    for (final raw in rawDevices) {
+      final device = _fromRawDevice(raw);
+      if (device == null) continue;
+      if (!_shouldShowDevice(device)) continue;
+
+      final idKey = '${device.kind}|${device.id}';
+      final labelKey = '${device.kind}|${device.label.toLowerCase()}';
+      if (_isMobileNative && seenLabels.contains(labelKey)) continue;
+
+      byId[idKey] = device;
+      seenLabels.add(labelKey);
     }
 
-    Future<void> addAll(
-      Future<List<dynamic>> Function() loader,
-      String source,
-    ) async {
-      try {
-        final devices = await loader();
-        for (final raw in devices) {
-          final device = _fromRawDevice(raw);
-          if (device == null) continue;
-          addDevice(device, source);
-        }
-      } catch (e) {
-        OrexLog.d('AudioDevices', '$source enumerate failed', e);
-      }
-    }
-
-    await addAll(
-      () async => await rtc.navigator.mediaDevices.enumerateDevices(),
-      'navigator.mediaDevices',
-    );
-    await addAll(
-      () async => await rtc.Helper.enumerateDevices('audioinput'),
-      'Helper.audioinput',
-    );
-    await addAll(
-      () async => await rtc.Helper.enumerateDevices('audiooutput'),
-      'Helper.audiooutput',
-    );
-    await addAll(
-      () async => await rtc.Helper.audiooutputs,
-      'Helper.audiooutputs',
-    );
-
-    // record has its own native device enumerator. It often sees microphone
-    // names even when WebRTC only returns defaults outside an active call.
-    rec.AudioRecorder? recorder;
-    try {
-      recorder = rec.AudioRecorder();
-      final inputs = await recorder.listInputDevices();
-      for (final input in inputs) {
-        addDevice(
-          OrexAudioDevice(
-            id: input.id,
-            kind: 'audioinput',
-            label: input.label.trim().isEmpty ? _fallbackLabel('audioinput', input.id) : input.label.trim(),
-            nativeOnly: true,
-          ),
-          'record.listInputDevices',
-        );
-      }
-    } catch (e) {
-      OrexLog.d('AudioDevices', 'record.listInputDevices failed', e);
-    } finally {
-      try {
-        await recorder?.dispose();
-      } catch (_) {}
-    }
-
-    if (_isMobileNative) {
-      addDevice(
-        const OrexAudioDevice(
-          id: AudioCueService.mobileEarpieceOutputId,
-          kind: 'audiooutput',
-          label: 'Разговорный динамик / гарнитура',
-          nativeOnly: true,
-        ),
-        'mobile.virtual',
-      );
-      addDevice(
-        const OrexAudioDevice(
-          id: AudioCueService.mobileSpeakerOutputId,
-          kind: 'audiooutput',
-          label: 'Громкий динамик',
-          nativeOnly: true,
-        ),
-        'mobile.virtual',
-      );
-    }
-
-    final liveOutputs = merged.values.where((d) => d.isOutput).toList();
-    if (liveOutputs.isNotEmpty) {
-      unawaited(_saveDeviceCache(liveOutputs));
-    } else {
-      for (final cached in await _loadDeviceCache()) {
-        addDevice(cached, 'cache');
-      }
-    }
-
-    final result = merged.values.toList()
+    final result = byId.values.toList()
       ..sort((a, b) {
         final byKind = a.kind.compareTo(b.kind);
         if (byKind != 0) return byKind;
-        if (a.cached != b.cached) return a.cached ? 1 : -1;
-        if (a.nativeOnly != b.nativeOnly) return a.nativeOnly ? 1 : -1;
         return a.label.toLowerCase().compareTo(b.label.toLowerCase());
       });
     OrexLog.d(
       'AudioDevices',
-      'enumerated total=${result.length} inputs=${result.where((d) => d.isInput).length} outputs=${result.where((d) => d.isOutput).length} permission=$requestPermission cachedOutputs=${result.where((d) => d.isOutput && d.cached).length}',
+      'enumerated total=${result.length} inputs=${result.where((d) => d.isInput).length} outputs=${result.where((d) => d.isOutput).length} permission=$requestPermission',
     );
     return result;
+  } catch (e) {
+    OrexLog.d('AudioDevices', 'navigator.mediaDevices enumerate failed', e);
+    return const [];
   } finally {
     for (final track in permissionStream?.getTracks() ?? <dynamic>[]) {
       try {
         track.stop();
       } catch (_) {}
     }
-  }
-}
-
-
-Future<void> _saveDeviceCache(List<OrexAudioDevice> outputs) async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    final payload = outputs
-        .where((d) => d.id.trim().isNotEmpty && d.label.trim().isNotEmpty)
-        .map((d) => {
-              'id': d.id,
-              'kind': d.kind,
-              'label': d.label,
-              'nativeOnly': d.nativeOnly,
-            })
-        .toList();
-    if (payload.isEmpty) return;
-    await prefs.setString(_kAudioDeviceCacheKey, jsonEncode(payload));
-  } catch (e) {
-    OrexLog.d('AudioDevices', 'save device cache failed', e);
-  }
-}
-
-Future<List<OrexAudioDevice>> _loadDeviceCache() async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_kAudioDeviceCacheKey);
-    if (raw == null || raw.trim().isEmpty) return const [];
-    final decoded = jsonDecode(raw);
-    if (decoded is! List) return const [];
-    return decoded
-        .whereType<Map>()
-        .map((item) {
-          final id = '${item['id'] ?? ''}'.trim();
-          final kind = _normalizeKind('${item['kind'] ?? ''}');
-          final label = '${item['label'] ?? ''}'.trim();
-          if (id.isEmpty || kind != 'audiooutput') return null;
-          return OrexAudioDevice(
-            id: id,
-            kind: kind!,
-            label: label.isEmpty ? _fallbackLabel(kind, id) : label,
-            nativeOnly: item['nativeOnly'] == true,
-            cached: true,
-          );
-        })
-        .whereType<OrexAudioDevice>()
-        .toList();
-  } catch (e) {
-    OrexLog.d('AudioDevices', 'load device cache failed', e);
-    return const [];
   }
 }
 
@@ -231,14 +88,27 @@ bool get _isMobileNative {
 OrexAudioDevice? _fromRawDevice(dynamic raw) {
   final id = _readString(raw, 'deviceId').trim();
   final kind = _normalizeKind(_readString(raw, 'kind'));
-  if (kind == null) return null;
-  final rawLabel = _readString(raw, 'label').trim();
-  final label = rawLabel.isEmpty ? _fallbackLabel(kind, id) : rawLabel;
-  return OrexAudioDevice(
-    id: id.isEmpty ? 'default' : id,
-    kind: kind,
-    label: label,
-  );
+  if (id.isEmpty || kind == null) return null;
+
+  final label = _cleanLabel(_readString(raw, 'label'));
+  return OrexAudioDevice(id: id, kind: kind, label: label);
+}
+
+bool _shouldShowDevice(OrexAudioDevice device) {
+  final id = device.id.trim().toLowerCase();
+  if (id.isEmpty || id == 'default' || id == 'communications') return false;
+
+  final label = device.label.trim();
+  // Unlabelled concrete ids are not useful to a user and usually mean the app
+  // has not obtained mic permission yet. The system default row remains usable.
+  if (label.isEmpty) return false;
+
+  // Android can expose several low-level AudioDeviceInfo entries whose labels
+  // are just build/model codes with numeric ids. They are not stable WebRTC
+  // deviceIds for LiveKit and make the settings look like a debug dump.
+  if (_isMobileNative && _looksLikeAndroidHardwareCode(label)) return false;
+
+  return true;
 }
 
 String _readString(dynamic raw, String field) {
@@ -282,10 +152,15 @@ String? _normalizeKind(String raw) {
   return null;
 }
 
-String _fallbackLabel(String kind, String id) {
-  final suffix = id.isEmpty || id == 'default'
-      ? ''
-      : ' · ${id.substring(0, id.length < 6 ? id.length : 6)}';
-  if (kind == 'audioinput') return 'Микрофон$suffix';
-  return 'Динамики / наушники$suffix';
+String _cleanLabel(String raw) => raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+bool _looksLikeAndroidHardwareCode(String label) {
+  final normalized = label.trim();
+  if (normalized.contains(' ')) return false;
+  if (RegExp(r'^(microphone|mic|speaker|earpiece|headset|bluetooth|usb)',
+          caseSensitive: false)
+      .hasMatch(normalized)) {
+    return false;
+  }
+  return RegExp(r'^(?=.*\d)[A-Z0-9._-]{5,}$').hasMatch(normalized);
 }

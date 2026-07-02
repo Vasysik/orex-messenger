@@ -30,7 +30,17 @@ class _CallScreenState extends State<CallScreen> {
   CallController get _call => widget.matrix.call;
   CallSession? get _session => _call.session;
   final GlobalKey _reactionButtonKey = GlobalKey();
-  bool _preferScreenShare = true;
+  final Map<String, bool> _preferScreenShareByIdentity = <String, bool>{};
+
+  bool _preferScreenShareFor(lk.Participant participant) =>
+      _preferScreenShareByIdentity[participant.identity] ?? true;
+
+  void _toggleParticipantVideoSource(lk.Participant participant) {
+    setState(() {
+      _preferScreenShareByIdentity[participant.identity] =
+          !_preferScreenShareFor(participant);
+    });
+  }
 
   @override
   void dispose() {
@@ -88,13 +98,19 @@ class _CallScreenState extends State<CallScreen> {
     );
   }
 
-  bool _canGrantVoice(Room? room, String userId, VoiceParticipantState state) {
-    if (room == null || !state.handRaised) return false;
-    if (userId == widget.matrix.client.userID) return false;
+  bool _canManageVoiceFor(Room? room, String userId) {
+    if (room == null || userId == widget.matrix.client.userID) return false;
     return widget.matrix.isChannel(room) &&
-        widget.matrix.canManageRoomSettings(room) &&
-        !widget.matrix.canSpeakInVoice(room, userId);
+        widget.matrix.canManageRoomSettings(room);
   }
+
+  bool _canGrantVoice(Room? room, String userId) =>
+      _canManageVoiceFor(room, userId) &&
+      !widget.matrix.canSpeakInVoice(room!, userId);
+
+  bool _canRevokeVoice(Room? room, String userId) =>
+      _canManageVoiceFor(room, userId) &&
+      widget.matrix.canSpeakInVoice(room!, userId);
 
   Future<void> _grantVoice(Room room, String userId) async {
     await widget.matrix.grantVoiceInChannel(room, userId);
@@ -102,6 +118,15 @@ class _CallScreenState extends State<CallScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Голос выдан')),
+    );
+  }
+
+  Future<void> _revokeVoice(Room room, String userId) async {
+    await widget.matrix.revokeVoiceInChannel(room, userId);
+    await widget.matrix.call.refreshVoicePermissions();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Голос забран')),
     );
   }
 
@@ -231,12 +256,13 @@ class _CallScreenState extends State<CallScreen> {
       }
     }
     if (pinned != null) {
-      final userId = _matrixUserId(pinned.identity);
+      final pinnedParticipant = pinned;
+      final userId = _matrixUserId(pinnedParticipant.identity);
       final state = session.voiceStateForUser(userId);
       return Padding(
         padding: const EdgeInsets.all(8),
         child: _ParticipantTile(
-          participant: pinned,
+          participant: pinnedParticipant,
           matrix: widget.matrix,
           room: room,
           voiceState: state,
@@ -244,9 +270,15 @@ class _CallScreenState extends State<CallScreen> {
           cornerIcon: Icons.close_fullscreen,
           cornerTooltip: 'Отменить приближение плитки',
           onCornerTap: () => _call.focusParticipant(null),
-          preferScreenShare: _preferScreenShare,
-          onGrantVoice: _canGrantVoice(room, userId, state)
+          preferScreenShare: _preferScreenShareFor(pinnedParticipant),
+          onSwitchVideoSource: orexHasCameraAndScreen(pinnedParticipant)
+              ? () => _toggleParticipantVideoSource(pinnedParticipant)
+              : null,
+          onGrantVoice: _canGrantVoice(room, userId)
               ? () => _grantVoice(room!, userId)
+              : null,
+          onRevokeVoice: _canRevokeVoice(room, userId)
+              ? () => _revokeVoice(room!, userId)
               : null,
         ),
       );
@@ -281,9 +313,15 @@ class _CallScreenState extends State<CallScreen> {
                                     cornerIcon: Icons.open_in_full,
                                     cornerTooltip: 'Приблизить плитку',
                                     onCornerTap: () => _call.focusParticipant(p.identity),
-                                    preferScreenShare: _preferScreenShare,
-                                    onGrantVoice: _canGrantVoice(room, userId, state)
+                                    preferScreenShare: _preferScreenShareFor(p),
+                                    onSwitchVideoSource: orexHasCameraAndScreen(p)
+                                        ? () => _toggleParticipantVideoSource(p)
+                                        : null,
+                                    onGrantVoice: _canGrantVoice(room, userId)
                                         ? () => _grantVoice(room!, userId)
+                                        : null,
+                                    onRevokeVoice: _canRevokeVoice(room, userId)
+                                        ? () => _revokeVoice(room!, userId)
                                         : null,
                                   ),
                                 );
@@ -361,15 +399,6 @@ class _CallScreenState extends State<CallScreen> {
                 icon: session.camOn ? Icons.videocam : Icons.videocam_off,
                 onTap: () { session.toggleCam(); },
               ),
-              if (session.camOn && session.screenShareOn)
-                _round(
-                  tooltip: _preferScreenShare
-                      ? 'Показывать камеру на плитках'
-                      : 'Показывать трансляцию экрана на плитках',
-                  icon: _preferScreenShare ? Icons.videocam : Icons.screen_share,
-                  selected: true,
-                  onTap: () { setState(() => _preferScreenShare = !_preferScreenShare); },
-                ),
               _round(
                 tooltip: 'Трансляция экрана',
                 icon: session.screenShareOn
@@ -471,7 +500,9 @@ class _ParticipantTile extends StatelessWidget {
     this.cornerIcon,
     this.cornerTooltip,
     this.onCornerTap,
+    this.onSwitchVideoSource,
     this.onGrantVoice,
+    this.onRevokeVoice,
   });
 
   final lk.Participant participant;
@@ -484,7 +515,9 @@ class _ParticipantTile extends StatelessWidget {
   final IconData? cornerIcon;
   final String? cornerTooltip;
   final VoidCallback? onCornerTap;
+  final VoidCallback? onSwitchVideoSource;
   final VoidCallback? onGrantVoice;
+  final VoidCallback? onRevokeVoice;
 
   /// LiveKit identity у Element Call / lk-jwt-service — это `@user:server:device`.
   /// Достаём из него matrix-id, чтобы взять имя и аватар из комнаты.
@@ -561,14 +594,34 @@ class _ParticipantTile extends StatelessWidget {
                           const TextStyle(color: Colors.white, fontSize: 12)),
                 ),
               ),
-              if (cornerIcon != null && onCornerTap != null)
+              if ((cornerIcon != null && onCornerTap != null) ||
+                  onSwitchVideoSource != null)
                 Positioned(
                   left: 8,
                   top: 8,
-                  child: _TileCornerButton(
-                    icon: cornerIcon!,
-                    tooltip: cornerTooltip ?? '',
-                    onTap: onCornerTap!,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (cornerIcon != null && onCornerTap != null)
+                        _TileCornerButton(
+                          icon: cornerIcon!,
+                          tooltip: cornerTooltip ?? '',
+                          onTap: onCornerTap!,
+                        ),
+                      if (onSwitchVideoSource != null) ...[
+                        if (cornerIcon != null && onCornerTap != null)
+                          const SizedBox(height: 6),
+                        _TileCornerButton(
+                          icon: preferScreenShare
+                              ? Icons.videocam
+                              : Icons.screen_share,
+                          tooltip: preferScreenShare
+                              ? 'Показать камеру участника'
+                              : 'Показать демонстрацию участника',
+                          onTap: onSwitchVideoSource!,
+                        ),
+                      ],
+                    ],
                   ),
                 ),
               Positioned(
@@ -578,6 +631,7 @@ class _ParticipantTile extends StatelessWidget {
                   handRaised: voiceState.handRaised,
                   reaction: voiceState.reaction,
                   onGrantVoice: onGrantVoice,
+                  onRevokeVoice: onRevokeVoice,
                 ),
               ),
               ],
@@ -700,11 +754,13 @@ class _VoiceStateBadges extends StatelessWidget {
     required this.handRaised,
     required this.reaction,
     this.onGrantVoice,
+    this.onRevokeVoice,
   });
 
   final bool handRaised;
   final String? reaction;
   final VoidCallback? onGrantVoice;
+  final VoidCallback? onRevokeVoice;
 
   @override
   Widget build(BuildContext context) {
@@ -722,6 +778,16 @@ class _VoiceStateBadges extends StatelessWidget {
             icon: Icons.record_voice_over,
             tooltip: 'Дать голос',
             onTap: onGrantVoice,
+            accent: true,
+          ),
+        ],
+        if (onRevokeVoice != null) ...[
+          if (handRaised || reaction != null || onGrantVoice != null)
+            const SizedBox(width: 6),
+          _badge(
+            icon: Icons.mic_off,
+            tooltip: 'Забрать голос',
+            onTap: onRevokeVoice,
             accent: true,
           ),
         ],

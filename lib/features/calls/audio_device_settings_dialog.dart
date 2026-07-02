@@ -146,7 +146,6 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
                         for (final d in inputs)
                           _deviceTile(
                             title: d.label,
-                            subtitle: d.id,
                             selected: _inputId == d.id,
                             onTap: () => _selectInput(d.id),
                           ),
@@ -166,9 +165,17 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
                         for (final d in outputs)
                           _deviceTile(
                             title: d.label,
-                            subtitle: d.cached ? 'Сохранённое устройство' : d.id,
                             selected: _outputId == d.id,
                             onTap: () => _selectOutput(d.id),
+                          ),
+                        if (outputs.isEmpty)
+                          const Padding(
+                            padding: EdgeInsets.fromLTRB(16, 0, 16, 10),
+                            child: Text(
+                              'На Android/iOS вывод выбирается системной маршрутизацией. '
+                              'Конкретные устройства WebRTC появятся на Windows, macOS, Linux и Web.',
+                              style: TextStyle(color: Colors.white54, fontSize: 12),
+                            ),
                           ),
                       ],
                     ),
@@ -257,14 +264,16 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
 
   Widget _deviceTile({
     required String title,
-    required String subtitle,
+    String? subtitle,
     required bool selected,
     required VoidCallback onTap,
   }) {
     return ListTile(
       dense: true,
       title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: subtitle == null
+          ? null
+          : Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
       trailing: Icon(
         selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
         color: selected ? OrexColors.copper : Colors.white38,

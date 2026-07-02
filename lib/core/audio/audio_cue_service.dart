@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:livekit_client/livekit_client.dart' as lk;
+import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logging/orex_logger.dart';
@@ -23,9 +23,8 @@ class AudioCueService extends ChangeNotifier {
   static const _kSpeakingThresholdDb = 'orex_audio_speaking_threshold_db';
   static const _kSpeakingThresholdEnabled = 'orex_audio_speaking_threshold_enabled';
 
-  static const mobileEarpieceOutputId = 'orex://mobile/earpiece';
-  static const mobileSpeakerOutputId = 'orex://mobile/speaker';
-
+  static const minSpeakingThresholdDb = -70.0;
+  static const maxSpeakingThresholdDb = -10.0;
   static const defaultSpeakingThresholdDb = -50.0;
   static const defaultSpeakingThresholdEnabled = false;
 
@@ -46,8 +45,13 @@ class AudioCueService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       inputDeviceId = _nullIfEmpty(prefs.getString(_kInputDeviceId));
       outputDeviceId = _nullIfEmpty(prefs.getString(_kOutputDeviceId));
-      speakingThresholdDb = prefs.getDouble(_kSpeakingThresholdDb) ??
-          defaultSpeakingThresholdDb;
+      if (_isLegacyMobileRoute(outputDeviceId)) {
+        outputDeviceId = null;
+        await prefs.remove(_kOutputDeviceId);
+      }
+      speakingThresholdDb = _clampSpeakingThreshold(
+        prefs.getDouble(_kSpeakingThresholdDb) ?? defaultSpeakingThresholdDb,
+      );
       speakingThresholdEnabled = prefs.getBool(_kSpeakingThresholdEnabled) ??
           defaultSpeakingThresholdEnabled;
       await applySelectedDevices();
@@ -71,7 +75,7 @@ class AudioCueService extends ChangeNotifier {
   }
 
   Future<void> setSpeakingThresholdDb(double value) async {
-    speakingThresholdDb = value.clamp(-80, -20).toDouble();
+    speakingThresholdDb = _clampSpeakingThreshold(value);
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setDouble(_kSpeakingThresholdDb, speakingThresholdDb);
@@ -146,17 +150,17 @@ class AudioCueService extends ChangeNotifier {
     final id = outputDeviceId;
     if (id == null || id == 'default') return;
 
-    if (id == mobileSpeakerOutputId || id == mobileEarpieceOutputId) {
-      try {
-        final speaker = id == mobileSpeakerOutputId;
-        await lk.AudioManager.instance.setSpeakerOutputPreferred(
-          speaker,
-          force: speaker,
-        );
-        OrexLog.d('Audio', 'selected mobile route speaker=$speaker');
-      } catch (e) {
-        OrexLog.d('Audio', 'select mobile route failed id=$id', e);
-      }
+    if (_isLegacyMobileRoute(id)) {
+      outputDeviceId = null;
+      await _saveString(_kOutputDeviceId, null);
+      return;
+    }
+
+    try {
+      await rtc.Helper.selectAudioOutput(id);
+      OrexLog.d('Audio', 'selected output device id=$id');
+    } catch (e) {
+      OrexLog.d('Audio', 'select output device failed id=$id', e);
     }
   }
 
@@ -172,6 +176,13 @@ class AudioCueService extends ChangeNotifier {
       OrexLog.d('Audio', 'save preference failed key=$key', e);
     }
   }
+
+  double _clampSpeakingThreshold(double value) => value
+      .clamp(minSpeakingThresholdDb, maxSpeakingThresholdDb)
+      .toDouble();
+
+  bool _isLegacyMobileRoute(String? value) =>
+      value == 'orex://mobile/earpiece' || value == 'orex://mobile/speaker';
 
   String? _nullIfEmpty(String? value) {
     final trimmed = value?.trim();

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:record/record.dart' as rec;
 
+import '../../core/audio/audio_cue_service.dart';
 import '../../core/logging/orex_logger.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/orex_theme.dart';
@@ -39,8 +40,8 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
   bool _testing = false;
   bool _starting = false;
   String? _error;
-  double _levelDb = -80;
-  double _peakDb = -80;
+  double _levelDb = AudioCueService.minSpeakingThresholdDb;
+  double _peakDb = AudioCueService.minSpeakingThresholdDb;
 
   @override
   void dispose() {
@@ -75,8 +76,8 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
     setState(() {
       _starting = true;
       _error = null;
-      _levelDb = -80;
-      _peakDb = -80;
+      _levelDb = AudioCueService.minSpeakingThresholdDb;
+      _peakDb = AudioCueService.minSpeakingThresholdDb;
     });
 
     rec.AudioRecorder? recorder;
@@ -189,12 +190,16 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
   }
 
   double _normalizeDb(double value) {
-    if (value.isNaN || value.isInfinite) return -80;
-    return value.clamp(-80, 0).toDouble();
+    if (value.isNaN || value.isInfinite) {
+      return AudioCueService.minSpeakingThresholdDb;
+    }
+    return value
+        .clamp(AudioCueService.minSpeakingThresholdDb, 0)
+        .toDouble();
   }
 
   double _dbFromPcm16(Uint8List bytes) {
-    if (bytes.length < 2) return -80;
+    if (bytes.length < 2) return AudioCueService.minSpeakingThresholdDb;
     final data = ByteData.sublistView(bytes);
     var sumSquares = 0.0;
     var count = 0;
@@ -203,10 +208,14 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
       sumSquares += sample * sample;
       count++;
     }
-    if (count == 0 || sumSquares <= 0) return -80;
+    if (count == 0 || sumSquares <= 0) {
+      return AudioCueService.minSpeakingThresholdDb;
+    }
     final rms = math.sqrt(sumSquares / count);
-    if (rms <= 0) return -80;
-    return (20 * math.log(rms) / math.ln10).clamp(-80.0, 0.0).toDouble();
+    if (rms <= 0) return AudioCueService.minSpeakingThresholdDb;
+    return (20 * math.log(rms) / math.ln10)
+        .clamp(AudioCueService.minSpeakingThresholdDb, 0.0)
+        .toDouble();
   }
 
   @override
@@ -228,7 +237,7 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
               Expanded(
                 child: Text(
                   widget.thresholdEnabled
-                      ? 'Порог говорения: ${widget.thresholdDb.round()} dB'
+                      ? 'Порог говорения: ${widget.thresholdDb.round()} dBFS'
                       : 'Порог говорения выключен',
                   style: titleStyle,
                 ),
@@ -247,31 +256,19 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
             thresholdEnabled: widget.thresholdEnabled,
           ),
           const SizedBox(height: 8),
-          Row(
-            children: [
-              SizedBox(
-                width: 74,
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final levelLabel = SizedBox(
+                width: 92,
                 child: Text(
-                  '${_levelDb.round()} dB',
+                  '${_levelDb.round()} dBFS',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: active ? OrexColors.online : Colors.white70,
                         fontFeatures: const [FontFeature.tabularFigures()],
                       ),
                 ),
-              ),
-              Expanded(
-                child: Slider(
-                  value: widget.thresholdDb,
-                  min: -80,
-                  max: -20,
-                  divisions: 60,
-                  label: '${widget.thresholdDb.round()} dB',
-                  onChanged: widget.thresholdEnabled
-                      ? widget.onThresholdChanged
-                      : null,
-                ),
-              ),
-              FilledButton.icon(
+              );
+              final testButton = FilledButton.icon(
                 onPressed: _starting ? null : _toggle,
                 icon: _starting
                     ? const SizedBox(
@@ -281,8 +278,53 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
                       )
                     : Icon(_testing ? Icons.stop : Icons.mic),
                 label: Text(_testing ? 'Стоп' : 'Тест'),
-              ),
-            ],
+              );
+              final slider = SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: constraints.maxWidth < 520 ? 7 : 4,
+                  thumbShape: RoundSliderThumbShape(
+                    enabledThumbRadius: constraints.maxWidth < 520 ? 11 : 9,
+                  ),
+                ),
+                child: Slider(
+                  value: widget.thresholdDb,
+                  min: AudioCueService.minSpeakingThresholdDb,
+                  max: AudioCueService.maxSpeakingThresholdDb,
+                  divisions: (AudioCueService.maxSpeakingThresholdDb -
+                          AudioCueService.minSpeakingThresholdDb)
+                      .round(),
+                  label: '${widget.thresholdDb.round()} dBFS',
+                  onChanged: widget.thresholdEnabled
+                      ? widget.onThresholdChanged
+                      : null,
+                ),
+              );
+
+              if (constraints.maxWidth < 520) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        levelLabel,
+                        const Spacer(),
+                        testButton,
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    slider,
+                  ],
+                );
+              }
+
+              return Row(
+                children: [
+                  levelLabel,
+                  Expanded(child: slider),
+                  testButton,
+                ],
+              );
+            },
           ),
           if (_error != null) ...[
             const SizedBox(height: 6),
@@ -295,7 +337,7 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
           ],
           const SizedBox(height: 4),
           Text(
-            'Тест показывает dBFS почти в реальном времени. В звонке этот же порог работает как gate для локального микрофона.',
+            'Тест показывает dBFS почти в реальном времени. Чем ближе порог к 0, тем сильнее отсекаются клавиатура и тихий шум.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Colors.white60,
                 ),
@@ -374,7 +416,8 @@ class _MicMeter extends StatelessWidget {
   }
 
   double _xFor(double db, double width) {
-    final normalized = ((db.clamp(-80, 0) + 80) / 80).clamp(0.0, 1.0);
+    final min = AudioCueService.minSpeakingThresholdDb;
+    final normalized = ((db.clamp(min, 0) - min) / -min).clamp(0.0, 1.0);
     return normalized * width;
   }
 }
