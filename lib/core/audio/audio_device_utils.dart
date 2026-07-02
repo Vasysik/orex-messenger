@@ -6,6 +6,9 @@ import 'native_audio_devices.dart';
 
 const _androidOutputPrefix = 'orex://android/audio-output/';
 
+bool get orexIsAndroidNativePlatform =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
 bool get orexIsMobileNativePlatform {
   if (kIsWeb) return false;
   return defaultTargetPlatform == TargetPlatform.android ||
@@ -22,6 +25,18 @@ bool orexIsAndroidOutputDeviceId(String? id) =>
     id != null && id.startsWith(_androidOutputPrefix);
 
 bool orexIsMobileRouteId(String? id) => orexIsAndroidOutputDeviceId(id);
+
+bool orexIsAndroidSpeakerOutputDeviceId(String? id) =>
+    _isAndroidOutputType(id, 2);
+
+bool orexIsAndroidEarpieceOutputDeviceId(String? id) =>
+    _isAndroidOutputType(id, 1);
+
+bool _isAndroidOutputType(String? id, int type) {
+  if (!orexIsAndroidOutputDeviceId(id)) return false;
+  final route = id!.substring(_androidOutputPrefix.length);
+  return route.startsWith('audio:$type:') || route.startsWith('$type:');
+}
 
 class OrexAudioDevice {
   const OrexAudioDevice({
@@ -45,6 +60,7 @@ class OrexAudioDevice {
 }
 
 List<OrexAudioDevice> _lastNonEmptyDevices = const [];
+List<OrexAudioDevice> _lastNonEmptyCallDevices = const [];
 
 /// Returns audio devices that are actually useful to the settings UI.
 ///
@@ -53,6 +69,7 @@ List<OrexAudioDevice> _lastNonEmptyDevices = const [];
 /// return an empty output list until a call is active on these platforms.
 Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
   bool requestPermission = false,
+  bool includeCallRoutes = false,
 }) async {
   rtc.MediaStream? permissionStream;
   if (requestPermission) {
@@ -69,7 +86,11 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
   try {
     final rawDevices = await _enumerateWebRtcDevices();
     final nativeDevices = orexCanUseNativeAudioDevices
-        ? _nativeDevicesFromMaps(await OrexNativeAudioDevices.enumerate())
+        ? _nativeDevicesFromMaps(
+            await OrexNativeAudioDevices.enumerate(
+              includeCallRoutes: includeCallRoutes,
+            ),
+          )
         : const <OrexAudioDevice>[];
     final byKey = <String, OrexAudioDevice>{};
     final seenLabels = <String>{};
@@ -115,17 +136,26 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
         return a.label.toLowerCase().compareTo(b.label.toLowerCase());
       });
 
-    if (result.isNotEmpty) _lastNonEmptyDevices = result;
-    final finalResult = result.isEmpty ? _lastNonEmptyDevices : result;
+    final cachedDevices = includeCallRoutes
+        ? _lastNonEmptyCallDevices
+        : _lastNonEmptyDevices;
+    if (result.isNotEmpty) {
+      if (includeCallRoutes) {
+        _lastNonEmptyCallDevices = result;
+      } else {
+        _lastNonEmptyDevices = result;
+      }
+    }
+    final finalResult = result.isEmpty ? cachedDevices : result;
 
     OrexLog.d(
       'AudioDevices',
-      'enumerated total=${finalResult.length} inputs=${finalResult.where((d) => d.isInput).length} outputs=${finalResult.where((d) => d.isOutput).length} webrtc=${rawDevices.length} native=${nativeDevices.length} permission=$requestPermission mobile=$orexIsMobileNativePlatform',
+      'enumerated total=${finalResult.length} inputs=${finalResult.where((d) => d.isInput).length} outputs=${finalResult.where((d) => d.isOutput).length} webrtc=${rawDevices.length} native=${nativeDevices.length} permission=$requestPermission includeCallRoutes=$includeCallRoutes mobile=$orexIsMobileNativePlatform',
     );
     return finalResult;
   } catch (e) {
     OrexLog.d('AudioDevices', 'enumerate failed', e);
-    return _lastNonEmptyDevices;
+    return includeCallRoutes ? _lastNonEmptyCallDevices : _lastNonEmptyDevices;
   } finally {
     for (final track in permissionStream?.getTracks() ?? <dynamic>[]) {
       try {
@@ -166,7 +196,8 @@ OrexAudioDevice? _fromRawDevice(dynamic raw) {
   final kind = _normalizeKind(_readString(raw, 'kind'));
   if (id.isEmpty || kind == null) return null;
 
-  final label = _cleanLabel(_readString(raw, 'label'));
+  final rawLabel = _cleanLabel(_readString(raw, 'label'));
+  final label = _friendlyLabel(id: id, kind: kind, label: rawLabel);
   return OrexAudioDevice(
     id: id,
     kind: kind,
@@ -208,17 +239,21 @@ String _inferCategory({
   required String label,
 }) {
   final value = '$id $label'.toLowerCase();
-  if (value.contains('bluetooth') ||
+  final bluetooth = value.contains('bluetooth') ||
       value.contains('bt-') ||
-      value.contains('airpods')) {
-    return 'bluetooth';
-  }
+      value.contains('airpods') ||
+      value.contains('hands-free') ||
+      value.contains('handsfree');
+  if (bluetooth) return 'bluetooth';
   if (value.contains('usb')) return 'usb';
 
   final looksLikeHeadset = value.contains('headphone') ||
+      value.contains('headphones') ||
       value.contains('headset') ||
       value.contains('earbud') ||
+      value.contains('earbuds') ||
       value.contains('earphone') ||
+      value.contains('earphones') ||
       value.contains('науш') ||
       value.contains('гарнитур');
   if (looksLikeHeadset) return 'headphones';
@@ -227,8 +262,31 @@ String _inferCategory({
   if (kind != 'audiooutput') return '';
 
   if (value.contains('earpiece') || value.contains('разговор')) return 'earpiece';
-  if (value.contains('speaker') || value.contains('динамик')) return 'speaker';
+  if (value.contains('speaker') ||
+      value.contains('speakers') ||
+      value.contains('динамик') ||
+      value.contains('динамики')) {
+    return 'speaker';
+  }
   return '';
+}
+
+String _friendlyLabel({
+  required String id,
+  required String kind,
+  required String label,
+}) {
+  if (!orexIsAndroidNativePlatform || kind != 'audioinput') return label;
+  final value = '$id $label'.toLowerCase();
+  if (value.contains('bottom')) return 'Нижний микрофон телефона';
+  if (value.contains('back') || value.contains('rear')) {
+    return 'Задний микрофон телефона';
+  }
+  if (value.contains('front')) return 'Передний микрофон телефона';
+  if (value == 'microphone' || value.endsWith(' microphone')) {
+    return 'Микрофон телефона';
+  }
+  return label;
 }
 
 String _readString(dynamic raw, String field) {

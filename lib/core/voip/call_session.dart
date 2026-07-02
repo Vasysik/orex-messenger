@@ -272,8 +272,7 @@ class CallSession extends ChangeNotifier {
     final id = audioOutputDeviceIdProvider?.call()?.trim();
 
     if (orexIsMobileNativePlatform) {
-      final ok = await OrexNativeAudioDevices.selectOutput(id);
-      if (!ok) OrexLog.d('Call', 'native output route not applied id=$id');
+      await OrexNativeAudioDevices.selectOutput(id, inCall: true);
       return;
     }
 
@@ -891,6 +890,9 @@ class CallSession extends ChangeNotifier {
         await room.dispose();
       } catch (_) {}
     }
+    if (orexIsAndroidNativePlatform) {
+      await OrexNativeAudioDevices.selectOutput(null, inCall: false);
+    }
     if (!_disposed) notifyListeners();
   }
 
@@ -945,6 +947,9 @@ class CallSession extends ChangeNotifier {
     _room?.removeListener(_onRoom);
     _room?.dispose();
     _room = null;
+    if (orexIsAndroidNativePlatform) {
+      unawaited(OrexNativeAudioDevices.selectOutput(null, inCall: false));
+    }
     super.dispose();
   }
 }

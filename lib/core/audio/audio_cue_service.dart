@@ -8,7 +8,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logging/orex_logger.dart';
 import 'audio_device_utils.dart';
-import 'native_audio_devices.dart';
 
 /// Единая точка коротких звуков Orex и пользовательских аудио-настроек.
 class AudioCueService extends ChangeNotifier {
@@ -46,7 +45,10 @@ class AudioCueService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       inputDeviceId = _nullIfEmpty(prefs.getString(_kInputDeviceId));
       outputDeviceId = _nullIfEmpty(prefs.getString(_kOutputDeviceId));
-      if (orexIsMobileRouteId(outputDeviceId) && !orexIsMobileNativePlatform) {
+      if (orexIsMobileRouteId(outputDeviceId) &&
+          (!orexIsMobileNativePlatform ||
+              orexIsAndroidSpeakerOutputDeviceId(outputDeviceId) ||
+              orexIsAndroidEarpieceOutputDeviceId(outputDeviceId))) {
         outputDeviceId = null;
         await prefs.remove(_kOutputDeviceId);
       }
@@ -146,18 +148,14 @@ class AudioCueService extends ChangeNotifier {
   Future<void> _applyOutputDevice() async {
     final id = outputDeviceId?.trim();
 
-    if (id == null || id.isEmpty) {
-      if (orexIsMobileNativePlatform) {
-        await OrexNativeAudioDevices.selectOutput(null);
-      }
+    if (orexIsMobileNativePlatform) {
+      // Mobile call routing is applied by CallSession with inCall: true.
+      // Do not switch Android into MODE_IN_COMMUNICATION from global settings
+      // or app startup: it breaks the volume panel and can wake SCO receivers.
       return;
     }
 
-    if (orexIsMobileNativePlatform) {
-      final ok = await OrexNativeAudioDevices.selectOutput(id);
-      if (!ok) OrexLog.d('Audio', 'native output route not applied id=$id');
-      return;
-    }
+    if (id == null || id.isEmpty) return;
 
     if (orexIsMobileRouteId(id)) {
       outputDeviceId = null;

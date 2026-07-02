@@ -5,9 +5,14 @@ import '../logging/orex_logger.dart';
 class OrexNativeAudioDevices {
   static const MethodChannel _channel = MethodChannel('orex/audio_devices');
 
-  static Future<List<Map<String, String>>> enumerate() async {
+  static Future<List<Map<String, String>>> enumerate({
+    bool includeCallRoutes = false,
+  }) async {
     try {
-      final raw = await _channel.invokeMethod<List<dynamic>>('listAudioDevices');
+      final raw = await _channel.invokeMethod<List<dynamic>>(
+        'listAudioDevices',
+        {'includeCallRoutes': includeCallRoutes},
+      );
       if (raw == null || raw.isEmpty) return const [];
       final result = <Map<String, String>>[];
       for (final item in raw) {
@@ -15,9 +20,9 @@ class OrexNativeAudioDevices {
         final id = '${item['id'] ?? ''}'.trim();
         final kind = '${item['kind'] ?? ''}'.trim();
         final label = '${item['label'] ?? ''}'.trim();
+        final category = '${item['category'] ?? ''}'.trim();
         if (id.isEmpty || kind.isEmpty || label.isEmpty) continue;
         if (kind != 'audioinput' && kind != 'audiooutput') continue;
-        final category = '${item['category'] ?? ''}'.trim();
         result.add({
           'id': id,
           'kind': kind,
@@ -34,14 +39,21 @@ class OrexNativeAudioDevices {
     }
   }
 
-  static Future<bool> selectOutput(String? id) async {
+  static Future<bool> selectOutput(String? id, {bool inCall = false}) async {
     try {
-      return await _channel.invokeMethod<bool>('selectAudioOutput', {'id': id}) ??
-          false;
+      final applied = await _channel.invokeMethod<bool>(
+        'selectAudioOutput',
+        {'id': id, 'inCall': inCall},
+      );
+      return applied ?? true;
     } on MissingPluginException {
       return false;
     } catch (e) {
-      OrexLog.d('AudioDevices', 'native select output failed id=$id', e);
+      OrexLog.d(
+        'AudioDevices',
+        'native select output failed id=$id inCall=$inCall',
+        e,
+      );
       return false;
     }
   }

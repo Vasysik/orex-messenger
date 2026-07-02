@@ -48,6 +48,7 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
     try {
       final devices = await enumerateOrexAudioDevices(
         requestPermission: requestPermission,
+        includeCallRoutes: true,
       );
       if (!mounted) return;
       setState(() => _devices = devices);
@@ -109,8 +110,13 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
     setState(() => _outputId = widget.matrix.audio.outputDeviceId);
   }
 
-  List<OrexAudioDevice> _byKind(String kind) =>
-      _devices.where((d) => d.kind == kind).toList();
+  List<OrexAudioDevice> _byKind(String kind) {
+    final devices = _devices.where((d) => d.kind == kind);
+    if (orexIsAndroidNativePlatform && kind == 'audiooutput') {
+      return devices.where((d) => d.category != 'speaker').toList();
+    }
+    return devices.toList();
+  }
 
   IconData _inputIcon(OrexAudioDevice device) {
     return switch (device.category) {
@@ -157,6 +163,7 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
                       Icons.mic,
                       [
                         _deviceTile(
+                          icon: Icons.mic,
                           title: 'Системный микрофон',
                           subtitle: 'По умолчанию',
                           selected: _inputId == null,
@@ -177,9 +184,17 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
                       Icons.volume_up,
                       [
                         _deviceTile(
-                          title: 'Системный вывод',
-                          subtitle: 'По умолчанию',
-                          selected: _outputId == null,
+                          icon: orexIsAndroidNativePlatform
+                              ? Icons.speaker
+                              : Icons.volume_up,
+                          title: orexIsAndroidNativePlatform
+                              ? 'Динамик телефона'
+                              : 'Системный вывод',
+                          subtitle: orexIsAndroidNativePlatform
+                              ? 'По умолчанию для звонка'
+                              : 'По умолчанию',
+                          selected: _outputId == null ||
+                              orexIsAndroidSpeakerOutputDeviceId(_outputId),
                           onTap: () => _selectOutput(null),
                         ),
                         for (final d in outputs)

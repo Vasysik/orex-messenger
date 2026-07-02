@@ -51,6 +51,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
     try {
       final devices = await enumerateOrexAudioDevices(
         requestPermission: requestPermission,
+        includeCallRoutes: false,
       );
       if (!mounted) return;
       setState(() => _devices = devices);
@@ -110,8 +111,13 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
     setState(() => _outputId = widget.matrix.audio.outputDeviceId);
   }
 
-  List<OrexAudioDevice> _byKind(String kind) =>
-      _devices.where((d) => d.kind == kind).toList();
+  List<OrexAudioDevice> _byKind(String kind) {
+    final devices = _devices.where((d) => d.kind == kind);
+    if (orexIsAndroidNativePlatform && kind == 'audiooutput') {
+      return devices.where((d) => d.category != 'speaker').toList();
+    }
+    return devices.toList();
+  }
 
   IconData _inputIcon(OrexAudioDevice device) {
     return switch (device.category) {
@@ -217,9 +223,14 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
               children: [
                 _DeviceRadioTile(
                   icon: Icons.speaker,
-                  title: 'Системный вывод',
-                  subtitle: 'Использовать устройство по умолчанию',
-                  selected: _outputId == null,
+                  title: orexIsAndroidNativePlatform
+                      ? 'Динамик телефона'
+                      : 'Системный вывод',
+                  subtitle: orexIsAndroidNativePlatform
+                      ? 'Стандартный вывод Android вне звонка'
+                      : 'Использовать устройство по умолчанию',
+                  selected: _outputId == null ||
+                      orexIsAndroidSpeakerOutputDeviceId(_outputId),
                   onTap: () => _selectOutput(null),
                 ),
                 for (final d in outputs)
