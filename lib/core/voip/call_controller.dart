@@ -90,7 +90,11 @@ class CallController extends ChangeNotifier {
       canUseMicNow: () => _canUseMicNowFor(roomId),
       audioInputDeviceIdProvider: () => matrix.audio.inputDeviceId,
       audioOutputDeviceIdProvider: () => matrix.audio.outputDeviceId,
-      callMicPreferenceSink: (enabled) => matrix.audio.setCallMicEnabled(enabled),
+      speakingThresholdDbProvider: () => matrix.audio.speakingThresholdDb,
+      speakingThresholdEnabledProvider: () =>
+          matrix.audio.speakingThresholdEnabled,
+      callMicPreferenceSink: (enabled) =>
+          matrix.audio.setCallMicEnabled(enabled),
     );
     focusedParticipantIdentity = null;
     _session = s;
@@ -148,7 +152,7 @@ class CallController extends ChangeNotifier {
   Future<void> _postCallSummary(
       String roomId, bool answered, DateTime? start) async {
     final room = matrix.client.getRoomById(roomId);
-    if (room == null) return;
+    if (room == null || matrix.roomKind(room) == OrexRoomKind.channel) return;
     String outcome;
     String text;
     if (answered) {

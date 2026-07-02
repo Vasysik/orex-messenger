@@ -4,11 +4,11 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
-import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logging/orex_logger.dart';
 import 'audio_device_utils.dart';
+import 'native_audio_devices.dart';
 
 /// Единая точка коротких звуков Orex и пользовательских аудио-настроек.
 class AudioCueService extends ChangeNotifier {
@@ -144,22 +144,17 @@ class AudioCueService extends ChangeNotifier {
   }
 
   Future<void> _applyOutputDevice() async {
-    final id = outputDeviceId;
+    final id = outputDeviceId?.trim();
+
+    if (id == null || id.isEmpty) {
+      if (orexIsMobileNativePlatform) {
+        await OrexNativeAudioDevices.selectOutput(null);
+      }
+      return;
+    }
 
     if (orexIsMobileNativePlatform) {
-      try {
-        final preferSpeaker = orexIsMobileSpeakerRouteId(id);
-        await lk.AudioManager.instance.setSpeakerOutputPreferred(
-          preferSpeaker,
-          force: false,
-        );
-        OrexLog.d(
-          'Audio',
-          'selected mobile output route id=${id ?? 'system'} speaker=$preferSpeaker',
-        );
-      } catch (e) {
-        OrexLog.d('Audio', 'select mobile output route failed id=$id', e);
-      }
+      await OrexNativeAudioDevices.selectOutput(id);
       return;
     }
 
@@ -170,8 +165,8 @@ class AudioCueService extends ChangeNotifier {
     }
 
     try {
-      await rtc.Helper.selectAudioOutput(id ?? 'default');
-      OrexLog.d('Audio', 'selected output device id=${id ?? 'default'}');
+      await rtc.Helper.selectAudioOutput(id);
+      OrexLog.d('Audio', 'selected output device id=$id');
     } catch (e) {
       OrexLog.d('Audio', 'select output device failed id=$id', e);
     }

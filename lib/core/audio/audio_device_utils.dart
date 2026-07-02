@@ -2,9 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 
 import '../logging/orex_logger.dart';
+import 'native_audio_devices.dart';
 
-const orexMobileSpeakerOutputId = 'orex://mobile/speaker';
-const orexMobileEarpieceOutputId = 'orex://mobile/earpiece';
+const _androidOutputPrefix = 'orex://android/audio-output/';
 
 bool get orexIsMobileNativePlatform {
   if (kIsWeb) return false;
@@ -12,10 +12,16 @@ bool get orexIsMobileNativePlatform {
       defaultTargetPlatform == TargetPlatform.iOS;
 }
 
-bool orexIsMobileRouteId(String? id) =>
-    id == orexMobileSpeakerOutputId || id == orexMobileEarpieceOutputId;
+bool get orexCanUseNativeAudioDevices {
+  if (kIsWeb) return false;
+  return defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.windows;
+}
 
-bool orexIsMobileSpeakerRouteId(String? id) => id == orexMobileSpeakerOutputId;
+bool orexIsAndroidOutputDeviceId(String? id) =>
+    id != null && id.startsWith(_androidOutputPrefix);
+
+bool orexIsMobileRouteId(String? id) => orexIsAndroidOutputDeviceId(id);
 
 class OrexAudioDevice {
   const OrexAudioDevice({
@@ -32,12 +38,13 @@ class OrexAudioDevice {
   bool get isOutput => kind == 'audiooutput';
 }
 
-/// Returns user-facing WebRTC devices and mobile call routes.
+List<OrexAudioDevice> _lastNonEmptyDevices = const [];
+
+/// Returns audio devices that are actually useful to the settings UI.
 ///
-/// The settings screen renders its own "system default" rows, so WebRTC
-/// defaults/cached rows are filtered out. Android/iOS do not expose stable
-/// WebRTC sink IDs for output routing, therefore mobile call routes are added
-/// as explicit synthetic options and are handled through LiveKit AudioManager.
+/// WebRTC is still the primary source for input devices. Android output routes
+/// and Windows output endpoints are read natively because flutter_webrtc can
+/// return an empty output list until a call is active on these platforms.
 Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
   bool requestPermission = false,
 }) async {
@@ -54,43 +61,56 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
   }
 
   try {
-    final rawDevices = await rtc.navigator.mediaDevices.enumerateDevices();
-    final byId = <String, OrexAudioDevice>{};
+    final rawDevices = await _enumerateWebRtcDevices();
+    final nativeDevices = orexCanUseNativeAudioDevices
+        ? _nativeDevicesFromMaps(await OrexNativeAudioDevices.enumerate())
+        : const <OrexAudioDevice>[];
+    final byKey = <String, OrexAudioDevice>{};
     final seenLabels = <String>{};
 
-    for (final raw in rawDevices) {
-      final device = _fromRawDevice(raw);
-      if (device == null) continue;
-      if (!_shouldShowDevice(device)) continue;
-
-      final idKey = '${device.kind}|${device.id}';
+    void addDevice(OrexAudioDevice device) {
+      if (!_shouldShowDevice(device)) return;
       final labelKey = '${device.kind}|${device.label.toLowerCase()}';
-      if (orexIsMobileNativePlatform && seenLabels.contains(labelKey)) continue;
+      final key = '${device.kind}|${device.id}';
 
-      byId[idKey] = device;
+      // Android WebRTC often exposes noisy low-level entries. Native routes are
+      // cleaner and update when a headset/Bluetooth device appears.
+      if (orexIsMobileNativePlatform &&
+          seenLabels.contains(labelKey) &&
+          !orexIsAndroidOutputDeviceId(device.id)) {
+        return;
+      }
+
+      byKey[key] = device;
       seenLabels.add(labelKey);
     }
 
-    if (orexIsMobileNativePlatform) {
-      for (final route in _mobileOutputRoutes()) {
-        byId['${route.kind}|${route.id}'] = route;
-      }
+    for (final raw in rawDevices) {
+      final device = _fromRawDevice(raw);
+      if (device != null) addDevice(device);
+    }
+    for (final device in nativeDevices) {
+      addDevice(device);
     }
 
-    final result = byId.values.toList()
+    final result = byKey.values.toList()
       ..sort((a, b) {
         final byKind = a.kind.compareTo(b.kind);
         if (byKind != 0) return byKind;
         return a.label.toLowerCase().compareTo(b.label.toLowerCase());
       });
+
+    if (result.isNotEmpty) _lastNonEmptyDevices = result;
+    final finalResult = result.isEmpty ? _lastNonEmptyDevices : result;
+
     OrexLog.d(
       'AudioDevices',
-      'enumerated total=${result.length} inputs=${result.where((d) => d.isInput).length} outputs=${result.where((d) => d.isOutput).length} permission=$requestPermission mobile=$orexIsMobileNativePlatform',
+      'enumerated total=${finalResult.length} inputs=${finalResult.where((d) => d.isInput).length} outputs=${finalResult.where((d) => d.isOutput).length} webrtc=${rawDevices.length} native=${nativeDevices.length} permission=$requestPermission mobile=$orexIsMobileNativePlatform',
     );
-    return result;
+    return finalResult;
   } catch (e) {
-    OrexLog.d('AudioDevices', 'navigator.mediaDevices enumerate failed', e);
-    return const [];
+    OrexLog.d('AudioDevices', 'enumerate failed', e);
+    return _lastNonEmptyDevices;
   } finally {
     for (final track in permissionStream?.getTracks() ?? <dynamic>[]) {
       try {
@@ -99,6 +119,25 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
     }
   }
 }
+
+Future<List<dynamic>> _enumerateWebRtcDevices() async {
+  try {
+    return await rtc.navigator.mediaDevices.enumerateDevices();
+  } catch (e) {
+    OrexLog.d('AudioDevices', 'navigator.mediaDevices enumerate failed', e);
+    return const [];
+  }
+}
+
+
+List<OrexAudioDevice> _nativeDevicesFromMaps(List<Map<String, String>> raw) => [
+      for (final item in raw)
+        OrexAudioDevice(
+          id: item['id'] ?? '',
+          kind: item['kind'] ?? '',
+          label: item['label'] ?? '',
+        ),
+    ];
 
 OrexAudioDevice? _fromRawDevice(dynamic raw) {
   final id = _readString(raw, 'deviceId').trim();
@@ -114,14 +153,13 @@ bool _shouldShowDevice(OrexAudioDevice device) {
   if (id.isEmpty || id == 'default' || id == 'communications') return false;
 
   final label = device.label.trim();
-  // Unlabelled concrete ids are not useful to a user and usually mean the app
-  // has not obtained mic permission yet. The system default row remains usable.
   if (label.isEmpty) return false;
 
-  // Android can expose several low-level AudioDeviceInfo entries whose labels
-  // are just build/model codes with numeric ids. They are not stable WebRTC
-  // deviceIds for LiveKit and make the settings look like a debug dump.
-  if (orexIsMobileNativePlatform && _looksLikeAndroidHardwareCode(label)) return false;
+  if (orexIsMobileNativePlatform &&
+      !orexIsAndroidOutputDeviceId(device.id) &&
+      _looksLikeAndroidHardwareCode(label)) {
+    return false;
+  }
 
   return true;
 }
@@ -179,16 +217,3 @@ bool _looksLikeAndroidHardwareCode(String label) {
   }
   return RegExp(r'^(?=.*\d)[A-Z0-9._-]{5,}$').hasMatch(normalized);
 }
-
-List<OrexAudioDevice> _mobileOutputRoutes() => const [
-      OrexAudioDevice(
-        id: orexMobileSpeakerOutputId,
-        kind: 'audiooutput',
-        label: 'Динамик телефона',
-      ),
-      OrexAudioDevice(
-        id: orexMobileEarpieceOutputId,
-        kind: 'audiooutput',
-        label: 'Разговорный динамик / гарнитура',
-      ),
-    ];

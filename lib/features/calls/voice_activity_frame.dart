@@ -17,9 +17,8 @@ bool orexParticipantVoiceActive(
   MatrixService matrix, {
   double? levelDb,
 }) {
-  if (!matrix.audio.speakingThresholdEnabled) {
-    return participant.isSpeaking;
-  }
+  if (!participant.isSpeaking) return false;
+  if (!matrix.audio.speakingThresholdEnabled) return true;
   final db = levelDb ?? orexAudioLevelToDb(participant.audioLevel);
   return db >= matrix.audio.speakingThresholdDb;
 }
