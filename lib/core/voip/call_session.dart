@@ -70,13 +70,13 @@ class CallSession extends ChangeNotifier {
   Timer? _mediaRecoveryTimer;
   String? _lastAppliedInputDeviceId;
   String? _lastAppliedCameraDeviceId;
+  String? _lastRequestedCameraDeviceId;
   rec.AudioRecorder? _voiceGateRecorder;
   StreamSubscription<Uint8List>? _voiceGatePcmSub;
   bool _voiceGateStarting = false;
   bool _voiceGateAppliedMuted = false;
   bool speakerMuted = false;
   bool _voiceGateTrackAccessFailed = false;
-  int _cameraCycleCursor = -1;
   int _lastRemoteParticipantCount = 0;
   DateTime _lastVoiceAboveThreshold = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -963,6 +963,7 @@ class CallSession extends ChangeNotifier {
 
     final nextCameraId = _normalizedCameraDeviceId();
     if (!force && nextCameraId == _lastAppliedCameraDeviceId) return;
+    if (nextCameraId != null && await _switchActiveCameraTrack(nextCameraId)) return;
 
     try {
       await lp.setCameraEnabled(false);
@@ -978,40 +979,135 @@ class CallSession extends ChangeNotifier {
   }
 
   Future<void> selectCameraDevice(String? deviceId) async {
-    final normalized = deviceId?.trim();
-    _cameraCycleCursor = -1;
-    final sink = cameraDeviceIdSink;
-    if (sink != null) {
-      await sink(normalized == null || normalized.isEmpty ? null : normalized);
+    final normalized = _normalizeSelectedDeviceId(deviceId);
+    await _saveCameraDeviceId(normalized);
+    if (normalized != null && await _switchActiveCameraTrack(normalized)) {
+      if (!_disposed) notifyListeners();
+      return;
     }
     await _restartCameraIfInputChanged(force: true);
     if (!_disposed) notifyListeners();
   }
 
-  Future<void> cycleCameraDevice(List<String> deviceIds) async {
-    final ids = [
-      for (final id in deviceIds.map((id) => id.trim()))
-        if (id.isNotEmpty) id,
-    ];
-    if (ids.isEmpty) return;
-    final current = _normalizedCameraDeviceId();
-    var index = current == null ? _cameraCycleCursor : ids.indexOf(current);
-    if (index < 0) {
-      // При системной камере LiveKit обычно уже использует первое устройство.
-      // Поэтому первый cycle должен перейти на следующее, а не включить то же самое.
-      index = ids.length == 1 ? 0 : 0;
+  Future<void> cycleCameraDevice(List<OrexAudioDevice> devices) async {
+    final ids = <String>[];
+    for (final device in devices) {
+      final id = device.id.trim();
+      if (id.isNotEmpty && !ids.contains(id)) ids.add(id);
     }
+    if (ids.isEmpty) return;
+
+    final activeTrackId = _currentCameraDeviceIdFromTrack();
+    final current = _normalizedCameraDeviceId() ??
+        _lastRequestedCameraDeviceId ??
+        activeTrackId;
+    var index = current == null ? 0 : ids.indexOf(current);
+    if (index < 0) index = 0;
     final nextIndex = ids.length == 1 ? 0 : (index + 1) % ids.length;
-    _cameraCycleCursor = nextIndex;
     final next = ids[nextIndex];
-    final sink = cameraDeviceIdSink;
-    if (sink != null) await sink(next);
+    await _saveCameraDeviceId(next);
+    if (await _switchActiveCameraTrack(next)) {
+      if (!_disposed) notifyListeners();
+      return;
+    }
     await _restartCameraIfInputChanged(force: true);
     if (!_disposed) notifyListeners();
+  }
+
+  String? _normalizeSelectedDeviceId(String? deviceId) {
+    final normalized = deviceId?.trim();
+    if (normalized == null || normalized.isEmpty || normalized == 'default') {
+      return null;
+    }
+    return normalized;
+  }
+
+  Future<void> _saveCameraDeviceId(String? deviceId) async {
+    _lastRequestedCameraDeviceId = deviceId;
+    final sink = cameraDeviceIdSink;
+    if (sink != null) await sink(deviceId);
+  }
+
+  Future<bool> _switchActiveCameraTrack(String deviceId) async {
+    final lp = _room?.localParticipant;
+    if (lp == null || !lp.isCameraEnabled() || !canPublishMedia) return false;
+    final track = _localCameraTrack();
+    if (track == null) return false;
+    try {
+      await lk.LocalVideoTrackExt(track).switchCamera(deviceId, fastSwitch: true);
+      _lastAppliedCameraDeviceId = deviceId;
+      cameraError = null;
+      OrexLog.d('Call', 'camera switched via LiveKit track device=$deviceId');
+      return true;
+    } catch (e) {
+      OrexLog.d('Call', 'camera fast switch failed device=$deviceId', e);
+      return false;
+    }
+  }
+
+  lk.LocalVideoTrack? _localCameraTrack() {
+    final lp = _room?.localParticipant;
+    if (lp == null) return null;
+    for (final pub in _localVideoPublications(lp)) {
+      if (_readDynamic(pub, 'source') != lk.TrackSource.camera) continue;
+      final track = _readDynamic(pub, 'track');
+      if (track is lk.LocalVideoTrack) return track;
+      if (pub is lk.LocalVideoTrack) return pub;
+    }
+    return null;
+  }
+
+  Iterable<dynamic> _localVideoPublications(lk.LocalParticipant lp) sync* {
+    final dynamic dynamicParticipant = lp;
+    try {
+      yield* _dynamicValues(dynamicParticipant.videoTrackPublications);
+    } catch (_) {}
+    try {
+      yield* _dynamicValues(dynamicParticipant.trackPublications);
+    } catch (_) {}
+  }
+
+  String? _currentCameraDeviceIdFromTrack() {
+    final track = _localCameraTrack();
+    if (track == null) return null;
+    for (final candidate in [
+      _readDynamic(track, 'mediaStreamTrack'),
+      _readDynamic(track, 'rtcTrack'),
+      _readDynamic(track, 'track'),
+      track,
+    ]) {
+      try {
+        final settings = candidate.getSettings();
+        if (settings is Map) {
+          final id = settings['deviceId'] ?? settings['device_id'];
+          final normalized = _normalizeSelectedDeviceId(id?.toString());
+          if (normalized != null) return normalized;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  Future<void> _clearLocalVoiceUiState() async {
+    final userId = client.userID;
+    if (userId == null || userId.isEmpty) return;
+    final state = localVoiceState;
+    if (!handRaised && !state.handRaised && state.reaction == null) return;
+    handRaised = false;
+    _reactionClearTimer?.cancel();
+    _reactionClearTimer = null;
+    _voiceStates[userId] = state.copyWith(
+      handRaised: false,
+      clearReaction: true,
+    );
+    try {
+      await _publishVoiceParticipantState();
+    } catch (_) {}
   }
 
   Future<void> hangUp() async {
     status = CallStatus.ended;
+    await _clearLocalVoiceUiState();
     _voiceStateRefreshTimer?.cancel();
     _voiceStateRefreshTimer = null;
     _mediaRecoveryTimer?.cancel();
@@ -1114,12 +1210,15 @@ class VoiceParticipantState {
 
   factory VoiceParticipantState.fromContent(Map<dynamic, dynamic>? content) {
     if (content == null) return const VoiceParticipantState();
+    final reactionTs = content['reaction_ts'] is num
+        ? (content['reaction_ts'] as num).toInt()
+        : null;
+    final reactionFresh = reactionTs != null &&
+        DateTime.now().millisecondsSinceEpoch - reactionTs < 6000;
     return VoiceParticipantState(
       handRaised: content['hand_raised'] == true,
-      reaction: content['reaction']?.toString(),
-      reactionTs: content['reaction_ts'] is num
-          ? (content['reaction_ts'] as num).toInt()
-          : null,
+      reaction: reactionFresh ? content['reaction']?.toString() : null,
+      reactionTs: reactionFresh ? reactionTs : null,
     );
   }
 

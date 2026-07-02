@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
 
 import 'core/config/orex_config.dart';
+import 'core/config/app_version.dart';
 import 'core/storage/database.dart';
 import 'core/matrix/matrix_service.dart';
 import 'core/logging/orex_logger.dart';
@@ -51,6 +52,7 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
   late final Future<_Services> _future = _init();
 
   Future<_Services> _init() async {
+    OrexLog.d('Bootstrap', 'starting Orex Messenger $orexAppVersionLabel');
     OrexConfig.validateSecurity();
     try {
       await vod.init().timeout(const Duration(seconds: 6));

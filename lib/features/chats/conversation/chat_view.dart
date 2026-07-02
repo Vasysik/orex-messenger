@@ -68,6 +68,7 @@ class _ChatViewState extends State<ChatView> {
   String? _lastReportedSupergroupChildId;
 
   List<ChatItem> _chatItems = [];
+  bool _showingCachedTimeline = false;
 
   @override
   void initState() {
@@ -162,6 +163,7 @@ class _ChatViewState extends State<ChatView> {
 
       if (mounted) {
         setState(() {
+          widget.matrix.cacheTimelineEvents(widget.roomId, timeline.events);
           _buildChatItems(timeline.events);
         });
       }
@@ -205,10 +207,22 @@ class _ChatViewState extends State<ChatView> {
       if (mounted) setState(() => _room = room);
       return;
     }
+    final cached = widget.matrix.cachedTimelineEvents(room.id);
+    if (cached.isNotEmpty && mounted) {
+      setState(() {
+        _room = room;
+        _showingCachedTimeline = true;
+        _buildChatItems(cached);
+      });
+    }
+
     final timeline = await room.getTimeline(onUpdate: () {
+      final events = _timeline?.events ?? const <Event>[];
+      if (events.isNotEmpty) widget.matrix.cacheTimelineEvents(room.id, events);
       if (mounted) {
         setState(() {
-          _buildChatItems(_timeline?.events ?? []);
+          _showingCachedTimeline = false;
+          _buildChatItems(events);
         });
       }
       _markRead(room);
@@ -218,7 +232,9 @@ class _ChatViewState extends State<ChatView> {
       setState(() {
         _room = room;
         _timeline = timeline;
+        _showingCachedTimeline = false;
         _noMoreHistory = false;
+        widget.matrix.cacheTimelineEvents(room.id, timeline.events);
         _buildChatItems(timeline.events);
       });
       _loadMoreHistory();
@@ -517,7 +533,11 @@ class _ChatViewState extends State<ChatView> {
   void dispose() {
     widget.matrix.removeListener(_onMatrix);
     _scroll.removeListener(_scrollListener);
-    _timeline?.cancelSubscriptions();
+    final timeline = _timeline;
+    if (timeline != null) {
+      widget.matrix.cacheTimelineEvents(widget.roomId, timeline.events);
+    }
+    timeline?.cancelSubscriptions();
     _input.dispose();
     _scroll.dispose();
     _focusNode.dispose();
@@ -656,13 +676,16 @@ class _ChatViewState extends State<ChatView> {
       return _buildSupergroup(room);
     }
 
-    if (_timeline == null) {
+    if (_timeline == null && _chatItems.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
 
     final myId = widget.matrix.client.userID;
+    final liveTimeline = _timeline;
 
-    _buildChatItems(_timeline!.events);
+    if (liveTimeline != null) {
+      _buildChatItems(liveTimeline.events);
+    }
 
     return DropTarget(
       onDragDone: (details) async {
@@ -711,6 +734,17 @@ class _ChatViewState extends State<ChatView> {
                   onJoin: () => _openCall(false),
                 ),
               ),
+            if (_showingCachedTimeline)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                color: OrexColors.copper.withValues(alpha: 0.10),
+                child: const Text(
+                  'Показываем кэш, обновляем ленту…',
+                  style: TextStyle(fontSize: 12),
+                  textAlign: TextAlign.center,
+                ),
+              ),
             Expanded(
               child: ListView.builder(
                 controller: _scroll,
@@ -743,14 +777,14 @@ class _ChatViewState extends State<ChatView> {
                       event: item.leader,
                       isMine: item.leader.senderId == myId,
                       showSender: !room.isDirectChat,
-                      timeline: _timeline,
+                      timeline: liveTimeline,
                       myUserId: myId,
                       onReact: (emoji) =>
                           room.sendReaction(item.leader.eventId, emoji),
                       onRedact: (rid) => room.redactEvent(rid),
-                      onEdit: () => _startEdit(item.leader),
+                      onEdit: liveTimeline == null ? null : () => _startEdit(item.leader),
                       onDelete: () => room.redactEvent(item.leader.eventId),
-                      onReply: () => _startReply(item.leader),
+                      onReply: liveTimeline == null ? null : () => _startReply(item.leader),
                       onOpenRoomReference: _openRoomReference,
                       onCancelSend: () async {
                         try {
@@ -768,14 +802,14 @@ class _ChatViewState extends State<ChatView> {
                       event: item.event,
                       isMine: item.event.senderId == myId,
                       showSender: !room.isDirectChat,
-                      timeline: _timeline,
+                      timeline: liveTimeline,
                       myUserId: myId,
                       onReact: (emoji) =>
                           room.sendReaction(item.event.eventId, emoji),
                       onRedact: (rid) => room.redactEvent(rid),
-                      onEdit: () => _startEdit(item.event),
+                      onEdit: liveTimeline == null ? null : () => _startEdit(item.event),
                       onDelete: () => room.redactEvent(item.event.eventId),
-                      onReply: () => _startReply(item.event),
+                      onReply: liveTimeline == null ? null : () => _startReply(item.event),
                       onOpenRoomReference: _openRoomReference,
                       onCancelSend: () async {
                         try {

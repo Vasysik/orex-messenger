@@ -60,8 +60,6 @@ class _CallScreenState extends State<CallScreen> {
 
   Future<void> _hangup() async {
     await _call.hangUp();
-    if (!mounted) return;
-    Navigator.of(context).maybePop();
   }
 
   Future<void> _showReactions(CallSession session) async {
@@ -356,7 +354,7 @@ class _CallScreenState extends State<CallScreen> {
   Future<void> _cycleCamera(CallSession session) async {
     final cameras = await enumerateOrexCameraDevices(requestPermission: true);
     if (cameras.isEmpty) return;
-    await session.cycleCameraDevice([for (final camera in cameras) camera.id]);
+    await session.cycleCameraDevice(cameras);
   }
 
   Widget _cameraNote() => Container(
@@ -692,7 +690,7 @@ class _ParticipantTile extends StatelessWidget {
       preferScreenShare: preferScreenShare,
     );
     final micMuted = orexParticipantMicMuted(participant);
-    final locallyMuted = speakerMuted && participant is! lk.LocalParticipant;
+    final locallyMuted = speakerMuted && participant is lk.LocalParticipant;
     final statusBadgeCount = (micMuted ? 1 : 0) + (locallyMuted ? 1 : 0);
     final cameraButtonBottom = statusBadgeCount == 0
         ? 8.0
@@ -805,7 +803,7 @@ class _ParticipantTile extends StatelessWidget {
                         if (micMuted) const SizedBox(height: 6),
                         const _TileStatusBadge(
                           icon: Icons.volume_off,
-                          tooltip: 'Звук участника замьючен у вас',
+                          tooltip: 'Вы выключили звук звонка у себя',
                         ),
                       ],
                     ],

@@ -40,6 +40,7 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
   static const double _miniTileGap = 6;
 
   double? _tilesHeight; // null → дефолт = 1/3 высоты экрана
+  double? _dragStartTilesHeight;
   final GlobalKey _reactionButtonKey = GlobalKey();
   final Map<String, bool> _preferScreenShareByIdentity = <String, bool>{};
 
@@ -332,7 +333,7 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
   Future<void> _cycleCamera(CallSession session) async {
     final cameras = await enumerateOrexCameraDevices(requestPermission: true);
     if (cameras.isEmpty) return;
-    await session.cycleCameraDevice([for (final camera in cameras) camera.id]);
+    await session.cycleCameraDevice(cameras);
   }
 
   /// Нижняя кромка-«ручка»: тянуть вверх/вниз, чтобы менять высоту плиток.
@@ -344,15 +345,24 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
       cursor: SystemMouseCursors.resizeUpDown,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
+        onVerticalDragStart: (_) {
+          _dragStartTilesHeight = _tilesHeight ?? (MediaQuery.sizeOf(context).height / 3);
+        },
         onVerticalDragUpdate: (d) {
           final base = _tilesHeight ?? (MediaQuery.sizeOf(context).height / 3);
           final next = (base + d.delta.dy).clamp(minH, maxH).toDouble();
           if (next >= maxH * 0.96 && d.delta.dy > 0) {
+            final restoreHeight = (_dragStartTilesHeight ?? (MediaQuery.sizeOf(context).height / 3))
+                .clamp(minH, maxH)
+                .toDouble();
+            setState(() => _tilesHeight = restoreHeight);
             widget.onExpand();
             return;
           }
           setState(() => _tilesHeight = next);
         },
+        onVerticalDragEnd: (_) => _dragStartTilesHeight = null,
+        onVerticalDragCancel: () => _dragStartTilesHeight = null,
         child: Container(
           height: 16,
           alignment: Alignment.center,
@@ -712,7 +722,7 @@ class _MiniTile extends StatelessWidget {
       preferScreenShare: preferScreenShare,
     );
     final micMuted = orexParticipantMicMuted(participant);
-    final locallyMuted = speakerMuted && participant is! lk.LocalParticipant;
+    final locallyMuted = speakerMuted && participant is lk.LocalParticipant;
     final statusBadgeCount = (micMuted ? 1 : 0) + (locallyMuted ? 1 : 0);
     final cameraButtonBottom = statusBadgeCount == 0
         ? 8.0
@@ -794,7 +804,7 @@ class _MiniTile extends StatelessWidget {
                     if (micMuted) const SizedBox(height: 5),
                     const _MiniTileStatusBadge(
                       icon: Icons.volume_off,
-                      tooltip: 'Звук участника замьючен у вас',
+                      tooltip: 'Вы выключили звук звонка у себя',
                     ),
                   ],
                 ],

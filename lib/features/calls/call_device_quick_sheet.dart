@@ -99,6 +99,9 @@ Future<void> showOrexCameraQuickSheet(
     ],
   );
   if (picked == null) return;
-  await matrix.audio.setCameraDeviceId(picked);
-  await session?.syncAudioSettingsFromSettings();
+  if (session != null) {
+    await session.selectCameraDevice(picked);
+  } else {
+    await matrix.audio.setCameraDeviceId(picked);
+  }
 }

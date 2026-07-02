@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart';
 
 import '../../core/matrix/matrix_service.dart';
+import '../../core/config/app_version.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/theme/theme_controller.dart';
@@ -447,6 +448,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       builder: (_) => DevicesScreen(matrix: widget.matrix),
                     ),
                   ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 16),
+            OrexSettingsSection(
+              title: 'О приложении',
+              children: const [
+                OrexSettingsTile(
+                  icon: Icons.info_outline,
+                  title: 'Orex Messenger',
+                  subtitle: 'Версия $orexAppVersion · сборка $orexAppBuildNumber',
                 ),
               ],
             ),
