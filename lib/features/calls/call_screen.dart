@@ -1,15 +1,17 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
 // Прячем matrix-овский CallSession — у нас свой одноимённый класс (медиа).
 import 'package:matrix/matrix.dart' hide CallSession;
 
-import '../../core/voip/call_controller.dart';
 import '../../core/matrix/matrix_service.dart';
+import '../../core/voip/call_controller.dart';
+import '../../core/voip/call_session.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/mxc_avatar.dart';
 import '../../shared/widgets/squirrel_mascot.dart';
-import '../../core/voip/call_session.dart';
+import 'screen_source_picker.dart';
 
 /// Наш собственный экран звонка поверх LiveKit (стек Element Call / MatrixRTC).
 /// Сам звонок живёт в [CallController] (matrix.call) — экран лишь отображает его,
@@ -26,6 +28,7 @@ class CallScreen extends StatefulWidget {
 class _CallScreenState extends State<CallScreen> {
   CallController get _call => widget.matrix.call;
   CallSession? get _session => _call.session;
+  final GlobalKey _reactionButtonKey = GlobalKey();
 
   @override
   void dispose() {
@@ -46,6 +49,58 @@ class _CallScreenState extends State<CallScreen> {
     if (mounted) Navigator.of(context).pop();
   }
 
+  Future<void> _showReactions(CallSession session) async {
+    final emoji = await _showReactionPopup(_reactionButtonKey);
+    if (emoji == null) return;
+    await widget.matrix.audio.playReaction();
+    await session.sendVoiceReaction(emoji);
+  }
+
+  Future<String?> _showReactionPopup(GlobalKey anchorKey) {
+    return _showReactionMenu(context, anchorKey);
+  }
+
+  Future<void> _toggleScreenShare(CallSession session) async {
+    if (session.screenShareOn) {
+      await session.toggleScreenShare();
+      return;
+    }
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      await session.toggleScreenShare();
+      return;
+    }
+    String? sourceId;
+    var allowDesktopDefault = false;
+    if (orexNeedsScreenSourcePicker) {
+      sourceId = await showOrexScreenSourcePicker(context);
+      if (sourceId == null) return;
+      allowDesktopDefault = orexIsDefaultScreenSourceId(sourceId);
+      if (allowDesktopDefault) sourceId = null;
+    }
+    await session.toggleScreenShare(
+      sourceId: sourceId,
+      allowDesktopDefault: allowDesktopDefault,
+    );
+  }
+
+  bool _canGrantVoice(Room? room, String userId, VoiceParticipantState state) {
+    if (room == null || !state.handRaised) return false;
+    if (userId == widget.matrix.client.userID) return false;
+    return widget.matrix.isChannel(room) &&
+        widget.matrix.canManageRoomSettings(room) &&
+        !widget.matrix.canSpeakInVoice(room, userId);
+  }
+
+  Future<void> _grantVoice(Room room, String userId) async {
+    await widget.matrix.grantVoiceInChannel(room, userId);
+    await widget.matrix.call.refreshVoicePermissions();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Голос выдан')),
+    );
+  }
+
+
   @override
   Widget build(BuildContext context) {
     return AmbientBackground(
@@ -65,7 +120,7 @@ class _CallScreenState extends State<CallScreen> {
               }
               return Column(
                 children: [
-                  _topBar(),
+                  _topBar(s),
                   Expanded(child: _body(s)),
                   if (s.status == CallStatus.connected) _controls(s),
                 ],
@@ -77,7 +132,7 @@ class _CallScreenState extends State<CallScreen> {
     );
   }
 
-  Widget _topBar() => Padding(
+  Widget _topBar(CallSession session) => Padding(
         padding: const EdgeInsets.all(12),
         child: Row(
           children: [
@@ -87,7 +142,18 @@ class _CallScreenState extends State<CallScreen> {
               onPressed: () => Navigator.of(context).maybePop(),
             ),
             const SizedBox(width: 4),
-            Text('Звонок', style: Theme.of(context).textTheme.titleMedium),
+            Expanded(
+              child: Text(
+                session.listenOnly ? 'Голосовой канал · просмотр' : 'Звонок',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+            if (session.listenOnly)
+              const Tooltip(
+                message: 'В каналах обычные участники входят без микрофона. '
+                    'Чтобы попросить слово, поднимите руку.',
+                child: Icon(Icons.visibility, color: OrexColors.copper),
+              ),
           ],
         ),
       );
@@ -126,31 +192,60 @@ class _CallScreenState extends State<CallScreen> {
         return const Center(child: Text('Звонок завершён'));
       case CallStatus.connected:
         final people = session.participants;
-        if (people.length <= 1) {
-          return Column(
-            children: [
-              if (session.cameraError != null) _cameraNote(),
-              const Expanded(
-                child: Center(
-                  child:
-                      SquirrelMascot(size: 120, caption: 'Ожидаем собеседника…'),
-                ),
-              ),
-            ],
-          );
-        }
         final room = widget.matrix.client.getRoomById(_call.roomId ?? '');
         return Column(
           children: [
             if (session.cameraError != null) _cameraNote(),
-            Expanded(child: _grid(people, room)),
+            if (session.error != null) _callNote(session.error!),
+            if (!session.canPublishMedia) _listenOnlyNote(),
+            Expanded(
+              child: people.isEmpty
+                  ? const Center(
+                      child: SquirrelMascot(
+                        size: 120,
+                        caption: 'Ожидаем участников…',
+                      ),
+                    )
+                  : _grid(session, people, room),
+            ),
           ],
         );
     }
   }
 
   /// Адаптивная сетка участников, заполняющая доступную область без прокрутки.
-  Widget _grid(List<lk.Participant> people, Room? room) {
+  Widget _grid(CallSession session, List<lk.Participant> people, Room? room) {
+    lk.Participant? pinned;
+    final focused = _call.focusedParticipantIdentity;
+    if (focused != null) {
+      for (final p in people) {
+        if (p.identity == focused) {
+          pinned = p;
+          break;
+        }
+      }
+    }
+    if (pinned != null) {
+      final userId = _matrixUserId(pinned.identity);
+      final state = session.voiceStateForUser(userId);
+      return Padding(
+        padding: const EdgeInsets.all(8),
+        child: _ParticipantTile(
+          participant: pinned,
+          matrix: widget.matrix,
+          room: room,
+          voiceState: state,
+          zoomable: true,
+          cornerIcon: Icons.close_fullscreen,
+          cornerTooltip: 'Отменить приближение плитки',
+          onCornerTap: () => _call.focusParticipant(null),
+          onGrantVoice: _canGrantVoice(room, userId, state)
+              ? () => _grantVoice(room!, userId)
+              : null,
+        ),
+      );
+    }
+
     final cols = people.length <= 1 ? 1 : 2;
     final rows = (people.length / cols).ceil();
     return Padding(
@@ -164,13 +259,28 @@ class _CallScreenState extends State<CallScreen> {
                   for (var c = 0; c < cols; c++)
                     Expanded(
                       child: r * cols + c < people.length
-                          ? Padding(
-                              padding: const EdgeInsets.all(4),
-                              child: _ParticipantTile(
-                                participant: people[r * cols + c],
-                                matrix: widget.matrix,
-                                room: room,
-                              ),
+                          ? Builder(
+                              builder: (_) {
+                                final p = people[r * cols + c];
+                                final userId = _matrixUserId(p.identity);
+                                final state = session.voiceStateForUser(userId);
+                                return Padding(
+                                  padding: const EdgeInsets.all(4),
+                                  child: _ParticipantTile(
+                                    participant: p,
+                                    matrix: widget.matrix,
+                                    room: room,
+                                    voiceState: state,
+                                    onTap: () => _call.focusParticipant(p.identity),
+                                    cornerIcon: Icons.open_in_full,
+                                    cornerTooltip: 'Приблизить плитку',
+                                    onCornerTap: () => _call.focusParticipant(p.identity),
+                                    onGrantVoice: _canGrantVoice(room, userId, state)
+                                        ? () => _grantVoice(room!, userId)
+                                        : null,
+                                  ),
+                                );
+                              },
                             )
                           : const SizedBox.shrink(),
                     ),
@@ -180,6 +290,11 @@ class _CallScreenState extends State<CallScreen> {
         ],
       ),
     );
+  }
+
+  String _matrixUserId(String identity) {
+    final m = RegExp(r'@[^:]+:[^:]+').firstMatch(identity);
+    return m?.group(0) ?? identity;
   }
 
   Widget _cameraNote() => Container(
@@ -196,22 +311,74 @@ class _CallScreenState extends State<CallScreen> {
         ),
       );
 
+  Widget _callNote(String text) => Container(
+        width: double.infinity,
+        margin: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFFE0A03A).withValues(alpha: 0.18),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text(text, style: const TextStyle(fontSize: 12)),
+      );
+
+  Widget _listenOnlyNote() => Container(
+        width: double.infinity,
+        margin: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: OrexColors.copper.withValues(alpha: 0.16),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Text(
+          'Режим просмотра: микрофон, камера и трансляция экрана недоступны. Поднимите руку, чтобы попросить голос.',
+          style: TextStyle(fontSize: 12),
+        ),
+      );
+
   Widget _controls(CallSession session) => Padding(
-        padding: const EdgeInsets.only(bottom: 24, top: 8),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
+        padding: const EdgeInsets.only(bottom: 24, top: 8, left: 16, right: 16),
+        child: Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 12,
+          runSpacing: 10,
           children: [
+            if (session.canPublishMedia) ...[
+              _round(
+                tooltip: 'Микрофон',
+                icon: session.micOn ? Icons.mic : Icons.mic_off,
+                onTap: () { session.toggleMic(); },
+              ),
+              _round(
+                tooltip: 'Камера',
+                icon: session.camOn ? Icons.videocam : Icons.videocam_off,
+                onTap: () { session.toggleCam(); },
+              ),
+              _round(
+                tooltip: 'Трансляция экрана',
+                icon: session.screenShareOn
+                    ? Icons.stop_screen_share
+                    : Icons.screen_share,
+                selected: session.screenShareOn,
+                onTap: () { _toggleScreenShare(session); },
+              ),
+            ],
             _round(
-              icon: session.micOn ? Icons.mic : Icons.mic_off,
-              onTap: session.toggleMic,
+              tooltip: session.handRaised ? 'Опустить руку' : 'Поднять руку',
+              icon: session.handRaised
+                  ? Icons.back_hand
+                  : Icons.back_hand_outlined,
+              selected: session.handRaised,
+              onTap: () { session.toggleHandRaised(); },
             ),
-            const SizedBox(width: 16),
             _round(
-              icon: session.camOn ? Icons.videocam : Icons.videocam_off,
-              onTap: session.toggleCam,
+              key: _reactionButtonKey,
+              tooltip: 'Реакция',
+              icon: Icons.emoji_emotions,
+              onTap: () { _showReactions(session); },
             ),
-            const SizedBox(width: 16),
             _round(
+              tooltip: 'Завершить',
               icon: Icons.call_end,
               background: const Color(0xFFCF6679),
               onTap: _hangup,
@@ -221,23 +388,58 @@ class _CallScreenState extends State<CallScreen> {
       );
 
   Widget _round({
+    Key? key,
     required IconData icon,
     required VoidCallback onTap,
+    String? tooltip,
     Color? background,
-  }) =>
-      GestureDetector(
-        onTap: onTap,
-        child: Container(
-          width: 58,
-          height: 58,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: background,
-            gradient: background == null ? OrexColors.copperGradient : null,
+    bool selected = false,
+  }) {
+    final child = MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: Material(
+        key: key,
+        color: Colors.transparent,
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkResponse(
+          containedInkWell: true,
+          highlightShape: BoxShape.circle,
+          radius: 32,
+          customBorder: const CircleBorder(),
+          hoverColor: Colors.white.withValues(alpha: 0.10),
+          splashColor: Colors.white.withValues(alpha: 0.16),
+          highlightColor: Colors.white.withValues(alpha: 0.08),
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 140),
+            width: 54,
+            height: 54,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: background,
+              gradient: background == null ? OrexColors.copperGradient : null,
+              border: selected
+                  ? Border.all(
+                      color: Colors.white.withValues(alpha: 0.8),
+                      width: 2,
+                    )
+                  : null,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.18),
+                  blurRadius: 10,
+                  offset: const Offset(0, 5),
+                ),
+              ],
+            ),
+            child: Icon(icon, color: OrexColors.cream),
           ),
-          child: Icon(icon, color: OrexColors.cream),
         ),
-      );
+      ),
+    );
+    return tooltip == null ? child : Tooltip(message: tooltip, child: child);
+  }
 }
 
 class _ParticipantTile extends StatelessWidget {
@@ -245,11 +447,25 @@ class _ParticipantTile extends StatelessWidget {
     required this.participant,
     required this.matrix,
     required this.room,
+    required this.voiceState,
+    this.onTap,
+    this.zoomable = false,
+    this.cornerIcon,
+    this.cornerTooltip,
+    this.onCornerTap,
+    this.onGrantVoice,
   });
 
   final lk.Participant participant;
   final MatrixService matrix;
   final Room? room;
+  final VoiceParticipantState voiceState;
+  final VoidCallback? onTap;
+  final bool zoomable;
+  final IconData? cornerIcon;
+  final String? cornerTooltip;
+  final VoidCallback? onCornerTap;
+  final VoidCallback? onGrantVoice;
 
   /// LiveKit identity у Element Call / lk-jwt-service — это `@user:server:device`.
   /// Достаём из него matrix-id, чтобы взять имя и аватар из комнаты.
@@ -274,44 +490,255 @@ class _ParticipantTile extends StatelessWidget {
     var name = user?.calcDisplayname() ?? userId;
     if (participant is lk.LocalParticipant) name = '$name · вы';
 
+    Widget media;
+    if (track != null) {
+      media = Container(
+        color: Colors.black,
+        alignment: Alignment.center,
+        child: lk.VideoTrackRenderer(track, fit: lk.VideoViewFit.contain),
+      );
+      if (zoomable) {
+        media = InteractiveViewer(
+          minScale: 1,
+          maxScale: 4,
+          child: media,
+        );
+      }
+    } else {
+      media = Container(
+        decoration: const BoxDecoration(gradient: OrexColors.copperGradient),
+        alignment: Alignment.center,
+        child: MxcAvatar(
+          matrix: matrix,
+          name: user?.calcDisplayname() ?? userId,
+          mxc: user?.avatarUrl,
+          size: zoomable ? 132 : 96,
+        ),
+      );
+    }
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(18),
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          if (track != null)
-            Container(
-              color: Colors.black,
-              alignment: Alignment.center,
-              child: lk.VideoTrackRenderer(track, fit: lk.VideoViewFit.contain),
-            )
-          else
-            Container(
-              decoration:
-                  const BoxDecoration(gradient: OrexColors.copperGradient),
-              alignment: Alignment.center,
-              child: MxcAvatar(
-                matrix: matrix,
-                name: user?.calcDisplayname() ?? userId,
-                mxc: user?.avatarUrl,
-                size: 96,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              media,
+              Positioned(
+                left: 8,
+                bottom: 8,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(name,
+                      style:
+                          const TextStyle(color: Colors.white, fontSize: 12)),
+                ),
               ),
-            ),
-          Positioned(
-            left: 8,
-            bottom: 8,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.4),
-                borderRadius: BorderRadius.circular(8),
+              if (cornerIcon != null && onCornerTap != null)
+                Positioned(
+                  left: 8,
+                  top: 8,
+                  child: _TileCornerButton(
+                    icon: cornerIcon!,
+                    tooltip: cornerTooltip ?? '',
+                    onTap: onCornerTap!,
+                  ),
+                ),
+              Positioned(
+                right: 8,
+                top: 8,
+                child: _VoiceStateBadges(
+                  handRaised: voiceState.handRaised,
+                  reaction: voiceState.reaction,
+                  onGrantVoice: onGrantVoice,
+                ),
               ),
-              child: Text(name,
-                  style: const TextStyle(color: Colors.white, fontSize: 12)),
-            ),
+            ],
           ),
-        ],
+        ),
       ),
     );
+  }
+
+}
+
+
+Future<String?> _showReactionMenu(BuildContext context, GlobalKey anchorKey) {
+  final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+  final button = anchorKey.currentContext?.findRenderObject() as RenderBox?;
+  if (overlay == null || button == null) return Future.value(null);
+
+  final topLeft = button.localToGlobal(Offset.zero, ancestor: overlay);
+  final bottomRight = button.localToGlobal(
+    button.size.bottomRight(Offset.zero),
+    ancestor: overlay,
+  );
+  final rect = Rect.fromPoints(topLeft, bottomRight);
+
+  return showMenu<String>(
+    context: context,
+    color: OrexColors.darkSurface.withValues(alpha: 0.98),
+    elevation: 18,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+    position: RelativeRect.fromLTRB(
+      rect.left,
+      rect.top - 8,
+      overlay.size.width - rect.right,
+      overlay.size.height - rect.top,
+    ),
+    items: [
+      PopupMenuItem<String>(
+        enabled: true,
+        padding: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: Wrap(
+            spacing: 6,
+            children: [
+              for (final emoji in const ['👍', '🔥', '😂', '❤️', '👏', '😮'])
+                _ReactionChoice(emoji: emoji),
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+class _ReactionChoice extends StatelessWidget {
+  const _ReactionChoice({required this.emoji});
+
+  final String emoji;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          hoverColor: OrexColors.copper.withValues(alpha: 0.14),
+          onTap: () => Navigator.pop(context, emoji),
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Text(emoji, style: const TextStyle(fontSize: 26)),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TileCornerButton extends StatelessWidget {
+  const _TileCornerButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final button = Material(
+      color: Colors.black.withValues(alpha: 0.45),
+      borderRadius: BorderRadius.circular(14),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          width: 38,
+          height: 38,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+          ),
+          child: Icon(icon, size: 18, color: Colors.white),
+        ),
+      ),
+    );
+    return Tooltip(message: tooltip, child: button);
+  }
+}
+
+class _VoiceStateBadges extends StatelessWidget {
+  const _VoiceStateBadges({
+    required this.handRaised,
+    required this.reaction,
+    this.onGrantVoice,
+  });
+
+  final bool handRaised;
+  final String? reaction;
+  final VoidCallback? onGrantVoice;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (reaction != null) _badge(text: reaction!, tooltip: 'Реакция'),
+        if (handRaised) ...[
+          if (reaction != null) const SizedBox(width: 6),
+          _badge(text: '✋', tooltip: 'Просит голос'),
+        ],
+        if (onGrantVoice != null) ...[
+          if (handRaised || reaction != null) const SizedBox(width: 6),
+          _badge(
+            icon: Icons.record_voice_over,
+            tooltip: 'Дать голос',
+            onTap: onGrantVoice,
+            accent: true,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _badge({
+    IconData? icon,
+    String? text,
+    required String tooltip,
+    VoidCallback? onTap,
+    bool accent = false,
+  }) {
+    final child = Container(
+      constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+      alignment: Alignment.center,
+      padding: const EdgeInsets.all(7),
+      decoration: BoxDecoration(
+        color: accent
+            ? OrexColors.copper.withValues(alpha: 0.90)
+            : Colors.black.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+      ),
+      child: icon != null
+          ? Icon(icon, color: Colors.white, size: 18)
+          : Text(text!, style: const TextStyle(fontSize: 22)),
+    );
+    final wrapped = onTap == null
+        ? child
+        : Material(
+            color: Colors.transparent,
+            borderRadius: BorderRadius.circular(14),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(onTap: onTap, child: child),
+          );
+    return Tooltip(message: tooltip, child: wrapped);
   }
 }

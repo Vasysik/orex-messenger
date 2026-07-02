@@ -193,6 +193,7 @@ class _OrexAppState extends State<OrexApp> {
       );
     });
     _incomingCallSub = widget.matrix.voip?.onIncomingCall.listen((room) {
+      widget.matrix.audio.startIncomingRingtone();
       final ctx = _navKey.currentContext;
       if (ctx == null || !ctx.mounted) return;
       final call = widget.matrix.call;

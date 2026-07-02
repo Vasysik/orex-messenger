@@ -9,6 +9,7 @@ import '../../shared/theme/orex_theme.dart';
 import '../../shared/theme/theme_controller.dart';
 import '../../shared/widgets/mxc_avatar.dart';
 import '../../shared/widgets/orex_settings_components.dart';
+import 'audio_devices_screen.dart';
 import 'devices_screen.dart';
 import 'key_storage_screen.dart';
 import 'verify_session_screen.dart';
@@ -365,6 +366,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
               title: 'Оформление',
               children: [
                 _ThemeSelector(theme: widget.theme),
+              ],
+            ),
+            const SizedBox(height: 16),
+            OrexSettingsSection(
+              title: 'Звук и звонки',
+              children: [
+                OrexSettingsTile(
+                  icon: Icons.settings_voice,
+                  title: 'Аудиоустройства',
+                  subtitle: 'Микрофон, вывод звука и проверка устройств',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => AudioDevicesScreen(matrix: widget.matrix),
+                    ),
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 16),

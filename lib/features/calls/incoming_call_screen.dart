@@ -40,6 +40,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     _dismissSub = widget.matrix.voip?.onDismissIncoming.listen((callId) {
       if (callId == _callId && mounted) Navigator.of(context).maybePop();
     });
+    widget.matrix.audio.startIncomingRingtone();
     widget.matrix.addListener(_onMatrix);
   }
 
@@ -52,6 +53,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
 
   @override
   void dispose() {
+    widget.matrix.audio.stopIncomingRingtone();
     _dismissSub?.cancel();
     widget.matrix.removeListener(_onMatrix);
     super.dispose();
@@ -60,12 +62,14 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   Future<void> _decline() async {
     // Закрыть входящий на других своих устройствах + сообщить инициатору, что
     // мы отклонили (он напишет «Отклонённый вызов»).
+    widget.matrix.audio.stopIncomingRingtone();
     await widget.matrix.voip?.markCallHandled(room.id, _callId);
     await widget.matrix.voip?.notifyRejected(room.id);
     if (mounted) Navigator.of(context).maybePop();
   }
 
   void _accept({required bool video}) {
+    widget.matrix.audio.stopIncomingRingtone();
     widget.matrix.voip?.markCallHandled(room.id, _callId);
     widget.matrix.call.start(room.id, video: video);
     final isWide = MediaQuery.sizeOf(context).width >= 900;

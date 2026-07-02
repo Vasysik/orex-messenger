@@ -68,6 +68,48 @@ extension MatrixRoomsApi on MatrixService {
     return null;
   }
 
+
+  bool canSpeakInVoice(Room room, String? userId) {
+    if (!isChannel(room)) return true;
+    if (userId == null || userId.isEmpty) return false;
+    if (userId == client.userID && canManageRoomSettings(room)) return true;
+    final state = room.getState(_orexVoicePermissionsEvent);
+    final users = state?.content['users'];
+    return users is Map && users[userId] == true;
+  }
+
+
+
+  Future<void> ensureVoiceParticipantStatePowerLevels(Room room) async {
+    if (!isChannel(room) || !canManageRoomSettings(room)) return;
+    try {
+      await _applyChannelPowerLevels(room);
+    } catch (e) {
+      _log('Rooms', 'ensure voice state power levels failed room=${room.id}', e);
+    }
+  }
+
+  Future<void> grantVoiceInChannel(Room room, String userId) async {
+    if (!canManageRoomSettings(room)) return;
+    final current = Map<String, Object?>.from(
+      room.getState(_orexVoicePermissionsEvent)?.content ??
+          const <String, Object?>{},
+    );
+    final users = Map<String, Object?>.from(
+      (current['users'] as Map?) ?? const <String, Object?>{},
+    );
+    users[userId] = true;
+    current['users'] = users;
+    await client.setRoomStateWithKey(
+      room.id,
+      _orexVoicePermissionsEvent,
+      '',
+      current,
+    );
+    _log('Rooms', 'grant voice room=${room.id} user=$userId');
+    _emitChange();
+  }
+
   bool canSendMessages(Room room) {
     if (room.canSendDefaultMessages) return true;
     // После создания канала локальный SDK иногда ещё не успел пересчитать

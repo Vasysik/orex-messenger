@@ -6,6 +6,7 @@ import 'package:matrix/encryption/utils/key_verification.dart';
 import 'package:matrix/encryption/utils/bootstrap.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../audio/audio_cue_service.dart';
 import '../voip/call_controller.dart';
 import '../logging/orex_logger.dart';
 import '../../domain/rooms/room_metadata.dart';
@@ -28,6 +29,8 @@ part 'matrix_media_api.dart';
 const _orexRoomKindEvent = 'ru.orex.room.kind';
 const _orexRoomIconEvent = 'ru.orex.room.icon';
 const _orexSpaceChildPreviewEvent = 'ru.orex.space.child.preview';
+const _orexVoicePermissionsEvent = 'ru.orex.voice.permissions';
+const _orexVoiceParticipantEvent = 'ru.orex.voice.participant';
 
 const _kLastBackup = 'orex_last_backup_ms';
 const _kAutoBackup = 'orex_auto_backup';
@@ -70,6 +73,9 @@ class MatrixService extends ChangeNotifier {
   /// Активный звонок (живёт поверх экранов — можно свернуть).
   late final CallController call = CallController(this);
 
+  /// Короткие звуки приложения: уведомления, входящий вызов, вход в голос.
+  late final AudioCueService audio = AudioCueService();
+
   /// Локально отслеживаемая версия бэкапа на сервере.
   /// null означает, что бэкап на сервере отсутствует или недоступен.
   String? _serverBackupVersion;
@@ -91,6 +97,9 @@ class MatrixService extends ChangeNotifier {
   final Map<String, Map<String, Map<String, Object?>>>
       _spaceChildPreviewOverrides = {};
   final Map<String, List<String>> _spaceChildOrderOverrides = {};
+
+  final Map<String, int> _notificationCounts = {};
+  bool _notificationSnapshotReady = false;
 
   /// Когда в последний раз ключи выгружались в бэкап (для показа в настройках).
   DateTime? lastBackup;
@@ -119,6 +128,7 @@ class MatrixService extends ChangeNotifier {
       waitForFirstSync: false, // покажем кэш сразу, не ждём сеть
     );
     client.onSync.stream.listen((_) {
+      _playNotificationCueIfNeeded();
       // Проверяем версию бэкапа только один раз после логина,
       // и только если пользователь не выключал его вручную в этой сессии.
       if (!_checkedServerBackup &&
@@ -134,6 +144,8 @@ class MatrixService extends ChangeNotifier {
       _checkedServerBackup = false;
       _serverBackupVersion = null;
       _backupDisabledByUser = false;
+      _notificationCounts.clear();
+      _notificationSnapshotReady = false;
       await _loadBackupPrefs();
       notifyListeners();
     });
@@ -160,6 +172,22 @@ class MatrixService extends ChangeNotifier {
     }
   }
 
+
+  void _playNotificationCueIfNeeded() {
+    if (!client.isLogged()) return;
+    var increased = false;
+    for (final room in client.rooms) {
+      final count = room.notificationCount;
+      final previous = _notificationCounts[room.id] ?? 0;
+      if (_notificationSnapshotReady && count > previous) {
+        increased = true;
+      }
+      _notificationCounts[room.id] = count;
+    }
+    _notificationSnapshotReady = true;
+    if (increased) audio.playNotification();
+  }
+
   /// Принудительно перерисовать слушателей (например, после завершения
   /// проверки сессии, чтобы плашка «не подтверждена» убралась без перезагрузки).
   void refresh() => notifyListeners();
@@ -178,6 +206,7 @@ class MatrixService extends ChangeNotifier {
   @override
   void dispose() {
     _autoBackupTimer?.cancel();
+    audio.dispose();
     client.dispose();
     super.dispose();
   }

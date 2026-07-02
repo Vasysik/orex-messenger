@@ -146,6 +146,12 @@ extension MatrixRoomAdminApi on MatrixService {
         : <String, Object?>{};
     events[EventTypes.Message] = 50;
     events[EventTypes.Encrypted] = 50;
+    // Голосовые реакции/поднятая рука — не сообщения и не настройки комнаты.
+    // Обычным участникам канала можно обновлять только свой voice-state,
+    // иначе listen-only пользователь не сможет попросить голос или отправить
+    // реакцию без права писать в чат.
+    events[_orexVoiceParticipantEvent] = 0;
+    events[_orexVoicePermissionsEvent] = 50;
     final rawUsers = current['users'];
     final users = rawUsers is Map
         ? Map<String, Object?>.from(

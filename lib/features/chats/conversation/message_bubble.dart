@@ -350,6 +350,27 @@ class MessageBubble extends StatelessWidget {
         ],
       );
     }
+
+    final voiceEvent = event.content['com.orex.voice_event'] as String?;
+    if (voiceEvent != null) {
+      final icon = switch (voiceEvent) {
+        'hand_raised' => Icons.pan_tool_alt,
+        'hand_lowered' => Icons.back_hand_outlined,
+        'reaction' => Icons.emoji_emotions,
+        _ => Icons.graphic_eq,
+      };
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 18, color: OrexColors.copper),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(body, style: TextStyle(color: textColor)),
+          ),
+        ],
+      );
+    }
+
     final outcome = event.content['com.orex.call_outcome'] as String?;
     if (outcome != null) {
       final color = switch (outcome) {

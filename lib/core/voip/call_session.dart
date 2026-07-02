@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -17,10 +18,21 @@ enum CallStatus { connecting, connected, failed, ended }
 /// lk-jwt-service одну и ту же LiveKit-комнату (она выводится из roomId),
 /// поэтому встречаются в одном звонке.
 class CallSession extends ChangeNotifier {
-  CallSession({required this.client, required this.matrixRoomId});
+  CallSession({
+    required this.client,
+    required this.matrixRoomId,
+    this.initialMicOn = true,
+    this.canUseMic = true,
+    this.listenOnly = false,
+    this.canUseMicNow,
+  });
 
   final Client client;
   final String matrixRoomId;
+  final bool initialMicOn;
+  bool canUseMic;
+  bool listenOnly;
+  final bool Function()? canUseMicNow;
 
   CallStatus status = CallStatus.connecting;
   String? error;
@@ -28,12 +40,29 @@ class CallSession extends ChangeNotifier {
   lk.Room? _room;
   lk.Room? get room => _room;
   bool _disposed = false;
+  bool screenShareOn = false;
+  bool handRaised = false;
+  final Map<String, VoiceParticipantState> _voiceStates = <String, VoiceParticipantState>{};
+  Timer? _reactionClearTimer;
+  Timer? _voiceStateRefreshTimer;
+
+  VoiceParticipantState voiceStateForUser(String userId) {
+    final cached = _voiceStates[userId];
+    if (cached != null) return cached;
+    final content =
+        client.getRoomById(matrixRoomId)?.getState('ru.orex.voice.participant', userId)?.content;
+    return VoiceParticipantState.fromContent(content);
+  }
+
+  VoiceParticipantState get localVoiceState =>
+      voiceStateForUser(client.userID ?? '');
 
   /// Подключался ли хоть кто-то ещё (для итогового сообщения «ответили/пропущен»).
   bool sawRemote = false;
 
   bool get micOn => _room?.localParticipant?.isMicrophoneEnabled() ?? false;
   bool get camOn => _room?.localParticipant?.isCameraEnabled() ?? false;
+  bool get canPublishMedia => canUseMic && !listenOnly;
 
   List<lk.Participant> get participants => [
         if (_room?.localParticipant != null) _room!.localParticipant!,
@@ -51,7 +80,7 @@ class CallSession extends ChangeNotifier {
       );
       await room.prepareConnection(creds.url, creds.jwt);
       await room.connect(creds.url, creds.jwt);
-      await room.localParticipant?.setMicrophoneEnabled(true);
+      await room.localParticipant?.setMicrophoneEnabled(initialMicOn);
       if (video) {
         // Камера может быть недоступна (занята другим окном/приложением —
         // NotReadableError). Не валим весь звонок: продолжаем со звуком.
@@ -70,6 +99,7 @@ class CallSession extends ChangeNotifier {
       }
       _room = room;
       room.addListener(_onRoom);
+      _startVoiceStateRefresh();
       status = CallStatus.connected;
       notifyListeners();
     } catch (e) {
@@ -88,16 +118,184 @@ class CallSession extends ChangeNotifier {
     notifyListeners();
   }
 
+
+  void _startVoiceStateRefresh() {
+    _voiceStateRefreshTimer?.cancel();
+    _voiceStateRefreshTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (_disposed || status != CallStatus.connected) return;
+      // Voice participant state comes from Matrix room state, not LiveKit
+      // media events. Poll lightly so remote hands/reactions appear in the
+      // call UI without writing them to the chat timeline. Permission changes
+      // are checked here too, so admins can accept a raised-hand request while
+      // the listener stays in the current channel call.
+      unawaited(refreshVoicePermissions());
+      notifyListeners();
+    });
+  }
+
+  Future<void> refreshVoicePermissions() async {
+    final checker = canUseMicNow;
+    if (checker == null || _disposed) return;
+    final nextCanUseMic = checker();
+    if (nextCanUseMic == canUseMic && listenOnly == !nextCanUseMic) return;
+
+    canUseMic = nextCanUseMic;
+    listenOnly = !nextCanUseMic;
+
+    final lp = _room?.localParticipant;
+    if (!nextCanUseMic && lp != null) {
+      try {
+        if (lp.isMicrophoneEnabled()) {
+          await lp.setMicrophoneEnabled(false);
+        }
+      } catch (_) {}
+      try {
+        if (lp.isCameraEnabled()) {
+          await lp.setCameraEnabled(false);
+        }
+      } catch (_) {}
+      if (screenShareOn) {
+        try {
+          await lp.setScreenShareEnabled(false);
+        } catch (_) {}
+        screenShareOn = false;
+      }
+    }
+
+    if (nextCanUseMic && handRaised) {
+      final userId = client.userID;
+      if (userId != null && userId.isNotEmpty) {
+        handRaised = false;
+        _voiceStates[userId] = localVoiceState.copyWith(handRaised: false);
+        await _publishVoiceParticipantState();
+      }
+    }
+
+    if (nextCanUseMic && error == 'В режиме просмотра трансляция экрана недоступна') {
+      error = null;
+    }
+    if (!_disposed) notifyListeners();
+  }
+
   Future<void> toggleMic() async {
     final lp = _room?.localParticipant;
     if (lp == null) return;
+    if (!canPublishMedia) return;
     await lp.setMicrophoneEnabled(!lp.isMicrophoneEnabled());
     if (!_disposed) notifyListeners();
+  }
+
+
+  Future<void> toggleScreenShare({
+    String? sourceId,
+    bool allowDesktopDefault = false,
+  }) async {
+    final lp = _room?.localParticipant;
+    if (lp == null) return;
+    try {
+      // Android media projection requires native foreground-service wiring
+      // outside lib/. До этого не открываем системный picker, чтобы не ловить
+      // native crash после выбора экрана.
+      if (!canPublishMedia) {
+        error = 'В режиме просмотра трансляция экрана недоступна';
+        if (!_disposed) notifyListeners();
+        return;
+      }
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        error = 'Трансляция экрана на Android будет реализована позже';
+        if (!_disposed) notifyListeners();
+        return;
+      }
+      final next = !screenShareOn;
+      if (next &&
+          sourceId == null &&
+          _desktopNeedsExplicitSource &&
+          !allowDesktopDefault) {
+        error = 'Выберите источник экрана';
+        if (!_disposed) notifyListeners();
+        return;
+      }
+
+      await lp.setScreenShareEnabled(
+        next,
+        screenShareCaptureOptions: next && sourceId != null
+            ? lk.ScreenShareCaptureOptions(sourceId: sourceId)
+            : null,
+      );
+      screenShareOn = next;
+      error = null;
+    } catch (e) {
+      error = 'Не удалось переключить трансляцию экрана: $e';
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  bool get _desktopNeedsExplicitSource {
+    if (kIsWeb) return false;
+    return defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.linux;
+  }
+
+  Future<void> toggleHandRaised({bool? force}) async {
+    final userId = client.userID;
+    if (userId == null || userId.isEmpty) return;
+    final next = force ?? !handRaised;
+    if (handRaised == next) return;
+    handRaised = next;
+    _voiceStates[userId] = localVoiceState.copyWith(handRaised: next);
+    await _publishVoiceParticipantState();
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> sendVoiceReaction(String emoji) async {
+    final userId = client.userID;
+    if (userId == null || userId.isEmpty) return;
+    _reactionClearTimer?.cancel();
+    _voiceStates[userId] = localVoiceState.copyWith(
+      reaction: emoji,
+      reactionTs: DateTime.now().millisecondsSinceEpoch,
+    );
+    await _publishVoiceParticipantState();
+    if (!_disposed) notifyListeners();
+    _reactionClearTimer = Timer(const Duration(seconds: 4), () async {
+      if (_disposed) return;
+      _voiceStates[userId] = localVoiceState.copyWith(clearReaction: true);
+      await _publishVoiceParticipantState();
+      if (!_disposed) notifyListeners();
+    });
+  }
+
+  Future<void> _publishVoiceParticipantState() async {
+    final userId = client.userID;
+    if (userId == null || userId.isEmpty) return;
+    final state = localVoiceState;
+    try {
+      await client.setRoomStateWithKey(
+        matrixRoomId,
+        'ru.orex.voice.participant',
+        userId,
+        {
+          'hand_raised': state.handRaised,
+          if (state.reaction != null) 'reaction': state.reaction,
+          if (state.reactionTs != null) 'reaction_ts': state.reactionTs,
+        },
+      );
+    } catch (e) {
+      error = 'Не удалось обновить состояние голосового канала: $e';
+      // Voice participant state is UX-only; failed state publish must not break
+      // the media session.
+    }
   }
 
   Future<void> toggleCam() async {
     final lp = _room?.localParticipant;
     if (lp == null) return;
+    if (!canPublishMedia) {
+      cameraError = 'В режиме просмотра камера недоступна';
+      if (!_disposed) notifyListeners();
+      return;
+    }
     try {
       await lp.setCameraEnabled(!lp.isCameraEnabled());
       cameraError = null;
@@ -109,11 +307,19 @@ class CallSession extends ChangeNotifier {
 
   Future<void> hangUp() async {
     status = CallStatus.ended;
+    _voiceStateRefreshTimer?.cancel();
+    _voiceStateRefreshTimer = null;
     final room = _room;
     _room = null;
     if (room != null) {
       // Снимаем слушатель ДО teardown, чтобы события закрытия не дёргали нас.
       room.removeListener(_onRoom);
+      try {
+        if (screenShareOn) {
+          await room.localParticipant?.setScreenShareEnabled(false);
+          screenShareOn = false;
+        }
+      } catch (_) {}
       try {
         await room.disconnect();
       } catch (_) {}
@@ -168,6 +374,8 @@ class CallSession extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _reactionClearTimer?.cancel();
+    _voiceStateRefreshTimer?.cancel();
     _room?.removeListener(_onRoom);
     _room?.dispose();
     _room = null;
@@ -179,4 +387,41 @@ class _Creds {
   _Creds({required this.url, required this.jwt});
   final String url;
   final String jwt;
+}
+
+
+class VoiceParticipantState {
+  const VoiceParticipantState({
+    this.handRaised = false,
+    this.reaction,
+    this.reactionTs,
+  });
+
+  factory VoiceParticipantState.fromContent(Map<dynamic, dynamic>? content) {
+    if (content == null) return const VoiceParticipantState();
+    return VoiceParticipantState(
+      handRaised: content['hand_raised'] == true,
+      reaction: content['reaction']?.toString(),
+      reactionTs: content['reaction_ts'] is num
+          ? (content['reaction_ts'] as num).toInt()
+          : null,
+    );
+  }
+
+  final bool handRaised;
+  final String? reaction;
+  final int? reactionTs;
+
+  VoiceParticipantState copyWith({
+    bool? handRaised,
+    String? reaction,
+    int? reactionTs,
+    bool clearReaction = false,
+  }) {
+    return VoiceParticipantState(
+      handRaised: handRaised ?? this.handRaised,
+      reaction: clearReaction ? null : reaction ?? this.reaction,
+      reactionTs: clearReaction ? null : reactionTs ?? this.reactionTs,
+    );
+  }
 }

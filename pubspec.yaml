@@ -21,7 +21,10 @@ dependencies:
   # LiveKit (нативные звонки в нашем UI, поверх вашего lk-jwt-service)
   livekit_client: ^2.8.0
   # WebRTC-примитивы для WebRTCDelegate модуля VoIP (MatrixRTC-сигналинг).
-  flutter_webrtc: ^1.4.0
+  flutter_webrtc: ^1.5.2
+
+  # Короткие звуки уведомлений, входящих вызовов и голосовых каналов.
+  audioplayers: ^6.1.0
   webrtc_interface: ^1.5.0   # типы MediaDevices/RTCPeerConnection для делегата
 
   # Сеть/утилиты
@@ -63,4 +66,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/icon/app_icon.png
+    - assets/sounds/
     # - assets/mascot/squirrel.png   # добавите, когда будет ассет маскота

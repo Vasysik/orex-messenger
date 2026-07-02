@@ -82,11 +82,13 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _buildChatItems(List<Event> rawEvents) {
+    final room = _room;
+    final hideMemberEvents = room != null && widget.matrix.isChannel(room);
     final events = rawEvents
         .where((e) =>
             (e.type == EventTypes.Message ||
                 e.type == EventTypes.Encrypted ||
-                e.type == EventTypes.RoomMember) &&
+                (!hideMemberEvents && e.type == EventTypes.RoomMember)) &&
             !e.redacted &&
             e.relationshipType != RelationshipTypes.edit)
         .toList();

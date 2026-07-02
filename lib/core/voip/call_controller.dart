@@ -19,23 +19,66 @@ class CallController extends ChangeNotifier {
 
   String? roomId;
   bool video = false;
+  bool listenOnly = false;
   bool minimized = false;
   bool _initiator = false; // мы начали этот звонок (а не присоединились)
   DateTime? _start;
+  String? focusedParticipantIdentity;
+
+  void focusParticipant(String? identity) {
+    if (focusedParticipantIdentity == identity) return;
+    focusedParticipantIdentity = identity;
+    notifyListeners();
+  }
+
+  bool _canUseMicNowFor(String roomId) {
+    final room = matrix.client.getRoomById(roomId);
+    if (room == null) return true;
+    final kind = matrix.roomKind(room);
+    return kind != OrexRoomKind.channel ||
+        matrix.canSpeakInVoice(room, matrix.client.userID);
+  }
+
+  Future<void> refreshVoicePermissions() async {
+    await _session?.refreshVoicePermissions();
+    final rid = roomId;
+    listenOnly = rid == null ? false : !_canUseMicNowFor(rid);
+    notifyListeners();
+  }
 
   bool get isActive => _session != null;
 
   /// Начать/присоединиться к звонку в комнате.
-  Future<void> start(String roomId, {required bool video}) async {
+  Future<void> start(
+    String roomId, {
+    required bool video,
+    bool? initialMicOn,
+  }) async {
     if (_session != null) await hangUp();
     this.roomId = roomId;
     this.video = video;
     minimized = false;
     // Инициатор = в комнате ещё не было активного звонка до нас.
     final room = matrix.client.getRoomById(roomId);
+    final kind = room != null ? matrix.roomKind(room) : OrexRoomKind.group;
+    if (room != null && kind == OrexRoomKind.channel) {
+      await matrix.ensureVoiceParticipantStatePowerLevels(room);
+    }
+    final canSpeak = _canUseMicNowFor(roomId);
+    listenOnly = !canSpeak;
+    final micInitiallyOn = initialMicOn ??
+        (room?.isDirectChat == true ? true : false);
     _initiator = room != null && !matrix.roomHasActiveCall(room);
     _start = DateTime.now();
-    final s = CallSession(client: matrix.client, matrixRoomId: roomId);
+    final s = CallSession(
+      client: matrix.client,
+      matrixRoomId: roomId,
+      initialMicOn: canSpeak && micInitiallyOn,
+      canUseMic: canSpeak,
+      listenOnly: listenOnly,
+      canUseMicNow: () => _canUseMicNowFor(roomId),
+    );
+    focusedParticipantIdentity = null;
     _session = s;
     s.addListener(notifyListeners);
     notifyListeners();
@@ -46,6 +89,9 @@ class CallController extends ChangeNotifier {
       OrexLog.d('Call', 'signaling failed room=$roomId', e);
     }
     await s.connect(video: video);
+    if (s.status == CallStatus.connected) {
+      await matrix.audio.playVoiceJoin();
+    }
   }
 
   void minimize() {
@@ -68,8 +114,10 @@ class CallController extends ChangeNotifier {
     _session = null;
     minimized = false;
     roomId = null;
+    listenOnly = false;
     _initiator = false;
     _start = null;
+    focusedParticipantIdentity = null;
     notifyListeners();
     if (s != null) {
       s.removeListener(notifyListeners);
