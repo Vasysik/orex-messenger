@@ -17,7 +17,13 @@ class OrexNativeAudioDevices {
         final label = '${item['label'] ?? ''}'.trim();
         if (id.isEmpty || kind.isEmpty || label.isEmpty) continue;
         if (kind != 'audioinput' && kind != 'audiooutput') continue;
-        result.add({'id': id, 'kind': kind, 'label': label});
+        final category = '${item['category'] ?? ''}'.trim();
+        result.add({
+          'id': id,
+          'kind': kind,
+          'label': label,
+          if (category.isNotEmpty) 'category': category,
+        });
       }
       return result;
     } on MissingPluginException {
@@ -30,8 +36,8 @@ class OrexNativeAudioDevices {
 
   static Future<bool> selectOutput(String? id) async {
     try {
-      await _channel.invokeMethod<void>('selectAudioOutput', {'id': id});
-      return true;
+      return await _channel.invokeMethod<bool>('selectAudioOutput', {'id': id}) ??
+          false;
     } on MissingPluginException {
       return false;
     } catch (e) {

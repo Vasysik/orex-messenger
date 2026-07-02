@@ -28,14 +28,20 @@ class OrexAudioDevice {
     required this.id,
     required this.kind,
     required this.label,
+    this.category = '',
   });
 
   final String id;
   final String kind;
   final String label;
+  final String category;
 
   bool get isInput => kind == 'audioinput';
   bool get isOutput => kind == 'audiooutput';
+
+  bool get isBluetooth => category == 'bluetooth';
+  bool get isHeadphones =>
+      isBluetooth || category == 'headphones' || category == 'usb';
 }
 
 List<OrexAudioDevice> _lastNonEmptyDevices = const [];
@@ -67,9 +73,16 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
         : const <OrexAudioDevice>[];
     final byKey = <String, OrexAudioDevice>{};
     final seenLabels = <String>{};
+    final hasNativeMobileOutputs = orexIsMobileNativePlatform &&
+        nativeDevices.any((device) => device.isOutput);
 
     void addDevice(OrexAudioDevice device) {
       if (!_shouldShowDevice(device)) return;
+      if (hasNativeMobileOutputs &&
+          device.isOutput &&
+          !orexIsAndroidOutputDeviceId(device.id)) {
+        return;
+      }
       final labelKey = '${device.kind}|${device.label.toLowerCase()}';
       final key = '${device.kind}|${device.id}';
 
@@ -97,6 +110,8 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
       ..sort((a, b) {
         final byKind = a.kind.compareTo(b.kind);
         if (byKind != 0) return byKind;
+        final byRank = _deviceSortRank(a).compareTo(_deviceSortRank(b));
+        if (byRank != 0) return byRank;
         return a.label.toLowerCase().compareTo(b.label.toLowerCase());
       });
 
@@ -136,6 +151,7 @@ List<OrexAudioDevice> _nativeDevicesFromMaps(List<Map<String, String>> raw) => [
           id: item['id'] ?? '',
           kind: item['kind'] ?? '',
           label: item['label'] ?? '',
+          category: item['category'] ?? '',
         ),
     ];
 
@@ -145,7 +161,12 @@ OrexAudioDevice? _fromRawDevice(dynamic raw) {
   if (id.isEmpty || kind == null) return null;
 
   final label = _cleanLabel(_readString(raw, 'label'));
-  return OrexAudioDevice(id: id, kind: kind, label: label);
+  return OrexAudioDevice(
+    id: id,
+    kind: kind,
+    label: label,
+    category: _inferCategory(id: id, kind: kind, label: label),
+  );
 }
 
 bool _shouldShowDevice(OrexAudioDevice device) {
@@ -162,6 +183,37 @@ bool _shouldShowDevice(OrexAudioDevice device) {
   }
 
   return true;
+}
+
+int _deviceSortRank(OrexAudioDevice device) {
+  if (!device.isOutput) return 0;
+  return switch (device.category) {
+    'bluetooth' => 0,
+    'headphones' || 'usb' => 1,
+    'speaker' => 8,
+    'earpiece' => 9,
+    _ => 5,
+  };
+}
+
+String _inferCategory({
+  required String id,
+  required String kind,
+  required String label,
+}) {
+  if (kind != 'audiooutput') return '';
+  final value = '$id $label'.toLowerCase();
+  if (value.contains('bluetooth') || value.contains('bt-')) return 'bluetooth';
+  if (value.contains('headphone') ||
+      value.contains('headset') ||
+      value.contains('науш') ||
+      value.contains('гарнитур')) {
+    return 'headphones';
+  }
+  if (value.contains('usb')) return 'usb';
+  if (value.contains('earpiece') || value.contains('разговор')) return 'earpiece';
+  if (value.contains('speaker') || value.contains('динамик')) return 'speaker';
+  return '';
 }
 
 String _readString(dynamic raw, String field) {

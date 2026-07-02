@@ -154,7 +154,8 @@ class AudioCueService extends ChangeNotifier {
     }
 
     if (orexIsMobileNativePlatform) {
-      await OrexNativeAudioDevices.selectOutput(id);
+      final ok = await OrexNativeAudioDevices.selectOutput(id);
+      if (!ok) OrexLog.d('Audio', 'native output route not applied id=$id');
       return;
     }
 

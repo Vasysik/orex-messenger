@@ -112,6 +112,16 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
   List<OrexAudioDevice> _byKind(String kind) =>
       _devices.where((d) => d.kind == kind).toList();
 
+  IconData _outputIcon(OrexAudioDevice device) {
+    return switch (device.category) {
+      'bluetooth' => Icons.headset_mic,
+      'headphones' => Icons.headphones,
+      'usb' => Icons.usb,
+      'earpiece' => Icons.phone_in_talk,
+      _ => Icons.speaker,
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
     final inputs = _byKind('audioinput');
@@ -164,6 +174,7 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
                         ),
                         for (final d in outputs)
                           _deviceTile(
+                            icon: _outputIcon(d),
                             title: d.label,
                             selected: _outputId == d.id,
                             onTap: () => _selectOutput(d.id),
@@ -263,6 +274,7 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
   }
 
   Widget _deviceTile({
+    IconData? icon,
     required String title,
     String? subtitle,
     required bool selected,
@@ -270,6 +282,7 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
   }) {
     return ListTile(
       dense: true,
+      leading: icon == null ? null : Icon(icon, color: OrexColors.copper),
       title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: subtitle == null
           ? null
