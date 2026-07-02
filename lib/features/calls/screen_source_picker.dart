@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -184,7 +185,7 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog>
 
   void _startRefreshTimer(rtc.SourceType type) {
     _refreshTimer?.cancel();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+    _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
       if (!mounted || type != _activeType) return;
       try {
         await rtc.desktopCapturer.updateSources(types: [type]);
@@ -430,7 +431,7 @@ class _SourceGrid extends StatelessWidget {
   }
 }
 
-class _SourceCard extends StatelessWidget {
+class _SourceCard extends StatefulWidget {
   const _SourceCard({
     required this.source,
     required this.selected,
@@ -441,24 +442,76 @@ class _SourceCard extends StatelessWidget {
   final bool selected;
   final VoidCallback onTap;
 
+  @override
+  State<_SourceCard> createState() => _SourceCardState();
+}
+
+class _SourceCardState extends State<_SourceCard> {
+  StreamSubscription<dynamic>? _thumbSub;
+  StreamSubscription<dynamic>? _nameSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _subscribe();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SourceCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.source != widget.source) {
+      _unsubscribe();
+      _subscribe();
+    }
+  }
+
+  @override
+  void dispose() {
+    _unsubscribe();
+    super.dispose();
+  }
+
+  void _subscribe() {
+    try {
+      _thumbSub = widget.source.onThumbnailChanged.stream.listen((_) {
+        if (mounted) setState(() {});
+      });
+    } catch (_) {}
+    try {
+      _nameSub = widget.source.onNameChanged.stream.listen((_) {
+        if (mounted) setState(() {});
+      });
+    } catch (_) {}
+  }
+
+  void _unsubscribe() {
+    unawaited(_thumbSub?.cancel());
+    unawaited(_nameSub?.cancel());
+    _thumbSub = null;
+    _nameSub = null;
+  }
+
   Uint8List? get _thumbnail {
-    final bytes = source.thumbnail;
+    final bytes = widget.source.thumbnail;
     if (bytes == null || bytes.isEmpty) return null;
     return bytes;
   }
 
   @override
   Widget build(BuildContext context) {
-    final isScreen = source.type == rtc.SourceType.Screen;
-    final title = source.name.trim().isEmpty ? source.id : source.name.trim();
+    final isScreen = widget.source.type == rtc.SourceType.Screen;
+    final title = widget.source.name.trim().isEmpty
+        ? widget.source.id
+        : widget.source.name.trim();
     final thumbnail = _thumbnail;
+    final selected = widget.selected;
 
     return Material(
       color: Colors.transparent,
       borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: onTap,
+        onTap: widget.onTap,
         borderRadius: BorderRadius.circular(16),
         hoverColor: OrexColors.copper.withValues(alpha: 0.08),
         child: AnimatedContainer(

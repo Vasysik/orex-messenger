@@ -1,5 +1,8 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
+import 'package:record/record.dart' as rec;
 
+import 'audio_cue_service.dart';
 import '../logging/orex_logger.dart';
 
 class OrexAudioDevice {
@@ -7,11 +10,17 @@ class OrexAudioDevice {
     required this.id,
     required this.kind,
     required this.label,
+    this.nativeOnly = false,
   });
 
   final String id;
   final String kind;
   final String label;
+
+  /// true means the item is a platform route/device discovered outside WebRTC.
+  /// It can still be useful for UI/routing, but WebRTC deviceId matching may be
+  /// platform-dependent.
+  final bool nativeOnly;
 
   bool get isInput => kind == 'audioinput';
   bool get isOutput => kind == 'audiooutput';
@@ -35,23 +44,32 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
   try {
     final merged = <String, OrexAudioDevice>{};
 
-    Future<void> addAll(Future<List<dynamic>> Function() loader, String source) async {
+    void addDevice(OrexAudioDevice device, String source) {
+      final id = device.id.trim();
+      if (id.isEmpty) return;
+      // We render our own "system default" rows. Keeping default duplicates from
+      // WebRTC makes the settings look broken on platforms that hide labels.
+      if (id == 'default' || id == 'communications') return;
+      final key = '${device.kind}|$id';
+      merged[key] = device;
+    }
+
+    Future<void> addAll(
+      Future<List<dynamic>> Function() loader,
+      String source,
+    ) async {
       try {
         final devices = await loader();
         for (final raw in devices) {
           final device = _fromRawDevice(raw);
           if (device == null) continue;
-          final key = '${device.kind}|${device.id}|${device.label}';
-          merged[key] = device;
+          addDevice(device, source);
         }
       } catch (e) {
         OrexLog.d('AudioDevices', '$source enumerate failed', e);
       }
     }
 
-    // navigator.mediaDevices is the WebRTC-standard path. Helper is the
-    // flutter_webrtc native helper; on desktop it can expose audio routes even
-    // when navigator.enumerateDevices() only returns defaults before a call.
     await addAll(
       () async => await rtc.navigator.mediaDevices.enumerateDevices(),
       'navigator.mediaDevices',
@@ -69,10 +87,58 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
       'Helper.audiooutputs',
     );
 
+    // record has its own native device enumerator and works on Windows/macOS/
+    // Linux/iOS/Android. It often sees microphone names even when WebRTC only
+    // returns defaults outside an active call.
+    rec.AudioRecorder? recorder;
+    try {
+      recorder = rec.AudioRecorder();
+      final inputs = await recorder.listInputDevices();
+      for (final input in inputs) {
+        addDevice(
+          OrexAudioDevice(
+            id: input.id,
+            kind: 'audioinput',
+            label: input.label.trim().isEmpty ? _fallbackLabel('audioinput', input.id) : input.label.trim(),
+            nativeOnly: true,
+          ),
+          'record.listInputDevices',
+        );
+      }
+    } catch (e) {
+      OrexLog.d('AudioDevices', 'record.listInputDevices failed', e);
+    } finally {
+      try {
+        await recorder?.dispose();
+      } catch (_) {}
+    }
+
+    if (_isMobileNative) {
+      addDevice(
+        const OrexAudioDevice(
+          id: AudioCueService.mobileEarpieceOutputId,
+          kind: 'audiooutput',
+          label: 'Разговорный динамик / гарнитура',
+          nativeOnly: true,
+        ),
+        'mobile.virtual',
+      );
+      addDevice(
+        const OrexAudioDevice(
+          id: AudioCueService.mobileSpeakerOutputId,
+          kind: 'audiooutput',
+          label: 'Громкий динамик',
+          nativeOnly: true,
+        ),
+        'mobile.virtual',
+      );
+    }
+
     final result = merged.values.toList()
       ..sort((a, b) {
         final byKind = a.kind.compareTo(b.kind);
         if (byKind != 0) return byKind;
+        if (a.nativeOnly != b.nativeOnly) return a.nativeOnly ? 1 : -1;
         return a.label.toLowerCase().compareTo(b.label.toLowerCase());
       });
     OrexLog.d(
@@ -89,6 +155,12 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
   }
 }
 
+bool get _isMobileNative {
+  if (kIsWeb) return false;
+  return defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+}
+
 OrexAudioDevice? _fromRawDevice(dynamic raw) {
   final id = _readString(raw, 'deviceId').trim();
   final kind = _normalizeKind(_readString(raw, 'kind'));
@@ -103,28 +175,50 @@ OrexAudioDevice? _fromRawDevice(dynamic raw) {
 }
 
 String _readString(dynamic raw, String field) {
-  try {
-    final value = switch (field) {
-      'deviceId' => raw.deviceId,
-      'kind' => raw.kind,
-      'label' => raw.label,
-      _ => '',
-    };
-    return '$value';
-  } catch (_) {
+  final keys = switch (field) {
+    'deviceId' => const ['deviceId', 'device_id', 'id'],
+    'kind' => const ['kind', 'type'],
+    'label' => const ['label', 'name'],
+    _ => const <String>[],
+  };
+
+  if (raw is Map) {
+    for (final key in keys) {
+      final value = raw[key];
+      if (value != null && '$value'.trim().isNotEmpty) return '$value';
+    }
     return '';
   }
+
+  for (final key in keys) {
+    try {
+      final value = switch (key) {
+        'deviceId' => raw.deviceId,
+        'device_id' => raw.deviceId,
+        'id' => raw.id,
+        'kind' => raw.kind,
+        'type' => raw.type,
+        'label' => raw.label,
+        'name' => raw.name,
+        _ => null,
+      };
+      if (value != null && '$value'.trim().isNotEmpty) return '$value';
+    } catch (_) {}
+  }
+  return '';
 }
 
 String? _normalizeKind(String raw) {
   final value = raw.toLowerCase().replaceAll(RegExp(r'[^a-z]'), '');
-  if (value.contains('audioinput')) return 'audioinput';
-  if (value.contains('audiooutput')) return 'audiooutput';
+  if (value.contains('audioinput') || value == 'input') return 'audioinput';
+  if (value.contains('audiooutput') || value == 'output') return 'audiooutput';
   return null;
 }
 
 String _fallbackLabel(String kind, String id) {
-  final suffix = id.isEmpty || id == 'default' ? '' : ' · ${id.substring(0, id.length < 6 ? id.length : 6)}';
+  final suffix = id.isEmpty || id == 'default'
+      ? ''
+      : ' · ${id.substring(0, id.length < 6 ? id.length : 6)}';
   if (kind == 'audioinput') return 'Микрофон$suffix';
   return 'Динамики / наушники$suffix';
 }

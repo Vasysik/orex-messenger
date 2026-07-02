@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 
@@ -6,6 +7,7 @@ import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/orex_settings_components.dart';
+import 'mic_level_tester.dart';
 
 class AudioDevicesScreen extends StatefulWidget {
   const AudioDevicesScreen({super.key, required this.matrix});
@@ -23,6 +25,8 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
   String? _inputId;
   String? _outputId;
   double _thresholdDb = -50;
+  bool _thresholdEnabled = true;
+  bool _explicitOutputRouting = false;
 
   @override
   void initState() {
@@ -30,6 +34,8 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
     _inputId = widget.matrix.audio.inputDeviceId;
     _outputId = widget.matrix.audio.outputDeviceId;
     _thresholdDb = widget.matrix.audio.speakingThresholdDb;
+    _thresholdEnabled = widget.matrix.audio.speakingThresholdEnabled;
+    _explicitOutputRouting = widget.matrix.audio.explicitOutputRouting;
     _load();
   }
 
@@ -97,6 +103,13 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
 
   List<OrexAudioDevice> _byKind(String kind) =>
       _devices.where((d) => d.kind == kind).toList();
+
+  bool get _desktopOutputRoutingCanDuck {
+    if (kIsWeb) return false;
+    return defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.linux;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -170,7 +183,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                   _DeviceRadioTile(
                     icon: Icons.mic,
                     title: d.label,
-                    subtitle: d.id,
+                    subtitle: d.nativeOnly ? '${d.id} · native' : d.id,
                     selected: _inputId == d.id,
                     onTap: () => _selectInput(d.id),
                   ),
@@ -195,7 +208,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                   _DeviceRadioTile(
                     icon: Icons.volume_up,
                     title: d.label,
-                    subtitle: d.id,
+                    subtitle: d.nativeOnly ? '${d.id} · route' : d.id,
                     selected: _outputId == d.id,
                     onTap: () => _selectOutput(d.id),
                   ),
@@ -206,50 +219,50 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
               ],
             ),
             const SizedBox(height: 16),
+            if (_desktopOutputRoutingCanDuck) ...[
+              OrexSettingsSection(
+                title: 'Маршрутизация вывода',
+                children: [
+                  SwitchListTile(
+                    value: _explicitOutputRouting,
+                    onChanged: (value) async {
+                      setState(() => _explicitOutputRouting = value);
+                      await widget.matrix.audio.setExplicitOutputRouting(value);
+                    },
+                    secondary: const Icon(Icons.headphones, color: OrexColors.copper),
+                    title: const Text('Принудительно выбирать вывод WebRTC'),
+                    subtitle: const Text(
+                      'Выключено: Orex сохраняет выбранные наушники, но не фиксирует route внутри WebRTC — Windows микширует звук сама. '
+                      'Включайте только если нужно жёстко вывести звонок на конкретное устройство; на некоторых драйверах это приглушает остальной звук.',
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+            ],
             OrexSettingsSection(
               title: 'Порог говорения',
               children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(Icons.graphic_eq, color: OrexColors.copper),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              'Подсветка плитки: ${_thresholdDb.round()} dB',
-                              style: Theme.of(context).textTheme.titleSmall,
-                            ),
-                          ),
-                        ],
-                      ),
-                      Slider(
-                        value: _thresholdDb,
-                        min: -80,
-                        max: -20,
-                        divisions: 60,
-                        label: '${_thresholdDb.round()} dB',
-                        onChanged: (value) async {
-                          setState(() => _thresholdDb = value);
-                          await widget.matrix.audio.setSpeakingThresholdDb(value);
-                        },
-                      ),
-                      Text(
-                        'Чем ближе к -20 dB, тем громче надо говорить. Чем ближе к -80 dB, тем чувствительнее подсветка.',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
+                OrexMicLevelTester(
+                  matrix: widget.matrix,
+                  inputDeviceId: _inputId,
+                  thresholdDb: _thresholdDb,
+                  thresholdEnabled: _thresholdEnabled,
+                  onThresholdChanged: (value) async {
+                    setState(() => _thresholdDb = value);
+                    await widget.matrix.audio.setSpeakingThresholdDb(value);
+                  },
+                  onThresholdEnabledChanged: (value) async {
+                    setState(() => _thresholdEnabled = value);
+                    await widget.matrix.audio.setSpeakingThresholdEnabled(value);
+                  },
                 ),
               ],
             ),
             const SizedBox(height: 16),
             Text(
               'Orex больше не открывает микрофон автоматически при входе в этот экран. '
-              'Если звук в других приложениях становится тише только во время активного микрофона, это обычно Windows Communications ducking или режим Bluetooth-гарнитуры; приложение выбирает конкретный input/output, но системный аудио-фокус остаётся за ОС/драйвером.',
+              'Если звук слегка проседает только когда в голосовом канале есть участники, это обычно не список устройств, а системная audio-session/communications-политика Windows или Bluetooth headset profile. На desktop LiveKit не управляет системной audio session, поэтому безопаснее не форсировать output route.',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],

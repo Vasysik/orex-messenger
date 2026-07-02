@@ -4,7 +4,7 @@ publish_to: "none"
 version: 0.2.4+1
 
 environment:
-  sdk: ">=3.4.0 <4.0.0"
+  sdk: ">=3.12.0 <4.0.0"
   flutter: ">=3.24.0"
 
 # Версии — «не ниже актуальных на момент сборки». Экосистема Matrix меняется
@@ -25,6 +25,7 @@ dependencies:
 
   # Короткие звуки уведомлений, входящих вызовов и голосовых каналов.
   audioplayers: ^6.1.0
+  record: ^7.1.1          # быстрый тест микрофона/амплитуда dBFS
   webrtc_interface: ^1.5.0   # типы MediaDevices/RTCPeerConnection для делегата
 
   # Сеть/утилиты

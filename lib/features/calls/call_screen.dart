@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
@@ -14,6 +12,7 @@ import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/mxc_avatar.dart';
 import '../../shared/widgets/squirrel_mascot.dart';
 import 'screen_source_picker.dart';
+import 'voice_activity_frame.dart';
 
 /// Наш собственный экран звонка поверх LiveKit (стек Element Call / MatrixRTC).
 /// Сам звонок живёт в [CallController] (matrix.call) — экран лишь отображает его,
@@ -31,6 +30,7 @@ class _CallScreenState extends State<CallScreen> {
   CallController get _call => widget.matrix.call;
   CallSession? get _session => _call.session;
   final GlobalKey _reactionButtonKey = GlobalKey();
+  bool _preferScreenShare = true;
 
   @override
   void dispose() {
@@ -244,6 +244,7 @@ class _CallScreenState extends State<CallScreen> {
           cornerIcon: Icons.close_fullscreen,
           cornerTooltip: 'Отменить приближение плитки',
           onCornerTap: () => _call.focusParticipant(null),
+          preferScreenShare: _preferScreenShare,
           onGrantVoice: _canGrantVoice(room, userId, state)
               ? () => _grantVoice(room!, userId)
               : null,
@@ -280,6 +281,7 @@ class _CallScreenState extends State<CallScreen> {
                                     cornerIcon: Icons.open_in_full,
                                     cornerTooltip: 'Приблизить плитку',
                                     onCornerTap: () => _call.focusParticipant(p.identity),
+                                    preferScreenShare: _preferScreenShare,
                                     onGrantVoice: _canGrantVoice(room, userId, state)
                                         ? () => _grantVoice(room!, userId)
                                         : null,
@@ -359,6 +361,15 @@ class _CallScreenState extends State<CallScreen> {
                 icon: session.camOn ? Icons.videocam : Icons.videocam_off,
                 onTap: () { session.toggleCam(); },
               ),
+              if (session.camOn && session.screenShareOn)
+                _round(
+                  tooltip: _preferScreenShare
+                      ? 'Показывать камеру на плитках'
+                      : 'Показывать трансляцию экрана на плитках',
+                  icon: _preferScreenShare ? Icons.videocam : Icons.screen_share,
+                  selected: true,
+                  onTap: () { setState(() => _preferScreenShare = !_preferScreenShare); },
+                ),
               _round(
                 tooltip: 'Трансляция экрана',
                 icon: session.screenShareOn
@@ -448,18 +459,13 @@ class _CallScreenState extends State<CallScreen> {
 }
 
 
-bool _participantVoiceActive(lk.Participant participant, double thresholdDb) {
-  final level = participant.audioLevel;
-  final db = level <= 0 ? -100.0 : 20 * math.log(level) / math.ln10;
-  return participant.isSpeaking || db >= thresholdDb;
-}
-
 class _ParticipantTile extends StatelessWidget {
   const _ParticipantTile({
     required this.participant,
     required this.matrix,
     required this.room,
     required this.voiceState,
+    required this.preferScreenShare,
     this.onTap,
     this.zoomable = false,
     this.cornerIcon,
@@ -472,6 +478,7 @@ class _ParticipantTile extends StatelessWidget {
   final MatrixService matrix;
   final Room? room;
   final VoiceParticipantState voiceState;
+  final bool preferScreenShare;
   final VoidCallback? onTap;
   final bool zoomable;
   final IconData? cornerIcon;
@@ -488,24 +495,15 @@ class _ParticipantTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    lk.VideoTrack? track;
-    for (final pub in participant.videoTrackPublications) {
-      // !pub.muted — иначе при выключенной камере остаётся последний кадр.
-      if (pub.track != null && pub.subscribed && !pub.muted) {
-        track = pub.track as lk.VideoTrack;
-        break;
-      }
-    }
+    final track = orexSelectVideoTrack(
+      participant,
+      preferScreenShare: preferScreenShare,
+    );
 
     final userId = _userId;
     final user = room?.unsafeGetUserFromMemoryOrFallback(userId);
     var name = user?.calcDisplayname() ?? userId;
     if (participant is lk.LocalParticipant) name = '$name · вы';
-    final speaking = _participantVoiceActive(
-      participant,
-      matrix.audio.speakingThresholdDb,
-    );
-
     Widget media;
     if (track != null) {
       media = Container(
@@ -533,27 +531,11 @@ class _ParticipantTile extends StatelessWidget {
       );
     }
 
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 140),
-      padding: EdgeInsets.all(speaking ? 2 : 1),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: speaking
-              ? OrexColors.copper.withValues(alpha: 0.95)
-              : Colors.white.withValues(alpha: 0.08),
-          width: speaking ? 2 : 1,
-        ),
-        boxShadow: speaking
-            ? [
-                BoxShadow(
-                  color: OrexColors.copper.withValues(alpha: 0.28),
-                  blurRadius: 18,
-                  spreadRadius: 1,
-                ),
-              ]
-            : null,
-      ),
+    return OrexSpeakingFrame(
+      participant: participant,
+      matrix: matrix,
+      borderRadius: 20,
+      activeBlur: 18,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(18),
         child: Material(

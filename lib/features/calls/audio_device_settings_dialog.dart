@@ -4,6 +4,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import '../../core/audio/audio_device_utils.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/orex_theme.dart';
+import '../settings/mic_level_tester.dart';
 
 class AudioDeviceSettingsDialog extends StatefulWidget {
   const AudioDeviceSettingsDialog({super.key, required this.matrix});
@@ -22,6 +23,7 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
   String? _inputId;
   String? _outputId;
   double _thresholdDb = -50;
+  bool _thresholdEnabled = true;
 
   @override
   void initState() {
@@ -29,6 +31,7 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
     _inputId = widget.matrix.audio.inputDeviceId;
     _outputId = widget.matrix.audio.outputDeviceId;
     _thresholdDb = widget.matrix.audio.speakingThresholdDb;
+    _thresholdEnabled = widget.matrix.audio.speakingThresholdEnabled;
     _load();
   }
 
@@ -132,7 +135,7 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
                         for (final d in _byKind('audioinput'))
                           _deviceTile(
                             title: d.label,
-                            subtitle: d.id,
+                            subtitle: d.nativeOnly ? '${d.id} · native' : d.id,
                             selected: _inputId == d.id,
                             onTap: () => _selectInput(d.id),
                           ),
@@ -152,24 +155,33 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
                         for (final d in _byKind('audiooutput'))
                           _deviceTile(
                             title: d.label,
-                            subtitle: d.id,
+                            subtitle: d.nativeOnly ? '${d.id} · route' : d.id,
                             selected: _outputId == d.id,
                             onTap: () => _selectOutput(d.id),
                           ),
                       ],
                     ),
                     const SizedBox(height: 12),
-                    Text('Порог говорения: ${_thresholdDb.round()} dB'),
-                    Slider(
-                      value: _thresholdDb,
-                      min: -80,
-                      max: -20,
-                      divisions: 60,
-                      label: '${_thresholdDb.round()} dB',
-                      onChanged: (value) async {
-                        setState(() => _thresholdDb = value);
-                        await widget.matrix.audio.setSpeakingThresholdDb(value);
-                      },
+                    _section(
+                      'Порог говорения',
+                      Icons.graphic_eq,
+                      [
+                        OrexMicLevelTester(
+                          matrix: widget.matrix,
+                          inputDeviceId: _inputId,
+                          thresholdDb: _thresholdDb,
+                          thresholdEnabled: _thresholdEnabled,
+                          compact: true,
+                          onThresholdChanged: (value) async {
+                            setState(() => _thresholdDb = value);
+                            await widget.matrix.audio.setSpeakingThresholdDb(value);
+                          },
+                          onThresholdEnabledChanged: (value) async {
+                            setState(() => _thresholdEnabled = value);
+                            await widget.matrix.audio.setSpeakingThresholdEnabled(value);
+                          },
+                        ),
+                      ],
                     ),
                   ],
                 ),

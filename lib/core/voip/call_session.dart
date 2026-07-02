@@ -251,12 +251,6 @@ class CallSession extends ChangeNotifier {
         return;
       }
 
-      final options = sourceId != null
-          ? lk.ScreenShareCaptureOptions(
-              sourceId: sourceId,
-              maxFrameRate: 15.0,
-            )
-          : const lk.ScreenShareCaptureOptions(maxFrameRate: 15.0);
       final sourceLabel = sourceName?.trim().isNotEmpty == true
           ? sourceName!.trim()
           : sourceId ?? 'default';
@@ -266,54 +260,79 @@ class CallSession extends ChangeNotifier {
       );
 
       if (!kIsWeb && _desktopNeedsExplicitSource && sourceId != null) {
-        try {
-          // Desktop: как в примерах LiveKit, сначала создаём track с выбранным
-          // DesktopCapturerSource.id и публикуем его вручную.
-          await _publishScreenShareTrack(
-            lp: lp,
-            options: options,
-            sourceId: sourceId,
-            sourceType: sourceType,
-            sourceLabel: sourceLabel,
-          );
-        } catch (e, st) {
-          OrexLog.d(
-            'Call',
-            'createScreenShareTrack failed sourceId=$sourceId type=$sourceType name=$sourceLabel stack=$st',
-            e,
-          );
-          await _cleanupScreenShareLocals();
-
-          if (_isDesktopScreenSource(sourceType)) {
-            // На части Windows-сборок flutter_webrtc отдаёт screen id в picker-е,
-            // но getDisplayMedia потом отвечает "source not found" именно для
-            // экранов. Для screen-источника безопасный fallback — весь экран
-            // без sourceId. Для окон такого fallback нет, чтобы не расшарить
-            // лишнее вместо выбранного окна.
-            const fallbackOptions = lk.ScreenShareCaptureOptions(maxFrameRate: 15.0);
+        Object? lastError;
+        StackTrace? lastStack;
+        final candidates = _screenShareCandidateIds(
+          sourceId: sourceId,
+          sourceType: sourceType,
+          sourceName: sourceName,
+        );
+        for (final candidateId in candidates) {
+          final options = _screenShareOptions(candidateId);
+          try {
             OrexLog.d(
               'Call',
-              'retrying screen share without sourceId after screen source lookup failed selectedId=$sourceId',
+              'screen share candidate sourceId=${candidateId ?? 'default'} originalId=$sourceId type=$sourceType name=$sourceLabel',
             );
             await _publishScreenShareTrack(
               lp: lp,
-              options: fallbackOptions,
-              sourceId: null,
+              options: options,
+              sourceId: candidateId,
               sourceType: sourceType,
-              sourceLabel: 'default screen',
+              sourceLabel: sourceLabel,
             );
-          } else {
-            // Fallback с тем же sourceId. Не переключаемся молча на весь экран,
-            // чтобы случайно не расшарить больше, чем выбрал пользователь.
-            await lp.setScreenShareEnabled(
-              true,
-              screenShareCaptureOptions: options,
+            lastError = null;
+            lastStack = null;
+            break;
+          } catch (e, st) {
+            lastError = e;
+            lastStack = st;
+            OrexLog.d(
+              'Call',
+              'createScreenShareTrack failed candidate=${candidateId ?? 'default'} originalId=$sourceId type=$sourceType name=$sourceLabel stack=$st',
+              e,
             );
-            screenShareOn = true;
-            OrexLog.d('Call', 'screen share started via setScreenShareEnabled sourceId=$sourceId');
+            await _cleanupScreenShareLocals();
           }
         }
+
+        if (!screenShareOn && lastError != null) {
+          if (!_isDesktopScreenSource(sourceType)) {
+            // Для окна не падаем молча на весь экран: можно расшарить лишнее.
+            final options = _screenShareOptions(sourceId);
+            try {
+              await lp.setScreenShareEnabled(
+                true,
+                screenShareCaptureOptions: options,
+              );
+              screenShareOn = true;
+              OrexLog.d('Call', 'screen share started via setScreenShareEnabled sourceId=$sourceId');
+            } catch (e, st) {
+              lastError = e;
+              lastStack = st;
+            }
+          } else {
+            // Последний шанс для экранов: вызвать helper без options вообще.
+            // В некоторых сборках flutter_webrtc это отличается от options
+            // без sourceId и даёт системный default-display path.
+            try {
+              OrexLog.d('Call', 'screen share final fallback setScreenShareEnabled without options');
+              await lp.setScreenShareEnabled(true);
+              screenShareOn = true;
+              lastError = null;
+              lastStack = null;
+            } catch (e, st) {
+              lastError = e;
+              lastStack = st;
+            }
+          }
+        }
+
+        if (!screenShareOn && lastError != null) {
+          Error.throwWithStackTrace(lastError, lastStack ?? StackTrace.current);
+        }
       } else {
+        final options = _screenShareOptions(sourceId);
         await lp.setScreenShareEnabled(
           true,
           screenShareCaptureOptions: options,
@@ -338,6 +357,49 @@ class CallSession extends ChangeNotifier {
       _screenShareBusy = false;
       if (!_disposed) notifyListeners();
     }
+  }
+
+  lk.ScreenShareCaptureOptions _screenShareOptions(String? sourceId) {
+    final normalized = sourceId?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      return const lk.ScreenShareCaptureOptions(maxFrameRate: 15.0);
+    }
+    return lk.ScreenShareCaptureOptions(sourceId: normalized, maxFrameRate: 15.0);
+  }
+
+  List<String?> _screenShareCandidateIds({
+    required String? sourceId,
+    required String? sourceType,
+    required String? sourceName,
+  }) {
+    final result = <String?>[];
+    void add(String? value) {
+      final normalized = value?.trim();
+      final candidate = normalized == null || normalized.isEmpty ? null : normalized;
+      if (result.contains(candidate)) return;
+      result.add(candidate);
+    }
+
+    add(sourceId);
+    if (_isDesktopScreenSource(sourceType)) {
+      final index = _screenIndexFromName(sourceName);
+      if (index != null) add('screen:$index:0');
+      final rawId = sourceId?.trim();
+      if (rawId != null && rawId.isNotEmpty) {
+        add('screen:$rawId:0');
+      }
+      add(null);
+    }
+    return result;
+  }
+
+  int? _screenIndexFromName(String? sourceName) {
+    if (sourceName == null) return null;
+    final match = RegExp(r'(\d+)').firstMatch(sourceName);
+    if (match == null) return null;
+    final number = int.tryParse(match.group(1) ?? '');
+    if (number == null) return null;
+    return number <= 0 ? 0 : number - 1;
   }
 
   Future<void> _publishScreenShareTrack({

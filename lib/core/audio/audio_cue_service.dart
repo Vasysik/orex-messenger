@@ -1,8 +1,10 @@
 import 'dart:async';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
+import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logging/orex_logger.dart';
@@ -24,12 +26,23 @@ class AudioCueService {
   static const _kInputDeviceId = 'orex_audio_input_device_id';
   static const _kOutputDeviceId = 'orex_audio_output_device_id';
   static const _kSpeakingThresholdDb = 'orex_audio_speaking_threshold_db';
+  static const _kSpeakingThresholdEnabled = 'orex_audio_speaking_threshold_enabled';
+  static const _kExplicitOutputRouting = 'orex_audio_explicit_output_routing';
+
+  static const mobileEarpieceOutputId = 'orex://mobile/earpiece';
+  static const mobileSpeakerOutputId = 'orex://mobile/speaker';
 
   Timer? _ringtoneWatchdog;
   bool _ringing = false;
   String? inputDeviceId;
   String? outputDeviceId;
   double speakingThresholdDb = -50;
+  bool speakingThresholdEnabled = true;
+
+  /// На Windows/macOS/Linux принудительный selectAudioOutput может вести себя
+  /// как отдельный WebRTC audio route и провоцировать системное приглушение.
+  /// По умолчанию сохраняем выбранный вывод, но оставляем маршрутизацию ОС.
+  bool explicitOutputRouting = false;
 
   bool get isRinging => _ringing;
 
@@ -39,6 +52,8 @@ class AudioCueService {
       inputDeviceId = _nullIfEmpty(prefs.getString(_kInputDeviceId));
       outputDeviceId = _nullIfEmpty(prefs.getString(_kOutputDeviceId));
       speakingThresholdDb = prefs.getDouble(_kSpeakingThresholdDb) ?? -50;
+      speakingThresholdEnabled = prefs.getBool(_kSpeakingThresholdEnabled) ?? true;
+      explicitOutputRouting = prefs.getBool(_kExplicitOutputRouting) ?? false;
       await applySelectedDevices();
     } catch (e) {
       OrexLog.d('Audio', 'load audio preferences failed', e);
@@ -67,6 +82,27 @@ class AudioCueService {
     }
   }
 
+  Future<void> setSpeakingThresholdEnabled(bool value) async {
+    speakingThresholdEnabled = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kSpeakingThresholdEnabled, value);
+    } catch (e) {
+      OrexLog.d('Audio', 'save speaking threshold enabled failed', e);
+    }
+  }
+
+  Future<void> setExplicitOutputRouting(bool value) async {
+    explicitOutputRouting = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kExplicitOutputRouting, value);
+    } catch (e) {
+      OrexLog.d('Audio', 'save output routing mode failed', e);
+    }
+    await _applyOutputDevice();
+  }
+
   Future<void> applySelectedDevices() async {
     await _applyInputDevice();
     await _applyOutputDevice();
@@ -86,12 +122,48 @@ class AudioCueService {
   Future<void> _applyOutputDevice() async {
     final id = outputDeviceId;
     if (id == null || id == 'default') return;
+
+    if (id == mobileSpeakerOutputId || id == mobileEarpieceOutputId) {
+      try {
+        final speaker = id == mobileSpeakerOutputId;
+        await lk.AudioManager.instance.setSpeakerOutputPreferred(
+          speaker,
+          force: speaker,
+        );
+        OrexLog.d('Audio', 'selected mobile route speaker=$speaker');
+      } catch (e) {
+        OrexLog.d('Audio', 'select mobile route failed id=$id', e);
+      }
+      return;
+    }
+
+    if (_desktopOutputRoutingIsRisky && !explicitOutputRouting) {
+      // На desktop не держим принудительный WebRTC route: пусть Windows/OS
+      // микширует вывод сама. Если до этого пользователь включал жёсткую
+      // маршрутизацию, пробуем вернуть WebRTC на default.
+      try {
+        await rtc.Helper.selectAudioOutput('default');
+      } catch (_) {}
+      OrexLog.d(
+        'Audio',
+        'output device saved but not forced by WebRTC id=$id explicit=false',
+      );
+      return;
+    }
+
     try {
       await rtc.Helper.selectAudioOutput(id);
       OrexLog.d('Audio', 'selected output device id=$id');
     } catch (e) {
       OrexLog.d('Audio', 'select output device failed id=$id', e);
     }
+  }
+
+  bool get _desktopOutputRoutingIsRisky {
+    if (kIsWeb) return false;
+    return defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.linux;
   }
 
   Future<void> _saveString(String key, String? value) async {

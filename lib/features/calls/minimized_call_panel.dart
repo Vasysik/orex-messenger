@@ -11,6 +11,7 @@ import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/mxc_avatar.dart';
 import '../../core/voip/call_session.dart';
 import 'screen_source_picker.dart';
+import 'voice_activity_frame.dart';
 
 /// Свёрнутый звонок панелью над чатом (как в Discord): плитки участников +
 /// управление. Тап по плиткам — развернуть на весь экран. Высоту можно тянуть
@@ -38,6 +39,7 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
 
   double? _tilesHeight; // null → дефолт = 1/3 высоты экрана
   final GlobalKey _reactionButtonKey = GlobalKey();
+  bool _preferScreenShare = true;
 
 
   String _matrixUserId(String identity) {
@@ -184,6 +186,7 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
             cornerIcon: Icons.close_fullscreen,
             cornerTooltip: 'Отменить приближение плитки',
             onCornerTap: () => widget.call.focusParticipant(null),
+            preferScreenShare: _preferScreenShare,
             onGrantVoice: _canGrantVoice(room, userId, state)
                 ? () => _grantVoice(room!, userId)
                 : null,
@@ -265,6 +268,7 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                     cornerTooltip: 'Приблизить плитку',
                     onCornerTap: () => widget.call.focusParticipant(p.identity),
                     onTap: () => widget.call.focusParticipant(p.identity),
+                    preferScreenShare: _preferScreenShare,
                     onGrantVoice: _canGrantVoice(room, userId, state)
                         ? () => _grantVoice(room!, userId)
                         : null,
@@ -326,6 +330,12 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                 icon: session.camOn ? Icons.videocam : Icons.videocam_off,
                 onTap: () { session.toggleCam(); },
               ),
+              if (session.camOn && session.screenShareOn)
+                _btn(
+                  icon: _preferScreenShare ? Icons.videocam : Icons.screen_share,
+                  selected: true,
+                  onTap: () { setState(() => _preferScreenShare = !_preferScreenShare); },
+                ),
               _btn(
                 icon: session.screenShareOn
                     ? Icons.stop_screen_share
@@ -477,18 +487,13 @@ class JoinCallPanel extends StatelessWidget {
 }
 
 
-bool _miniParticipantVoiceActive(lk.Participant participant, double thresholdDb) {
-  final level = participant.audioLevel;
-  final db = level <= 0 ? -100.0 : 20 * math.log(level) / math.ln10;
-  return participant.isSpeaking || db >= thresholdDb;
-}
-
 class _MiniTile extends StatelessWidget {
   const _MiniTile({
     required this.participant,
     required this.matrix,
     required this.room,
     required this.voiceState,
+    required this.preferScreenShare,
     this.zoomable = false,
     this.onTap,
     this.cornerIcon,
@@ -501,6 +506,7 @@ class _MiniTile extends StatelessWidget {
   final MatrixService matrix;
   final Room? room;
   final VoiceParticipantState voiceState;
+  final bool preferScreenShare;
   final bool zoomable;
   final VoidCallback? onTap;
   final IconData? cornerIcon;
@@ -515,40 +521,17 @@ class _MiniTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    lk.VideoTrack? track;
-    for (final pub in participant.videoTrackPublications) {
-      if (pub.track != null && pub.subscribed && !pub.muted) {
-        track = pub.track as lk.VideoTrack;
-        break;
-      }
-    }
-    final user = room?.unsafeGetUserFromMemoryOrFallback(_userId);
-    final speaking = _miniParticipantVoiceActive(
+    final track = orexSelectVideoTrack(
       participant,
-      matrix.audio.speakingThresholdDb,
+      preferScreenShare: preferScreenShare,
     );
+    final user = room?.unsafeGetUserFromMemoryOrFallback(_userId);
 
-    final tile = AnimatedContainer(
-      duration: const Duration(milliseconds: 140),
-      padding: EdgeInsets.all(speaking ? 2 : 1),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: speaking
-              ? OrexColors.copper.withValues(alpha: 0.95)
-              : Colors.white.withValues(alpha: 0.08),
-          width: speaking ? 2 : 1,
-        ),
-        boxShadow: speaking
-            ? [
-                BoxShadow(
-                  color: OrexColors.copper.withValues(alpha: 0.26),
-                  blurRadius: 14,
-                  spreadRadius: 1,
-                ),
-              ]
-            : null,
-      ),
+    final tile = OrexSpeakingFrame(
+      participant: participant,
+      matrix: matrix,
+      borderRadius: 14,
+      activeBlur: 14,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(12),
         child: Stack(
