@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import 'call_session.dart';
@@ -11,8 +13,16 @@ import '../logging/orex_logger.dart';
 /// экран — лишь «вид» на этот контроллер: свернуть = выйти с экрана, не вешая
 /// трубку; над чатом показывается мини-панель управления.
 class CallController extends ChangeNotifier {
-  CallController(this.matrix);
+  CallController(this.matrix) {
+    matrix.audio.addListener(_onAudioSettingsChanged);
+  }
+
   final MatrixService matrix;
+
+  void _onAudioSettingsChanged() {
+    unawaited(_session?.syncVoiceGateFromSettings());
+    notifyListeners();
+  }
 
   CallSession? _session;
   CallSession? get session => _session;
@@ -78,6 +88,12 @@ class CallController extends ChangeNotifier {
       listenOnly: listenOnly,
       canUseMicNow: () => _canUseMicNowFor(roomId),
       audioInputDeviceIdProvider: () => matrix.audio.inputDeviceId,
+      speakingThresholdDbProvider: () => matrix.audio.speakingThresholdDb,
+      speakingThresholdEnabledProvider: () => matrix.audio.speakingThresholdEnabled,
+      localVoiceActivitySink: (db, active) => matrix.audio.updateLocalVoiceActivity(
+        db: db,
+        active: active,
+      ),
     );
     focusedParticipantIdentity = null;
     _session = s;
@@ -170,6 +186,7 @@ class CallController extends ChangeNotifier {
 
   @override
   void dispose() {
+    matrix.audio.removeListener(_onAudioSettingsChanged);
     _session?.removeListener(notifyListeners);
     _session?.dispose();
     super.dispose();

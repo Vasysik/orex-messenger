@@ -138,7 +138,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
             return ListView.separated(
               padding: const EdgeInsets.all(16),
               itemCount: devices.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              separatorBuilder: (_, _) => const SizedBox(height: 10),
               itemBuilder: (_, i) {
                 final d = devices[i];
                 final isCurrent = d.deviceId == currentDeviceId;

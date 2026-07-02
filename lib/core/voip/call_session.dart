@@ -1,9 +1,11 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:livekit_client/livekit_client.dart' as lk;
+import 'package:record/record.dart' as rec;
 import 'package:matrix/matrix.dart';
 
 import '../config/orex_config.dart';
@@ -27,6 +29,9 @@ class CallSession extends ChangeNotifier {
     this.listenOnly = false,
     this.canUseMicNow,
     this.audioInputDeviceIdProvider,
+    this.speakingThresholdDbProvider,
+    this.speakingThresholdEnabledProvider,
+    this.localVoiceActivitySink,
   });
 
   final Client client;
@@ -36,6 +41,9 @@ class CallSession extends ChangeNotifier {
   bool listenOnly;
   final bool Function()? canUseMicNow;
   final String? Function()? audioInputDeviceIdProvider;
+  final double Function()? speakingThresholdDbProvider;
+  final bool Function()? speakingThresholdEnabledProvider;
+  final void Function(double db, bool active)? localVoiceActivitySink;
 
   CallStatus status = CallStatus.connecting;
   String? error;
@@ -50,6 +58,14 @@ class CallSession extends ChangeNotifier {
   final Map<String, VoiceParticipantState> _voiceStates = <String, VoiceParticipantState>{};
   Timer? _reactionClearTimer;
   Timer? _voiceStateRefreshTimer;
+  rec.AudioRecorder? _voiceGateRecorder;
+  StreamSubscription<rec.Amplitude>? _voiceGateAmpSub;
+  StreamSubscription<Uint8List>? _voiceGatePcmSub;
+  bool _voiceGateStarting = false;
+  bool _voiceGateMuted = false;
+  bool _voiceGateAppliedMuted = false;
+  DateTime _lastVoiceAboveThreshold = DateTime.fromMillisecondsSinceEpoch(0);
+  Future<void>? _voiceGateApplyFuture;
 
   VoiceParticipantState voiceStateForUser(String userId) {
     final cached = _voiceStates[userId];
@@ -103,13 +119,15 @@ class CallSession extends ChangeNotifier {
         }
       }
 
+      _room = room;
+      await _syncVoiceGate();
+
       if (_disposed) {
         // Сессию закрыли, пока подключались — сворачиваем комнату.
         await room.disconnect();
         await room.dispose();
         return;
       }
-      _room = room;
       room.addListener(_onRoom);
       _startVoiceStateRefresh();
       status = CallStatus.connected;
@@ -173,6 +191,8 @@ class CallSession extends ChangeNotifier {
       }
     }
 
+    await _syncVoiceGate();
+
     if (nextCanUseMic && handRaised) {
       final userId = client.userID;
       if (userId != null && userId.isNotEmpty) {
@@ -197,6 +217,7 @@ class CallSession extends ChangeNotifier {
       next,
       audioCaptureOptions: next ? _audioCaptureOptions() : null,
     );
+    await _syncVoiceGate();
     if (!_disposed) notifyListeners();
   }
 
@@ -212,6 +233,217 @@ class CallSession extends ChangeNotifier {
       autoGainControl: true,
       highPassFilter: true,
     );
+  }
+
+
+  Future<void> syncVoiceGateFromSettings() => _syncVoiceGate();
+
+  bool get _voiceGateEnabled =>
+      speakingThresholdEnabledProvider?.call() ?? false;
+
+  double get _voiceGateThresholdDb =>
+      (speakingThresholdDbProvider?.call() ?? -50).clamp(-80, -20).toDouble();
+
+  Future<void> _syncVoiceGate() async {
+    final lp = _room?.localParticipant;
+    final shouldRun = lp != null &&
+        lp.isMicrophoneEnabled() &&
+        canPublishMedia &&
+        _voiceGateEnabled &&
+        !_disposed;
+
+    if (!shouldRun) {
+      await _stopVoiceGate(resetTrack: true);
+      return;
+    }
+    await _startVoiceGate();
+  }
+
+  Future<void> _startVoiceGate() async {
+    if (_voiceGateRecorder != null || _voiceGateStarting) return;
+    _voiceGateStarting = true;
+    rec.AudioRecorder? recorder;
+    try {
+      recorder = rec.AudioRecorder();
+      final allowed = await recorder.hasPermission();
+      if (!allowed) throw StateError('Нет разрешения на микрофон');
+      final device = await _recordDeviceFor(recorder, audioInputDeviceIdProvider?.call());
+      final stream = await recorder.startStream(
+        rec.RecordConfig(
+          encoder: rec.AudioEncoder.pcm16bits,
+          sampleRate: 16000,
+          numChannels: 1,
+          autoGain: false,
+          echoCancel: false,
+          noiseSuppress: false,
+          device: device,
+          streamBufferSize: 480,
+        ),
+      );
+      _voiceGatePcmSub = stream.listen((_) {}, onError: (Object e) {
+        OrexLog.d('Call', 'voice gate pcm stream failed', e);
+      });
+      _voiceGateAmpSub = recorder
+          .onAmplitudeChanged(const Duration(milliseconds: 25))
+          .listen(_onVoiceGateAmplitude, onError: (Object e) {
+        OrexLog.d('Call', 'voice gate amplitude failed', e);
+      });
+      _voiceGateRecorder = recorder;
+      _lastVoiceAboveThreshold = DateTime.now();
+      _voiceGateStarting = false;
+      OrexLog.d('Call', 'voice gate started device=${device?.id ?? 'default'}');
+    } catch (e, st) {
+      _voiceGateStarting = false;
+      OrexLog.d('Call', 'voice gate start failed stack=$st', e);
+      try {
+        await recorder?.dispose();
+      } catch (_) {}
+      localVoiceActivitySink?.call(-100, false);
+    }
+  }
+
+  Future<rec.InputDevice?> _recordDeviceFor(
+    rec.AudioRecorder recorder,
+    String? selectedId,
+  ) async {
+    final normalized = selectedId?.trim();
+    if (normalized == null || normalized.isEmpty || normalized == 'default') {
+      return null;
+    }
+    try {
+      final devices = await recorder.listInputDevices();
+      for (final device in devices) {
+        if (device.id == normalized) return device;
+      }
+    } catch (e) {
+      OrexLog.d('Call', 'voice gate device match failed', e);
+    }
+    return null;
+  }
+
+  void _onVoiceGateAmplitude(rec.Amplitude amp) {
+    if (_disposed) return;
+    final db = _normalizeDb(amp.current);
+    final threshold = _voiceGateThresholdDb;
+    final now = DateTime.now();
+    final above = db >= threshold;
+    if (above) {
+      _lastVoiceAboveThreshold = now;
+    }
+    final active = above ||
+        now.difference(_lastVoiceAboveThreshold) < const Duration(milliseconds: 120);
+    localVoiceActivitySink?.call(db, active);
+
+    if (!_voiceGateEnabled || !micOn || !canPublishMedia) {
+      unawaited(_stopVoiceGate(resetTrack: true));
+      return;
+    }
+    _queueVoiceGateMuted(!active);
+  }
+
+  double _normalizeDb(double value) {
+    if (value.isNaN || value.isInfinite) return -100;
+    return value.clamp(-100, 0).toDouble();
+  }
+
+  void _queueVoiceGateMuted(bool muted) {
+    if (_voiceGateMuted == muted && _voiceGateApplyFuture != null) return;
+    _voiceGateMuted = muted;
+    _voiceGateApplyFuture ??= _drainVoiceGateMuteQueue().whenComplete(() {
+      _voiceGateApplyFuture = null;
+    });
+  }
+
+  Future<void> _drainVoiceGateMuteQueue() async {
+    while (_voiceGateAppliedMuted != _voiceGateMuted && !_disposed) {
+      final target = _voiceGateMuted;
+      await _applyVoiceGateMuted(target);
+      _voiceGateAppliedMuted = target;
+    }
+  }
+
+  Future<void> _applyVoiceGateMuted(bool muted) async {
+    final pub = _localMicrophonePublication();
+    final track = pub == null ? null : _readDynamic(pub, 'track');
+    var changedNativeTrack = false;
+    try {
+      final mediaStream = _readDynamic(track, 'mediaStream');
+      final tracks = mediaStream == null
+          ? const <dynamic>[]
+          : (mediaStream.getAudioTracks() as List<dynamic>);
+      for (final rawTrack in tracks) {
+        rawTrack.enabled = !muted;
+        changedNativeTrack = true;
+      }
+    } catch (e) {
+      OrexLog.d('Call', 'voice gate native track mute failed muted=$muted', e);
+    }
+
+    if (changedNativeTrack) return;
+
+    try {
+      final dynamic dynamicPub = pub;
+      if (muted) {
+        await dynamicPub?.mute(stopOnMute: false);
+      } else {
+        await dynamicPub?.unmute(stopOnMute: false);
+      }
+    } catch (e) {
+      OrexLog.d('Call', 'voice gate publication mute failed muted=$muted', e);
+    }
+  }
+
+  dynamic _localMicrophonePublication() {
+    final lp = _room?.localParticipant;
+    if (lp == null) return null;
+    try {
+      final dynamic dynamicParticipant = lp;
+      for (final dynamic pub in dynamicParticipant.audioTrackPublications) {
+        if (pub.source == lk.TrackSource.microphone) return pub;
+      }
+    } catch (_) {}
+    try {
+      final dynamic dynamicParticipant = lp;
+      for (final dynamic pub in dynamicParticipant.trackPublications) {
+        if (pub.source == lk.TrackSource.microphone) return pub;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  dynamic _readDynamic(dynamic object, String getterName) {
+    if (object == null) return null;
+    try {
+      return switch (getterName) {
+        'track' => object.track,
+        'mediaStream' => object.mediaStream,
+        _ => null,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _stopVoiceGate({required bool resetTrack}) async {
+    final recorder = _voiceGateRecorder;
+    _voiceGateRecorder = null;
+    _voiceGateStarting = false;
+    await _voiceGateAmpSub?.cancel();
+    await _voiceGatePcmSub?.cancel();
+    _voiceGateAmpSub = null;
+    _voiceGatePcmSub = null;
+    try {
+      await recorder?.stop();
+    } catch (_) {}
+    try {
+      await recorder?.dispose();
+    } catch (_) {}
+    if (resetTrack && _voiceGateMuted) {
+      _voiceGateMuted = false;
+      await _applyVoiceGateMuted(false);
+      _voiceGateAppliedMuted = false;
+    }
+    localVoiceActivitySink?.call(-100, false);
   }
 
 
@@ -529,6 +761,7 @@ class CallSession extends ChangeNotifier {
     status = CallStatus.ended;
     _voiceStateRefreshTimer?.cancel();
     _voiceStateRefreshTimer = null;
+    await _stopVoiceGate(resetTrack: true);
     final room = _room;
     _room = null;
     if (room != null) {
@@ -595,6 +828,10 @@ class CallSession extends ChangeNotifier {
     _disposed = true;
     _reactionClearTimer?.cancel();
     _voiceStateRefreshTimer?.cancel();
+    _voiceGateAmpSub?.cancel();
+    _voiceGatePcmSub?.cancel();
+    _voiceGateRecorder?.dispose();
+    localVoiceActivitySink?.call(-100, false);
     _room?.removeListener(_onRoom);
     _room?.dispose();
     _room = null;

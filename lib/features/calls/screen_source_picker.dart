@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
@@ -68,7 +66,6 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog>
   rtc.DesktopCapturerSource? _selected;
   bool _loading = true;
   String? _error;
-  Timer? _refreshTimer;
   int _screenCount = 0;
   int _windowCount = 0;
 
@@ -116,8 +113,6 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog>
   }
 
   void _shutdownSourceWatching() {
-    _refreshTimer?.cancel();
-    _refreshTimer = null;
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }
@@ -139,7 +134,6 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog>
       _error = null;
       _sources.clear();
     });
-    _refreshTimer?.cancel();
     OrexLog.d('ScreenShare', 'loading desktop sources type=${_sourceTypeName(type)}');
     try {
       // Важно: не грузим Screen и Window подряд. В flutter_webrtc desktopCapturer
@@ -164,7 +158,6 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog>
         'ScreenShare',
         'desktop sources loaded type=${_sourceTypeName(type)} count=${clean.length} thumbs=${_thumbCount(clean)}',
       );
-      _startRefreshTimer(type);
       Future<void>.delayed(const Duration(milliseconds: 500), () {
         if (!mounted || type != _activeType) return;
         setState(() {});
@@ -183,17 +176,6 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog>
     }
   }
 
-  void _startRefreshTimer(rtc.SourceType type) {
-    _refreshTimer?.cancel();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
-      if (!mounted || type != _activeType) return;
-      try {
-        await rtc.desktopCapturer.updateSources(types: [type]);
-      } catch (e) {
-        OrexLog.d('ScreenShare', 'desktopCapturer.updateSources failed type=${_sourceTypeName(type)}', e);
-      }
-    });
-  }
 
   int _thumbCount(List<rtc.DesktopCapturerSource> sources) {
     return sources.where((source) {
@@ -235,8 +217,6 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog>
       'ScreenShare',
       'source selected id=${source.id} type=${source.type} name=${source.name}',
     );
-    _refreshTimer?.cancel();
-    _refreshTimer = null;
     Navigator.of(context).pop(source);
   }
 
@@ -332,7 +312,7 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog>
       sources: sources,
       emptyText: _activeType == rtc.SourceType.Screen
           ? 'Экраны не найдены'
-          : 'Окна не найдены. Если окно свёрнуто, Windows часто не отдаёт его в capturer.',
+          : 'Окна не найдены. Свёрнутые или защищённые окна могут не отдавать кадр.',
       selectedId: _selected?.id,
       onSelect: (source) => setState(() => _selected = source),
     );
@@ -669,7 +649,6 @@ class _PickerFooter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final selected = selectedName?.trim();
-    final showWindowsHint = !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
     return Container(
       padding: const EdgeInsets.fromLTRB(18, 10, 18, 16),
       decoration: BoxDecoration(
@@ -680,18 +659,16 @@ class _PickerFooter extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (showWindowsHint) ...[
-            Text(
-              'Окна должны быть развернуты/видимы. Свёрнутые и защищённые окна Windows часто не дают кадр или источник.',
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.white60,
-                    fontSize: 11,
-                  ),
-            ),
-            const SizedBox(height: 8),
-          ],
+          Text(
+            'Окна должны быть развернуты/видимы. Свёрнутые и защищённые окна могут не давать кадр или источник.',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Colors.white60,
+                  fontSize: 11,
+                ),
+          ),
+          const SizedBox(height: 8),
           Row(
             children: [
               Expanded(

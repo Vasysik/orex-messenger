@@ -47,6 +47,7 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
     void addDevice(OrexAudioDevice device, String source) {
       final id = device.id.trim();
       if (id.isEmpty) return;
+      if (device.isOutput && !_isMobileNative) return;
       // We render our own "system default" rows. Keeping default duplicates from
       // WebRTC makes the settings look broken on platforms that hide labels.
       if (id == 'default' || id == 'communications') return;
@@ -87,9 +88,8 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
       'Helper.audiooutputs',
     );
 
-    // record has its own native device enumerator and works on Windows/macOS/
-    // Linux/iOS/Android. It often sees microphone names even when WebRTC only
-    // returns defaults outside an active call.
+    // record has its own native device enumerator. It often sees microphone
+    // names even when WebRTC only returns defaults outside an active call.
     rec.AudioRecorder? recorder;
     try {
       recorder = rec.AudioRecorder();

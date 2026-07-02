@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 
+import '../../core/audio/audio_cue_service.dart';
 import '../../core/audio/audio_device_utils.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
@@ -24,26 +25,30 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
   List<OrexAudioDevice> _devices = const [];
   String? _inputId;
   String? _outputId;
-  double _thresholdDb = -50;
-  bool _thresholdEnabled = true;
-  bool _explicitOutputRouting = false;
+  double _thresholdDb = AudioCueService.defaultSpeakingThresholdDb;
+  bool _thresholdEnabled = AudioCueService.defaultSpeakingThresholdEnabled;
 
   @override
   void initState() {
     super.initState();
+    _readPrefs();
+    _load();
+  }
+
+  void _readPrefs() {
     _inputId = widget.matrix.audio.inputDeviceId;
     _outputId = widget.matrix.audio.outputDeviceId;
     _thresholdDb = widget.matrix.audio.speakingThresholdDb;
     _thresholdEnabled = widget.matrix.audio.speakingThresholdEnabled;
-    _explicitOutputRouting = widget.matrix.audio.explicitOutputRouting;
-    _load();
   }
 
   Future<void> _load({bool requestPermission = false}) async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final devices = await enumerateOrexAudioDevices(
         requestPermission: requestPermission,
@@ -89,6 +94,13 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
     }
   }
 
+  Future<void> _resetSoundSettings() async {
+    await widget.matrix.audio.resetSoundSettings();
+    if (!mounted) return;
+    setState(_readPrefs);
+    await _load(requestPermission: false);
+  }
+
   Future<void> _selectInput(String? id) async {
     await widget.matrix.audio.setInputDeviceId(id);
     if (!mounted) return;
@@ -104,17 +116,19 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
   List<OrexAudioDevice> _byKind(String kind) =>
       _devices.where((d) => d.kind == kind).toList();
 
-  bool get _desktopOutputRoutingCanDuck {
+  bool get _showOutputRoutes {
     if (kIsWeb) return false;
-    return defaultTargetPlatform == TargetPlatform.windows ||
-        defaultTargetPlatform == TargetPlatform.macOS ||
-        defaultTargetPlatform == TargetPlatform.linux;
+    return defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
   }
 
   @override
   Widget build(BuildContext context) {
     final inputs = _byKind('audioinput');
-    final outputs = _byKind('audiooutput');
+    final outputs = _showOutputRoutes
+        ? _byKind('audiooutput')
+        : const <OrexAudioDevice>[];
+
     return AmbientBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
@@ -129,17 +143,11 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
               title: 'Проверка',
               children: [
                 OrexSettingsTile(
-                  icon: Icons.refresh,
-                  title: 'Обновить список устройств',
-                  subtitle: _loading
-                      ? 'Загрузка…'
-                      : 'Переопросить WebRTC/Flutter WebRTC без включения микрофона',
-                  onTap: () { _load(); },
-                ),
-                OrexSettingsTile(
                   icon: Icons.privacy_tip_outlined,
                   title: 'Разрешить доступ к микрофону и обновить',
-                  subtitle: 'Коротко открыть микрофон, чтобы ОС/WebRTC раскрыли названия устройств',
+                  subtitle: _loading
+                      ? 'Загрузка…'
+                      : 'Коротко открыть микрофон, перечитать устройства и сразу отпустить трек',
                   onTap: _unlockAndReload,
                 ),
                 OrexSettingsTile(
@@ -154,10 +162,16 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                   subtitle: 'Запросить выбранный вход и сразу отпустить трек',
                   onTap: _testMic,
                 ),
+                OrexSettingsTile(
+                  icon: Icons.restart_alt,
+                  title: 'Сбросить настройки звука',
+                  subtitle: 'Вернуть системный микрофон и стандартный порог говорения',
+                  onTap: _resetSoundSettings,
+                ),
               ],
             ),
             const SizedBox(height: 16),
-            if (_error != null)
+            if (_error != null) ...[
               OrexSettingsSection(
                 title: 'Ошибка',
                 children: [
@@ -169,6 +183,8 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                   ),
                 ],
               ),
+              const SizedBox(height: 16),
+            ],
             OrexSettingsSection(
               title: 'Устройство ввода',
               children: [
@@ -183,63 +199,42 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                   _DeviceRadioTile(
                     icon: Icons.mic,
                     title: d.label,
-                    subtitle: d.nativeOnly ? '${d.id} · native' : d.id,
+                    subtitle: d.id,
                     selected: _inputId == d.id,
                     onTap: () => _selectInput(d.id),
                   ),
                 if (!_loading && inputs.isEmpty)
                   const _EmptyDeviceHint(
-                    text: 'WebRTC пока отдаёт только системный вход. Нажмите «Разрешить доступ к микрофону и обновить» или проверьте разрешение микрофона в Windows.',
+                    text: 'Сейчас доступен только системный вход. Нажмите кнопку разрешения выше или проверьте системные разрешения микрофона.',
                   ),
               ],
             ),
-            const SizedBox(height: 16),
-            OrexSettingsSection(
-              title: 'Устройство вывода',
-              children: [
-                _DeviceRadioTile(
-                  icon: Icons.speaker,
-                  title: 'Системный вывод',
-                  subtitle: 'Использовать динамики/наушники по умолчанию',
-                  selected: _outputId == null,
-                  onTap: () => _selectOutput(null),
-                ),
-                for (final d in outputs)
-                  _DeviceRadioTile(
-                    icon: Icons.volume_up,
-                    title: d.label,
-                    subtitle: d.nativeOnly ? '${d.id} · route' : d.id,
-                    selected: _outputId == d.id,
-                    onTap: () => _selectOutput(d.id),
-                  ),
-                if (!_loading && outputs.isEmpty)
-                  const _EmptyDeviceHint(
-                    text: 'WebRTC пока отдаёт только системный вывод. На Windows фактический маршрут может оставаться за системным микшером/драйвером.',
-                  ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            if (_desktopOutputRoutingCanDuck) ...[
+            if (_showOutputRoutes) ...[
+              const SizedBox(height: 16),
               OrexSettingsSection(
-                title: 'Маршрутизация вывода',
+                title: 'Вывод звука',
                 children: [
-                  SwitchListTile(
-                    value: _explicitOutputRouting,
-                    onChanged: (value) async {
-                      setState(() => _explicitOutputRouting = value);
-                      await widget.matrix.audio.setExplicitOutputRouting(value);
-                    },
-                    secondary: const Icon(Icons.headphones, color: OrexColors.copper),
-                    title: const Text('Принудительно выбирать вывод WebRTC'),
-                    subtitle: const Text(
-                      'Выключено: Orex сохраняет выбранные наушники, но не фиксирует route внутри WebRTC — Windows микширует звук сама. '
-                      'Включайте только если нужно жёстко вывести звонок на конкретное устройство; на некоторых драйверах это приглушает остальной звук.',
-                    ),
+                  _DeviceRadioTile(
+                    icon: Icons.speaker,
+                    title: 'Системный вывод',
+                    subtitle: 'Использовать маршрут по умолчанию',
+                    selected: _outputId == null,
+                    onTap: () => _selectOutput(null),
                   ),
+                  for (final d in outputs)
+                    _DeviceRadioTile(
+                      icon: d.id == AudioCueService.mobileSpeakerOutputId
+                          ? Icons.volume_up
+                          : Icons.hearing,
+                      title: d.label,
+                      subtitle: 'Маршрут вывода',
+                      selected: _outputId == d.id,
+                      onTap: () => _selectOutput(d.id),
+                    ),
                 ],
               ),
-              const SizedBox(height: 16),
             ],
+            const SizedBox(height: 16),
             OrexSettingsSection(
               title: 'Порог говорения',
               children: [
@@ -261,8 +256,8 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
             ),
             const SizedBox(height: 16),
             Text(
-              'Orex больше не открывает микрофон автоматически при входе в этот экран. '
-              'Если звук слегка проседает только когда в голосовом канале есть участники, это обычно не список устройств, а системная audio-session/communications-политика Windows или Bluetooth headset profile. На desktop LiveKit не управляет системной audio session, поэтому безопаснее не форсировать output route.',
+              'Orex не открывает микрофон автоматически при входе в этот экран. '
+              'Порог говорения применяется к локальному микрофону в звонке как быстрый gate: звук ниже линии порога приглушается перед отправкой.',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -308,17 +303,20 @@ class _DeviceRadioTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      leading: Icon(icon, color: OrexColors.copper),
-      title: Text(title),
-      subtitle: subtitle == null
-          ? null
-          : Text(subtitle!, maxLines: 1, overflow: TextOverflow.ellipsis),
-      trailing: Icon(
-        selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
-        color: selected ? OrexColors.copper : Colors.white38,
+    return Material(
+      type: MaterialType.transparency,
+      child: ListTile(
+        leading: Icon(icon, color: OrexColors.copper),
+        title: Text(title),
+        subtitle: subtitle == null
+            ? null
+            : Text(subtitle!, maxLines: 1, overflow: TextOverflow.ellipsis),
+        trailing: Icon(
+          selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+          color: selected ? OrexColors.copper : Colors.white38,
+        ),
+        onTap: onTap,
       ),
-      onTap: onTap,
     );
   }
 }

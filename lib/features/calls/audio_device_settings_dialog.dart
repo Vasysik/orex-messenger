@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 
+import '../../core/audio/audio_cue_service.dart';
 import '../../core/audio/audio_device_utils.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/orex_theme.dart';
@@ -22,17 +24,21 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
   List<OrexAudioDevice> _devices = const [];
   String? _inputId;
   String? _outputId;
-  double _thresholdDb = -50;
-  bool _thresholdEnabled = true;
+  double _thresholdDb = AudioCueService.defaultSpeakingThresholdDb;
+  bool _thresholdEnabled = AudioCueService.defaultSpeakingThresholdEnabled;
 
   @override
   void initState() {
     super.initState();
+    _readPrefs();
+    _load();
+  }
+
+  void _readPrefs() {
     _inputId = widget.matrix.audio.inputDeviceId;
     _outputId = widget.matrix.audio.outputDeviceId;
     _thresholdDb = widget.matrix.audio.speakingThresholdDb;
     _thresholdEnabled = widget.matrix.audio.speakingThresholdEnabled;
-    _load();
   }
 
   Future<void> _load({bool requestPermission = false}) async {
@@ -85,6 +91,13 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
     }
   }
 
+  Future<void> _resetSoundSettings() async {
+    await widget.matrix.audio.resetSoundSettings();
+    if (!mounted) return;
+    setState(_readPrefs);
+    await _load();
+  }
+
   Future<void> _selectInput(String? id) async {
     await widget.matrix.audio.setInputDeviceId(id);
     if (!mounted) return;
@@ -100,8 +113,19 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
   List<OrexAudioDevice> _byKind(String kind) =>
       _devices.where((d) => d.kind == kind).toList();
 
+  bool get _showOutputRoutes {
+    if (kIsWeb) return false;
+    return defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final inputs = _byKind('audioinput');
+    final outputs = _showOutputRoutes
+        ? _byKind('audiooutput')
+        : const <OrexAudioDevice>[];
+
     return AlertDialog(
       title: const Text('Аудиоустройства'),
       content: SizedBox(
@@ -117,7 +141,7 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Список открывается без включения микрофона. Если ОС скрыла названия/устройства, нажмите «Разрешить» — Orex коротко запросит микрофон и сразу отпустит трек.',
+                      'Микрофон не открывается автоматически. Для полного списка нажмите «Разрешить».',
                     ),
                     const SizedBox(height: 14),
                     if (_error != null)
@@ -132,35 +156,37 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
                           selected: _inputId == null,
                           onTap: () => _selectInput(null),
                         ),
-                        for (final d in _byKind('audioinput'))
+                        for (final d in inputs)
                           _deviceTile(
                             title: d.label,
-                            subtitle: d.nativeOnly ? '${d.id} · native' : d.id,
+                            subtitle: d.id,
                             selected: _inputId == d.id,
                             onTap: () => _selectInput(d.id),
                           ),
                       ],
                     ),
-                    const SizedBox(height: 12),
-                    _section(
-                      'Вывод',
-                      Icons.volume_up,
-                      [
-                        _deviceTile(
-                          title: 'Системный вывод',
-                          subtitle: 'По умолчанию',
-                          selected: _outputId == null,
-                          onTap: () => _selectOutput(null),
-                        ),
-                        for (final d in _byKind('audiooutput'))
+                    if (_showOutputRoutes) ...[
+                      const SizedBox(height: 12),
+                      _section(
+                        'Вывод',
+                        Icons.volume_up,
+                        [
                           _deviceTile(
-                            title: d.label,
-                            subtitle: d.nativeOnly ? '${d.id} · route' : d.id,
-                            selected: _outputId == d.id,
-                            onTap: () => _selectOutput(d.id),
+                            title: 'Системный вывод',
+                            subtitle: 'По умолчанию',
+                            selected: _outputId == null,
+                            onTap: () => _selectOutput(null),
                           ),
-                      ],
-                    ),
+                          for (final d in outputs)
+                            _deviceTile(
+                              title: d.label,
+                              subtitle: 'Маршрут вывода',
+                              selected: _outputId == d.id,
+                              onTap: () => _selectOutput(d.id),
+                            ),
+                        ],
+                      ),
+                    ],
                     const SizedBox(height: 12),
                     _section(
                       'Порог говорения',
@@ -189,11 +215,6 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
       ),
       actions: [
         TextButton.icon(
-          onPressed: () { _load(); },
-          icon: const Icon(Icons.refresh),
-          label: const Text('Обновить'),
-        ),
-        TextButton.icon(
           onPressed: () => _load(requestPermission: true),
           icon: const Icon(Icons.privacy_tip_outlined),
           label: const Text('Разрешить'),
@@ -207,6 +228,11 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
           onPressed: _testMic,
           icon: const Icon(Icons.mic),
           label: const Text('Микрофон'),
+        ),
+        TextButton.icon(
+          onPressed: _resetSoundSettings,
+          icon: const Icon(Icons.restart_alt),
+          label: const Text('Сброс'),
         ),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(),
@@ -222,21 +248,24 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
         border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
         borderRadius: BorderRadius.circular(14),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
-            child: Row(
-              children: [
-                Icon(icon, size: 18, color: OrexColors.copper),
-                const SizedBox(width: 8),
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
-              ],
+      child: Material(
+        type: MaterialType.transparency,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+              child: Row(
+                children: [
+                  Icon(icon, size: 18, color: OrexColors.copper),
+                  const SizedBox(width: 8),
+                  Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+                ],
+              ),
             ),
-          ),
-          ...children,
-        ],
+            ...children,
+          ],
+        ),
       ),
     );
   }

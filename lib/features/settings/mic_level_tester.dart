@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'dart:ui' show FontFeature;
-
 import 'package:flutter/material.dart';
 import 'package:record/record.dart' as rec;
 
@@ -97,7 +95,7 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
           echoCancel: false,
           noiseSuppress: false,
           device: device,
-          streamBufferSize: 960,
+          streamBufferSize: 480,
         ),
       );
 
@@ -106,7 +104,7 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
         setState(() => _error = '$e');
       });
       _ampSub = recorder
-          .onAmplitudeChanged(const Duration(milliseconds: 45))
+          .onAmplitudeChanged(const Duration(milliseconds: 25))
           .listen((amp) {
         if (!mounted) return;
         final db = _normalizeDb(amp.current);
@@ -278,7 +276,7 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
           ],
           const SizedBox(height: 4),
           Text(
-            'Тест открывает выбранный микрофон явно и показывает dBFS каждые ~45 мс. Подсветка плиток использует этот же порог; если порог выключен, остаётся стандартный LiveKit isSpeaking.',
+            'Тест открывает выбранный микрофон явно и показывает dBFS почти в реальном времени. В звонке этот же порог работает как gate: всё ниже линии порога приглушается перед отправкой.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Colors.white60,
                 ),
@@ -324,7 +322,7 @@ class _MicMeter extends StatelessWidget {
                 ),
               ),
               AnimatedContainer(
-                duration: const Duration(milliseconds: 50),
+                duration: const Duration(milliseconds: 25),
                 curve: Curves.linear,
                 height: 14,
                 width: levelX.clamp(0, width),

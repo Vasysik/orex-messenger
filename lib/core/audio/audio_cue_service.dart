@@ -3,18 +3,13 @@ import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logging/orex_logger.dart';
 
-/// Единая точка коротких звуков Orex.
-///
-/// Звуки лежат в bundled assets (`assets/sounds/*.wav`) и проигрываются через
-/// `audioplayers`. Если аудио-backend на конкретной платформе не сработал,
-/// сервис аккуратно падает в системный fallback, не ломая звонок/чат.
-class AudioCueService {
+/// Единая точка коротких звуков Orex и пользовательских аудио-настроек.
+class AudioCueService extends ChangeNotifier {
   static const notificationAsset = 'assets/sounds/orex_notification.wav';
   static const incomingAsset = 'assets/sounds/orex_incoming_call.wav';
   static const voiceJoinAsset = 'assets/sounds/orex_voice_join.wav';
@@ -27,22 +22,22 @@ class AudioCueService {
   static const _kOutputDeviceId = 'orex_audio_output_device_id';
   static const _kSpeakingThresholdDb = 'orex_audio_speaking_threshold_db';
   static const _kSpeakingThresholdEnabled = 'orex_audio_speaking_threshold_enabled';
-  static const _kExplicitOutputRouting = 'orex_audio_explicit_output_routing';
 
   static const mobileEarpieceOutputId = 'orex://mobile/earpiece';
   static const mobileSpeakerOutputId = 'orex://mobile/speaker';
+
+  static const defaultSpeakingThresholdDb = -50.0;
+  static const defaultSpeakingThresholdEnabled = true;
 
   Timer? _ringtoneWatchdog;
   bool _ringing = false;
   String? inputDeviceId;
   String? outputDeviceId;
-  double speakingThresholdDb = -50;
-  bool speakingThresholdEnabled = true;
+  double speakingThresholdDb = defaultSpeakingThresholdDb;
+  bool speakingThresholdEnabled = defaultSpeakingThresholdEnabled;
 
-  /// На Windows/macOS/Linux принудительный selectAudioOutput может вести себя
-  /// как отдельный WebRTC audio route и провоцировать системное приглушение.
-  /// По умолчанию сохраняем выбранный вывод, но оставляем маршрутизацию ОС.
-  bool explicitOutputRouting = false;
+  double localMicLevelDb = -100;
+  bool localVoiceActive = false;
 
   bool get isRinging => _ringing;
 
@@ -51,9 +46,10 @@ class AudioCueService {
       final prefs = await SharedPreferences.getInstance();
       inputDeviceId = _nullIfEmpty(prefs.getString(_kInputDeviceId));
       outputDeviceId = _nullIfEmpty(prefs.getString(_kOutputDeviceId));
-      speakingThresholdDb = prefs.getDouble(_kSpeakingThresholdDb) ?? -50;
-      speakingThresholdEnabled = prefs.getBool(_kSpeakingThresholdEnabled) ?? true;
-      explicitOutputRouting = prefs.getBool(_kExplicitOutputRouting) ?? false;
+      speakingThresholdDb = prefs.getDouble(_kSpeakingThresholdDb) ??
+          defaultSpeakingThresholdDb;
+      speakingThresholdEnabled = prefs.getBool(_kSpeakingThresholdEnabled) ??
+          defaultSpeakingThresholdEnabled;
       await applySelectedDevices();
     } catch (e) {
       OrexLog.d('Audio', 'load audio preferences failed', e);
@@ -64,12 +60,14 @@ class AudioCueService {
     inputDeviceId = _nullIfEmpty(value);
     await _saveString(_kInputDeviceId, inputDeviceId);
     await _applyInputDevice();
+    notifyListeners();
   }
 
   Future<void> setOutputDeviceId(String? value) async {
     outputDeviceId = _nullIfEmpty(value);
     await _saveString(_kOutputDeviceId, outputDeviceId);
     await _applyOutputDevice();
+    notifyListeners();
   }
 
   Future<void> setSpeakingThresholdDb(double value) async {
@@ -80,6 +78,7 @@ class AudioCueService {
     } catch (e) {
       OrexLog.d('Audio', 'save speaking threshold failed', e);
     }
+    notifyListeners();
   }
 
   Future<void> setSpeakingThresholdEnabled(bool value) async {
@@ -90,17 +89,44 @@ class AudioCueService {
     } catch (e) {
       OrexLog.d('Audio', 'save speaking threshold enabled failed', e);
     }
+    notifyListeners();
   }
 
-  Future<void> setExplicitOutputRouting(bool value) async {
-    explicitOutputRouting = value;
+  Future<void> resetSoundSettings() async {
+    inputDeviceId = null;
+    outputDeviceId = null;
+    speakingThresholdDb = defaultSpeakingThresholdDb;
+    speakingThresholdEnabled = defaultSpeakingThresholdEnabled;
+    localMicLevelDb = -100;
+    localVoiceActive = false;
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_kExplicitOutputRouting, value);
+      await prefs.remove(_kInputDeviceId);
+      await prefs.remove(_kOutputDeviceId);
+      await prefs.setDouble(_kSpeakingThresholdDb, speakingThresholdDb);
+      await prefs.setBool(_kSpeakingThresholdEnabled, speakingThresholdEnabled);
     } catch (e) {
-      OrexLog.d('Audio', 'save output routing mode failed', e);
+      OrexLog.d('Audio', 'reset sound settings failed', e);
     }
-    await _applyOutputDevice();
+    await applySelectedDevices();
+    notifyListeners();
+  }
+
+  void updateLocalVoiceActivity({required double db, required bool active}) {
+    final clamped = db.clamp(-100, 0).toDouble();
+    if (active == localVoiceActive && (clamped - localMicLevelDb).abs() < 1.2) {
+      return;
+    }
+    localMicLevelDb = clamped;
+    localVoiceActive = active;
+    notifyListeners();
+  }
+
+  void clearLocalVoiceActivity() {
+    if (localMicLevelDb == -100 && !localVoiceActive) return;
+    localMicLevelDb = -100;
+    localVoiceActive = false;
+    notifyListeners();
   }
 
   Future<void> applySelectedDevices() async {
@@ -109,15 +135,12 @@ class AudioCueService {
   }
 
   Future<void> _applyInputDevice() async {
-    final id = inputDeviceId;
-    if (id == null || id == 'default') return;
-    try {
-      await rtc.Helper.selectAudioInput(id);
-      OrexLog.d('Audio', 'selected input device id=$id');
-    } catch (e) {
-      OrexLog.d('Audio', 'select input device failed id=$id', e);
-    }
+    // LiveKit receives the chosen microphone through AudioCaptureOptions when
+    // the mic track is created. Do not pre-lock the route here: some backends
+    // reject IDs that are still valid for getUserMedia/LiveKit, and that only
+    // creates noisy startup logs.
   }
+
 
   Future<void> _applyOutputDevice() async {
     final id = outputDeviceId;
@@ -134,36 +157,7 @@ class AudioCueService {
       } catch (e) {
         OrexLog.d('Audio', 'select mobile route failed id=$id', e);
       }
-      return;
     }
-
-    if (_desktopOutputRoutingIsRisky && !explicitOutputRouting) {
-      // На desktop не держим принудительный WebRTC route: пусть Windows/OS
-      // микширует вывод сама. Если до этого пользователь включал жёсткую
-      // маршрутизацию, пробуем вернуть WebRTC на default.
-      try {
-        await rtc.Helper.selectAudioOutput('default');
-      } catch (_) {}
-      OrexLog.d(
-        'Audio',
-        'output device saved but not forced by WebRTC id=$id explicit=false',
-      );
-      return;
-    }
-
-    try {
-      await rtc.Helper.selectAudioOutput(id);
-      OrexLog.d('Audio', 'selected output device id=$id');
-    } catch (e) {
-      OrexLog.d('Audio', 'select output device failed id=$id', e);
-    }
-  }
-
-  bool get _desktopOutputRoutingIsRisky {
-    if (kIsWeb) return false;
-    return defaultTargetPlatform == TargetPlatform.windows ||
-        defaultTargetPlatform == TargetPlatform.macOS ||
-        defaultTargetPlatform == TargetPlatform.linux;
   }
 
   Future<void> _saveString(String key, String? value) async {
@@ -206,7 +200,7 @@ class AudioCueService {
   Future<void> startIncomingRingtone() async {
     if (_ringing) return;
     _ringing = true;
-    OrexLog.d('Audio', 'start incoming ringtone output=$outputDeviceId');
+    OrexLog.d('Audio', 'start incoming ringtone');
     try {
       await _ensureAsset(incomingAsset);
       await _ringtonePlayer.setReleaseMode(ReleaseMode.loop);
@@ -242,11 +236,7 @@ class AudioCueService {
       await _cuePlayer.stop();
       await _cuePlayer.play(_assetSource(asset));
     } catch (e) {
-      OrexLog.d(
-        'Audio',
-        '$label asset sound failed asset=$asset output=$outputDeviceId',
-        e,
-      );
+      OrexLog.d('Audio', '$label asset sound failed asset=$asset', e);
       await _fallback(fallback);
     }
   }
@@ -264,9 +254,11 @@ class AudioCueService {
     } catch (_) {}
   }
 
+  @override
   void dispose() {
     _ringtoneWatchdog?.cancel();
     _cuePlayer.dispose();
     _ringtonePlayer.dispose();
+    super.dispose();
   }
 }
