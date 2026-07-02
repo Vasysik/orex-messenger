@@ -151,7 +151,13 @@ List<OrexAudioDevice> _nativeDevicesFromMaps(List<Map<String, String>> raw) => [
           id: item['id'] ?? '',
           kind: item['kind'] ?? '',
           label: item['label'] ?? '',
-          category: item['category'] ?? '',
+          category: (item['category'] ?? '').isNotEmpty
+              ? item['category']!
+              : _inferCategory(
+                  id: item['id'] ?? '',
+                  kind: item['kind'] ?? '',
+                  label: item['label'] ?? '',
+                ),
         ),
     ];
 
@@ -201,16 +207,25 @@ String _inferCategory({
   required String kind,
   required String label,
 }) {
-  if (kind != 'audiooutput') return '';
   final value = '$id $label'.toLowerCase();
-  if (value.contains('bluetooth') || value.contains('bt-')) return 'bluetooth';
-  if (value.contains('headphone') ||
-      value.contains('headset') ||
-      value.contains('науш') ||
-      value.contains('гарнитур')) {
-    return 'headphones';
+  if (value.contains('bluetooth') ||
+      value.contains('bt-') ||
+      value.contains('airpods')) {
+    return 'bluetooth';
   }
   if (value.contains('usb')) return 'usb';
+
+  final looksLikeHeadset = value.contains('headphone') ||
+      value.contains('headset') ||
+      value.contains('earbud') ||
+      value.contains('earphone') ||
+      value.contains('науш') ||
+      value.contains('гарнитур');
+  if (looksLikeHeadset) return 'headphones';
+
+  if (kind == 'audioinput') return 'mic';
+  if (kind != 'audiooutput') return '';
+
   if (value.contains('earpiece') || value.contains('разговор')) return 'earpiece';
   if (value.contains('speaker') || value.contains('динамик')) return 'speaker';
   return '';

@@ -1,12 +1,9 @@
 package com.example.orex_messenger
 
 import android.content.Context
-import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -15,70 +12,23 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private val channelName = "orex/audio_devices"
     private val androidOutputPrefix = "orex://android/audio-output/"
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private var selectedOutputId: String? = null
-    private var audioDeviceCallback: AudioDeviceCallback? = null
-    private val reapplyRouteRunnable = Runnable {
-        selectedOutputId?.let { selectAudioOutput(it) }
-    }
-
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        registerAudioDeviceCallbackOnce()
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "listAudioDevices" -> result.success(listAudioDevices())
                     "selectAudioOutput" -> {
-                        selectedOutputId = call.argument<String>("id")?.trim()?.takeIf { it.isNotEmpty() }
-                        result.success(selectAudioOutput(selectedOutputId))
+                        val id = call.argument<String>("id")?.trim()?.takeIf { it.isNotEmpty() }
+                        result.success(selectAudioOutput(id))
                     }
                     else -> result.notImplemented()
                 }
             }
     }
 
-    override fun onDestroy() {
-        unregisterAudioDeviceCallback()
-        super.onDestroy()
-    }
-
     private fun audioManager(): AudioManager =
         getSystemService(Context.AUDIO_SERVICE) as AudioManager
-
-    private fun registerAudioDeviceCallbackOnce() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || audioDeviceCallback != null) return
-        val callback = object : AudioDeviceCallback() {
-            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
-                scheduleRouteReapply()
-            }
-
-            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
-                scheduleRouteReapply()
-            }
-        }
-        try {
-            audioManager().registerAudioDeviceCallback(callback, mainHandler)
-            audioDeviceCallback = callback
-        } catch (e: Throwable) {
-            Log.w("OrexAudioDevices", "register callback failed", e)
-        }
-    }
-
-    private fun unregisterAudioDeviceCallback() {
-        val callback = audioDeviceCallback ?: return
-        audioDeviceCallback = null
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
-        try {
-            audioManager().unregisterAudioDeviceCallback(callback)
-        } catch (_: Throwable) {}
-    }
-
-    private fun scheduleRouteReapply() {
-        if (selectedOutputId == null) return
-        mainHandler.removeCallbacks(reapplyRouteRunnable)
-        mainHandler.postDelayed(reapplyRouteRunnable, 350L)
-    }
 
     private fun listAudioDevices(): List<Map<String, String>> {
         val items = linkedMapOf<String, RouteCandidate>()
@@ -134,6 +84,9 @@ class MainActivity : FlutterActivity() {
             if (route == null) {
                 return try {
                     manager.clearCommunicationDevice()
+                    @Suppress("DEPRECATION")
+                    manager.isSpeakerphoneOn = false
+                    volumeControlStream = AudioManager.STREAM_MUSIC
                     true
                 } catch (e: Throwable) {
                     Log.w("OrexAudioDevices", "clear route failed", e)
@@ -153,23 +106,40 @@ class MainActivity : FlutterActivity() {
 
             if (target == null) return false
 
-            return try {
-                manager.mode = AudioManager.MODE_IN_COMMUNICATION
-                if (target.communication || target.device.isBuiltInOutput()) {
-                    manager.setCommunicationDevice(target.device)
-                } else {
-                    false
-                }
-            } catch (e: Throwable) {
-                Log.w("OrexAudioDevices", "set route failed ${target.routeId()}", e)
-                false
-            }
+            return applyCommunicationRoute(manager, target)
         }
 
         val target = route?.let { wanted ->
             availableOutputCandidates(manager).firstOrNull { it.matches(wanted) }
         }
         return selectLegacyOutput(manager, target?.device)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applyCommunicationRoute(manager: AudioManager, target: RouteCandidate): Boolean {
+        return try {
+            manager.mode = AudioManager.MODE_IN_COMMUNICATION
+            val isSpeaker = target.device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            manager.isSpeakerphoneOn = isSpeaker
+
+            val applied = if (target.communication || target.device.isBuiltInOutput()) {
+                manager.setCommunicationDevice(target.device)
+            } else {
+                false
+            }
+
+            if (applied) {
+                volumeControlStream = if (isSpeaker) {
+                    AudioManager.STREAM_MUSIC
+                } else {
+                    AudioManager.STREAM_VOICE_CALL
+                }
+            }
+            applied
+        } catch (e: Throwable) {
+            Log.w("OrexAudioDevices", "set route failed ${target.routeId()}", e)
+            false
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -180,11 +150,18 @@ class MainActivity : FlutterActivity() {
                 manager.isSpeakerphoneOn = false
                 manager.startBluetoothSco()
                 manager.isBluetoothScoOn = true
+                volumeControlStream = AudioManager.STREAM_VOICE_CALL
                 true
             } else {
+                val isSpeaker = target?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
                 manager.isBluetoothScoOn = false
                 manager.stopBluetoothSco()
-                manager.isSpeakerphoneOn = target?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                manager.isSpeakerphoneOn = isSpeaker
+                volumeControlStream = if (isSpeaker) {
+                    AudioManager.STREAM_MUSIC
+                } else {
+                    AudioManager.STREAM_VOICE_CALL
+                }
                 true
             }
         } catch (e: Throwable) {
@@ -327,7 +304,7 @@ class MainActivity : FlutterActivity() {
 
     private fun AudioDeviceInfo.stableExternalKey(): String {
         val product = cleanProductName()
-        if (product.isNotBlank()) return product.lowercase()
+        if (product.isNotBlank()) return product.normalizedRouteName()
         val address = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try {
                 address.trim()
@@ -338,6 +315,7 @@ class MainActivity : FlutterActivity() {
             ""
         }
         if (address.isNotBlank()) return address.lowercase()
+        if (isBluetoothOutput()) return "bluetooth"
         return routeIdForKey()
     }
 
@@ -349,6 +327,12 @@ class MainActivity : FlutterActivity() {
         if (product.looksLikeAndroidModelName()) return ""
         return product
     }
+
+    private fun String.normalizedRouteName(): String =
+        lowercase()
+            .replace(Regex("\\b(headset|headphones|hands-free|stereo|audio|a2dp|sco)\\b"), "")
+            .replace(Regex("[^a-z0-9а-яё]+"), "")
+            .ifBlank { lowercase() }
 
     private fun String.looksLikeAndroidModelName(): Boolean {
         if (contains(' ')) return false

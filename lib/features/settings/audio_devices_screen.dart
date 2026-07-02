@@ -113,6 +113,15 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
   List<OrexAudioDevice> _byKind(String kind) =>
       _devices.where((d) => d.kind == kind).toList();
 
+  IconData _inputIcon(OrexAudioDevice device) {
+    return switch (device.category) {
+      'bluetooth' => Icons.headset_mic,
+      'headphones' => Icons.headset_mic,
+      'usb' => Icons.usb,
+      _ => Icons.mic,
+    };
+  }
+
   IconData _outputIcon(OrexAudioDevice device) {
     return switch (device.category) {
       'bluetooth' => Icons.headset_mic,
@@ -190,7 +199,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                 ),
                 for (final d in inputs)
                   _DeviceRadioTile(
-                    icon: Icons.mic,
+                    icon: _inputIcon(d),
                     title: d.label,
                     subtitle: null,
                     selected: _inputId == d.id,
