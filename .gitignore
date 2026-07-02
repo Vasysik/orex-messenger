@@ -30,11 +30,22 @@ android/**/GeneratedPluginRegistrant.java
 **/*.keystore
 **/*.jks
 
+# --- Windows: храним runner/native исходники, игнорируем только генерируемое ---
+windows/flutter/ephemeral/
+windows/**/CMakeFiles/
+windows/**/CMakeCache.txt
+windows/**/cmake_install.cmake
+windows/**/Debug/
+windows/**/Profile/
+windows/**/Release/
+windows/**/x64/
+windows/**/x86/
+windows/**/arm64/
+
 # --- Остальные платформы регенерируются flutter create ---
 /ios/
 /linux/
 /macos/
-/windows/
 /web/
 /test/
 
