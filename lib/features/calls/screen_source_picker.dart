@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 
+import '../../core/logging/orex_logger.dart';
 import '../../shared/theme/orex_theme.dart';
 
 bool get orexNeedsScreenSourcePicker {
@@ -11,10 +12,36 @@ bool get orexNeedsScreenSourcePicker {
       defaultTargetPlatform == TargetPlatform.linux;
 }
 
-Future<String?> showOrexScreenSourcePicker(BuildContext context) async {
+class OrexScreenSource {
+  const OrexScreenSource({
+    required this.id,
+    required this.name,
+    required this.type,
+  });
+
+  final String id;
+  final String name;
+  final String type;
+
+  factory OrexScreenSource.fromDesktop(rtc.DesktopCapturerSource source) {
+    return OrexScreenSource(
+      id: source.id,
+      name: source.name.trim().isEmpty ? source.id : source.name.trim(),
+      type: _sourceTypeName(source.type),
+    );
+  }
+}
+
+String _sourceTypeName(rtc.SourceType type) {
+  if (type == rtc.SourceType.Screen) return 'screen';
+  if (type == rtc.SourceType.Window) return 'window';
+  return 'unknown';
+}
+
+Future<OrexScreenSource?> showOrexScreenSourcePicker(BuildContext context) async {
   if (!orexNeedsScreenSourcePicker) return null;
 
-  return showDialog<String>(
+  return showDialog<OrexScreenSource>(
     context: context,
     barrierDismissible: true,
     builder: (_) => const _OrexScreenSourceDialog(),
@@ -33,22 +60,38 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog> {
   rtc.DesktopCapturerSource? _selected;
 
   Future<_SourceGroups> _loadSources() async {
-    // Грузим экраны и окна раздельно: так flutter_webrtc на desktop отдаёт
-    // более полный список, а выбранный source.id дальше можно передать в
-    // ScreenShareCaptureOptions/LocalVideoTrack.
-    final screens = await rtc.desktopCapturer.getSources(
-      types: const [rtc.SourceType.Screen],
-      thumbnailSize: rtc.ThumbnailSize(360, 220),
-    );
-    final windows = await rtc.desktopCapturer.getSources(
-      types: const [rtc.SourceType.Window],
-      thumbnailSize: rtc.ThumbnailSize(360, 220),
-    );
-
-    return _SourceGroups(
+    OrexLog.d('ScreenShare', 'loading desktop sources');
+    final screens = await _loadGroup(rtc.SourceType.Screen);
+    final windows = await _loadGroup(rtc.SourceType.Window);
+    final groups = _SourceGroups(
       screens: _clean(screens),
       windows: _clean(windows),
     );
+    OrexLog.d(
+      'ScreenShare',
+      'desktop sources loaded screens=${groups.screens.length} windows=${groups.windows.length} '
+      'screenThumbs=${_thumbCount(groups.screens)} windowThumbs=${_thumbCount(groups.windows)}',
+    );
+    return groups;
+  }
+
+  Future<List<rtc.DesktopCapturerSource>> _loadGroup(rtc.SourceType type) async {
+    try {
+      return await rtc.desktopCapturer.getSources(
+        types: [type],
+        thumbnailSize: rtc.ThumbnailSize(320, 180),
+      );
+    } catch (e, st) {
+      OrexLog.d('ScreenShare', 'desktopCapturer.getSources failed type=${_sourceTypeName(type)} stack=$st', e);
+      rethrow;
+    }
+  }
+
+  int _thumbCount(List<rtc.DesktopCapturerSource> sources) {
+    return sources.where((source) {
+      final thumbnail = source.thumbnail;
+      return thumbnail != null && thumbnail.isNotEmpty;
+    }).length;
   }
 
   List<rtc.DesktopCapturerSource> _clean(
@@ -73,16 +116,21 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog> {
   void _share() {
     final selected = _selected;
     if (selected == null) return;
-    Navigator.of(context).pop(selected.id);
+    final source = OrexScreenSource.fromDesktop(selected);
+    OrexLog.d(
+      'ScreenShare',
+      'source selected id=${source.id} type=${source.type} name=${source.name}',
+    );
+    Navigator.of(context).pop(source);
   }
 
   @override
   Widget build(BuildContext context) {
     return Dialog(
       backgroundColor: Colors.transparent,
-      insetPadding: const EdgeInsets.all(22),
+      insetPadding: const EdgeInsets.all(24),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 760, maxHeight: 640),
+        constraints: const BoxConstraints(maxWidth: 620, maxHeight: 560),
         child: Container(
           decoration: BoxDecoration(
             color: OrexColors.darkSurface.withValues(alpha: 0.98),
@@ -90,8 +138,8 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog> {
             border: Border.all(color: OrexColors.copper.withValues(alpha: 0.22)),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.38),
-                blurRadius: 28,
+                color: Colors.black.withValues(alpha: 0.35),
+                blurRadius: 24,
                 offset: const Offset(0, 16),
               ),
             ],
@@ -109,7 +157,7 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog> {
                     builder: (context, snapshot) {
                       if (snapshot.connectionState != ConnectionState.done) {
                         return const SizedBox(
-                          height: 330,
+                          height: 300,
                           child: Center(child: CircularProgressIndicator()),
                         );
                       }
@@ -151,39 +199,21 @@ class _PickerHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 16, 10, 10),
+      padding: const EdgeInsets.fromLTRB(20, 16, 10, 8),
       child: Row(
         children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: const BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: OrexColors.copperGradient,
-            ),
-            child: const Icon(Icons.screen_share, color: OrexColors.cream, size: 20),
-          ),
-          const SizedBox(width: 12),
+          const Icon(Icons.screen_share, color: OrexColors.copper),
+          const SizedBox(width: 10),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Что показывать?',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'Выберите экран или окно',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
+            child: Text(
+              'Трансляция экрана',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
             ),
           ),
           IconButton(
-            tooltip: 'Обновить',
+            tooltip: 'Обновить превью',
             onPressed: onReload,
             icon: const Icon(Icons.refresh),
           ),
@@ -218,20 +248,19 @@ class _SourceTabs extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 18),
             child: Container(
-              height: 40,
+              height: 38,
               padding: const EdgeInsets.all(3),
               decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.18),
-                borderRadius: BorderRadius.circular(16),
+                color: Colors.black.withValues(alpha: 0.16),
+                borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
               ),
               child: TabBar(
                 indicatorSize: TabBarIndicatorSize.tab,
                 dividerColor: Colors.transparent,
                 indicator: BoxDecoration(
-                  color: OrexColors.copper.withValues(alpha: 0.28),
-                  borderRadius: BorderRadius.circular(13),
-                  border: Border.all(color: OrexColors.copper.withValues(alpha: 0.35)),
+                  color: OrexColors.copper.withValues(alpha: 0.22),
+                  borderRadius: BorderRadius.circular(11),
                 ),
                 labelColor: OrexColors.cream,
                 unselectedLabelColor: OrexColors.darkTextSoft,
@@ -242,7 +271,7 @@ class _SourceTabs extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Flexible(
             child: TabBarView(
               children: [
@@ -254,7 +283,7 @@ class _SourceTabs extends StatelessWidget {
                 ),
                 _SourceGrid(
                   sources: groups.windows,
-                  emptyText: 'Окна не найдены',
+                  emptyText: 'Окна не найдены. Если окно свёрнуто, Windows часто не отдаёт его в capturer.',
                   selectedId: selectedId,
                   onSelect: onSelect,
                 ),
@@ -284,21 +313,28 @@ class _SourceGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     if (sources.isEmpty) {
       return Center(
-        child: Text(emptyText, style: const TextStyle(color: Colors.white70)),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            emptyText,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white70),
+          ),
+        ),
       );
     }
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
-        final columns = width >= 660 ? 3 : width >= 430 ? 2 : 1;
+        final columns = width >= 520 ? 2 : 1;
         return GridView.builder(
           padding: const EdgeInsets.fromLTRB(18, 0, 18, 10),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: columns,
             crossAxisSpacing: 10,
             mainAxisSpacing: 10,
-            childAspectRatio: 1.22,
+            childAspectRatio: 1.34,
           ),
           itemCount: sources.length,
           itemBuilder: (context, index) {
@@ -350,7 +386,7 @@ class _SourceCard extends StatelessWidget {
           duration: const Duration(milliseconds: 140),
           decoration: BoxDecoration(
             color: selected
-                ? OrexColors.copper.withValues(alpha: 0.16)
+                ? OrexColors.copper.withValues(alpha: 0.14)
                 : Colors.white.withValues(alpha: 0.045),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
@@ -370,11 +406,15 @@ class _SourceCard extends StatelessWidget {
                     fit: StackFit.expand,
                     children: [
                       if (thumbnail != null)
-                        Image.memory(
-                          thumbnail,
-                          fit: BoxFit.cover,
-                          gaplessPlayback: true,
-                          filterQuality: FilterQuality.low,
+                        Container(
+                          color: Colors.black.withValues(alpha: 0.22),
+                          alignment: Alignment.center,
+                          child: Image.memory(
+                            thumbnail,
+                            fit: BoxFit.contain,
+                            gaplessPlayback: true,
+                            filterQuality: FilterQuality.low,
+                          ),
                         )
                       else
                         Container(
@@ -383,15 +423,25 @@ class _SourceCard extends StatelessWidget {
                               begin: Alignment.topLeft,
                               end: Alignment.bottomRight,
                               colors: [
-                                OrexColors.walnutDeep.withValues(alpha: 0.75),
-                                OrexColors.copper.withValues(alpha: 0.28),
+                                OrexColors.walnutDeep.withValues(alpha: 0.78),
+                                OrexColors.copper.withValues(alpha: 0.24),
                               ],
                             ),
                           ),
-                          child: Icon(
-                            isScreen ? Icons.monitor : Icons.web_asset,
-                            color: OrexColors.cream.withValues(alpha: 0.80),
-                            size: 40,
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                isScreen ? Icons.monitor : Icons.web_asset,
+                                color: OrexColors.cream.withValues(alpha: 0.82),
+                                size: 34,
+                              ),
+                              const SizedBox(height: 6),
+                              const Text(
+                                'Превью недоступно',
+                                style: TextStyle(fontSize: 11, color: Colors.white70),
+                              ),
+                            ],
                           ),
                         ),
                       Positioned(
@@ -407,13 +457,13 @@ class _SourceCard extends StatelessWidget {
                           right: 9,
                           top: 9,
                           child: Container(
-                            width: 25,
-                            height: 25,
+                            width: 24,
+                            height: 24,
                             decoration: const BoxDecoration(
                               color: OrexColors.copper,
                               shape: BoxShape.circle,
                             ),
-                            child: const Icon(Icons.check, size: 16, color: OrexColors.cream),
+                            child: const Icon(Icons.check, size: 15, color: OrexColors.cream),
                           ),
                         ),
                     ],
@@ -421,10 +471,10 @@ class _SourceCard extends StatelessWidget {
                 ),
               ),
               Padding(
-                padding: const EdgeInsets.fromLTRB(10, 9, 10, 10),
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 9),
                 child: Text(
                   title,
-                  maxLines: 2,
+                  maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 12,
@@ -487,30 +537,49 @@ class _PickerFooter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final selected = selectedName?.trim();
+    final showWindowsHint = !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
     return Container(
-      padding: const EdgeInsets.fromLTRB(18, 11, 18, 16),
+      padding: const EdgeInsets.fromLTRB(18, 10, 18, 16),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.14),
         border: Border(top: BorderSide(color: Colors.white.withValues(alpha: 0.08))),
       ),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(
-            child: Text(
-              hasSelection
-                  ? 'Выбрано: ${selected?.isNotEmpty == true ? selected : 'источник'}'
-                  : 'Сначала выберите источник',
-              maxLines: 1,
+          if (showWindowsHint) ...[
+            Text(
+              'Windows не отдаёт содержимое некоторых свёрнутых/защищённых окон — разверните окно, если его нет или превью пустое.',
+              maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.white60,
+                    fontSize: 11,
+                  ),
             ),
-          ),
-          TextButton(onPressed: onCancel, child: const Text('Отмена')),
-          const SizedBox(width: 8),
-          FilledButton.icon(
-            onPressed: hasSelection ? onShare : null,
-            icon: const Icon(Icons.screen_share, size: 18),
-            label: const Text('Поделиться'),
+            const SizedBox(height: 8),
+          ],
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  hasSelection
+                      ? 'Выбрано: ${selected?.isNotEmpty == true ? selected : 'источник'}'
+                      : 'Сначала выберите источник',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+              TextButton(onPressed: onCancel, child: const Text('Отмена')),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                onPressed: hasSelection ? onShare : null,
+                icon: const Icon(Icons.screen_share, size: 18),
+                label: const Text('Поделиться'),
+              ),
+            ],
           ),
         ],
       ),

@@ -7,6 +7,7 @@ import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:matrix/matrix.dart';
 
 import '../config/orex_config.dart';
+import '../logging/orex_logger.dart';
 
 enum CallStatus { connecting, connected, failed, ended }
 
@@ -42,7 +43,6 @@ class CallSession extends ChangeNotifier {
   bool _disposed = false;
   bool screenShareOn = false;
   bool _screenShareBusy = false;
-  lk.LocalTrackPublication<lk.LocalVideoTrack>? _screenSharePublication;
   lk.LocalVideoTrack? _screenShareTrack;
   bool handRaised = false;
   final Map<String, VoiceParticipantState> _voiceStates = <String, VoiceParticipantState>{};
@@ -188,7 +188,11 @@ class CallSession extends ChangeNotifier {
   }
 
 
-  Future<void> toggleScreenShare({String? sourceId}) async {
+  Future<void> toggleScreenShare({
+    String? sourceId,
+    String? sourceName,
+    String? sourceType,
+  }) async {
     final lp = _room?.localParticipant;
     if (lp == null || _screenShareBusy) return;
     _screenShareBusy = true;
@@ -220,38 +224,66 @@ class CallSession extends ChangeNotifier {
         return;
       }
 
+      final options = sourceId != null
+          ? lk.ScreenShareCaptureOptions(
+              sourceId: sourceId,
+              maxFrameRate: 15.0,
+            )
+          : null;
+      final sourceLabel = sourceName?.trim().isNotEmpty == true
+          ? sourceName!.trim()
+          : sourceId ?? 'default';
+      OrexLog.d(
+        'Call',
+        'screen share start requested sourceId=$sourceId type=$sourceType name=$sourceLabel',
+      );
+
       if (!kIsWeb && _desktopNeedsExplicitSource && sourceId != null) {
-        // На desktop LiveKit в своём README рекомендует не shortcut
-        // setScreenShareEnabled(...sourceId...), а явное создание screen-share
-        // track и publishVideoTrack. Это аккуратнее после нашего picker-а с
-        // превью: один capturer выбирает sourceId, второй создаёт готовый track.
-        final track = await lk.LocalVideoTrack.createScreenShareTrack(
-          lk.ScreenShareCaptureOptions(
-            sourceId: sourceId,
-            maxFrameRate: 15.0,
-          ),
-        );
-        final publication = await lp.publishVideoTrack(track);
-        _screenShareTrack = track;
-        _screenSharePublication = publication;
-        screenShareOn = true;
+        try {
+          // Сначала пробуем явный desktop-track: так выбранный sourceId не
+          // теряется между нашим picker-ом и LiveKit.
+          final track = await lk.LocalVideoTrack.createScreenShareTrack(options!);
+          await lp.publishVideoTrack(track);
+          _screenShareTrack = track;
+          screenShareOn = true;
+          OrexLog.d('Call', 'screen share started via createScreenShareTrack sourceId=$sourceId');
+        } catch (e, st) {
+          OrexLog.d(
+            'Call',
+            'createScreenShareTrack failed sourceId=$sourceId type=$sourceType name=$sourceLabel stack=$st',
+            e,
+          );
+          await _cleanupScreenShareLocals();
+          // Fallback с тем же sourceId. Не переключаемся молча на весь экран,
+          // чтобы случайно не расшарить больше, чем выбрал пользователь.
+          await lp.setScreenShareEnabled(
+            true,
+            screenShareCaptureOptions: options,
+          );
+          screenShareOn = true;
+          OrexLog.d('Call', 'screen share started via setScreenShareEnabled sourceId=$sourceId');
+        }
       } else {
         await lp.setScreenShareEnabled(
           true,
-          screenShareCaptureOptions: sourceId != null
-              ? lk.ScreenShareCaptureOptions(
-                  sourceId: sourceId,
-                  maxFrameRate: 15.0,
-                )
-              : null,
+          screenShareCaptureOptions: options,
         );
         screenShareOn = true;
+        OrexLog.d('Call', 'screen share started via setScreenShareEnabled sourceId=$sourceId');
       }
       error = null;
-    } catch (e) {
+    } catch (e, st) {
       await _cleanupScreenShareLocals();
       screenShareOn = false;
-      error = 'Не удалось переключить трансляцию экрана: $e';
+      OrexLog.d(
+        'Call',
+        'screen share failed sourceId=$sourceId type=$sourceType name=${sourceName ?? ''} stack=$st',
+        e,
+      );
+      final sourcePart = sourceName?.trim().isNotEmpty == true
+          ? ' для "${sourceName!.trim()}"'
+          : '';
+      error = 'Не удалось включить трансляцию экрана$sourcePart: $e';
     } finally {
       _screenShareBusy = false;
       if (!_disposed) notifyListeners();
@@ -260,8 +292,6 @@ class CallSession extends ChangeNotifier {
 
   Future<void> _stopScreenShare({lk.LocalParticipant? lp}) async {
     final participant = lp ?? _room?.localParticipant;
-    _screenSharePublication = null;
-
     // Не используем LocalParticipant.unpublishTrack(): в части версий
     // livekit_client этот метод отсутствует/не экспортируется, из-за чего
     // flutter analyze падает. Для screen-share LiveKit умеет выключать

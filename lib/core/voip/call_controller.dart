@@ -39,13 +39,6 @@ class CallController extends ChangeNotifier {
         matrix.canSpeakInVoice(room, matrix.client.userID);
   }
 
-  bool get _avoidAutoMicOnDesktop {
-    if (kIsWeb) return false;
-    return defaultTargetPlatform == TargetPlatform.windows ||
-        defaultTargetPlatform == TargetPlatform.macOS ||
-        defaultTargetPlatform == TargetPlatform.linux;
-  }
-
   Future<void> refreshVoicePermissions() async {
     await _session?.refreshVoicePermissions();
     final rid = roomId;
@@ -74,7 +67,7 @@ class CallController extends ChangeNotifier {
     final canSpeak = _canUseMicNowFor(roomId);
     listenOnly = !canSpeak;
     final micInitiallyOn = initialMicOn ??
-        ((room?.isDirectChat == true) && !_avoidAutoMicOnDesktop);
+        (room?.isDirectChat == true ? true : false);
     _initiator = room != null && !matrix.roomHasActiveCall(room);
     _start = DateTime.now();
     final s = CallSession(

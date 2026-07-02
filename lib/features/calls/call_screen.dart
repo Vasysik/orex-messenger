@@ -69,17 +69,21 @@ class _CallScreenState extends State<CallScreen> {
       await session.toggleScreenShare();
       return;
     }
-    String? sourceId;
+    OrexScreenSource? source;
     if (orexNeedsScreenSourcePicker) {
-      sourceId = await showOrexScreenSourcePicker(context);
-      if (sourceId == null) return;
-      // Даём окну выбора полностью закрыться перед стартом захвата. На Windows
-      // это снижает шанс гонки между thumbnail-callbacks picker-а и созданием
-      // реального screen-share track.
-      await Future<void>.delayed(const Duration(milliseconds: 450));
+      source = await showOrexScreenSourcePicker(context);
+      if (source == null) return;
+      // Даём окну выбора закрыться перед стартом захвата, но не пытаемся
+      // лечить этим native-crash: реальная диагностика теперь логируется в
+      // CallSession при создании screen-share track.
+      await Future<void>.delayed(const Duration(milliseconds: 220));
       if (!mounted) return;
     }
-    await session.toggleScreenShare(sourceId: sourceId);
+    await session.toggleScreenShare(
+      sourceId: source?.id,
+      sourceName: source?.name,
+      sourceType: source?.type,
+    );
   }
 
   bool _canGrantVoice(Room? room, String userId, VoiceParticipantState state) {
