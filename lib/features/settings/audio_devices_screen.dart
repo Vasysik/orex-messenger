@@ -136,8 +136,8 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                   title: 'Обновить список устройств',
                   subtitle: _loading
                       ? 'Загрузка…'
-                      : 'Перечитать аудиоустройства',
-                  onTap: () => _load(requestPermission: false),
+                      : 'Перечитать устройства и разблокировать их названия',
+                  onTap: () => _load(requestPermission: true),
                 ),
                 OrexSettingsTile(
                   icon: Icons.volume_up,
@@ -213,7 +213,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                   ),
                 if (!_loading && outputs.isEmpty)
                   const _EmptyDeviceHint(
-                    text: 'Сейчас доступен только системный вывод. На Android и iOS вывод выбирается системной аудиомаршрутизацией; на Windows/macOS/Linux/Web здесь появятся реальные WebRTC-устройства.',
+                    text: 'Сейчас доступен только системный вывод. Нажмите «Обновить список устройств» и проверьте, видит ли устройство операционная система.',
                   ),
               ],
             ),

@@ -185,8 +185,8 @@ extension MatrixSupergroupApi on MatrixService {
     final localServerName = _localServerName;
     final childServerName = _serverNameFromRoomId(childId);
     final servers = <String>{
-      if (localServerName != null) localServerName,
-      if (childServerName != null) childServerName,
+      ?localServerName,
+      ?childServerName,
     };
     return servers.where((server) => server.isNotEmpty).toList();
   }

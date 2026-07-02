@@ -20,7 +20,7 @@ class CallController extends ChangeNotifier {
   final MatrixService matrix;
 
   void _onAudioSettingsChanged() {
-    unawaited(_session?.syncVoiceGateFromSettings());
+    unawaited(_session?.syncAudioSettingsFromSettings());
     notifyListeners();
   }
 
@@ -77,6 +77,7 @@ class CallController extends ChangeNotifier {
     final canSpeak = _canUseMicNowFor(roomId);
     listenOnly = !canSpeak;
     final micInitiallyOn = initialMicOn ??
+        matrix.audio.callMicEnabledOverride ??
         (room?.isDirectChat == true ? true : false);
     _initiator = room != null && !matrix.roomHasActiveCall(room);
     _start = DateTime.now();
@@ -88,12 +89,8 @@ class CallController extends ChangeNotifier {
       listenOnly: listenOnly,
       canUseMicNow: () => _canUseMicNowFor(roomId),
       audioInputDeviceIdProvider: () => matrix.audio.inputDeviceId,
-      speakingThresholdDbProvider: () => matrix.audio.speakingThresholdDb,
-      speakingThresholdEnabledProvider: () => matrix.audio.speakingThresholdEnabled,
-      localVoiceActivitySink: (db, active) => matrix.audio.updateLocalVoiceActivity(
-        db: db,
-        active: active,
-      ),
+      audioOutputDeviceIdProvider: () => matrix.audio.outputDeviceId,
+      callMicPreferenceSink: (enabled) => matrix.audio.setCallMicEnabled(enabled),
     );
     focusedParticipantIdentity = null;
     _session = s;

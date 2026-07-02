@@ -172,8 +172,8 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
                           const Padding(
                             padding: EdgeInsets.fromLTRB(16, 0, 16, 10),
                             child: Text(
-                              'На Android/iOS вывод выбирается системной маршрутизацией. '
-                              'Конкретные устройства WebRTC появятся на Windows, macOS, Linux и Web.',
+                              'Сейчас доступен только системный вывод. '
+                              'Нажмите «Обновить», чтобы перечитать устройства и разблокировать их названия.',
                               style: TextStyle(color: Colors.white54, fontSize: 12),
                             ),
                           ),
@@ -207,7 +207,7 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
       ),
       actions: [
         TextButton.icon(
-          onPressed: () => _load(requestPermission: false),
+          onPressed: () => _load(requestPermission: true),
           icon: const Icon(Icons.refresh),
           label: const Text('Обновить'),
         ),

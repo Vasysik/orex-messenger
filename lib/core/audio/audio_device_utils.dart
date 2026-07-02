@@ -3,6 +3,20 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 
 import '../logging/orex_logger.dart';
 
+const orexMobileSpeakerOutputId = 'orex://mobile/speaker';
+const orexMobileEarpieceOutputId = 'orex://mobile/earpiece';
+
+bool get orexIsMobileNativePlatform {
+  if (kIsWeb) return false;
+  return defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+}
+
+bool orexIsMobileRouteId(String? id) =>
+    id == orexMobileSpeakerOutputId || id == orexMobileEarpieceOutputId;
+
+bool orexIsMobileSpeakerRouteId(String? id) => id == orexMobileSpeakerOutputId;
+
 class OrexAudioDevice {
   const OrexAudioDevice({
     required this.id,
@@ -18,11 +32,12 @@ class OrexAudioDevice {
   bool get isOutput => kind == 'audiooutput';
 }
 
-/// Returns only WebRTC devices that can be used by getUserMedia/LiveKit.
+/// Returns user-facing WebRTC devices and mobile call routes.
 ///
-/// The settings screen renders its own "system default" rows, so synthetic
-/// WebRTC defaults, cached rows, Android AudioDeviceInfo ids and mobile speaker
-/// route pseudo-devices are intentionally not exposed here.
+/// The settings screen renders its own "system default" rows, so WebRTC
+/// defaults/cached rows are filtered out. Android/iOS do not expose stable
+/// WebRTC sink IDs for output routing, therefore mobile call routes are added
+/// as explicit synthetic options and are handled through LiveKit AudioManager.
 Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
   bool requestPermission = false,
 }) async {
@@ -50,10 +65,16 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
 
       final idKey = '${device.kind}|${device.id}';
       final labelKey = '${device.kind}|${device.label.toLowerCase()}';
-      if (_isMobileNative && seenLabels.contains(labelKey)) continue;
+      if (orexIsMobileNativePlatform && seenLabels.contains(labelKey)) continue;
 
       byId[idKey] = device;
       seenLabels.add(labelKey);
+    }
+
+    if (orexIsMobileNativePlatform) {
+      for (final route in _mobileOutputRoutes()) {
+        byId['${route.kind}|${route.id}'] = route;
+      }
     }
 
     final result = byId.values.toList()
@@ -64,7 +85,7 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
       });
     OrexLog.d(
       'AudioDevices',
-      'enumerated total=${result.length} inputs=${result.where((d) => d.isInput).length} outputs=${result.where((d) => d.isOutput).length} permission=$requestPermission',
+      'enumerated total=${result.length} inputs=${result.where((d) => d.isInput).length} outputs=${result.where((d) => d.isOutput).length} permission=$requestPermission mobile=$orexIsMobileNativePlatform',
     );
     return result;
   } catch (e) {
@@ -77,12 +98,6 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
       } catch (_) {}
     }
   }
-}
-
-bool get _isMobileNative {
-  if (kIsWeb) return false;
-  return defaultTargetPlatform == TargetPlatform.android ||
-      defaultTargetPlatform == TargetPlatform.iOS;
 }
 
 OrexAudioDevice? _fromRawDevice(dynamic raw) {
@@ -106,7 +121,7 @@ bool _shouldShowDevice(OrexAudioDevice device) {
   // Android can expose several low-level AudioDeviceInfo entries whose labels
   // are just build/model codes with numeric ids. They are not stable WebRTC
   // deviceIds for LiveKit and make the settings look like a debug dump.
-  if (_isMobileNative && _looksLikeAndroidHardwareCode(label)) return false;
+  if (orexIsMobileNativePlatform && _looksLikeAndroidHardwareCode(label)) return false;
 
   return true;
 }
@@ -164,3 +179,16 @@ bool _looksLikeAndroidHardwareCode(String label) {
   }
   return RegExp(r'^(?=.*\d)[A-Z0-9._-]{5,}$').hasMatch(normalized);
 }
+
+List<OrexAudioDevice> _mobileOutputRoutes() => const [
+      OrexAudioDevice(
+        id: orexMobileSpeakerOutputId,
+        kind: 'audiooutput',
+        label: 'Динамик телефона',
+      ),
+      OrexAudioDevice(
+        id: orexMobileEarpieceOutputId,
+        kind: 'audiooutput',
+        label: 'Разговорный динамик / гарнитура',
+      ),
+    ];

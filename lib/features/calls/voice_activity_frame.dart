@@ -100,7 +100,6 @@ class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
   @override
   void initState() {
     super.initState();
-    widget.matrix.audio.addListener(_sample);
     _sample();
     _timer = Timer.periodic(const Duration(milliseconds: 35), (_) => _sample());
   }
@@ -108,10 +107,6 @@ class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
   @override
   void didUpdateWidget(covariant OrexSpeakingFrame oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.matrix != widget.matrix) {
-      oldWidget.matrix.audio.removeListener(_sample);
-      widget.matrix.audio.addListener(_sample);
-    }
     if (oldWidget.participant != widget.participant ||
         oldWidget.matrix != widget.matrix) {
       _sample();
@@ -121,23 +116,17 @@ class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
   @override
   void dispose() {
     _timer?.cancel();
-    widget.matrix.audio.removeListener(_sample);
     super.dispose();
   }
 
   void _sample() {
     if (!mounted) return;
-    final isLocal = widget.participant is lk.LocalParticipant;
-    final db = isLocal && widget.matrix.audio.speakingThresholdEnabled
-        ? widget.matrix.audio.localMicLevelDb
-        : orexAudioLevelToDb(widget.participant.audioLevel);
-    final active = isLocal && widget.matrix.audio.speakingThresholdEnabled
-        ? widget.matrix.audio.localVoiceActive
-        : orexParticipantVoiceActive(
-            widget.participant,
-            widget.matrix,
-            levelDb: db,
-          );
+    final db = orexAudioLevelToDb(widget.participant.audioLevel);
+    final active = orexParticipantVoiceActive(
+      widget.participant,
+      widget.matrix,
+      levelDb: db,
+    );
     if (active == _active && (db - _levelDb).abs() < 1.5) return;
     setState(() {
       _active = active;

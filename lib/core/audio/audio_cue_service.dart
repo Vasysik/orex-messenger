@@ -4,9 +4,11 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
+import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logging/orex_logger.dart';
+import 'audio_device_utils.dart';
 
 /// Единая точка коротких звуков Orex и пользовательских аудио-настроек.
 class AudioCueService extends ChangeNotifier {
@@ -22,6 +24,7 @@ class AudioCueService extends ChangeNotifier {
   static const _kOutputDeviceId = 'orex_audio_output_device_id';
   static const _kSpeakingThresholdDb = 'orex_audio_speaking_threshold_db';
   static const _kSpeakingThresholdEnabled = 'orex_audio_speaking_threshold_enabled';
+  static const _kCallMicEnabled = 'orex_audio_call_mic_enabled';
 
   static const minSpeakingThresholdDb = -70.0;
   static const maxSpeakingThresholdDb = -10.0;
@@ -34,9 +37,7 @@ class AudioCueService extends ChangeNotifier {
   String? outputDeviceId;
   double speakingThresholdDb = defaultSpeakingThresholdDb;
   bool speakingThresholdEnabled = defaultSpeakingThresholdEnabled;
-
-  double localMicLevelDb = -100;
-  bool localVoiceActive = false;
+  bool? callMicEnabledOverride;
 
   bool get isRinging => _ringing;
 
@@ -45,7 +46,7 @@ class AudioCueService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       inputDeviceId = _nullIfEmpty(prefs.getString(_kInputDeviceId));
       outputDeviceId = _nullIfEmpty(prefs.getString(_kOutputDeviceId));
-      if (_isLegacyMobileRoute(outputDeviceId)) {
+      if (orexIsMobileRouteId(outputDeviceId) && !orexIsMobileNativePlatform) {
         outputDeviceId = null;
         await prefs.remove(_kOutputDeviceId);
       }
@@ -54,6 +55,9 @@ class AudioCueService extends ChangeNotifier {
       );
       speakingThresholdEnabled = prefs.getBool(_kSpeakingThresholdEnabled) ??
           defaultSpeakingThresholdEnabled;
+      callMicEnabledOverride = prefs.containsKey(_kCallMicEnabled)
+          ? prefs.getBool(_kCallMicEnabled)
+          : null;
       await applySelectedDevices();
     } catch (e) {
       OrexLog.d('Audio', 'load audio preferences failed', e);
@@ -71,6 +75,17 @@ class AudioCueService extends ChangeNotifier {
     outputDeviceId = _nullIfEmpty(value);
     await _saveString(_kOutputDeviceId, outputDeviceId);
     await _applyOutputDevice();
+    notifyListeners();
+  }
+
+  Future<void> setCallMicEnabled(bool value) async {
+    callMicEnabledOverride = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kCallMicEnabled, value);
+    } catch (e) {
+      OrexLog.d('Audio', 'save call mic preference failed', e);
+    }
     notifyListeners();
   }
 
@@ -101,35 +116,18 @@ class AudioCueService extends ChangeNotifier {
     outputDeviceId = null;
     speakingThresholdDb = defaultSpeakingThresholdDb;
     speakingThresholdEnabled = defaultSpeakingThresholdEnabled;
-    localMicLevelDb = -100;
-    localVoiceActive = false;
+    callMicEnabledOverride = null;
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_kInputDeviceId);
       await prefs.remove(_kOutputDeviceId);
+      await prefs.remove(_kCallMicEnabled);
       await prefs.setDouble(_kSpeakingThresholdDb, speakingThresholdDb);
       await prefs.setBool(_kSpeakingThresholdEnabled, speakingThresholdEnabled);
     } catch (e) {
       OrexLog.d('Audio', 'reset sound settings failed', e);
     }
     await applySelectedDevices();
-    notifyListeners();
-  }
-
-  void updateLocalVoiceActivity({required double db, required bool active}) {
-    final clamped = db.clamp(-100, 0).toDouble();
-    if (active == localVoiceActive && (clamped - localMicLevelDb).abs() < 1.2) {
-      return;
-    }
-    localMicLevelDb = clamped;
-    localVoiceActive = active;
-    notifyListeners();
-  }
-
-  void clearLocalVoiceActivity() {
-    if (localMicLevelDb == -100 && !localVoiceActive) return;
-    localMicLevelDb = -100;
-    localVoiceActive = false;
     notifyListeners();
   }
 
@@ -145,20 +143,35 @@ class AudioCueService extends ChangeNotifier {
     // creates noisy startup logs.
   }
 
-
   Future<void> _applyOutputDevice() async {
     final id = outputDeviceId;
-    if (id == null || id == 'default') return;
 
-    if (_isLegacyMobileRoute(id)) {
+    if (orexIsMobileNativePlatform) {
+      try {
+        final preferSpeaker = orexIsMobileSpeakerRouteId(id);
+        await lk.AudioManager.instance.setSpeakerOutputPreferred(
+          preferSpeaker,
+          force: false,
+        );
+        OrexLog.d(
+          'Audio',
+          'selected mobile output route id=${id ?? 'system'} speaker=$preferSpeaker',
+        );
+      } catch (e) {
+        OrexLog.d('Audio', 'select mobile output route failed id=$id', e);
+      }
+      return;
+    }
+
+    if (orexIsMobileRouteId(id)) {
       outputDeviceId = null;
       await _saveString(_kOutputDeviceId, null);
       return;
     }
 
     try {
-      await rtc.Helper.selectAudioOutput(id);
-      OrexLog.d('Audio', 'selected output device id=$id');
+      await rtc.Helper.selectAudioOutput(id ?? 'default');
+      OrexLog.d('Audio', 'selected output device id=${id ?? 'default'}');
     } catch (e) {
       OrexLog.d('Audio', 'select output device failed id=$id', e);
     }
@@ -180,9 +193,6 @@ class AudioCueService extends ChangeNotifier {
   double _clampSpeakingThreshold(double value) => value
       .clamp(minSpeakingThresholdDb, maxSpeakingThresholdDb)
       .toDouble();
-
-  bool _isLegacyMobileRoute(String? value) =>
-      value == 'orex://mobile/earpiece' || value == 'orex://mobile/speaker';
 
   String? _nullIfEmpty(String? value) {
     final trimmed = value?.trim();
