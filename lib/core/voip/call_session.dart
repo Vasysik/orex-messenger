@@ -229,7 +229,7 @@ class CallSession extends ChangeNotifier {
               sourceId: sourceId,
               maxFrameRate: 15.0,
             )
-          : null;
+          : const lk.ScreenShareCaptureOptions(maxFrameRate: 15.0);
       final sourceLabel = sourceName?.trim().isNotEmpty == true
           ? sourceName!.trim()
           : sourceId ?? 'default';
@@ -240,13 +240,15 @@ class CallSession extends ChangeNotifier {
 
       if (!kIsWeb && _desktopNeedsExplicitSource && sourceId != null) {
         try {
-          // Сначала пробуем явный desktop-track: так выбранный sourceId не
-          // теряется между нашим picker-ом и LiveKit.
-          final track = await lk.LocalVideoTrack.createScreenShareTrack(options!);
-          await lp.publishVideoTrack(track);
-          _screenShareTrack = track;
-          screenShareOn = true;
-          OrexLog.d('Call', 'screen share started via createScreenShareTrack sourceId=$sourceId');
+          // Desktop: как в примерах LiveKit, сначала создаём track с выбранным
+          // DesktopCapturerSource.id и публикуем его вручную.
+          await _publishScreenShareTrack(
+            lp: lp,
+            options: options,
+            sourceId: sourceId,
+            sourceType: sourceType,
+            sourceLabel: sourceLabel,
+          );
         } catch (e, st) {
           OrexLog.d(
             'Call',
@@ -254,14 +256,35 @@ class CallSession extends ChangeNotifier {
             e,
           );
           await _cleanupScreenShareLocals();
-          // Fallback с тем же sourceId. Не переключаемся молча на весь экран,
-          // чтобы случайно не расшарить больше, чем выбрал пользователь.
-          await lp.setScreenShareEnabled(
-            true,
-            screenShareCaptureOptions: options,
-          );
-          screenShareOn = true;
-          OrexLog.d('Call', 'screen share started via setScreenShareEnabled sourceId=$sourceId');
+
+          if (_isDesktopScreenSource(sourceType)) {
+            // На части Windows-сборок flutter_webrtc отдаёт screen id в picker-е,
+            // но getDisplayMedia потом отвечает "source not found" именно для
+            // экранов. Для screen-источника безопасный fallback — весь экран
+            // без sourceId. Для окон такого fallback нет, чтобы не расшарить
+            // лишнее вместо выбранного окна.
+            const fallbackOptions = lk.ScreenShareCaptureOptions(maxFrameRate: 15.0);
+            OrexLog.d(
+              'Call',
+              'retrying screen share without sourceId after screen source lookup failed selectedId=$sourceId',
+            );
+            await _publishScreenShareTrack(
+              lp: lp,
+              options: fallbackOptions,
+              sourceId: null,
+              sourceType: sourceType,
+              sourceLabel: 'default screen',
+            );
+          } else {
+            // Fallback с тем же sourceId. Не переключаемся молча на весь экран,
+            // чтобы случайно не расшарить больше, чем выбрал пользователь.
+            await lp.setScreenShareEnabled(
+              true,
+              screenShareCaptureOptions: options,
+            );
+            screenShareOn = true;
+            OrexLog.d('Call', 'screen share started via setScreenShareEnabled sourceId=$sourceId');
+          }
         }
       } else {
         await lp.setScreenShareEnabled(
@@ -289,6 +312,26 @@ class CallSession extends ChangeNotifier {
       if (!_disposed) notifyListeners();
     }
   }
+
+  Future<void> _publishScreenShareTrack({
+    required lk.LocalParticipant lp,
+    required lk.ScreenShareCaptureOptions options,
+    required String? sourceId,
+    required String? sourceType,
+    required String sourceLabel,
+  }) async {
+    final track = await lk.LocalVideoTrack.createScreenShareTrack(options);
+    await lp.publishVideoTrack(track);
+    _screenShareTrack = track;
+    screenShareOn = true;
+    OrexLog.d(
+      'Call',
+      'screen share started via createScreenShareTrack sourceId=${sourceId ?? 'default'} type=$sourceType name=$sourceLabel',
+    );
+  }
+
+  bool _isDesktopScreenSource(String? sourceType) =>
+      sourceType == null || sourceType == 'screen';
 
   Future<void> _stopScreenShare({lk.LocalParticipant? lp}) async {
     final participant = lp ?? _room?.localParticipant;

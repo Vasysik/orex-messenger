@@ -31,7 +31,7 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
       _error = null;
     });
     try {
-      final devices = await rtc.navigator.mediaDevices.enumerateDevices();
+      final devices = await _enumerateDevicesWithPermissionUnlock();
       if (!mounted) return;
       setState(() => _devices = devices);
     } catch (e) {
@@ -39,6 +39,26 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
       setState(() => _error = '$e');
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<List<dynamic>> _enumerateDevicesWithPermissionUnlock() async {
+    rtc.MediaStream? permissionStream;
+    try {
+      permissionStream = await rtc.navigator.mediaDevices.getUserMedia({
+        'audio': true,
+        'video': false,
+      });
+    } catch (_) {}
+
+    try {
+      return await rtc.navigator.mediaDevices.enumerateDevices();
+    } finally {
+      for (final track in permissionStream?.getTracks() ?? <dynamic>[]) {
+        try {
+          track.stop();
+        } catch (_) {}
+      }
     }
   }
 
@@ -55,6 +75,8 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
       for (final track in stream.getTracks()) {
         track.stop();
       }
+      if (!mounted) return;
+      await _load();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Микрофон доступен')),

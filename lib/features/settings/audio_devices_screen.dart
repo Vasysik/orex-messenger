@@ -36,7 +36,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
       _error = null;
     });
     try {
-      final devices = await rtc.navigator.mediaDevices.enumerateDevices();
+      final devices = await _enumerateDevicesWithPermissionUnlock();
       if (!mounted) return;
       setState(() => _devices = devices);
     } catch (e) {
@@ -44,6 +44,32 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
       setState(() => _error = '$e');
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<List<dynamic>> _enumerateDevicesWithPermissionUnlock() async {
+    rtc.MediaStream? permissionStream;
+    try {
+      // Без короткого getUserMedia многие WebRTC-реализации показывают только
+      // системные default-устройства или пустые label/deviceId. Трек сразу
+      // отпускается: это не включает микрофон для звонка.
+      permissionStream = await rtc.navigator.mediaDevices.getUserMedia({
+        'audio': true,
+        'video': false,
+      });
+    } catch (_) {
+      // Даже если пользователь запретил микрофон, всё равно показываем то, что
+      // enumerateDevices разрешает отдать сейчас.
+    }
+
+    try {
+      return await rtc.navigator.mediaDevices.enumerateDevices();
+    } finally {
+      for (final track in permissionStream?.getTracks() ?? <dynamic>[]) {
+        try {
+          track.stop();
+        } catch (_) {}
+      }
     }
   }
 
@@ -62,6 +88,8 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
       for (final track in stream.getTracks()) {
         track.stop();
       }
+      if (!mounted) return;
+      await _load();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Микрофон доступен')),
@@ -95,7 +123,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                 OrexSettingsTile(
                   icon: Icons.refresh,
                   title: 'Обновить список устройств',
-                  subtitle: _loading ? 'Загрузка…' : 'Переопросить WebRTC-устройства',
+                  subtitle: _loading ? 'Загрузка…' : 'Запросить доступ и переопросить WebRTC-устройства',
                   onTap: _load,
                 ),
                 OrexSettingsTile(

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
@@ -58,6 +60,20 @@ class _OrexScreenSourceDialog extends StatefulWidget {
 class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog> {
   late Future<_SourceGroups> _future = _loadSources();
   rtc.DesktopCapturerSource? _selected;
+  final List<StreamSubscription<dynamic>> _sourceSubscriptions = <StreamSubscription<dynamic>>[];
+
+  @override
+  void dispose() {
+    _cancelSourceSubscriptions();
+    super.dispose();
+  }
+
+  void _cancelSourceSubscriptions() {
+    for (final subscription in _sourceSubscriptions) {
+      unawaited(subscription.cancel());
+    }
+    _sourceSubscriptions.clear();
+  }
 
   Future<_SourceGroups> _loadSources() async {
     OrexLog.d('ScreenShare', 'loading desktop sources');
@@ -67,6 +83,7 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog> {
       screens: _clean(screens),
       windows: _clean(windows),
     );
+    _attachSourceListeners(groups.all);
     OrexLog.d(
       'ScreenShare',
       'desktop sources loaded screens=${groups.screens.length} windows=${groups.windows.length} '
@@ -106,9 +123,31 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog> {
     return byId.values.toList();
   }
 
+  void _attachSourceListeners(List<rtc.DesktopCapturerSource> sources) {
+    _cancelSourceSubscriptions();
+    for (final source in sources) {
+      _sourceSubscriptions.add(source.onThumbnailChanged.stream.listen((_) {
+        if (!mounted) return;
+        setState(() {});
+      }));
+      _sourceSubscriptions.add(source.onNameChanged.stream.listen((_) {
+        if (!mounted) return;
+        setState(() {});
+      }));
+    }
+    // flutter_webrtc often returns sources before thumbnails are populated.
+    // One late repaint is enough to show thumbnails delivered immediately after
+    // getSources(), without running a noisy periodic update loop.
+    Future<void>.delayed(const Duration(milliseconds: 450), () {
+      if (!mounted) return;
+      setState(() {});
+    });
+  }
+
   void _reload() {
     setState(() {
       _selected = null;
+      _cancelSourceSubscriptions();
       _future = _loadSources();
     });
   }
@@ -640,4 +679,9 @@ class _SourceGroups {
 
   final List<rtc.DesktopCapturerSource> screens;
   final List<rtc.DesktopCapturerSource> windows;
+
+  List<rtc.DesktopCapturerSource> get all => <rtc.DesktopCapturerSource>[
+        ...screens,
+        ...windows,
+      ];
 }
