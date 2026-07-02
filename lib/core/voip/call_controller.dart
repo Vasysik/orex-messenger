@@ -77,6 +77,7 @@ class CallController extends ChangeNotifier {
       canUseMic: canSpeak,
       listenOnly: listenOnly,
       canUseMicNow: () => _canUseMicNowFor(roomId),
+      audioInputDeviceIdProvider: () => matrix.audio.inputDeviceId,
     );
     focusedParticipantIdentity = null;
     _session = s;

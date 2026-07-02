@@ -57,51 +57,141 @@ class _OrexScreenSourceDialog extends StatefulWidget {
   State<_OrexScreenSourceDialog> createState() => _OrexScreenSourceDialogState();
 }
 
-class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog> {
-  late Future<_SourceGroups> _future = _loadSources();
+class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabController;
+  final Map<String, rtc.DesktopCapturerSource> _sources = <String, rtc.DesktopCapturerSource>{};
+  final List<StreamSubscription<dynamic>> _subscriptions = <StreamSubscription<dynamic>>[];
+
+  rtc.SourceType _activeType = rtc.SourceType.Screen;
   rtc.DesktopCapturerSource? _selected;
-  final List<StreamSubscription<dynamic>> _sourceSubscriptions = <StreamSubscription<dynamic>>[];
+  bool _loading = true;
+  String? _error;
+  Timer? _refreshTimer;
+  int _screenCount = 0;
+  int _windowCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(_onTabChanged);
+    _subscribeDesktopCapturer();
+    unawaited(_loadSources(_activeType));
+  }
 
   @override
   void dispose() {
-    _cancelSourceSubscriptions();
+    _tabController.removeListener(_onTabChanged);
+    _tabController.dispose();
+    _shutdownSourceWatching();
     super.dispose();
   }
 
-  void _cancelSourceSubscriptions() {
-    for (final subscription in _sourceSubscriptions) {
+  void _subscribeDesktopCapturer() {
+    _subscriptions.add(rtc.desktopCapturer.onAdded.stream.listen((source) {
+      if (!mounted || source.type != _activeType) return;
+      setState(() {
+        _sources[source.id] = source;
+        _updateCountFor(_activeType, _sources.length);
+      });
+    }));
+    _subscriptions.add(rtc.desktopCapturer.onRemoved.stream.listen((source) {
+      if (!mounted) return;
+      setState(() {
+        _sources.remove(source.id);
+        if (_selected?.id == source.id) _selected = null;
+        _updateCountFor(_activeType, _sources.length);
+      });
+    }));
+    _subscriptions.add(rtc.desktopCapturer.onThumbnailChanged.stream.listen((_) {
+      if (!mounted) return;
+      setState(() {});
+    }));
+    _subscriptions.add(rtc.desktopCapturer.onNameChanged.stream.listen((_) {
+      if (!mounted) return;
+      setState(() {});
+    }));
+  }
+
+  void _shutdownSourceWatching() {
+    _refreshTimer?.cancel();
+    _refreshTimer = null;
+    for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }
-    _sourceSubscriptions.clear();
+    _subscriptions.clear();
   }
 
-  Future<_SourceGroups> _loadSources() async {
-    OrexLog.d('ScreenShare', 'loading desktop sources');
-    final screens = await _loadGroup(rtc.SourceType.Screen);
-    final windows = await _loadGroup(rtc.SourceType.Window);
-    final groups = _SourceGroups(
-      screens: _clean(screens),
-      windows: _clean(windows),
-    );
-    _attachSourceListeners(groups.all);
-    OrexLog.d(
-      'ScreenShare',
-      'desktop sources loaded screens=${groups.screens.length} windows=${groups.windows.length} '
-      'screenThumbs=${_thumbCount(groups.screens)} windowThumbs=${_thumbCount(groups.windows)}',
-    );
-    return groups;
+  void _onTabChanged() {
+    if (_tabController.indexIsChanging) return;
+    final next = _tabController.index == 0 ? rtc.SourceType.Screen : rtc.SourceType.Window;
+    if (next == _activeType) return;
+    _activeType = next;
+    _selected = null;
+    unawaited(_loadSources(next));
   }
 
-  Future<List<rtc.DesktopCapturerSource>> _loadGroup(rtc.SourceType type) async {
+  Future<void> _loadSources(rtc.SourceType type) async {
+    setState(() {
+      _loading = true;
+      _error = null;
+      _sources.clear();
+    });
+    _refreshTimer?.cancel();
+    OrexLog.d('ScreenShare', 'loading desktop sources type=${_sourceTypeName(type)}');
     try {
-      return await rtc.desktopCapturer.getSources(
+      // Важно: не грузим Screen и Window подряд. В flutter_webrtc desktopCapturer
+      // внутренне держит активный набор источников по типу; если после Screen
+      // сразу запросить Window, screen id может стать "source not found" при
+      // getDisplayMedia. Это повторяет подход LiveKit ScreenSelectDialog:
+      // активная вкладка -> getSources только для её типа.
+      final sources = await rtc.desktopCapturer.getSources(
         types: [type],
         thumbnailSize: rtc.ThumbnailSize(320, 180),
       );
+      if (!mounted || type != _activeType) return;
+      final clean = _clean(sources);
+      setState(() {
+        _sources
+          ..clear()
+          ..addEntries(clean.map((source) => MapEntry(source.id, source)));
+        _updateCountFor(type, clean.length);
+        _loading = false;
+      });
+      OrexLog.d(
+        'ScreenShare',
+        'desktop sources loaded type=${_sourceTypeName(type)} count=${clean.length} thumbs=${_thumbCount(clean)}',
+      );
+      _startRefreshTimer(type);
+      Future<void>.delayed(const Duration(milliseconds: 500), () {
+        if (!mounted || type != _activeType) return;
+        setState(() {});
+      });
     } catch (e, st) {
-      OrexLog.d('ScreenShare', 'desktopCapturer.getSources failed type=${_sourceTypeName(type)} stack=$st', e);
-      rethrow;
+      OrexLog.d(
+        'ScreenShare',
+        'desktopCapturer.getSources failed type=${_sourceTypeName(type)} stack=$st',
+        e,
+      );
+      if (!mounted || type != _activeType) return;
+      setState(() {
+        _loading = false;
+        _error = '$e';
+      });
     }
+  }
+
+  void _startRefreshTimer(rtc.SourceType type) {
+    _refreshTimer?.cancel();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      if (!mounted || type != _activeType) return;
+      try {
+        await rtc.desktopCapturer.updateSources(types: [type]);
+      } catch (e) {
+        OrexLog.d('ScreenShare', 'desktopCapturer.updateSources failed type=${_sourceTypeName(type)}', e);
+      }
+    });
   }
 
   int _thumbCount(List<rtc.DesktopCapturerSource> sources) {
@@ -123,36 +213,20 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog> {
     return byId.values.toList();
   }
 
-  void _attachSourceListeners(List<rtc.DesktopCapturerSource> sources) {
-    _cancelSourceSubscriptions();
-    for (final source in sources) {
-      _sourceSubscriptions.add(source.onThumbnailChanged.stream.listen((_) {
-        if (!mounted) return;
-        setState(() {});
-      }));
-      _sourceSubscriptions.add(source.onNameChanged.stream.listen((_) {
-        if (!mounted) return;
-        setState(() {});
-      }));
+  void _updateCountFor(rtc.SourceType type, int count) {
+    if (type == rtc.SourceType.Screen) {
+      _screenCount = count;
+    } else if (type == rtc.SourceType.Window) {
+      _windowCount = count;
     }
-    // flutter_webrtc often returns sources before thumbnails are populated.
-    // One late repaint is enough to show thumbnails delivered immediately after
-    // getSources(), without running a noisy periodic update loop.
-    Future<void>.delayed(const Duration(milliseconds: 450), () {
-      if (!mounted) return;
-      setState(() {});
-    });
   }
 
   void _reload() {
-    setState(() {
-      _selected = null;
-      _cancelSourceSubscriptions();
-      _future = _loadSources();
-    });
+    _selected = null;
+    unawaited(_loadSources(_activeType));
   }
 
-  void _share() {
+  Future<void> _share() async {
     final selected = _selected;
     if (selected == null) return;
     final source = OrexScreenSource.fromDesktop(selected);
@@ -160,6 +234,8 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog> {
       'ScreenShare',
       'source selected id=${source.id} type=${source.type} name=${source.name}',
     );
+    _refreshTimer?.cancel();
+    _refreshTimer = null;
     Navigator.of(context).pop(source);
   }
 
@@ -190,42 +266,74 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _PickerHeader(onReload: _reload),
-                Flexible(
-                  child: FutureBuilder<_SourceGroups>(
-                    future: _future,
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState != ConnectionState.done) {
-                        return const SizedBox(
-                          height: 300,
-                          child: Center(child: CircularProgressIndicator()),
-                        );
-                      }
-                      if (snapshot.hasError) {
-                        return _PickerError(
-                          error: snapshot.error.toString(),
-                          onRetry: _reload,
-                        );
-                      }
-                      final groups = snapshot.data ?? const _SourceGroups();
-                      return _SourceTabs(
-                        groups: groups,
-                        selectedId: _selected?.id,
-                        onSelect: (source) => setState(() => _selected = source),
-                      );
-                    },
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 18),
+                  child: Container(
+                    height: 38,
+                    padding: const EdgeInsets.all(3),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                    ),
+                    child: TabBar(
+                      controller: _tabController,
+                      indicatorSize: TabBarIndicatorSize.tab,
+                      dividerColor: Colors.transparent,
+                      indicator: BoxDecoration(
+                        color: OrexColors.copper.withValues(alpha: 0.22),
+                        borderRadius: BorderRadius.circular(11),
+                      ),
+                      labelColor: OrexColors.cream,
+                      unselectedLabelColor: OrexColors.darkTextSoft,
+                      onTap: (index) {
+                        final next = index == 0 ? rtc.SourceType.Screen : rtc.SourceType.Window;
+                        if (next == _activeType) return;
+                        _activeType = next;
+                        _selected = null;
+                        unawaited(_loadSources(next));
+                      },
+                      tabs: [
+                        Tab(text: 'Экраны · $_screenCount'),
+                        Tab(text: 'Окна · $_windowCount'),
+                      ],
+                    ),
                   ),
                 ),
+                const SizedBox(height: 10),
+                Flexible(child: _body()),
                 _PickerFooter(
                   selectedName: _selected?.name,
                   hasSelection: _selected != null,
                   onCancel: () => Navigator.of(context).pop(),
-                  onShare: _share,
+                  onShare: () { unawaited(_share()); },
                 ),
               ],
             ),
           ),
         ),
       ),
+    );
+  }
+
+  Widget _body() {
+    if (_loading) {
+      return const SizedBox(
+        height: 300,
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (_error != null) {
+      return _PickerError(error: _error!, onRetry: _reload);
+    }
+    final sources = _sources.values.where((source) => source.type == _activeType).toList();
+    return _SourceGrid(
+      sources: sources,
+      emptyText: _activeType == rtc.SourceType.Screen
+          ? 'Экраны не найдены'
+          : 'Окна не найдены. Если окно свёрнуто, Windows часто не отдаёт его в capturer.',
+      selectedId: _selected?.id,
+      onSelect: (source) => setState(() => _selected = source),
     );
   }
 }
@@ -260,74 +368,6 @@ class _PickerHeader extends StatelessWidget {
             tooltip: 'Закрыть',
             onPressed: () => Navigator.of(context).pop(),
             icon: const Icon(Icons.close),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SourceTabs extends StatelessWidget {
-  const _SourceTabs({
-    required this.groups,
-    required this.selectedId,
-    required this.onSelect,
-  });
-
-  final _SourceGroups groups;
-  final String? selectedId;
-  final ValueChanged<rtc.DesktopCapturerSource> onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 18),
-            child: Container(
-              height: 38,
-              padding: const EdgeInsets.all(3),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.16),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-              ),
-              child: TabBar(
-                indicatorSize: TabBarIndicatorSize.tab,
-                dividerColor: Colors.transparent,
-                indicator: BoxDecoration(
-                  color: OrexColors.copper.withValues(alpha: 0.22),
-                  borderRadius: BorderRadius.circular(11),
-                ),
-                labelColor: OrexColors.cream,
-                unselectedLabelColor: OrexColors.darkTextSoft,
-                tabs: [
-                  Tab(text: 'Экраны · ${groups.screens.length}'),
-                  Tab(text: 'Окна · ${groups.windows.length}'),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          Flexible(
-            child: TabBarView(
-              children: [
-                _SourceGrid(
-                  sources: groups.screens,
-                  emptyText: 'Экраны не найдены',
-                  selectedId: selectedId,
-                  onSelect: onSelect,
-                ),
-                _SourceGrid(
-                  sources: groups.windows,
-                  emptyText: 'Окна не найдены. Если окно свёрнуто, Windows часто не отдаёт его в capturer.',
-                  selectedId: selectedId,
-                  onSelect: onSelect,
-                ),
-              ],
-            ),
           ),
         ],
       ),
@@ -477,7 +517,7 @@ class _SourceCard extends StatelessWidget {
                               ),
                               const SizedBox(height: 6),
                               const Text(
-                                'Превью недоступно',
+                                'Превью загружается…',
                                 style: TextStyle(fontSize: 11, color: Colors.white70),
                               ),
                             ],
@@ -589,7 +629,7 @@ class _PickerFooter extends StatelessWidget {
         children: [
           if (showWindowsHint) ...[
             Text(
-              'Windows не отдаёт содержимое некоторых свёрнутых/защищённых окон — разверните окно, если его нет или превью пустое.',
+              'Окна должны быть развернуты/видимы. Свёрнутые и защищённые окна Windows часто не дают кадр или источник.',
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -669,19 +709,4 @@ class _PickerError extends StatelessWidget {
       ),
     );
   }
-}
-
-class _SourceGroups {
-  const _SourceGroups({
-    this.screens = const <rtc.DesktopCapturerSource>[],
-    this.windows = const <rtc.DesktopCapturerSource>[],
-  });
-
-  final List<rtc.DesktopCapturerSource> screens;
-  final List<rtc.DesktopCapturerSource> windows;
-
-  List<rtc.DesktopCapturerSource> get all => <rtc.DesktopCapturerSource>[
-        ...screens,
-        ...windows,
-      ];
 }

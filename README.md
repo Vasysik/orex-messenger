@@ -429,3 +429,12 @@ flutter build windows
 - README описывает текущую архитектуру приложения и ближайшее направление. Если
   код меняется структурно, этот файл нужно обновлять вместе с изменениями, а не
   после нескольких крупных коммитов.
+
+## 2026-07-02 serious audio/screen-share repair
+
+- Screen picker now follows the LiveKit desktop pattern: it keeps only one active desktopCapturer source type at a time. Screen and Window are no longer loaded sequentially in one refresh, because on Windows that can make previously returned screen ids fail later with `Unable to getDisplayMedia: source not found`.
+- Picker previews now refresh while the dialog is open through desktopCapturer `updateSources()` and native thumbnail/name events. Manual refresh remains available.
+- Audio devices are enumerated without automatically opening the microphone. The settings page merges `navigator.mediaDevices.enumerateDevices()` with flutter_webrtc `Helper.enumerateDevices('audioinput'/'audiooutput')` and `Helper.audiooutputs`.
+- The explicit "Разрешить доступ к микрофону и обновить" action can briefly open and stop a microphone track to unlock labels/devices where the OS/WebRTC hides them before permission.
+- Selected microphone/output devices are persisted and applied via `Helper.selectAudioInput` / `Helper.selectAudioOutput`; microphone publishing uses LiveKit `AudioCaptureOptions(deviceId: ...)`.
+- Added configurable speaking threshold in dB and speaking border highlight for call tiles/minimized tiles.

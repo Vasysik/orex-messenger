@@ -122,6 +122,7 @@ class MatrixService extends ChangeNotifier {
 
   /// Инициализация: восстановление сессии из БД (если была) и подписка на sync.
   Future<void> init() async {
+    await audio.init();
     // Для E2EE инициализируйте vodozemac до init():
     //   await vod.init();  (пакет flutter_vodozemac)
     await client.init(

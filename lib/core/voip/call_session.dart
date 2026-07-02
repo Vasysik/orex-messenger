@@ -26,6 +26,7 @@ class CallSession extends ChangeNotifier {
     this.canUseMic = true,
     this.listenOnly = false,
     this.canUseMicNow,
+    this.audioInputDeviceIdProvider,
   });
 
   final Client client;
@@ -34,6 +35,7 @@ class CallSession extends ChangeNotifier {
   bool canUseMic;
   bool listenOnly;
   final bool Function()? canUseMicNow;
+  final String? Function()? audioInputDeviceIdProvider;
 
   CallStatus status = CallStatus.connecting;
   String? error;
@@ -83,7 +85,14 @@ class CallSession extends ChangeNotifier {
       );
       await room.prepareConnection(creds.url, creds.jwt);
       await room.connect(creds.url, creds.jwt);
-      await room.localParticipant?.setMicrophoneEnabled(initialMicOn);
+      if (initialMicOn) {
+        await room.localParticipant?.setMicrophoneEnabled(
+          true,
+          audioCaptureOptions: _audioCaptureOptions(),
+        );
+      } else {
+        await room.localParticipant?.setMicrophoneEnabled(false);
+      }
       if (video) {
         // Камера может быть недоступна (занята другим окном/приложением —
         // NotReadableError). Не валим весь звонок: продолжаем со звуком.
@@ -183,8 +192,26 @@ class CallSession extends ChangeNotifier {
     final lp = _room?.localParticipant;
     if (lp == null) return;
     if (!canPublishMedia) return;
-    await lp.setMicrophoneEnabled(!lp.isMicrophoneEnabled());
+    final next = !lp.isMicrophoneEnabled();
+    await lp.setMicrophoneEnabled(
+      next,
+      audioCaptureOptions: next ? _audioCaptureOptions() : null,
+    );
     if (!_disposed) notifyListeners();
+  }
+
+  lk.AudioCaptureOptions _audioCaptureOptions() {
+    final deviceId = audioInputDeviceIdProvider?.call();
+    final normalized = deviceId?.trim();
+    return lk.AudioCaptureOptions(
+      deviceId: normalized == null || normalized.isEmpty || normalized == 'default'
+          ? null
+          : normalized,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      highPassFilter: true,
+    );
   }
 
 

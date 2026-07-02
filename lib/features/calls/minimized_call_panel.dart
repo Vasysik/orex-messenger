@@ -476,6 +476,13 @@ class JoinCallPanel extends StatelessWidget {
   }
 }
 
+
+bool _miniParticipantVoiceActive(lk.Participant participant, double thresholdDb) {
+  final level = participant.audioLevel;
+  final db = level <= 0 ? -100.0 : 20 * math.log(level) / math.ln10;
+  return participant.isSpeaking || db >= thresholdDb;
+}
+
 class _MiniTile extends StatelessWidget {
   const _MiniTile({
     required this.participant,
@@ -516,10 +523,35 @@ class _MiniTile extends StatelessWidget {
       }
     }
     final user = room?.unsafeGetUserFromMemoryOrFallback(_userId);
+    final speaking = _miniParticipantVoiceActive(
+      participant,
+      matrix.audio.speakingThresholdDb,
+    );
 
-    final tile = ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: Stack(
+    final tile = AnimatedContainer(
+      duration: const Duration(milliseconds: 140),
+      padding: EdgeInsets.all(speaking ? 2 : 1),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: speaking
+              ? OrexColors.copper.withValues(alpha: 0.95)
+              : Colors.white.withValues(alpha: 0.08),
+          width: speaking ? 2 : 1,
+        ),
+        boxShadow: speaking
+            ? [
+                BoxShadow(
+                  color: OrexColors.copper.withValues(alpha: 0.26),
+                  blurRadius: 14,
+                  spreadRadius: 1,
+                ),
+              ]
+            : null,
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Stack(
         fit: StackFit.expand,
         children: [
           if (track != null)
@@ -562,7 +594,8 @@ class _MiniTile extends StatelessWidget {
               onGrantVoice: onGrantVoice,
             ),
           ),
-        ],
+          ],
+        ),
       ),
     );
 

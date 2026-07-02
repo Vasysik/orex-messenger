@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
@@ -445,6 +447,13 @@ class _CallScreenState extends State<CallScreen> {
   }
 }
 
+
+bool _participantVoiceActive(lk.Participant participant, double thresholdDb) {
+  final level = participant.audioLevel;
+  final db = level <= 0 ? -100.0 : 20 * math.log(level) / math.ln10;
+  return participant.isSpeaking || db >= thresholdDb;
+}
+
 class _ParticipantTile extends StatelessWidget {
   const _ParticipantTile({
     required this.participant,
@@ -492,6 +501,10 @@ class _ParticipantTile extends StatelessWidget {
     final user = room?.unsafeGetUserFromMemoryOrFallback(userId);
     var name = user?.calcDisplayname() ?? userId;
     if (participant is lk.LocalParticipant) name = '$name · вы';
+    final speaking = _participantVoiceActive(
+      participant,
+      matrix.audio.speakingThresholdDb,
+    );
 
     Widget media;
     if (track != null) {
@@ -520,16 +533,37 @@ class _ParticipantTile extends StatelessWidget {
       );
     }
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(18),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              media,
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 140),
+      padding: EdgeInsets.all(speaking ? 2 : 1),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: speaking
+              ? OrexColors.copper.withValues(alpha: 0.95)
+              : Colors.white.withValues(alpha: 0.08),
+          width: speaking ? 2 : 1,
+        ),
+        boxShadow: speaking
+            ? [
+                BoxShadow(
+                  color: OrexColors.copper.withValues(alpha: 0.28),
+                  blurRadius: 18,
+                  spreadRadius: 1,
+                ),
+              ]
+            : null,
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(18),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                media,
               Positioned(
                 left: 8,
                 bottom: 8,
@@ -564,7 +598,8 @@ class _ParticipantTile extends StatelessWidget {
                   onGrantVoice: onGrantVoice,
                 ),
               ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 
+import '../../core/audio/audio_device_utils.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
@@ -18,25 +19,29 @@ class AudioDevicesScreen extends StatefulWidget {
 class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
   bool _loading = true;
   String? _error;
-  List<dynamic> _devices = const [];
+  List<OrexAudioDevice> _devices = const [];
   String? _inputId;
   String? _outputId;
+  double _thresholdDb = -50;
 
   @override
   void initState() {
     super.initState();
     _inputId = widget.matrix.audio.inputDeviceId;
     _outputId = widget.matrix.audio.outputDeviceId;
+    _thresholdDb = widget.matrix.audio.speakingThresholdDb;
     _load();
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool requestPermission = false}) async {
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      final devices = await _enumerateDevicesWithPermissionUnlock();
+      final devices = await enumerateOrexAudioDevices(
+        requestPermission: requestPermission,
+      );
       if (!mounted) return;
       setState(() => _devices = devices);
     } catch (e) {
@@ -47,31 +52,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
     }
   }
 
-  Future<List<dynamic>> _enumerateDevicesWithPermissionUnlock() async {
-    rtc.MediaStream? permissionStream;
-    try {
-      // Без короткого getUserMedia многие WebRTC-реализации показывают только
-      // системные default-устройства или пустые label/deviceId. Трек сразу
-      // отпускается: это не включает микрофон для звонка.
-      permissionStream = await rtc.navigator.mediaDevices.getUserMedia({
-        'audio': true,
-        'video': false,
-      });
-    } catch (_) {
-      // Даже если пользователь запретил микрофон, всё равно показываем то, что
-      // enumerateDevices разрешает отдать сейчас.
-    }
-
-    try {
-      return await rtc.navigator.mediaDevices.enumerateDevices();
-    } finally {
-      for (final track in permissionStream?.getTracks() ?? <dynamic>[]) {
-        try {
-          track.stop();
-        } catch (_) {}
-      }
-    }
-  }
+  Future<void> _unlockAndReload() => _load(requestPermission: true);
 
   Future<void> _testOutput() => widget.matrix.audio.playNotification();
 
@@ -89,7 +70,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
         track.stop();
       }
       if (!mounted) return;
-      await _load();
+      await _load(requestPermission: false);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Микрофон доступен')),
@@ -102,11 +83,25 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
     }
   }
 
-  List<dynamic> _byKind(String kind) =>
-      _devices.where((d) => '${d.kind}'.contains(kind)).toList();
+  Future<void> _selectInput(String? id) async {
+    await widget.matrix.audio.setInputDeviceId(id);
+    if (!mounted) return;
+    setState(() => _inputId = widget.matrix.audio.inputDeviceId);
+  }
+
+  Future<void> _selectOutput(String? id) async {
+    await widget.matrix.audio.setOutputDeviceId(id);
+    if (!mounted) return;
+    setState(() => _outputId = widget.matrix.audio.outputDeviceId);
+  }
+
+  List<OrexAudioDevice> _byKind(String kind) =>
+      _devices.where((d) => d.kind == kind).toList();
 
   @override
   Widget build(BuildContext context) {
+    final inputs = _byKind('audioinput');
+    final outputs = _byKind('audiooutput');
     return AmbientBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
@@ -123,8 +118,16 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                 OrexSettingsTile(
                   icon: Icons.refresh,
                   title: 'Обновить список устройств',
-                  subtitle: _loading ? 'Загрузка…' : 'Запросить доступ и переопросить WebRTC-устройства',
-                  onTap: _load,
+                  subtitle: _loading
+                      ? 'Загрузка…'
+                      : 'Переопросить WebRTC/Flutter WebRTC без включения микрофона',
+                  onTap: () { _load(); },
+                ),
+                OrexSettingsTile(
+                  icon: Icons.privacy_tip_outlined,
+                  title: 'Разрешить доступ к микрофону и обновить',
+                  subtitle: 'Коротко открыть микрофон, чтобы ОС/WebRTC раскрыли названия устройств',
+                  onTap: _unlockAndReload,
                 ),
                 OrexSettingsTile(
                   icon: Icons.volume_up,
@@ -135,7 +138,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                 OrexSettingsTile(
                   icon: Icons.mic,
                   title: 'Проверить микрофон',
-                  subtitle: 'Запросить доступ и сразу отпустить трек',
+                  subtitle: 'Запросить выбранный вход и сразу отпустить трек',
                   onTap: _testMic,
                 ),
               ],
@@ -161,21 +164,19 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                   title: 'Системный микрофон',
                   subtitle: 'Использовать устройство по умолчанию',
                   selected: _inputId == null,
-                  onTap: () => setState(() {
-                    _inputId = null;
-                    widget.matrix.audio.inputDeviceId = null;
-                  }),
+                  onTap: () => _selectInput(null),
                 ),
-                for (final d in _byKind('audioinput'))
+                for (final d in inputs)
                   _DeviceRadioTile(
                     icon: Icons.mic,
-                    title: _label(d, 'Микрофон'),
-                    subtitle: '${d.deviceId}',
-                    selected: _inputId == '${d.deviceId}',
-                    onTap: () => setState(() {
-                      _inputId = '${d.deviceId}';
-                      widget.matrix.audio.inputDeviceId = _inputId;
-                    }),
+                    title: d.label,
+                    subtitle: d.id,
+                    selected: _inputId == d.id,
+                    onTap: () => _selectInput(d.id),
+                  ),
+                if (!_loading && inputs.isEmpty)
+                  const _EmptyDeviceHint(
+                    text: 'WebRTC пока отдаёт только системный вход. Нажмите «Разрешить доступ к микрофону и обновить» или проверьте разрешение микрофона в Windows.',
                   ),
               ],
             ),
@@ -188,28 +189,67 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                   title: 'Системный вывод',
                   subtitle: 'Использовать динамики/наушники по умолчанию',
                   selected: _outputId == null,
-                  onTap: () => setState(() {
-                    _outputId = null;
-                    widget.matrix.audio.outputDeviceId = null;
-                  }),
+                  onTap: () => _selectOutput(null),
                 ),
-                for (final d in _byKind('audiooutput'))
+                for (final d in outputs)
                   _DeviceRadioTile(
                     icon: Icons.volume_up,
-                    title: _label(d, 'Динамик / наушники'),
-                    subtitle: '${d.deviceId}',
-                    selected: _outputId == '${d.deviceId}',
-                    onTap: () => setState(() {
-                      _outputId = '${d.deviceId}';
-                      widget.matrix.audio.outputDeviceId = _outputId;
-                    }),
+                    title: d.label,
+                    subtitle: d.id,
+                    selected: _outputId == d.id,
+                    onTap: () => _selectOutput(d.id),
+                  ),
+                if (!_loading && outputs.isEmpty)
+                  const _EmptyDeviceHint(
+                    text: 'WebRTC пока отдаёт только системный вывод. На Windows фактический маршрут может оставаться за системным микшером/драйвером.',
                   ),
               ],
             ),
             const SizedBox(height: 16),
+            OrexSettingsSection(
+              title: 'Порог говорения',
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.graphic_eq, color: OrexColors.copper),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Подсветка плитки: ${_thresholdDb.round()} dB',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Slider(
+                        value: _thresholdDb,
+                        min: -80,
+                        max: -20,
+                        divisions: 60,
+                        label: '${_thresholdDb.round()} dB',
+                        onChanged: (value) async {
+                          setState(() => _thresholdDb = value);
+                          await widget.matrix.audio.setSpeakingThresholdDb(value);
+                        },
+                      ),
+                      Text(
+                        'Чем ближе к -20 dB, тем громче надо говорить. Чем ближе к -80 dB, тем чувствительнее подсветка.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
             Text(
-              'Выбор вывода применяется там, где это разрешает платформа/WebRTC. '
-              'На части desktop/Android-сборок фактический audio route всё ещё контролирует ОС.',
+              'Orex больше не открывает микрофон автоматически при входе в этот экран. '
+              'Если звук в других приложениях становится тише только во время активного микрофона, это обычно Windows Communications ducking или режим Bluetooth-гарнитуры; приложение выбирает конкретный input/output, но системный аудио-фокус остаётся за ОС/драйвером.',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -217,10 +257,24 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
       ),
     );
   }
+}
 
-  String _label(dynamic device, String fallback) {
-    final label = '${device.label}'.trim();
-    return label.isEmpty ? fallback : label;
+class _EmptyDeviceHint extends StatelessWidget {
+  const _EmptyDeviceHint({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+      child: Text(
+        text,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Colors.white60,
+            ),
+      ),
+    );
   }
 }
 
@@ -244,7 +298,9 @@ class _DeviceRadioTile extends StatelessWidget {
     return ListTile(
       leading: Icon(icon, color: OrexColors.copper),
       title: Text(title),
-      subtitle: subtitle == null ? null : Text(subtitle!, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: subtitle == null
+          ? null
+          : Text(subtitle!, maxLines: 1, overflow: TextOverflow.ellipsis),
       trailing: Icon(
         selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
         color: selected ? OrexColors.copper : Colors.white38,

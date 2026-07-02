@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logging/orex_logger.dart';
 
@@ -19,12 +21,97 @@ class AudioCueService {
   final AudioPlayer _cuePlayer = AudioPlayer();
   final AudioPlayer _ringtonePlayer = AudioPlayer();
 
+  static const _kInputDeviceId = 'orex_audio_input_device_id';
+  static const _kOutputDeviceId = 'orex_audio_output_device_id';
+  static const _kSpeakingThresholdDb = 'orex_audio_speaking_threshold_db';
+
   Timer? _ringtoneWatchdog;
   bool _ringing = false;
   String? inputDeviceId;
   String? outputDeviceId;
+  double speakingThresholdDb = -50;
 
   bool get isRinging => _ringing;
+
+  Future<void> init() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      inputDeviceId = _nullIfEmpty(prefs.getString(_kInputDeviceId));
+      outputDeviceId = _nullIfEmpty(prefs.getString(_kOutputDeviceId));
+      speakingThresholdDb = prefs.getDouble(_kSpeakingThresholdDb) ?? -50;
+      await applySelectedDevices();
+    } catch (e) {
+      OrexLog.d('Audio', 'load audio preferences failed', e);
+    }
+  }
+
+  Future<void> setInputDeviceId(String? value) async {
+    inputDeviceId = _nullIfEmpty(value);
+    await _saveString(_kInputDeviceId, inputDeviceId);
+    await _applyInputDevice();
+  }
+
+  Future<void> setOutputDeviceId(String? value) async {
+    outputDeviceId = _nullIfEmpty(value);
+    await _saveString(_kOutputDeviceId, outputDeviceId);
+    await _applyOutputDevice();
+  }
+
+  Future<void> setSpeakingThresholdDb(double value) async {
+    speakingThresholdDb = value.clamp(-80, -20).toDouble();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_kSpeakingThresholdDb, speakingThresholdDb);
+    } catch (e) {
+      OrexLog.d('Audio', 'save speaking threshold failed', e);
+    }
+  }
+
+  Future<void> applySelectedDevices() async {
+    await _applyInputDevice();
+    await _applyOutputDevice();
+  }
+
+  Future<void> _applyInputDevice() async {
+    final id = inputDeviceId;
+    if (id == null || id == 'default') return;
+    try {
+      await rtc.Helper.selectAudioInput(id);
+      OrexLog.d('Audio', 'selected input device id=$id');
+    } catch (e) {
+      OrexLog.d('Audio', 'select input device failed id=$id', e);
+    }
+  }
+
+  Future<void> _applyOutputDevice() async {
+    final id = outputDeviceId;
+    if (id == null || id == 'default') return;
+    try {
+      await rtc.Helper.selectAudioOutput(id);
+      OrexLog.d('Audio', 'selected output device id=$id');
+    } catch (e) {
+      OrexLog.d('Audio', 'select output device failed id=$id', e);
+    }
+  }
+
+  Future<void> _saveString(String key, String? value) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (value == null) {
+        await prefs.remove(key);
+      } else {
+        await prefs.setString(key, value);
+      }
+    } catch (e) {
+      OrexLog.d('Audio', 'save preference failed key=$key', e);
+    }
+  }
+
+  String? _nullIfEmpty(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty || trimmed == 'null') return null;
+    return trimmed;
+  }
 
   Future<void> playNotification() => _playAsset(
         notificationAsset,
