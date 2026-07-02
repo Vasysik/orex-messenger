@@ -6,6 +6,7 @@ import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/theme/theme_controller.dart';
 import '../../shared/widgets/orex_loading_overlay.dart';
+import '../../shared/widgets/orex_choice_sheet.dart';
 import '../../shared/widgets/squirrel_mascot.dart';
 import '../calls/call_screen.dart';
 import '../calls/minimized_call_panel.dart';
@@ -96,43 +97,28 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   Future<void> _openNewChat() async {
-    final kind = await showModalBottomSheet<_CreateRoomKind>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-          child: GlassPanel(
-            borderRadius: 24,
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _CreateRoomChoice(
-                    icon: Icons.group_add,
-                    title: 'Новая группа',
-                    subtitle: 'Обычный чат с участниками и звонком',
-                    onTap: () => Navigator.pop(ctx, _CreateRoomKind.group),
-                  ),
-                  _CreateRoomChoice(
-                    icon: Icons.campaign,
-                    title: 'Новый канал',
-                    subtitle: 'Комната, где пишут админы',
-                    onTap: () => Navigator.pop(ctx, _CreateRoomKind.channel),
-                  ),
-                  _CreateRoomChoice(
-                    icon: Icons.hub,
-                    title: 'Новая супергруппа',
-                    subtitle: 'Space с внутренними чатами',
-                    onTap: () => Navigator.pop(ctx, _CreateRoomKind.supergroup),
-                  ),
-                ],
-              ),
-            ),
-          ),
+    final kind = await showOrexChoiceSheet<_CreateRoomKind>(
+      context,
+      options: const [
+        OrexChoiceSheetOption<_CreateRoomKind>(
+          value: _CreateRoomKind.group,
+          icon: Icons.group_add,
+          title: 'Новая группа',
+          subtitle: 'Обычный чат с участниками и звонком',
         ),
-      ),
+        OrexChoiceSheetOption<_CreateRoomKind>(
+          value: _CreateRoomKind.channel,
+          icon: Icons.campaign,
+          title: 'Новый канал',
+          subtitle: 'Комната, где пишут админы',
+        ),
+        OrexChoiceSheetOption<_CreateRoomKind>(
+          value: _CreateRoomKind.supergroup,
+          icon: Icons.hub,
+          title: 'Новая супергруппа',
+          subtitle: 'Space с внутренними чатами',
+        ),
+      ],
     );
     if (kind == null || !mounted) return;
     await _createRoom(kind);
@@ -635,31 +621,6 @@ class _VerifyBanner extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-class _CreateRoomChoice extends StatelessWidget {
-  const _CreateRoomChoice({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      leading: Icon(icon, color: OrexColors.copper),
-      title: Text(title),
-      subtitle: Text(subtitle),
-      trailing: const Icon(Icons.chevron_right),
-      onTap: onTap,
     );
   }
 }

@@ -176,6 +176,53 @@ Future<List<dynamic>> _enumerateWebRtcDevices() async {
 }
 
 
+
+String? orexResolveCurrentDeviceId(
+  List<OrexAudioDevice> devices, {
+  required String? selectedId,
+}) {
+  final normalized = selectedId?.trim();
+  if (normalized != null && normalized.isNotEmpty && normalized != 'default') {
+    for (final device in devices) {
+      if (device.id == normalized) return device.id;
+    }
+    if (orexIsAndroidSpeakerOutputDeviceId(normalized)) {
+      for (final device in devices) {
+        if (orexIsAndroidSpeakerOutputDeviceId(device.id) ||
+            device.category == 'speaker') {
+          return device.id;
+        }
+      }
+    }
+  }
+
+  final sorted = devices.toList()
+    ..sort((a, b) {
+      final byRank = _currentDefaultRank(a).compareTo(_currentDefaultRank(b));
+      if (byRank != 0) return byRank;
+      return a.label.toLowerCase().compareTo(b.label.toLowerCase());
+    });
+  return sorted.isEmpty ? null : sorted.first.id;
+}
+
+int _currentDefaultRank(OrexAudioDevice device) {
+  if (device.isOutput && orexIsAndroidNativePlatform) {
+    if (device.category == 'speaker' || orexIsAndroidSpeakerOutputDeviceId(device.id)) {
+      return 0;
+    }
+    return _deviceSortRank(device) + 10;
+  }
+
+  return switch (device.category) {
+    'bluetooth' => 0,
+    'headphones' || 'usb' => 1,
+    'front_camera' => 0,
+    'back_camera' => 1,
+    'webcam' => 2,
+    _ => 5,
+  };
+}
+
 List<OrexAudioDevice> _nativeDevicesFromMaps(List<Map<String, String>> raw) => [
       for (final item in raw)
         OrexAudioDevice(

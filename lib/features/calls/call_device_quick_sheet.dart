@@ -3,55 +3,73 @@ import 'package:flutter/material.dart';
 import '../../core/audio/audio_device_utils.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../core/voip/call_session.dart';
-import '../../shared/theme/orex_theme.dart';
+import '../../shared/widgets/orex_choice_sheet.dart';
 
 Future<void> showOrexInputQuickSheet(
   BuildContext context, {
   required MatrixService matrix,
 }) async {
-  final devices = await enumerateOrexAudioDevices(
+  final devices = (await enumerateOrexAudioDevices(
     requestPermission: true,
     includeCallRoutes: true,
-  );
+  ))
+      .where((d) => d.isInput)
+      .toList();
   if (!context.mounted) return;
-  await _showDeviceSheet(
+  final selectedId = orexResolveCurrentDeviceId(
+    devices,
+    selectedId: matrix.audio.inputDeviceId,
+  );
+  final picked = await showOrexChoiceSheet<String>(
     context,
     title: 'Микрофон',
-    selectedId: matrix.audio.inputDeviceId,
-    devices: devices.where((d) => d.isInput).toList(),
-    iconFor: orexInputDeviceIcon,
-    onSelect: matrix.audio.setInputDeviceId,
+    emptyText: 'Микрофоны сейчас не найдены. Проверьте разрешение на микрофон.',
+    options: [
+      for (final device in devices)
+        OrexChoiceSheetOption<String>(
+          value: device.id,
+          icon: orexInputDeviceIcon(device),
+          title: device.label,
+          selected: selectedId == device.id,
+        ),
+    ],
   );
+  if (picked == null) return;
+  await matrix.audio.setInputDeviceId(picked);
 }
 
 Future<void> showOrexOutputQuickSheet(
   BuildContext context, {
   required MatrixService matrix,
 }) async {
-  final devices = await enumerateOrexAudioDevices(includeCallRoutes: true);
+  final devices = (await enumerateOrexAudioDevices(includeCallRoutes: true))
+      .where((d) => d.isOutput)
+      .toList();
   if (!context.mounted) return;
-  await _showDeviceSheet(
+  final selectedId = orexResolveCurrentDeviceId(
+    devices,
+    selectedId: matrix.audio.outputDeviceId,
+  );
+  final picked = await showOrexChoiceSheet<String>(
     context,
     title: 'Вывод звука',
-    selectedId: matrix.audio.outputDeviceId,
-    devices: devices.where((d) => d.isOutput).toList(),
-    iconFor: orexOutputDeviceIcon,
-    isSelected: (device) {
-      final selectedId = matrix.audio.outputDeviceId?.trim();
-      if (orexIsAndroidNativePlatform &&
-          (selectedId == null || selectedId.isEmpty) &&
-          orexIsAndroidSpeakerOutputDeviceId(device.id)) {
-        return true;
-      }
-      return selectedId == device.id;
-    },
-    onSelect: (id) async {
-      // На Android speaker = дефолтный режим звонка. Не сохраняем конкретный
-      // route-id динамика, иначе после перезагрузки устройства id может устареть.
-      await matrix.audio.setOutputDeviceId(
-        orexIsAndroidSpeakerOutputDeviceId(id) ? null : id,
-      );
-    },
+    emptyText: 'Устройства вывода сейчас не найдены.',
+    options: [
+      for (final device in devices)
+        OrexChoiceSheetOption<String>(
+          value: device.id,
+          icon: orexOutputDeviceIcon(device),
+          title: device.label,
+          selected: selectedId == device.id,
+        ),
+    ],
+  );
+  if (picked == null) return;
+
+  // На Android speaker = дефолтный режим звонка. Не сохраняем конкретный
+  // route-id динамика, иначе после перезагрузки устройства id может устареть.
+  await matrix.audio.setOutputDeviceId(
+    orexIsAndroidSpeakerOutputDeviceId(picked) ? null : picked,
   );
 }
 
@@ -62,104 +80,25 @@ Future<void> showOrexCameraQuickSheet(
 }) async {
   final devices = await enumerateOrexCameraDevices(requestPermission: true);
   if (!context.mounted) return;
-  await _showDeviceSheet(
+  final selectedId = orexResolveCurrentDeviceId(
+    devices,
+    selectedId: matrix.audio.cameraDeviceId,
+  );
+  final picked = await showOrexChoiceSheet<String>(
     context,
     title: 'Камера',
-    selectedId: matrix.audio.cameraDeviceId,
-    devices: devices,
-    iconFor: orexCameraDeviceIcon,
-    onSelect: (id) async {
-      await matrix.audio.setCameraDeviceId(id);
-      await session?.syncAudioSettingsFromSettings();
-    },
-  );
-}
-
-Future<void> _showDeviceSheet(
-  BuildContext context, {
-  required String title,
-  required String? selectedId,
-  required List<OrexAudioDevice> devices,
-  required IconData Function(OrexAudioDevice device) iconFor,
-  required Future<void> Function(String? id) onSelect,
-  bool Function(OrexAudioDevice device)? isSelected,
-}) {
-  final normalizedSelected = selectedId?.trim();
-  final fallbackSelectedId = normalizedSelected == null || normalizedSelected.isEmpty
-      ? (devices.isEmpty ? null : devices.first.id)
-      : normalizedSelected;
-
-  return showModalBottomSheet<void>(
-    context: context,
-    showDragHandle: true,
-    backgroundColor: const Color(0xFF17120F),
-    builder: (sheetContext) {
-      return SafeArea(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 420),
-          child: ListView(
-            shrinkWrap: true,
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
-                child: Text(
-                  title,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
-                ),
-              ),
-              for (final device in devices)
-                _DeviceOptionTile(
-                  icon: iconFor(device),
-                  title: device.label,
-                  selected: isSelected?.call(device) ??
-                      (fallbackSelectedId != null && fallbackSelectedId == device.id),
-                  onTap: () async {
-                    Navigator.of(sheetContext).pop();
-                    await onSelect(device.id);
-                  },
-                ),
-              if (devices.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text(
-                    'Устройства сейчас не найдены. Проверьте разрешения и подключение.',
-                    style: TextStyle(color: Colors.white54),
-                  ),
-                ),
-            ],
-          ),
+    emptyText: 'Камеры сейчас не найдены. Проверьте разрешение на камеру.',
+    options: [
+      for (final device in devices)
+        OrexChoiceSheetOption<String>(
+          value: device.id,
+          icon: orexCameraDeviceIcon(device),
+          title: device.label,
+          selected: selectedId == device.id,
         ),
-      );
-    },
+    ],
   );
-}
-
-class _DeviceOptionTile extends StatelessWidget {
-  const _DeviceOptionTile({
-    required this.icon,
-    required this.title,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String title;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      leading: Icon(icon, color: OrexColors.copper),
-      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      trailing: Icon(
-        selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
-        color: selected ? OrexColors.copper : Colors.white38,
-      ),
-      onTap: onTap,
-    );
-  }
+  if (picked == null) return;
+  await matrix.audio.setCameraDeviceId(picked);
+  await session?.syncAudioSettingsFromSettings();
 }

@@ -186,15 +186,6 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
             ],
           ),
             ),
-            Positioned(
-              left: 10,
-              top: 10,
-              child: _MiniTileCornerButton(
-                icon: Icons.open_in_full,
-                tooltip: 'Развернуть звонок',
-                onTap: widget.onExpand,
-              ),
-            ),
           ],
         );
       },
@@ -221,6 +212,7 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
             matrix: widget.call.matrix,
             room: room,
             voiceState: state,
+            speakerMuted: session.speakerMuted,
             zoomable: true,
             cornerIcon: Icons.close_fullscreen,
             cornerTooltip: 'Отменить приближение плитки',
@@ -310,6 +302,7 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                     matrix: widget.call.matrix,
                     room: room,
                     voiceState: state,
+                    speakerMuted: session.speakerMuted,
                     cornerIcon: Icons.open_in_full,
                     cornerTooltip: 'Приблизить плитку',
                     onCornerTap: () => widget.call.focusParticipant(p.identity),
@@ -352,11 +345,13 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onVerticalDragUpdate: (d) {
-          setState(() {
-            final base = _tilesHeight ??
-                (MediaQuery.sizeOf(context).height / 3);
-            _tilesHeight = (base + d.delta.dy).clamp(minH, maxH).toDouble();
-          });
+          final base = _tilesHeight ?? (MediaQuery.sizeOf(context).height / 3);
+          final next = (base + d.delta.dy).clamp(minH, maxH).toDouble();
+          if (next >= maxH * 0.96 && d.delta.dy > 0) {
+            widget.onExpand();
+            return;
+          }
+          setState(() => _tilesHeight = next);
         },
         child: Container(
           height: 16,
@@ -676,6 +671,7 @@ class _MiniTile extends StatelessWidget {
     required this.matrix,
     required this.room,
     required this.voiceState,
+    required this.speakerMuted,
     required this.preferScreenShare,
     this.zoomable = false,
     this.onTap,
@@ -692,6 +688,7 @@ class _MiniTile extends StatelessWidget {
   final MatrixService matrix;
   final Room? room;
   final VoiceParticipantState voiceState;
+  final bool speakerMuted;
   final bool preferScreenShare;
   final bool zoomable;
   final VoidCallback? onTap;
@@ -714,6 +711,12 @@ class _MiniTile extends StatelessWidget {
       participant,
       preferScreenShare: preferScreenShare,
     );
+    final micMuted = orexParticipantMicMuted(participant);
+    final locallyMuted = speakerMuted && participant is! lk.LocalParticipant;
+    final statusBadgeCount = (micMuted ? 1 : 0) + (locallyMuted ? 1 : 0);
+    final cameraButtonBottom = statusBadgeCount == 0
+        ? 8.0
+        : 8.0 + statusBadgeCount * 39.0;
     final user = room?.unsafeGetUserFromMemoryOrFallback(_userId);
 
     final tile = OrexSpeakingFrame(
@@ -775,19 +778,32 @@ class _MiniTile extends StatelessWidget {
                 ],
               ),
             ),
-          if (orexParticipantMicMuted(participant))
-            const Positioned(
+          if (statusBadgeCount > 0)
+            Positioned(
               right: 8,
               bottom: 8,
-              child: _MiniTileStatusBadge(
-                icon: Icons.mic_off,
-                tooltip: 'Микрофон выключен',
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (micMuted)
+                    const _MiniTileStatusBadge(
+                      icon: Icons.mic_off,
+                      tooltip: 'Микрофон выключен',
+                    ),
+                  if (locallyMuted) ...[
+                    if (micMuted) const SizedBox(height: 5),
+                    const _MiniTileStatusBadge(
+                      icon: Icons.volume_off,
+                      tooltip: 'Звук участника замьючен у вас',
+                    ),
+                  ],
+                ],
               ),
             ),
           if (track != null && onCycleCamera != null)
             Positioned(
               right: 8,
-              bottom: orexParticipantMicMuted(participant) ? 47 : 8,
+              bottom: cameraButtonBottom,
               child: _MiniTileCornerButton(
                 icon: Icons.cameraswitch,
                 tooltip: 'Переключить камеру',
@@ -825,9 +841,11 @@ class _MiniTile extends StatelessWidget {
 
 
 class _MiniTileStatusBadge extends StatelessWidget {
-  const _MiniTileStatusBadge({required this.icon, required this.tooltip});
+  const _MiniTileStatusBadge({this.icon, this.text, required this.tooltip})
+      : assert(icon != null || text != null);
 
-  final IconData icon;
+  final IconData? icon;
+  final String? text;
   final String tooltip;
 
   @override
@@ -843,7 +861,9 @@ class _MiniTileStatusBadge extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
         ),
-        child: Icon(icon, size: 17, color: Colors.white),
+        child: icon != null
+            ? Icon(icon, size: 17, color: Colors.white)
+            : Text(text!, style: const TextStyle(fontSize: 19)),
       ),
     );
   }
@@ -972,10 +992,14 @@ class _MiniVoiceBadges extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (reaction != null) _badge(text: reaction!, tooltip: 'Реакция'),
+        if (reaction != null)
+          _MiniTileStatusBadge(text: reaction!, tooltip: 'Реакция'),
         if (handRaised) ...[
           if (reaction != null) const SizedBox(width: 6),
-          _badge(text: '✋', tooltip: 'Просит голос'),
+          const _MiniTileStatusBadge(
+            icon: Icons.back_hand,
+            tooltip: 'Просит голос',
+          ),
         ],
         if (onGrantVoice != null) ...[
           if (handRaised || reaction != null) const SizedBox(width: 6),
@@ -996,38 +1020,5 @@ class _MiniVoiceBadges extends StatelessWidget {
         ],
       ],
     );
-  }
-
-  Widget _badge({
-    IconData? icon,
-    String? text,
-    required String tooltip,
-    VoidCallback? onTap,
-    bool accent = false,
-  }) {
-    final child = Container(
-      constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-      alignment: Alignment.center,
-      padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(
-        color: accent
-            ? OrexColors.copper.withValues(alpha: 0.90)
-            : Colors.black.withValues(alpha: 0.45),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
-      ),
-      child: icon != null
-          ? Icon(icon, color: Colors.white, size: 16)
-          : Text(text!, style: const TextStyle(fontSize: 20)),
-    );
-    final wrapped = onTap == null
-        ? child
-        : Material(
-            color: Colors.transparent,
-            borderRadius: BorderRadius.circular(14),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(onTap: onTap, child: child),
-          );
-    return Tooltip(message: tooltip, child: wrapped);
   }
 }

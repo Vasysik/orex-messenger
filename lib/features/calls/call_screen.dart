@@ -269,6 +269,7 @@ class _CallScreenState extends State<CallScreen> {
           matrix: widget.matrix,
           room: room,
           voiceState: state,
+          speakerMuted: session.speakerMuted,
           zoomable: true,
           cornerIcon: Icons.close_fullscreen,
           cornerTooltip: 'Отменить приближение плитки',
@@ -315,6 +316,7 @@ class _CallScreenState extends State<CallScreen> {
                                     matrix: widget.matrix,
                                     room: room,
                                     voiceState: state,
+                                    speakerMuted: session.speakerMuted,
                                     onTap: () => _call.focusParticipant(p.identity),
                                     cornerIcon: Icons.open_in_full,
                                     cornerTooltip: 'Приблизить плитку',
@@ -647,6 +649,7 @@ class _ParticipantTile extends StatelessWidget {
     required this.matrix,
     required this.room,
     required this.voiceState,
+    required this.speakerMuted,
     required this.preferScreenShare,
     this.onTap,
     this.zoomable = false,
@@ -663,6 +666,7 @@ class _ParticipantTile extends StatelessWidget {
   final MatrixService matrix;
   final Room? room;
   final VoiceParticipantState voiceState;
+  final bool speakerMuted;
   final bool preferScreenShare;
   final VoidCallback? onTap;
   final bool zoomable;
@@ -687,6 +691,12 @@ class _ParticipantTile extends StatelessWidget {
       participant,
       preferScreenShare: preferScreenShare,
     );
+    final micMuted = orexParticipantMicMuted(participant);
+    final locallyMuted = speakerMuted && participant is! lk.LocalParticipant;
+    final statusBadgeCount = (micMuted ? 1 : 0) + (locallyMuted ? 1 : 0);
+    final cameraButtonBottom = statusBadgeCount == 0
+        ? 8.0
+        : 8.0 + statusBadgeCount * 44.0;
 
     final userId = _userId;
     final user = room?.unsafeGetUserFromMemoryOrFallback(userId);
@@ -779,19 +789,32 @@ class _ParticipantTile extends StatelessWidget {
                     ],
                   ),
                 ),
-              if (orexParticipantMicMuted(participant))
-                const Positioned(
+              if (statusBadgeCount > 0)
+                Positioned(
                   right: 8,
                   bottom: 8,
-                  child: _TileStatusBadge(
-                    icon: Icons.mic_off,
-                    tooltip: 'Микрофон выключен',
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (micMuted)
+                        const _TileStatusBadge(
+                          icon: Icons.mic_off,
+                          tooltip: 'Микрофон выключен',
+                        ),
+                      if (locallyMuted) ...[
+                        if (micMuted) const SizedBox(height: 6),
+                        const _TileStatusBadge(
+                          icon: Icons.volume_off,
+                          tooltip: 'Звук участника замьючен у вас',
+                        ),
+                      ],
+                    ],
                   ),
                 ),
               if (track != null && onCycleCamera != null)
                 Positioned(
                   right: 8,
-                  bottom: orexParticipantMicMuted(participant) ? 52 : 8,
+                  bottom: cameraButtonBottom,
                   child: _TileCornerButton(
                     icon: Icons.cameraswitch,
                     tooltip: 'Переключить камеру',
@@ -925,9 +948,11 @@ class _TileCornerButton extends StatelessWidget {
 
 
 class _TileStatusBadge extends StatelessWidget {
-  const _TileStatusBadge({required this.icon, required this.tooltip});
+  const _TileStatusBadge({this.icon, this.text, required this.tooltip})
+      : assert(icon != null || text != null);
 
-  final IconData icon;
+  final IconData? icon;
+  final String? text;
   final String tooltip;
 
   @override
@@ -943,7 +968,9 @@ class _TileStatusBadge extends StatelessWidget {
           borderRadius: BorderRadius.circular(14),
           border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
         ),
-        child: Icon(icon, size: 18, color: Colors.white),
+        child: icon != null
+            ? Icon(icon, size: 18, color: Colors.white)
+            : Text(text!, style: const TextStyle(fontSize: 21)),
       ),
     );
   }
@@ -967,10 +994,14 @@ class _VoiceStateBadges extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (reaction != null) _badge(text: reaction!, tooltip: 'Реакция'),
+        if (reaction != null)
+          _TileStatusBadge(text: reaction!, tooltip: 'Реакция'),
         if (handRaised) ...[
           if (reaction != null) const SizedBox(width: 6),
-          _badge(text: '✋', tooltip: 'Просит голос'),
+          const _TileStatusBadge(
+            icon: Icons.back_hand,
+            tooltip: 'Просит голос',
+          ),
         ],
         if (onGrantVoice != null) ...[
           if (handRaised || reaction != null) const SizedBox(width: 6),
@@ -991,38 +1022,5 @@ class _VoiceStateBadges extends StatelessWidget {
         ],
       ],
     );
-  }
-
-  Widget _badge({
-    IconData? icon,
-    String? text,
-    required String tooltip,
-    VoidCallback? onTap,
-    bool accent = false,
-  }) {
-    final child = Container(
-      constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
-      alignment: Alignment.center,
-      padding: const EdgeInsets.all(7),
-      decoration: BoxDecoration(
-        color: accent
-            ? OrexColors.copper.withValues(alpha: 0.90)
-            : Colors.black.withValues(alpha: 0.45),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
-      ),
-      child: icon != null
-          ? Icon(icon, color: Colors.white, size: 18)
-          : Text(text!, style: const TextStyle(fontSize: 22)),
-    );
-    final wrapped = onTap == null
-        ? child
-        : Material(
-            color: Colors.transparent,
-            borderRadius: BorderRadius.circular(14),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(onTap: onTap, child: child),
-          );
-    return Tooltip(message: tooltip, child: wrapped);
   }
 }
