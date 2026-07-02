@@ -130,7 +130,7 @@ class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
   Widget build(BuildContext context) {
     final active = _active;
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 80),
+      duration: const Duration(milliseconds: 35),
       curve: Curves.linear,
       padding: EdgeInsets.all(active ? widget.activePadding : widget.inactivePadding),
       decoration: BoxDecoration(

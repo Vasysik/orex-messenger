@@ -1,6 +1,10 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:record/record.dart' as rec;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'audio_cue_service.dart';
 import '../logging/orex_logger.dart';
@@ -11,6 +15,7 @@ class OrexAudioDevice {
     required this.kind,
     required this.label,
     this.nativeOnly = false,
+    this.cached = false,
   });
 
   final String id;
@@ -21,10 +26,13 @@ class OrexAudioDevice {
   /// It can still be useful for UI/routing, but WebRTC deviceId matching may be
   /// platform-dependent.
   final bool nativeOnly;
+  final bool cached;
 
   bool get isInput => kind == 'audioinput';
   bool get isOutput => kind == 'audiooutput';
 }
+
+const _kAudioDeviceCacheKey = 'orex_audio_device_cache_v2';
 
 Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
   bool requestPermission = false,
@@ -47,7 +55,6 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
     void addDevice(OrexAudioDevice device, String source) {
       final id = device.id.trim();
       if (id.isEmpty) return;
-      if (device.isOutput && !_isMobileNative) return;
       // We render our own "system default" rows. Keeping default duplicates from
       // WebRTC makes the settings look broken on platforms that hide labels.
       if (id == 'default' || id == 'communications') return;
@@ -134,16 +141,26 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
       );
     }
 
+    final liveOutputs = merged.values.where((d) => d.isOutput).toList();
+    if (liveOutputs.isNotEmpty) {
+      unawaited(_saveDeviceCache(liveOutputs));
+    } else {
+      for (final cached in await _loadDeviceCache()) {
+        addDevice(cached, 'cache');
+      }
+    }
+
     final result = merged.values.toList()
       ..sort((a, b) {
         final byKind = a.kind.compareTo(b.kind);
         if (byKind != 0) return byKind;
+        if (a.cached != b.cached) return a.cached ? 1 : -1;
         if (a.nativeOnly != b.nativeOnly) return a.nativeOnly ? 1 : -1;
         return a.label.toLowerCase().compareTo(b.label.toLowerCase());
       });
     OrexLog.d(
       'AudioDevices',
-      'enumerated total=${result.length} inputs=${result.where((d) => d.isInput).length} outputs=${result.where((d) => d.isOutput).length} permission=$requestPermission',
+      'enumerated total=${result.length} inputs=${result.where((d) => d.isInput).length} outputs=${result.where((d) => d.isOutput).length} permission=$requestPermission cachedOutputs=${result.where((d) => d.isOutput && d.cached).length}',
     );
     return result;
   } finally {
@@ -152,6 +169,56 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
         track.stop();
       } catch (_) {}
     }
+  }
+}
+
+
+Future<void> _saveDeviceCache(List<OrexAudioDevice> outputs) async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final payload = outputs
+        .where((d) => d.id.trim().isNotEmpty && d.label.trim().isNotEmpty)
+        .map((d) => {
+              'id': d.id,
+              'kind': d.kind,
+              'label': d.label,
+              'nativeOnly': d.nativeOnly,
+            })
+        .toList();
+    if (payload.isEmpty) return;
+    await prefs.setString(_kAudioDeviceCacheKey, jsonEncode(payload));
+  } catch (e) {
+    OrexLog.d('AudioDevices', 'save device cache failed', e);
+  }
+}
+
+Future<List<OrexAudioDevice>> _loadDeviceCache() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kAudioDeviceCacheKey);
+    if (raw == null || raw.trim().isEmpty) return const [];
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) return const [];
+    return decoded
+        .whereType<Map>()
+        .map((item) {
+          final id = '${item['id'] ?? ''}'.trim();
+          final kind = _normalizeKind('${item['kind'] ?? ''}');
+          final label = '${item['label'] ?? ''}'.trim();
+          if (id.isEmpty || kind != 'audiooutput') return null;
+          return OrexAudioDevice(
+            id: id,
+            kind: kind!,
+            label: label.isEmpty ? _fallbackLabel(kind, id) : label,
+            nativeOnly: item['nativeOnly'] == true,
+            cached: true,
+          );
+        })
+        .whereType<OrexAudioDevice>()
+        .toList();
+  } catch (e) {
+    OrexLog.d('AudioDevices', 'load device cache failed', e);
+    return const [];
   }
 }
 

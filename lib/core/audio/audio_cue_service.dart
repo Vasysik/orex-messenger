@@ -27,7 +27,7 @@ class AudioCueService extends ChangeNotifier {
   static const mobileSpeakerOutputId = 'orex://mobile/speaker';
 
   static const defaultSpeakingThresholdDb = -50.0;
-  static const defaultSpeakingThresholdEnabled = true;
+  static const defaultSpeakingThresholdEnabled = false;
 
   Timer? _ringtoneWatchdog;
   bool _ringing = false;

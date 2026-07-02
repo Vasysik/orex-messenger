@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:async';
 import 'dart:typed_data';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -280,11 +281,14 @@ class CallSession extends ChangeNotifier {
           streamBufferSize: 480,
         ),
       );
-      _voiceGatePcmSub = stream.listen((_) {}, onError: (Object e) {
+      _voiceGatePcmSub = stream.listen(_onVoiceGatePcm, onError: (Object e) {
         OrexLog.d('Call', 'voice gate pcm stream failed', e);
       });
+      // Keep the backend amplitude stream as a fallback for platforms that do
+      // not emit PCM chunks regularly. PCM is preferred because it reacts much
+      // faster than the aggregated amplitude callback.
       _voiceGateAmpSub = recorder
-          .onAmplitudeChanged(const Duration(milliseconds: 25))
+          .onAmplitudeChanged(const Duration(milliseconds: 60))
           .listen(_onVoiceGateAmplitude, onError: (Object e) {
         OrexLog.d('Call', 'voice gate amplitude failed', e);
       });
@@ -321,9 +325,16 @@ class CallSession extends ChangeNotifier {
     return null;
   }
 
+  void _onVoiceGatePcm(Uint8List data) {
+    _handleVoiceGateDb(_dbFromPcm16(data));
+  }
+
   void _onVoiceGateAmplitude(rec.Amplitude amp) {
+    _handleVoiceGateDb(_normalizeDb(amp.current));
+  }
+
+  void _handleVoiceGateDb(double db) {
     if (_disposed) return;
-    final db = _normalizeDb(amp.current);
     final threshold = _voiceGateThresholdDb;
     final now = DateTime.now();
     final above = db >= threshold;
@@ -331,7 +342,7 @@ class CallSession extends ChangeNotifier {
       _lastVoiceAboveThreshold = now;
     }
     final active = above ||
-        now.difference(_lastVoiceAboveThreshold) < const Duration(milliseconds: 120);
+        now.difference(_lastVoiceAboveThreshold) < const Duration(milliseconds: 70);
     localVoiceActivitySink?.call(db, active);
 
     if (!_voiceGateEnabled || !micOn || !canPublishMedia) {
@@ -344,6 +355,22 @@ class CallSession extends ChangeNotifier {
   double _normalizeDb(double value) {
     if (value.isNaN || value.isInfinite) return -100;
     return value.clamp(-100, 0).toDouble();
+  }
+
+  double _dbFromPcm16(Uint8List bytes) {
+    if (bytes.length < 2) return -100;
+    final data = ByteData.sublistView(bytes);
+    var sumSquares = 0.0;
+    var count = 0;
+    for (var i = 0; i + 1 < bytes.length; i += 2) {
+      final sample = data.getInt16(i, Endian.little) / 32768.0;
+      sumSquares += sample * sample;
+      count++;
+    }
+    if (count == 0 || sumSquares <= 0) return -100;
+    final rms = math.sqrt(sumSquares / count);
+    if (rms <= 0) return -100;
+    return (20 * math.log(rms) / math.ln10).clamp(-100.0, 0.0).toDouble();
   }
 
   void _queueVoiceGateMuted(bool muted) {
@@ -365,22 +392,16 @@ class CallSession extends ChangeNotifier {
   Future<void> _applyVoiceGateMuted(bool muted) async {
     final pub = _localMicrophonePublication();
     final track = pub == null ? null : _readDynamic(pub, 'track');
-    var changedNativeTrack = false;
-    try {
-      final mediaStream = _readDynamic(track, 'mediaStream');
-      final tracks = mediaStream == null
-          ? const <dynamic>[]
-          : (mediaStream.getAudioTracks() as List<dynamic>);
-      for (final rawTrack in tracks) {
-        rawTrack.enabled = !muted;
-        changedNativeTrack = true;
-      }
-    } catch (e) {
-      OrexLog.d('Call', 'voice gate native track mute failed muted=$muted', e);
+    final enabled = !muted;
+
+    if (_setMediaTrackEnabled(track, enabled) ||
+        _setMediaTrackEnabled(pub, enabled)) {
+      return;
     }
 
-    if (changedNativeTrack) return;
-
+    // Last-resort fallback. It is slower than flipping the native track flag,
+    // but it is better than leaking audio below threshold when the current
+    // LiveKit/flutter_webrtc shape hides the native track object.
     try {
       final dynamic dynamicPub = pub;
       if (muted) {
@@ -398,17 +419,83 @@ class CallSession extends ChangeNotifier {
     if (lp == null) return null;
     try {
       final dynamic dynamicParticipant = lp;
-      for (final dynamic pub in dynamicParticipant.audioTrackPublications) {
-        if (pub.source == lk.TrackSource.microphone) return pub;
+      final pub = dynamicParticipant.getTrackPublicationBySource(
+        lk.TrackSource.microphone,
+      );
+      if (pub != null) return pub;
+    } catch (_) {}
+    try {
+      final dynamic dynamicParticipant = lp;
+      for (final dynamic pub in _dynamicValues(dynamicParticipant.audioTrackPublications)) {
+        if (_readDynamic(pub, 'source') == lk.TrackSource.microphone) return pub;
       }
     } catch (_) {}
     try {
       final dynamic dynamicParticipant = lp;
-      for (final dynamic pub in dynamicParticipant.trackPublications) {
-        if (pub.source == lk.TrackSource.microphone) return pub;
+      for (final dynamic pub in _dynamicValues(dynamicParticipant.trackPublications)) {
+        if (_readDynamic(pub, 'source') == lk.TrackSource.microphone) return pub;
       }
     } catch (_) {}
     return null;
+  }
+
+  Iterable<dynamic> _dynamicValues(dynamic value) sync* {
+    if (value == null) return;
+    if (value is Map) {
+      yield* value.values;
+      return;
+    }
+    if (value is Iterable) {
+      yield* value;
+    }
+  }
+
+  bool _setMediaTrackEnabled(dynamic candidate, bool enabled) {
+    if (candidate == null) return false;
+
+    final direct = _trySetEnabled(candidate, enabled);
+    if (direct) return true;
+
+    for (final getter in const [
+      'mediaStreamTrack',
+      'rtcTrack',
+      'track',
+      'senderTrack',
+    ]) {
+      final nested = _readDynamic(candidate, getter);
+      if (_trySetEnabled(nested, enabled)) return true;
+    }
+
+    for (final getter in const ['mediaStream', 'stream']) {
+      final mediaStream = _readDynamic(candidate, getter);
+      if (_setAudioTracksEnabled(mediaStream, enabled)) return true;
+    }
+
+    return false;
+  }
+
+  bool _trySetEnabled(dynamic candidate, bool enabled) {
+    if (candidate == null) return false;
+    try {
+      candidate.enabled = enabled;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _setAudioTracksEnabled(dynamic mediaStream, bool enabled) {
+    if (mediaStream == null) return false;
+    try {
+      final tracks = mediaStream.getAudioTracks() as List<dynamic>;
+      var changed = false;
+      for (final rawTrack in tracks) {
+        if (_trySetEnabled(rawTrack, enabled)) changed = true;
+      }
+      return changed;
+    } catch (_) {
+      return false;
+    }
   }
 
   dynamic _readDynamic(dynamic object, String getterName) {
@@ -416,13 +503,19 @@ class CallSession extends ChangeNotifier {
     try {
       return switch (getterName) {
         'track' => object.track,
+        'source' => object.source,
         'mediaStream' => object.mediaStream,
+        'stream' => object.stream,
+        'mediaStreamTrack' => object.mediaStreamTrack,
+        'rtcTrack' => object.rtcTrack,
+        'senderTrack' => object.senderTrack,
         _ => null,
       };
     } catch (_) {
       return null;
     }
   }
+
 
   Future<void> _stopVoiceGate({required bool resetTrack}) async {
     final recorder = _voiceGateRecorder;

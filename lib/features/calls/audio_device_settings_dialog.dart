@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 
@@ -113,18 +112,10 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
   List<OrexAudioDevice> _byKind(String kind) =>
       _devices.where((d) => d.kind == kind).toList();
 
-  bool get _showOutputRoutes {
-    if (kIsWeb) return false;
-    return defaultTargetPlatform == TargetPlatform.android ||
-        defaultTargetPlatform == TargetPlatform.iOS;
-  }
-
   @override
   Widget build(BuildContext context) {
     final inputs = _byKind('audioinput');
-    final outputs = _showOutputRoutes
-        ? _byKind('audiooutput')
-        : const <OrexAudioDevice>[];
+    final outputs = _byKind('audiooutput');
 
     return AlertDialog(
       title: const Text('Аудиоустройства'),
@@ -140,10 +131,6 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Микрофон не открывается автоматически. Для полного списка нажмите «Разрешить».',
-                    ),
-                    const SizedBox(height: 14),
                     if (_error != null)
                       Text(_error!, style: const TextStyle(color: Colors.red)),
                     _section(
@@ -165,28 +152,26 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
                           ),
                       ],
                     ),
-                    if (_showOutputRoutes) ...[
-                      const SizedBox(height: 12),
-                      _section(
-                        'Вывод',
-                        Icons.volume_up,
-                        [
+                    const SizedBox(height: 12),
+                    _section(
+                      'Вывод',
+                      Icons.volume_up,
+                      [
+                        _deviceTile(
+                          title: 'Системный вывод',
+                          subtitle: 'По умолчанию',
+                          selected: _outputId == null,
+                          onTap: () => _selectOutput(null),
+                        ),
+                        for (final d in outputs)
                           _deviceTile(
-                            title: 'Системный вывод',
-                            subtitle: 'По умолчанию',
-                            selected: _outputId == null,
-                            onTap: () => _selectOutput(null),
+                            title: d.label,
+                            subtitle: d.cached ? 'Сохранённое устройство' : d.id,
+                            selected: _outputId == d.id,
+                            onTap: () => _selectOutput(d.id),
                           ),
-                          for (final d in outputs)
-                            _deviceTile(
-                              title: d.label,
-                              subtitle: 'Маршрут вывода',
-                              selected: _outputId == d.id,
-                              onTap: () => _selectOutput(d.id),
-                            ),
-                        ],
-                      ),
-                    ],
+                      ],
+                    ),
                     const SizedBox(height: 12),
                     _section(
                       'Порог говорения',
@@ -215,9 +200,9 @@ class _AudioDeviceSettingsDialogState extends State<AudioDeviceSettingsDialog> {
       ),
       actions: [
         TextButton.icon(
-          onPressed: () => _load(requestPermission: true),
-          icon: const Icon(Icons.privacy_tip_outlined),
-          label: const Text('Разрешить'),
+          onPressed: () => _load(requestPermission: false),
+          icon: const Icon(Icons.refresh),
+          label: const Text('Обновить'),
         ),
         TextButton.icon(
           onPressed: _testOutput,

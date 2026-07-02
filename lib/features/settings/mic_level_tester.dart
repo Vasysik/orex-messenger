@@ -99,19 +99,16 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
         ),
       );
 
-      _pcmSub = stream.listen((_) {}, onError: (Object e) {
+      _pcmSub = stream.listen((data) {
+        _updateLevel(_dbFromPcm16(data));
+      }, onError: (Object e) {
         if (!mounted) return;
         setState(() => _error = '$e');
       });
       _ampSub = recorder
-          .onAmplitudeChanged(const Duration(milliseconds: 25))
+          .onAmplitudeChanged(const Duration(milliseconds: 60))
           .listen((amp) {
-        if (!mounted) return;
-        final db = _normalizeDb(amp.current);
-        setState(() {
-          _levelDb = db;
-          _peakDb = math.max(_peakDb, db);
-        });
+        _updateLevel(_normalizeDb(amp.current));
       }, onError: (Object e) {
         if (!mounted) return;
         setState(() => _error = '$e');
@@ -183,11 +180,33 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
     return null;
   }
 
+  void _updateLevel(double db) {
+    if (!mounted) return;
+    setState(() {
+      _levelDb = db;
+      _peakDb = math.max(_peakDb, db);
+    });
+  }
+
   double _normalizeDb(double value) {
     if (value.isNaN || value.isInfinite) return -80;
-    // record returns dBFS: usually 0 = max, negative = quiet. Some backends
-    // briefly return positive/zero during startup; clamp to the visible meter.
     return value.clamp(-80, 0).toDouble();
+  }
+
+  double _dbFromPcm16(Uint8List bytes) {
+    if (bytes.length < 2) return -80;
+    final data = ByteData.sublistView(bytes);
+    var sumSquares = 0.0;
+    var count = 0;
+    for (var i = 0; i + 1 < bytes.length; i += 2) {
+      final sample = data.getInt16(i, Endian.little) / 32768.0;
+      sumSquares += sample * sample;
+      count++;
+    }
+    if (count == 0 || sumSquares <= 0) return -80;
+    final rms = math.sqrt(sumSquares / count);
+    if (rms <= 0) return -80;
+    return (20 * math.log(rms) / math.ln10).clamp(-80.0, 0.0).toDouble();
   }
 
   @override
@@ -276,7 +295,7 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
           ],
           const SizedBox(height: 4),
           Text(
-            'Тест открывает выбранный микрофон явно и показывает dBFS почти в реальном времени. В звонке этот же порог работает как gate: всё ниже линии порога приглушается перед отправкой.',
+            'Тест показывает dBFS почти в реальном времени. В звонке этот же порог работает как gate для локального микрофона.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Colors.white60,
                 ),

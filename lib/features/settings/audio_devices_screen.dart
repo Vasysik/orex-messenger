@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 
@@ -63,8 +62,6 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
     }
   }
 
-  Future<void> _unlockAndReload() => _load(requestPermission: true);
-
   Future<void> _testOutput() => widget.matrix.audio.playNotification();
 
   Future<void> _testMic() async {
@@ -116,18 +113,10 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
   List<OrexAudioDevice> _byKind(String kind) =>
       _devices.where((d) => d.kind == kind).toList();
 
-  bool get _showOutputRoutes {
-    if (kIsWeb) return false;
-    return defaultTargetPlatform == TargetPlatform.android ||
-        defaultTargetPlatform == TargetPlatform.iOS;
-  }
-
   @override
   Widget build(BuildContext context) {
     final inputs = _byKind('audioinput');
-    final outputs = _showOutputRoutes
-        ? _byKind('audiooutput')
-        : const <OrexAudioDevice>[];
+    final outputs = _byKind('audiooutput');
 
     return AmbientBackground(
       child: Scaffold(
@@ -143,12 +132,12 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
               title: 'Проверка',
               children: [
                 OrexSettingsTile(
-                  icon: Icons.privacy_tip_outlined,
-                  title: 'Разрешить доступ к микрофону и обновить',
+                  icon: Icons.refresh,
+                  title: 'Обновить список устройств',
                   subtitle: _loading
                       ? 'Загрузка…'
-                      : 'Коротко открыть микрофон, перечитать устройства и сразу отпустить трек',
-                  onTap: _unlockAndReload,
+                      : 'Перечитать аудиоустройства',
+                  onTap: () => _load(requestPermission: false),
                 ),
                 OrexSettingsTile(
                   icon: Icons.volume_up,
@@ -161,12 +150,6 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                   title: 'Проверить микрофон',
                   subtitle: 'Запросить выбранный вход и сразу отпустить трек',
                   onTap: _testMic,
-                ),
-                OrexSettingsTile(
-                  icon: Icons.restart_alt,
-                  title: 'Сбросить настройки звука',
-                  subtitle: 'Вернуть системный микрофон и стандартный порог говорения',
-                  onTap: _resetSoundSettings,
                 ),
               ],
             ),
@@ -205,35 +188,37 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                   ),
                 if (!_loading && inputs.isEmpty)
                   const _EmptyDeviceHint(
-                    text: 'Сейчас доступен только системный вход. Нажмите кнопку разрешения выше или проверьте системные разрешения микрофона.',
+                    text: 'Сейчас доступен только системный вход. Нажмите «Проверить микрофон» или проверьте системные разрешения микрофона.',
                   ),
               ],
             ),
-            if (_showOutputRoutes) ...[
-              const SizedBox(height: 16),
-              OrexSettingsSection(
-                title: 'Вывод звука',
-                children: [
+            const SizedBox(height: 16),
+            OrexSettingsSection(
+              title: 'Устройство вывода',
+              children: [
+                _DeviceRadioTile(
+                  icon: Icons.speaker,
+                  title: 'Системный вывод',
+                  subtitle: 'Использовать устройство по умолчанию',
+                  selected: _outputId == null,
+                  onTap: () => _selectOutput(null),
+                ),
+                for (final d in outputs)
                   _DeviceRadioTile(
-                    icon: Icons.speaker,
-                    title: 'Системный вывод',
-                    subtitle: 'Использовать маршрут по умолчанию',
-                    selected: _outputId == null,
-                    onTap: () => _selectOutput(null),
+                    icon: d.id == AudioCueService.mobileSpeakerOutputId
+                        ? Icons.volume_up
+                        : Icons.hearing,
+                    title: d.label,
+                    subtitle: d.cached ? 'Сохранённое устройство' : d.id,
+                    selected: _outputId == d.id,
+                    onTap: () => _selectOutput(d.id),
                   ),
-                  for (final d in outputs)
-                    _DeviceRadioTile(
-                      icon: d.id == AudioCueService.mobileSpeakerOutputId
-                          ? Icons.volume_up
-                          : Icons.hearing,
-                      title: d.label,
-                      subtitle: 'Маршрут вывода',
-                      selected: _outputId == d.id,
-                      onTap: () => _selectOutput(d.id),
-                    ),
-                ],
-              ),
-            ],
+                if (!_loading && outputs.isEmpty)
+                  const _EmptyDeviceHint(
+                    text: 'Сейчас доступен только системный вывод. Нажмите «Обновить список устройств» или откройте звонок и вернитесь сюда.',
+                  ),
+              ],
+            ),
             const SizedBox(height: 16),
             OrexSettingsSection(
               title: 'Порог говорения',
@@ -256,9 +241,21 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
             ),
             const SizedBox(height: 16),
             Text(
-              'Orex не открывает микрофон автоматически при входе в этот экран. '
               'Порог говорения применяется к локальному микрофону в звонке как быстрый gate: звук ниже линии порога приглушается перед отправкой.',
               style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 16),
+            OrexSettingsSection(
+              title: 'Сброс',
+              children: [
+                OrexSettingsTile(
+                  icon: Icons.restart_alt,
+                  title: 'Сбросить настройки звука',
+                  subtitle: 'Вернуть системный микрофон, системный вывод и стандартный порог',
+                  onTap: _resetSoundSettings,
+                  danger: true,
+                ),
+              ],
             ),
           ],
         ),
