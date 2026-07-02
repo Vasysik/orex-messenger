@@ -70,17 +70,16 @@ class _CallScreenState extends State<CallScreen> {
       return;
     }
     String? sourceId;
-    var allowDesktopDefault = false;
     if (orexNeedsScreenSourcePicker) {
       sourceId = await showOrexScreenSourcePicker(context);
       if (sourceId == null) return;
-      allowDesktopDefault = orexIsDefaultScreenSourceId(sourceId);
-      if (allowDesktopDefault) sourceId = null;
+      // Даём окну выбора полностью закрыться перед стартом захвата. На Windows
+      // это снижает шанс гонки между thumbnail-callbacks picker-а и созданием
+      // реального screen-share track.
+      await Future<void>.delayed(const Duration(milliseconds: 450));
+      if (!mounted) return;
     }
-    await session.toggleScreenShare(
-      sourceId: sourceId,
-      allowDesktopDefault: allowDesktopDefault,
-    );
+    await session.toggleScreenShare(sourceId: sourceId);
   }
 
   bool _canGrantVoice(Room? room, String userId, VoiceParticipantState state) {

@@ -41,6 +41,9 @@ class CallSession extends ChangeNotifier {
   lk.Room? get room => _room;
   bool _disposed = false;
   bool screenShareOn = false;
+  bool _screenShareBusy = false;
+  lk.LocalTrackPublication<lk.LocalVideoTrack>? _screenSharePublication;
+  lk.LocalVideoTrack? _screenShareTrack;
   bool handRaised = false;
   final Map<String, VoiceParticipantState> _voiceStates = <String, VoiceParticipantState>{};
   Timer? _reactionClearTimer;
@@ -156,9 +159,8 @@ class CallSession extends ChangeNotifier {
       } catch (_) {}
       if (screenShareOn) {
         try {
-          await lp.setScreenShareEnabled(false);
+          await _stopScreenShare(lp: lp);
         } catch (_) {}
-        screenShareOn = false;
       }
     }
 
@@ -186,12 +188,10 @@ class CallSession extends ChangeNotifier {
   }
 
 
-  Future<void> toggleScreenShare({
-    String? sourceId,
-    bool allowDesktopDefault = false,
-  }) async {
+  Future<void> toggleScreenShare({String? sourceId}) async {
     final lp = _room?.localParticipant;
-    if (lp == null) return;
+    if (lp == null || _screenShareBusy) return;
+    _screenShareBusy = true;
     try {
       // Android media projection requires native foreground-service wiring
       // outside lib/. До этого не открываем системный picker, чтобы не ловить
@@ -206,28 +206,86 @@ class CallSession extends ChangeNotifier {
         if (!_disposed) notifyListeners();
         return;
       }
+
       final next = !screenShareOn;
-      if (next &&
-          sourceId == null &&
-          _desktopNeedsExplicitSource &&
-          !allowDesktopDefault) {
+      if (!next) {
+        await _stopScreenShare(lp: lp);
+        error = null;
+        return;
+      }
+
+      if (sourceId == null && _desktopNeedsExplicitSource) {
         error = 'Выберите источник экрана';
         if (!_disposed) notifyListeners();
         return;
       }
 
-      await lp.setScreenShareEnabled(
-        next,
-        screenShareCaptureOptions: next && sourceId != null
-            ? lk.ScreenShareCaptureOptions(sourceId: sourceId)
-            : null,
-      );
-      screenShareOn = next;
+      if (!kIsWeb && _desktopNeedsExplicitSource && sourceId != null) {
+        // На desktop LiveKit в своём README рекомендует не shortcut
+        // setScreenShareEnabled(...sourceId...), а явное создание screen-share
+        // track и publishVideoTrack. Это аккуратнее после нашего picker-а с
+        // превью: один capturer выбирает sourceId, второй создаёт готовый track.
+        final track = await lk.LocalVideoTrack.createScreenShareTrack(
+          lk.ScreenShareCaptureOptions(
+            sourceId: sourceId,
+            maxFrameRate: 15.0,
+          ),
+        );
+        final publication = await lp.publishVideoTrack(track);
+        _screenShareTrack = track;
+        _screenSharePublication = publication;
+        screenShareOn = true;
+      } else {
+        await lp.setScreenShareEnabled(
+          true,
+          screenShareCaptureOptions: sourceId != null
+              ? lk.ScreenShareCaptureOptions(
+                  sourceId: sourceId,
+                  maxFrameRate: 15.0,
+                )
+              : null,
+        );
+        screenShareOn = true;
+      }
       error = null;
     } catch (e) {
+      await _cleanupScreenShareLocals();
+      screenShareOn = false;
       error = 'Не удалось переключить трансляцию экрана: $e';
+    } finally {
+      _screenShareBusy = false;
+      if (!_disposed) notifyListeners();
     }
-    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> _stopScreenShare({lk.LocalParticipant? lp}) async {
+    final participant = lp ?? _room?.localParticipant;
+    _screenSharePublication = null;
+
+    // Не используем LocalParticipant.unpublishTrack(): в части версий
+    // livekit_client этот метод отсутствует/не экспортируется, из-за чего
+    // flutter analyze падает. Для screen-share LiveKit умеет выключать
+    // публикацию по TrackSource через setScreenShareEnabled(false), а локальный
+    // track ниже дополнительно останавливается и dispose-ится.
+    if (participant != null) {
+      try {
+        await participant.setScreenShareEnabled(false);
+      } catch (_) {}
+    }
+
+    await _cleanupScreenShareLocals();
+    screenShareOn = false;
+  }
+
+  Future<void> _cleanupScreenShareLocals() async {
+    final track = _screenShareTrack;
+    _screenShareTrack = null;
+    try {
+      await track?.stop();
+    } catch (_) {}
+    try {
+      await track?.dispose();
+    } catch (_) {}
   }
 
   bool get _desktopNeedsExplicitSource {
@@ -316,8 +374,7 @@ class CallSession extends ChangeNotifier {
       room.removeListener(_onRoom);
       try {
         if (screenShareOn) {
-          await room.localParticipant?.setScreenShareEnabled(false);
-          screenShareOn = false;
+          await _stopScreenShare(lp: room.localParticipant);
         }
       } catch (_) {}
       try {

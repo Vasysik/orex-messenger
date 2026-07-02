@@ -62,17 +62,16 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
       return;
     }
     String? sourceId;
-    var allowDesktopDefault = false;
     if (orexNeedsScreenSourcePicker) {
       sourceId = await showOrexScreenSourcePicker(context);
       if (sourceId == null) return;
-      allowDesktopDefault = orexIsDefaultScreenSourceId(sourceId);
-      if (allowDesktopDefault) sourceId = null;
+      // Даём окну выбора полностью закрыться перед стартом захвата. На Windows
+      // это снижает шанс гонки между thumbnail-callbacks picker-а и созданием
+      // реального screen-share track.
+      await Future<void>.delayed(const Duration(milliseconds: 450));
+      if (!mounted) return;
     }
-    await session.toggleScreenShare(
-      sourceId: sourceId,
-      allowDesktopDefault: allowDesktopDefault,
-    );
+    await session.toggleScreenShare(sourceId: sourceId);
   }
 
   bool _canGrantVoice(Room? room, String userId, VoiceParticipantState state) {
@@ -169,21 +168,38 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
       if (p == null) return const SizedBox.shrink();
       final userId = _matrixUserId(p.identity);
       final state = session.voiceStateForUser(userId);
-      return Padding(
-        padding: const EdgeInsets.all(3),
-        child: _MiniTile(
-          participant: p,
-          matrix: widget.call.matrix,
-          room: room,
-          voiceState: state,
-          zoomable: true,
-          cornerIcon: Icons.close_fullscreen,
-          cornerTooltip: 'Отменить приближение плитки',
-          onCornerTap: () => widget.call.focusParticipant(null),
-          onGrantVoice: _canGrantVoice(room, userId, state)
-              ? () => _grantVoice(room!, userId)
-              : null,
-        ),
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final tileWidth = constraints.maxWidth
+              .clamp(_miniTileMinWidth, _miniTileMaxWidth)
+              .toDouble();
+          final tileHeight = constraints.maxHeight
+              .clamp(_miniTileMinHeight, _miniTileMaxHeight)
+              .toDouble();
+          return Align(
+            alignment: Alignment.center,
+            child: SizedBox(
+              width: tileWidth,
+              height: tileHeight,
+              child: Padding(
+                padding: const EdgeInsets.all(3),
+                child: _MiniTile(
+                  participant: p,
+                  matrix: widget.call.matrix,
+                  room: room,
+                  voiceState: state,
+                  zoomable: true,
+                  cornerIcon: Icons.close_fullscreen,
+                  cornerTooltip: 'Отменить приближение плитки',
+                  onCornerTap: () => widget.call.focusParticipant(null),
+                  onGrantVoice: _canGrantVoice(room, userId, state)
+                      ? () => _grantVoice(room!, userId)
+                      : null,
+                ),
+              ),
+            ),
+          );
+        },
       );
     }
 
