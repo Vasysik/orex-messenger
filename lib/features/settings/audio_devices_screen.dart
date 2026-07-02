@@ -205,7 +205,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                 ),
                 for (final d in outputs)
                   _DeviceRadioTile(
-                    icon: Icons.hearing,
+                    icon: Icons.speaker,
                     title: d.label,
                     subtitle: null,
                     selected: _outputId == d.id,
