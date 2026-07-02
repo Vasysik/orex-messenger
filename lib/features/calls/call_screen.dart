@@ -11,6 +11,8 @@ import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/mxc_avatar.dart';
 import '../../shared/widgets/squirrel_mascot.dart';
+import '../../core/audio/audio_device_utils.dart';
+import 'call_device_quick_sheet.dart';
 import 'screen_source_picker.dart';
 import 'voice_activity_frame.dart';
 
@@ -56,9 +58,10 @@ class _CallScreenState extends State<CallScreen> {
     super.dispose();
   }
 
-  void _hangup() {
-    _call.hangUp();
-    if (mounted) Navigator.of(context).pop();
+  Future<void> _hangup() async {
+    await _call.hangUp();
+    if (!mounted) return;
+    Navigator.of(context).maybePop();
   }
 
   Future<void> _showReactions(CallSession session) async {
@@ -274,6 +277,9 @@ class _CallScreenState extends State<CallScreen> {
           onSwitchVideoSource: orexHasCameraAndScreen(pinnedParticipant)
               ? () => _toggleParticipantVideoSource(pinnedParticipant)
               : null,
+          onCycleCamera: pinnedParticipant is lk.LocalParticipant
+              ? () => _cycleCamera(session)
+              : null,
           onGrantVoice: _canGrantVoice(room, userId)
               ? () => _grantVoice(room!, userId)
               : null,
@@ -317,6 +323,9 @@ class _CallScreenState extends State<CallScreen> {
                                     onSwitchVideoSource: orexHasCameraAndScreen(p)
                                         ? () => _toggleParticipantVideoSource(p)
                                         : null,
+                                    onCycleCamera: p is lk.LocalParticipant
+                                        ? () => _cycleCamera(session)
+                                        : null,
                                     onGrantVoice: _canGrantVoice(room, userId)
                                         ? () => _grantVoice(room!, userId)
                                         : null,
@@ -340,6 +349,12 @@ class _CallScreenState extends State<CallScreen> {
   String _matrixUserId(String identity) {
     final m = RegExp(r'@[^:]+:[^:]+').firstMatch(identity);
     return m?.group(0) ?? identity;
+  }
+
+  Future<void> _cycleCamera(CallSession session) async {
+    final cameras = await enumerateOrexCameraDevices(requestPermission: true);
+    if (cameras.isEmpty) return;
+    await session.cycleCameraDevice([for (final camera in cameras) camera.id]);
   }
 
   Widget _cameraNote() => Container(
@@ -390,14 +405,23 @@ class _CallScreenState extends State<CallScreen> {
           children: [
             if (session.canPublishMedia) ...[
               _round(
-                tooltip: 'Микрофон',
+                tooltip: 'Микрофон · зажмите для выбора устройства',
                 icon: session.micOn ? Icons.mic : Icons.mic_off,
                 onTap: () { session.toggleMic(); },
+                onLongPress: () => showOrexInputQuickSheet(
+                  context,
+                  matrix: widget.matrix,
+                ),
               ),
               _round(
-                tooltip: 'Камера',
+                tooltip: 'Камера · зажмите для выбора устройства',
                 icon: session.camOn ? Icons.videocam : Icons.videocam_off,
                 onTap: () { session.toggleCam(); },
+                onLongPress: () => showOrexCameraQuickSheet(
+                  context,
+                  matrix: widget.matrix,
+                  session: session,
+                ),
               ),
               _round(
                 tooltip: 'Трансляция экрана',
@@ -408,6 +432,16 @@ class _CallScreenState extends State<CallScreen> {
                 onTap: () { _toggleScreenShare(session); },
               ),
             ],
+            _round(
+              tooltip: 'Звук · зажмите для выбора вывода',
+              icon: session.speakerMuted ? Icons.volume_off : Icons.volume_up,
+              selected: session.speakerMuted,
+              onTap: () { session.toggleSpeakerMute(); },
+              onLongPress: () => showOrexOutputQuickSheet(
+                context,
+                matrix: widget.matrix,
+              ),
+            ),
             _round(
               tooltip: session.handRaised ? 'Опустить руку' : 'Поднять руку',
               icon: session.handRaised
@@ -426,7 +460,7 @@ class _CallScreenState extends State<CallScreen> {
               tooltip: 'Завершить',
               icon: Icons.call_end,
               background: const Color(0xFFCF6679),
-              onTap: _hangup,
+              onTap: () { _hangup(); },
             ),
           ],
         ),
@@ -436,35 +470,82 @@ class _CallScreenState extends State<CallScreen> {
     Key? key,
     required IconData icon,
     required VoidCallback onTap,
+    VoidCallback? onLongPress,
     String? tooltip,
     Color? background,
     bool selected = false,
   }) {
-    final child = MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: Material(
-        key: key,
-        color: Colors.transparent,
-        shape: const CircleBorder(),
-        clipBehavior: Clip.antiAlias,
-        child: InkResponse(
-          containedInkWell: true,
-          highlightShape: BoxShape.circle,
-          radius: 32,
-          customBorder: const CircleBorder(),
-          hoverColor: Colors.white.withValues(alpha: 0.10),
-          splashColor: Colors.white.withValues(alpha: 0.16),
-          highlightColor: Colors.white.withValues(alpha: 0.08),
-          onTap: onTap,
+    final child = _PressableCircleButton(
+      key: key,
+      icon: icon,
+      size: 54,
+      radius: 32,
+      background: background,
+      selected: selected,
+      onTap: onTap,
+      onLongPress: onLongPress,
+    );
+    return tooltip == null ? child : Tooltip(message: tooltip, child: child);
+  }
+}
+
+class _PressableCircleButton extends StatefulWidget {
+  const _PressableCircleButton({
+    super.key,
+    required this.icon,
+    required this.size,
+    required this.radius,
+    required this.selected,
+    required this.onTap,
+    this.onLongPress,
+    this.background,
+  });
+
+  final IconData icon;
+  final double size;
+  final double radius;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+  final Color? background;
+
+  @override
+  State<_PressableCircleButton> createState() => _PressableCircleButtonState();
+}
+
+class _PressableCircleButtonState extends State<_PressableCircleButton> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkResponse(
+        containedInkWell: true,
+        highlightShape: BoxShape.circle,
+        radius: widget.radius,
+        customBorder: const CircleBorder(),
+        mouseCursor: SystemMouseCursors.basic,
+        hoverColor: Colors.white.withValues(alpha: 0.10),
+        splashColor: Colors.white.withValues(alpha: 0.16),
+        highlightColor: Colors.white.withValues(alpha: 0.08),
+        onHighlightChanged: (value) => setState(() => _pressed = value),
+        onTap: widget.onTap,
+        onLongPress: widget.onLongPress,
+        child: AnimatedScale(
+          duration: const Duration(milliseconds: 90),
+          scale: _pressed ? 0.94 : 1,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 140),
-            width: 54,
-            height: 54,
+            width: widget.size,
+            height: widget.size,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: background,
-              gradient: background == null ? OrexColors.copperGradient : null,
-              border: selected
+              color: widget.background,
+              gradient: widget.background == null ? OrexColors.copperGradient : null,
+              border: widget.selected
                   ? Border.all(
                       color: Colors.white.withValues(alpha: 0.8),
                       width: 2,
@@ -478,14 +559,14 @@ class _CallScreenState extends State<CallScreen> {
                 ),
               ],
             ),
-            child: Icon(icon, color: OrexColors.cream),
+            child: Icon(widget.icon, color: OrexColors.cream),
           ),
         ),
       ),
     );
-    return tooltip == null ? child : Tooltip(message: tooltip, child: child);
   }
 }
+
 
 
 class _ParticipantTile extends StatelessWidget {
@@ -501,6 +582,7 @@ class _ParticipantTile extends StatelessWidget {
     this.cornerTooltip,
     this.onCornerTap,
     this.onSwitchVideoSource,
+    this.onCycleCamera,
     this.onGrantVoice,
     this.onRevokeVoice,
   });
@@ -516,6 +598,7 @@ class _ParticipantTile extends StatelessWidget {
   final String? cornerTooltip;
   final VoidCallback? onCornerTap;
   final VoidCallback? onSwitchVideoSource;
+  final VoidCallback? onCycleCamera;
   final VoidCallback? onGrantVoice;
   final VoidCallback? onRevokeVoice;
 
@@ -622,6 +705,25 @@ class _ParticipantTile extends StatelessWidget {
                         ),
                       ],
                     ],
+                  ),
+                ),
+              if (orexParticipantMicMuted(participant))
+                const Positioned(
+                  right: 8,
+                  bottom: 8,
+                  child: _TileStatusBadge(
+                    icon: Icons.mic_off,
+                    tooltip: 'Микрофон выключен',
+                  ),
+                ),
+              if (track != null && onCycleCamera != null)
+                Positioned(
+                  right: 8,
+                  bottom: orexParticipantMicMuted(participant) ? 52 : 8,
+                  child: _TileCornerButton(
+                    icon: Icons.cameraswitch,
+                    tooltip: 'Переключить камеру',
+                    onTap: onCycleCamera!,
                   ),
                 ),
               Positioned(
@@ -746,6 +848,32 @@ class _TileCornerButton extends StatelessWidget {
       ),
     );
     return Tooltip(message: tooltip, child: button);
+  }
+}
+
+
+class _TileStatusBadge extends StatelessWidget {
+  const _TileStatusBadge({required this.icon, required this.tooltip});
+
+  final IconData icon;
+  final String tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Container(
+        width: 38,
+        height: 38,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.52),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+        ),
+        child: Icon(icon, size: 18, color: Colors.white),
+      ),
+    );
   }
 }
 

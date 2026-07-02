@@ -21,6 +21,7 @@ class AudioCueService extends ChangeNotifier {
 
   static const _kInputDeviceId = 'orex_audio_input_device_id';
   static const _kOutputDeviceId = 'orex_audio_output_device_id';
+  static const _kCameraDeviceId = 'orex_video_camera_device_id';
   static const _kSpeakingThresholdDb = 'orex_audio_speaking_threshold_db';
   static const _kSpeakingThresholdEnabled = 'orex_audio_speaking_threshold_enabled';
   static const _kCallMicEnabled = 'orex_audio_call_mic_enabled';
@@ -34,6 +35,7 @@ class AudioCueService extends ChangeNotifier {
   bool _ringing = false;
   String? inputDeviceId;
   String? outputDeviceId;
+  String? cameraDeviceId;
   double speakingThresholdDb = defaultSpeakingThresholdDb;
   bool speakingThresholdEnabled = defaultSpeakingThresholdEnabled;
   bool? callMicEnabledOverride;
@@ -45,6 +47,7 @@ class AudioCueService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       inputDeviceId = _nullIfEmpty(prefs.getString(_kInputDeviceId));
       outputDeviceId = _nullIfEmpty(prefs.getString(_kOutputDeviceId));
+      cameraDeviceId = _nullIfEmpty(prefs.getString(_kCameraDeviceId));
       if (orexIsMobileRouteId(outputDeviceId) &&
           (!orexIsMobileNativePlatform ||
               orexIsAndroidSpeakerOutputDeviceId(outputDeviceId) ||
@@ -77,6 +80,12 @@ class AudioCueService extends ChangeNotifier {
     outputDeviceId = _nullIfEmpty(value);
     await _saveString(_kOutputDeviceId, outputDeviceId);
     await _applyOutputDevice();
+    notifyListeners();
+  }
+
+  Future<void> setCameraDeviceId(String? value) async {
+    cameraDeviceId = _nullIfEmpty(value);
+    await _saveString(_kCameraDeviceId, cameraDeviceId);
     notifyListeners();
   }
 
@@ -117,6 +126,7 @@ class AudioCueService extends ChangeNotifier {
     inputDeviceId = null;
     outputDeviceId = null;
     speakingThresholdDb = defaultSpeakingThresholdDb;
+    cameraDeviceId = null;
     speakingThresholdEnabled = defaultSpeakingThresholdEnabled;
     callMicEnabledOverride = null;
     try {
@@ -124,6 +134,7 @@ class AudioCueService extends ChangeNotifier {
       await prefs.remove(_kInputDeviceId);
       await prefs.remove(_kOutputDeviceId);
       await prefs.remove(_kCallMicEnabled);
+      await prefs.remove(_kCameraDeviceId);
       await prefs.setDouble(_kSpeakingThresholdDb, speakingThresholdDb);
       await prefs.setBool(_kSpeakingThresholdEnabled, speakingThresholdEnabled);
     } catch (e) {

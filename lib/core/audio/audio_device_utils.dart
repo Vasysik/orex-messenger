@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 
 import '../logging/orex_logger.dart';
@@ -341,4 +342,111 @@ bool _looksLikeAndroidHardwareCode(String label) {
     return false;
   }
   return RegExp(r'^(?=.*\d)[A-Z0-9._-]{5,}$').hasMatch(normalized);
+}
+
+Future<List<OrexAudioDevice>> enumerateOrexCameraDevices({
+  bool requestPermission = false,
+}) async {
+  rtc.MediaStream? permissionStream;
+  if (requestPermission) {
+    try {
+      permissionStream = await rtc.navigator.mediaDevices.getUserMedia({
+        'audio': false,
+        'video': true,
+      });
+    } catch (e) {
+      OrexLog.d('AudioDevices', 'camera permission unlock failed', e);
+    }
+  }
+
+  try {
+    final rawDevices = await _enumerateWebRtcDevices();
+    final result = <OrexAudioDevice>[];
+    final seen = <String>{};
+    for (final raw in rawDevices) {
+      final id = _readString(raw, 'deviceId').trim();
+      if (id.isEmpty || _normalizeVideoKind(_readString(raw, 'kind')) != 'videoinput') {
+        continue;
+      }
+      final rawLabel = _cleanLabel(_readString(raw, 'label'));
+      final label = rawLabel.isEmpty ? 'Камера' : rawLabel;
+      final category = _inferCameraCategory(id: id, label: label);
+      final key = '$id|${label.toLowerCase()}';
+      if (!seen.add(key)) continue;
+      result.add(OrexAudioDevice(
+        id: id,
+        kind: 'videoinput',
+        label: label,
+        category: category,
+      ));
+    }
+    result.sort((a, b) {
+      final byRank = _cameraSortRank(a).compareTo(_cameraSortRank(b));
+      if (byRank != 0) return byRank;
+      return a.label.toLowerCase().compareTo(b.label.toLowerCase());
+    });
+    return result;
+  } finally {
+    for (final track in permissionStream?.getTracks() ?? <dynamic>[]) {
+      try {
+        track.stop();
+      } catch (_) {}
+    }
+  }
+}
+
+String? _normalizeVideoKind(String raw) {
+  final value = raw.toLowerCase().replaceAll(RegExp(r'[^a-z]'), '');
+  if (value.contains('videoinput')) return 'videoinput';
+  return null;
+}
+
+String _inferCameraCategory({required String id, required String label}) {
+  final value = '$id $label'.toLowerCase();
+  if (value.contains('front') || value.contains('фронт')) return 'front_camera';
+  if (value.contains('back') ||
+      value.contains('rear') ||
+      value.contains('environment') ||
+      value.contains('зад')) {
+    return 'back_camera';
+  }
+  if (value.contains('usb') || value.contains('webcam') || value.contains('web cam')) {
+    return 'webcam';
+  }
+  return 'camera';
+}
+
+int _cameraSortRank(OrexAudioDevice device) => switch (device.category) {
+      'front_camera' => 0,
+      'back_camera' => 1,
+      'webcam' => 2,
+      _ => 5,
+    };
+
+IconData orexInputDeviceIcon(OrexAudioDevice device) {
+  return switch (device.category) {
+    'bluetooth' => Icons.headset_mic,
+    'headphones' => Icons.headset_mic,
+    'usb' => Icons.usb,
+    _ => Icons.mic,
+  };
+}
+
+IconData orexOutputDeviceIcon(OrexAudioDevice device) {
+  return switch (device.category) {
+    'bluetooth' => Icons.headset_mic,
+    'headphones' => Icons.headphones,
+    'usb' => Icons.usb,
+    'earpiece' => Icons.phone_in_talk,
+    _ => Icons.speaker,
+  };
+}
+
+IconData orexCameraDeviceIcon(OrexAudioDevice device) {
+  return switch (device.category) {
+    'front_camera' => Icons.camera_front,
+    'back_camera' => Icons.camera_rear,
+    'webcam' => Icons.videocam,
+    _ => Icons.photo_camera,
+  };
 }

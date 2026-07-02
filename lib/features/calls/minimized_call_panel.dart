@@ -9,7 +9,9 @@ import '../../core/voip/call_controller.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/mxc_avatar.dart';
+import '../../core/audio/audio_device_utils.dart';
 import '../../core/voip/call_session.dart';
+import 'call_device_quick_sheet.dart';
 import 'screen_source_picker.dart';
 import 'voice_activity_frame.dart';
 
@@ -214,6 +216,9 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
             onSwitchVideoSource: orexHasCameraAndScreen(p)
                 ? () => _toggleParticipantVideoSource(p)
                 : null,
+            onCycleCamera: p is lk.LocalParticipant
+                ? () => _cycleCamera(session)
+                : null,
             onGrantVoice: _canGrantVoice(room, userId)
                 ? () => _grantVoice(room!, userId)
                 : null,
@@ -287,9 +292,7 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                 final p = people[index];
                 final userId = _matrixUserId(p.identity);
                 final state = session.voiceStateForUser(userId);
-                return MouseRegion(
-                  cursor: SystemMouseCursors.click,
-                  child: _MiniTile(
+                return _MiniTile(
                     participant: p,
                     matrix: widget.call.matrix,
                     room: room,
@@ -302,20 +305,28 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                     onSwitchVideoSource: orexHasCameraAndScreen(p)
                         ? () => _toggleParticipantVideoSource(p)
                         : null,
+                    onCycleCamera: p is lk.LocalParticipant
+                        ? () => _cycleCamera(session)
+                        : null,
                     onGrantVoice: _canGrantVoice(room, userId)
                         ? () => _grantVoice(room!, userId)
                         : null,
                     onRevokeVoice: _canRevokeVoice(room, userId)
                         ? () => _revokeVoice(room!, userId)
                         : null,
-                  ),
-                );
+                  );
               },
             ),
           ),
         );
       },
     );
+  }
+
+  Future<void> _cycleCamera(CallSession session) async {
+    final cameras = await enumerateOrexCameraDevices(requestPermission: true);
+    if (cameras.isEmpty) return;
+    await session.cycleCameraDevice([for (final camera in cameras) camera.id]);
   }
 
   /// Нижняя кромка-«ручка»: тянуть вверх/вниз, чтобы менять высоту плиток.
@@ -361,10 +372,19 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
               _btn(
                 icon: session.micOn ? Icons.mic : Icons.mic_off,
                 onTap: () { session.toggleMic(); },
+                onLongPress: () => showOrexInputQuickSheet(
+                  context,
+                  matrix: widget.call.matrix,
+                ),
               ),
               _btn(
                 icon: session.camOn ? Icons.videocam : Icons.videocam_off,
                 onTap: () { session.toggleCam(); },
+                onLongPress: () => showOrexCameraQuickSheet(
+                  context,
+                  matrix: widget.call.matrix,
+                  session: session,
+                ),
               ),
               _btn(
                 icon: session.screenShareOn
@@ -374,6 +394,15 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                 onTap: () { _toggleScreenShare(session); },
               ),
             ],
+            _btn(
+              icon: session.speakerMuted ? Icons.volume_off : Icons.volume_up,
+              selected: session.speakerMuted,
+              onTap: () { session.toggleSpeakerMute(); },
+              onLongPress: () => showOrexOutputQuickSheet(
+                context,
+                matrix: widget.call.matrix,
+              ),
+            ),
             _btn(
               icon: session.handRaised
                   ? Icons.back_hand
@@ -401,44 +430,19 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
     Key? key,
     required IconData icon,
     required VoidCallback onTap,
+    VoidCallback? onLongPress,
     Color? bg,
     bool selected = false,
   }) =>
-      MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: Material(
-          key: key,
-          color: Colors.transparent,
-          shape: const CircleBorder(),
-          clipBehavior: Clip.antiAlias,
-          child: InkResponse(
-            containedInkWell: true,
-            highlightShape: BoxShape.circle,
-            radius: 26,
-            customBorder: const CircleBorder(),
-            hoverColor: Colors.white.withValues(alpha: 0.12),
-            splashColor: Colors.white.withValues(alpha: 0.18),
-            highlightColor: Colors.white.withValues(alpha: 0.08),
-            onTap: onTap,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 140),
-              width: 42,
-              height: 42,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: bg ?? Colors.white24,
-                border: Border.all(
-                  color: selected
-                      ? Colors.white.withValues(alpha: 0.82)
-                      : Colors.white.withValues(alpha: 0.06),
-                  width: selected ? 2 : 1,
-                ),
-              ),
-              child: Icon(icon, color: Colors.white, size: 20),
-            ),
-          ),
-        ),
+      _MiniPressableButton(
+        key: key,
+        icon: icon,
+        selected: selected,
+        background: bg,
+        onTap: onTap,
+        onLongPress: onLongPress,
       );
+
 
   Widget _miniNote(String text) => Container(
         width: double.infinity,
@@ -455,6 +459,73 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
           style: const TextStyle(color: Colors.white, fontSize: 12),
         ),
       );
+}
+
+
+class _MiniPressableButton extends StatefulWidget {
+  const _MiniPressableButton({
+    super.key,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+    this.onLongPress,
+    this.background,
+  });
+
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+  final Color? background;
+
+  @override
+  State<_MiniPressableButton> createState() => _MiniPressableButtonState();
+}
+
+class _MiniPressableButtonState extends State<_MiniPressableButton> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkResponse(
+        containedInkWell: true,
+        highlightShape: BoxShape.circle,
+        radius: 26,
+        customBorder: const CircleBorder(),
+        mouseCursor: SystemMouseCursors.basic,
+        hoverColor: Colors.white.withValues(alpha: 0.12),
+        splashColor: Colors.white.withValues(alpha: 0.18),
+        highlightColor: Colors.white.withValues(alpha: 0.08),
+        onHighlightChanged: (value) => setState(() => _pressed = value),
+        onTap: widget.onTap,
+        onLongPress: widget.onLongPress,
+        child: AnimatedScale(
+          duration: const Duration(milliseconds: 90),
+          scale: _pressed ? 0.94 : 1,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 140),
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: widget.background ?? Colors.white24,
+              border: Border.all(
+                color: widget.selected
+                    ? Colors.white.withValues(alpha: 0.82)
+                    : Colors.white.withValues(alpha: 0.06),
+                width: widget.selected ? 2 : 1,
+              ),
+            ),
+            child: Icon(widget.icon, color: Colors.white, size: 20),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Панель «Идёт звонок» для звонка в комнате, в который мы НЕ вошли: аватары
@@ -530,6 +601,7 @@ class _MiniTile extends StatelessWidget {
     this.cornerTooltip,
     this.onCornerTap,
     this.onSwitchVideoSource,
+    this.onCycleCamera,
     this.onGrantVoice,
     this.onRevokeVoice,
   });
@@ -545,6 +617,7 @@ class _MiniTile extends StatelessWidget {
   final String? cornerTooltip;
   final VoidCallback? onCornerTap;
   final VoidCallback? onSwitchVideoSource;
+  final VoidCallback? onCycleCamera;
   final VoidCallback? onGrantVoice;
   final VoidCallback? onRevokeVoice;
 
@@ -620,6 +693,25 @@ class _MiniTile extends StatelessWidget {
                 ],
               ),
             ),
+          if (orexParticipantMicMuted(participant))
+            const Positioned(
+              right: 8,
+              bottom: 8,
+              child: _MiniTileStatusBadge(
+                icon: Icons.mic_off,
+                tooltip: 'Микрофон выключен',
+              ),
+            ),
+          if (track != null && onCycleCamera != null)
+            Positioned(
+              right: 8,
+              bottom: orexParticipantMicMuted(participant) ? 47 : 8,
+              child: _MiniTileCornerButton(
+                icon: Icons.cameraswitch,
+                tooltip: 'Переключить камеру',
+                onTap: onCycleCamera!,
+              ),
+            ),
           Positioned(
             right: 8,
             top: 8,
@@ -645,6 +737,32 @@ class _MiniTile extends StatelessWidget {
       minScale: 1,
       maxScale: 4,
       child: child,
+    );
+  }
+}
+
+
+class _MiniTileStatusBadge extends StatelessWidget {
+  const _MiniTileStatusBadge({required this.icon, required this.tooltip});
+
+  final IconData icon;
+  final String tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Container(
+        width: 34,
+        height: 34,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.52),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+        ),
+        child: Icon(icon, size: 17, color: Colors.white),
+      ),
     );
   }
 }

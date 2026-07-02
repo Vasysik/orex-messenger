@@ -99,6 +99,7 @@ class MatrixService extends ChangeNotifier {
 
   final Map<String, int> _notificationCounts = {};
   bool _notificationSnapshotReady = false;
+  String? _foregroundRoomId;
 
   /// Когда в последний раз ключи выгружались в бэкап (для показа в настройках).
   DateTime? lastBackup;
@@ -179,13 +180,20 @@ class MatrixService extends ChangeNotifier {
     for (final room in client.rooms) {
       final count = room.notificationCount;
       final previous = _notificationCounts[room.id] ?? 0;
-      if (_notificationSnapshotReady && count > previous) {
+      if (_notificationSnapshotReady &&
+          count > previous &&
+          room.id != _foregroundRoomId) {
         increased = true;
       }
       _notificationCounts[room.id] = count;
     }
     _notificationSnapshotReady = true;
     if (increased) audio.playNotification();
+  }
+
+  void setForegroundRoomId(String? roomId) {
+    final value = roomId?.trim();
+    _foregroundRoomId = value == null || value.isEmpty ? null : value;
   }
 
   /// Принудительно перерисовать слушателей (например, после завершения

@@ -90,6 +90,8 @@ class CallController extends ChangeNotifier {
       canUseMicNow: () => _canUseMicNowFor(roomId),
       audioInputDeviceIdProvider: () => matrix.audio.inputDeviceId,
       audioOutputDeviceIdProvider: () => matrix.audio.outputDeviceId,
+      videoInputDeviceIdProvider: () => matrix.audio.cameraDeviceId,
+      cameraDeviceIdSink: (deviceId) => matrix.audio.setCameraDeviceId(deviceId),
       speakingThresholdDbProvider: () => matrix.audio.speakingThresholdDb,
       speakingThresholdEnabledProvider: () =>
           matrix.audio.speakingThresholdEnabled,

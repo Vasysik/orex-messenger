@@ -33,6 +33,8 @@ class CallSession extends ChangeNotifier {
     this.canUseMicNow,
     this.audioInputDeviceIdProvider,
     this.audioOutputDeviceIdProvider,
+    this.videoInputDeviceIdProvider,
+    this.cameraDeviceIdSink,
     this.speakingThresholdDbProvider,
     this.speakingThresholdEnabledProvider,
     this.callMicPreferenceSink,
@@ -46,6 +48,8 @@ class CallSession extends ChangeNotifier {
   final bool Function()? canUseMicNow;
   final String? Function()? audioInputDeviceIdProvider;
   final String? Function()? audioOutputDeviceIdProvider;
+  final String? Function()? videoInputDeviceIdProvider;
+  final FutureOr<void> Function(String? deviceId)? cameraDeviceIdSink;
   final double Function()? speakingThresholdDbProvider;
   final bool Function()? speakingThresholdEnabledProvider;
   final FutureOr<void> Function(bool enabled)? callMicPreferenceSink;
@@ -64,10 +68,12 @@ class CallSession extends ChangeNotifier {
   Timer? _reactionClearTimer;
   Timer? _voiceStateRefreshTimer;
   String? _lastAppliedInputDeviceId;
+  String? _lastAppliedCameraDeviceId;
   rec.AudioRecorder? _voiceGateRecorder;
   StreamSubscription<Uint8List>? _voiceGatePcmSub;
   bool _voiceGateStarting = false;
   bool _voiceGateAppliedMuted = false;
+  bool speakerMuted = false;
   bool _voiceGateTrackAccessFailed = false;
   DateTime _lastVoiceAboveThreshold = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -120,7 +126,10 @@ class CallSession extends ChangeNotifier {
         // Камера может быть недоступна (занята другим окном/приложением —
         // NotReadableError). Не валим весь звонок: продолжаем со звуком.
         try {
-          await room.localParticipant?.setCameraEnabled(true);
+          await room.localParticipant?.setCameraEnabled(
+          true,
+          cameraCaptureOptions: _cameraCaptureOptions(),
+        );
         } catch (e) {
           cameraError = '$e';
         }
@@ -149,6 +158,7 @@ class CallSession extends ChangeNotifier {
     // получаем «CallSession used after being disposed».
     if (_disposed) return;
     if (_room?.remoteParticipants.isNotEmpty ?? false) sawRemote = true;
+    _applySpeakerMute();
     notifyListeners();
   }
 
@@ -249,6 +259,7 @@ class CallSession extends ChangeNotifier {
   Future<void> syncAudioSettingsFromSettings() async {
     await applyAudioOutput();
     await _restartMicIfInputChanged();
+    await _restartCameraIfInputChanged();
     await _syncVoiceGate();
   }
 
@@ -558,6 +569,39 @@ class CallSession extends ChangeNotifier {
     _voiceGateAppliedMuted = false;
   }
 
+
+  Future<void> toggleSpeakerMute() async {
+    speakerMuted = !speakerMuted;
+    _applySpeakerMute();
+    if (!_disposed) notifyListeners();
+  }
+
+  void _applySpeakerMute() {
+    final room = _room;
+    if (room == null) return;
+    final enabled = !speakerMuted;
+    for (final participant in room.remoteParticipants.values) {
+      _setParticipantAudioEnabled(participant, enabled);
+    }
+  }
+
+  void _setParticipantAudioEnabled(lk.Participant participant, bool enabled) {
+    try {
+      final dynamic dynamicParticipant = participant;
+      for (final dynamic pub in _dynamicValues(dynamicParticipant.audioTrackPublications)) {
+        _setMediaTrackEnabled(pub, enabled);
+      }
+    } catch (_) {}
+    try {
+      final dynamic dynamicParticipant = participant;
+      for (final dynamic pub in _dynamicValues(dynamicParticipant.trackPublications)) {
+        if (_readDynamic(pub, 'source') == lk.TrackSource.microphone) {
+          _setMediaTrackEnabled(pub, enabled);
+        }
+      }
+    } catch (_) {}
+  }
+
   Future<void> toggleScreenShare({
     String? sourceId,
     String? sourceName,
@@ -860,12 +904,58 @@ class CallSession extends ChangeNotifier {
       return;
     }
     try {
-      await lp.setCameraEnabled(!lp.isCameraEnabled());
+      final next = !lp.isCameraEnabled();
+      await lp.setCameraEnabled(
+        next,
+        cameraCaptureOptions: next ? _cameraCaptureOptions() : null,
+      );
       cameraError = null;
     } catch (e) {
       cameraError = '$e';
     }
     if (!_disposed) notifyListeners();
+  }
+
+  lk.CameraCaptureOptions _cameraCaptureOptions() {
+    final normalized = _normalizedCameraDeviceId();
+    _lastAppliedCameraDeviceId = normalized;
+    return lk.CameraCaptureOptions(deviceId: normalized);
+  }
+
+  String? _normalizedCameraDeviceId() {
+    final normalized = videoInputDeviceIdProvider?.call()?.trim();
+    return normalized == null || normalized.isEmpty || normalized == 'default'
+        ? null
+        : normalized;
+  }
+
+  Future<void> _restartCameraIfInputChanged() async {
+    final lp = _room?.localParticipant;
+    if (lp == null || !lp.isCameraEnabled() || !canPublishMedia) return;
+
+    final nextCameraId = _normalizedCameraDeviceId();
+    if (nextCameraId == _lastAppliedCameraDeviceId) return;
+
+    await lp.setCameraEnabled(false);
+    await lp.setCameraEnabled(
+      true,
+      cameraCaptureOptions: _cameraCaptureOptions(),
+    );
+  }
+
+  Future<void> selectCameraDevice(String? deviceId) async {
+    final sink = cameraDeviceIdSink;
+    if (sink != null) await sink(deviceId);
+    await _restartCameraIfInputChanged();
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> cycleCameraDevice(List<String> deviceIds) async {
+    if (deviceIds.isEmpty) return;
+    final current = _normalizedCameraDeviceId();
+    final currentIndex = current == null ? -1 : deviceIds.indexOf(current);
+    final next = deviceIds[(currentIndex + 1) % deviceIds.length];
+    await selectCameraDevice(next);
   }
 
   Future<void> hangUp() async {

@@ -53,6 +53,7 @@ class _HomeShellState extends State<HomeShell> {
       ..addListener(_onFolderPrefsChanged);
     _folders.load();
     widget.matrix.addListener(_onMatrixChanged);
+    widget.matrix.setForegroundRoomId(_selectedRoomId);
   }
 
   void _onFolderPrefsChanged() {
@@ -70,6 +71,7 @@ class _HomeShellState extends State<HomeShell> {
     if (roomId == null || !mounted) return;
     final room = widget.matrix.client.getRoomById(roomId);
     if (room == null || room.membership == Membership.leave) {
+      widget.matrix.setForegroundRoomId(null);
       setState(() => _selectedRoomId = null);
     }
   }
@@ -79,6 +81,7 @@ class _HomeShellState extends State<HomeShell> {
     _folders
       ..removeListener(_onFolderPrefsChanged)
       ..dispose();
+    widget.matrix.setForegroundRoomId(null);
     widget.matrix.removeListener(_onMatrixChanged);
     super.dispose();
   }
@@ -159,6 +162,7 @@ class _HomeShellState extends State<HomeShell> {
           ),
       };
       if (mounted) {
+        widget.matrix.setForegroundRoomId(roomId);
         setState(() {
           _previewRoom = null;
           _selectedRoomId = roomId;
@@ -256,6 +260,7 @@ class _HomeShellState extends State<HomeShell> {
 
   void _openPublicRoomPreview(OrexRoomPreview preview) {
     OrexLog.d('Home', 'open public preview room=${preview.roomId} name=${preview.name}');
+    widget.matrix.setForegroundRoomId(null);
     setState(() {
       _selectedRoomId = null;
       _previewRoom = preview;
@@ -264,6 +269,7 @@ class _HomeShellState extends State<HomeShell> {
 
   void _selectRoom(String roomId, {String source = 'unknown'}) {
     OrexLog.d('Home', 'select room source=$source room=$roomId');
+    widget.matrix.setForegroundRoomId(roomId);
     setState(() {
       _previewRoom = null;
       _selectedRoomId = roomId;
@@ -388,8 +394,10 @@ class _HomeShellState extends State<HomeShell> {
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
         if (_previewRoom != null) {
+          widget.matrix.setForegroundRoomId(_selectedRoomId);
           setState(() => _previewRoom = null);
         } else if (_selectedRoomId != null) {
+          widget.matrix.setForegroundRoomId(null);
           setState(() => _selectedRoomId = null);
         }
       },
@@ -465,6 +473,7 @@ class _HomeShellState extends State<HomeShell> {
   void _onVisibleSupergroupChildChanged(String spaceId, String childId) {
     if (!mounted || _visibleSupergroupChildBySpace[spaceId] == childId) return;
     OrexLog.d('Home', 'visible supergroup child space=$spaceId child=$childId');
+    widget.matrix.setForegroundRoomId(childId);
     setState(() => _visibleSupergroupChildBySpace[spaceId] = childId);
   }
 
@@ -478,6 +487,7 @@ class _HomeShellState extends State<HomeShell> {
         onBack: onBack,
         onJoined: (roomId) {
           if (!mounted) return;
+          widget.matrix.setForegroundRoomId(roomId);
           setState(() {
             _previewRoom = null;
             _selectedRoomId = roomId;
@@ -556,10 +566,13 @@ class _HomeShellState extends State<HomeShell> {
             child: GlassPanel(
               borderRadius: 24,
               child: _conversationPane(
-                onBack: () => setState(() {
-                  _previewRoom = null;
-                  _selectedRoomId = null;
-                }),
+                onBack: () {
+                  widget.matrix.setForegroundRoomId(null);
+                  setState(() {
+                    _previewRoom = null;
+                    _selectedRoomId = null;
+                  });
+                },
               ),
             ),
           ),

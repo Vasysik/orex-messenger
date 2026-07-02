@@ -22,8 +22,10 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
   bool _loading = true;
   String? _error;
   List<OrexAudioDevice> _devices = const [];
+  List<OrexAudioDevice> _cameras = const [];
   String? _inputId;
   String? _outputId;
+  String? _cameraId;
   double _thresholdDb = AudioCueService.defaultSpeakingThresholdDb;
   bool _thresholdEnabled = AudioCueService.defaultSpeakingThresholdEnabled;
 
@@ -37,6 +39,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
   void _readPrefs() {
     _inputId = widget.matrix.audio.inputDeviceId;
     _outputId = widget.matrix.audio.outputDeviceId;
+    _cameraId = widget.matrix.audio.cameraDeviceId;
     _thresholdDb = widget.matrix.audio.speakingThresholdDb;
     _thresholdEnabled = widget.matrix.audio.speakingThresholdEnabled;
   }
@@ -53,8 +56,14 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
         requestPermission: requestPermission,
         includeCallRoutes: false,
       );
+      final cameras = await enumerateOrexCameraDevices(
+        requestPermission: requestPermission,
+      );
       if (!mounted) return;
-      setState(() => _devices = devices);
+      setState(() {
+        _devices = devices;
+        _cameras = cameras;
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = '$e');
@@ -111,6 +120,12 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
     setState(() => _outputId = widget.matrix.audio.outputDeviceId);
   }
 
+  Future<void> _selectCamera(String? id) async {
+    await widget.matrix.audio.setCameraDeviceId(id);
+    if (!mounted) return;
+    setState(() => _cameraId = widget.matrix.audio.cameraDeviceId);
+  }
+
   List<OrexAudioDevice> _byKind(String kind) {
     final devices = _devices.where((d) => d.kind == kind);
     if (orexIsAndroidNativePlatform && kind == 'audiooutput') {
@@ -119,24 +134,11 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
     return devices.toList();
   }
 
-  IconData _inputIcon(OrexAudioDevice device) {
-    return switch (device.category) {
-      'bluetooth' => Icons.headset_mic,
-      'headphones' => Icons.headset_mic,
-      'usb' => Icons.usb,
-      _ => Icons.mic,
-    };
-  }
+  IconData _inputIcon(OrexAudioDevice device) => orexInputDeviceIcon(device);
 
-  IconData _outputIcon(OrexAudioDevice device) {
-    return switch (device.category) {
-      'bluetooth' => Icons.headset_mic,
-      'headphones' => Icons.headphones,
-      'usb' => Icons.usb,
-      'earpiece' => Icons.phone_in_talk,
-      _ => Icons.speaker,
-    };
-  }
+  IconData _outputIcon(OrexAudioDevice device) => orexOutputDeviceIcon(device);
+
+  IconData _cameraIcon(OrexAudioDevice device) => orexCameraDeviceIcon(device);
 
   @override
   Widget build(BuildContext context) {
@@ -249,6 +251,31 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
             ),
             const SizedBox(height: 16),
             OrexSettingsSection(
+              title: 'Камера',
+              children: [
+                _DeviceRadioTile(
+                  icon: Icons.videocam,
+                  title: 'Системная камера',
+                  subtitle: 'Использовать камеру по умолчанию',
+                  selected: _cameraId == null,
+                  onTap: () => _selectCamera(null),
+                ),
+                for (final camera in _cameras)
+                  _DeviceRadioTile(
+                    icon: _cameraIcon(camera),
+                    title: camera.label,
+                    subtitle: null,
+                    selected: _cameraId == camera.id,
+                    onTap: () => _selectCamera(camera.id),
+                  ),
+                if (!_loading && _cameras.isEmpty)
+                  const _EmptyDeviceHint(
+                    text: 'Камеры не найдены. Нажмите «Обновить список устройств» и проверьте системные разрешения камеры.',
+                  ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            OrexSettingsSection(
               title: 'Порог говорения',
               children: [
                 OrexMicLevelTester(
@@ -279,7 +306,7 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                 OrexSettingsTile(
                   icon: Icons.restart_alt,
                   title: 'Сбросить настройки звука',
-                  subtitle: 'Вернуть системный микрофон, системный вывод и стандартный порог',
+                  subtitle: 'Вернуть системный микрофон, системный вывод, системную камеру и стандартный порог',
                   onTap: _resetSoundSettings,
                   danger: true,
                 ),

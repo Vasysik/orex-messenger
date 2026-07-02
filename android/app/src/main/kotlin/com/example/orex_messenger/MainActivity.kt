@@ -4,12 +4,18 @@ import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
+import android.os.Bundle
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        installScoBroadcastCrashGuard()
+        super.onCreate(savedInstanceState)
+    }
+
     private val channelName = "orex/audio_devices"
     private val androidOutputPrefix = "orex://android/audio-output/"
 
@@ -30,6 +36,25 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    private fun installScoBroadcastCrashGuard() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            if (isKnownScoReceiverReplyCrash(throwable)) {
+                Log.w("OrexAudioDevices", "Ignored Android SCO receiver double-reply crash", throwable)
+                return@setDefaultUncaughtExceptionHandler
+            }
+            previous?.uncaughtException(thread, throwable)
+        }
+    }
+
+    private fun isKnownScoReceiverReplyCrash(throwable: Throwable): Boolean {
+        if (throwable.message?.contains("Reply already submitted") != true) return false
+        val text = throwable.stackTraceToString()
+        return text.contains("ACTION_SCO_AUDIO_STATE_UPDATED") ||
+            text.contains("onReceive") ||
+            text.contains("ReceiverDispatcher")
     }
 
     private fun audioManager(): AudioManager =
@@ -135,7 +160,7 @@ class MainActivity : FlutterActivity() {
     @Suppress("DEPRECATION")
     private fun forceSpeakerphone(manager: AudioManager): Boolean {
         return try {
-            manager.mode = AudioManager.MODE_IN_COMMUNICATION
+            manager.mode = AudioManager.MODE_NORMAL
             manager.isSpeakerphoneOn = true
             volumeControlStream = AudioManager.STREAM_MUSIC
             true
@@ -148,21 +173,19 @@ class MainActivity : FlutterActivity() {
     @Suppress("DEPRECATION")
     private fun applyCommunicationRoute(manager: AudioManager, target: RouteCandidate): Boolean {
         return try {
-            manager.mode = AudioManager.MODE_IN_COMMUNICATION
             val isSpeaker = target.device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-            manager.isSpeakerphoneOn = isSpeaker
+            if (isSpeaker) {
+                return forceSpeakerphone(manager)
+            }
+            manager.mode = AudioManager.MODE_IN_COMMUNICATION
+            manager.isSpeakerphoneOn = false
             val applied = if (target.communication || target.device.isBuiltInOutput()) {
                 manager.setCommunicationDevice(target.device)
             } else {
                 false
             }
-            if (isSpeaker) manager.isSpeakerphoneOn = true
-            volumeControlStream = if (isSpeaker) {
-                AudioManager.STREAM_MUSIC
-            } else {
-                AudioManager.STREAM_VOICE_CALL
-            }
-            applied || (isSpeaker && forceSpeakerphone(manager))
+            volumeControlStream = AudioManager.STREAM_VOICE_CALL
+            applied
         } catch (e: Throwable) {
             Log.w("OrexAudioDevices", "set route failed ${target.routeId()}", e)
             false
