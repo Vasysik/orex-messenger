@@ -6,7 +6,7 @@ class OrexAppVersion {
     required this.buildNumber,
   });
 
-  static const fallback = OrexAppVersion(version: '0.3.3', buildNumber: '3');
+  static const fallback = OrexAppVersion(version: '0.0.0', buildNumber: '0');
 
   final String version;
   final String buildNumber;
