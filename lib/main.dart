@@ -227,6 +227,7 @@ class _OrexAppState extends State<OrexApp> {
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
   StreamSubscription? _verificationSub;
   StreamSubscription? _incomingCallSub;
+  final Set<String> _incomingCallDialogs = <String>{};
 
   @override
   void initState() {
@@ -245,22 +246,17 @@ class _OrexAppState extends State<OrexApp> {
       if (ctx == null || !ctx.mounted) return;
       final call = widget.matrix.call;
       if (call.isActive && call.roomId == room.id) return;
-      final isWide = MediaQuery.sizeOf(ctx).width >= 900;
-      if (isWide) {
-        showDialog<void>(
-          context: ctx,
-          barrierDismissible: false,
-          builder: (_) => IncomingCallScreen(
-              matrix: widget.matrix, room: room, asDialog: true),
-        );
-      } else {
-        _navKey.currentState?.push(
-          MaterialPageRoute(
-            builder: (_) =>
-                IncomingCallScreen(matrix: widget.matrix, room: room),
-          ),
-        );
-      }
+      if (!_incomingCallDialogs.add(room.id)) return;
+      showDialog<void>(
+        context: ctx,
+        barrierDismissible: false,
+        useRootNavigator: true,
+        builder: (_) => IncomingCallScreen(
+          matrix: widget.matrix,
+          room: room,
+          asDialog: true,
+        ),
+      ).whenComplete(() => _incomingCallDialogs.remove(room.id));
     });
   }
 

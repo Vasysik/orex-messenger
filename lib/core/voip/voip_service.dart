@@ -124,12 +124,16 @@ class VoipService extends ChangeNotifier {
   final StreamController<String> _dismiss =
       StreamController<String>.broadcast();
 
-  static const Duration _suppressClearDelay = Duration(seconds: 8);
+  // MatrixRTC membership can briefly disappear/reappear during sync while the
+  // SDK rewrites `com.famedly.call.member`. Do not close an incoming dialog or
+  // clear local suppress state on the first "no call" frame; wait for a stable
+  // no-call state instead.
+  static const Duration _endedDebounceDelay = Duration(milliseconds: 1800);
 
   final Set<String> _shown = <String>{}; // по этим комнатам сейчас показан входящий
   final Set<String> _suppress =
       <String>{}; // не звонить: вышли / было при старте / обработано
-  final Map<String, Timer> _suppressClearTimers = <String, Timer>{};
+  final Map<String, Timer> _endedDebounceTimers = <String, Timer>{};
 
   /// Входящие звонки: roomId комнаты, где идёт звонок, в который мы не вошли.
   Stream<Room> get onIncomingCall => _incoming.stream;
@@ -143,8 +147,14 @@ class VoipService extends ChangeNotifier {
 
   bool get inCall => active != null;
 
-  bool _roomHasCall(Room room) =>
-      room.hasActiveGroupCall(voip, ignoreDirectChats: false);
+  bool _roomHasCall(Room room) {
+    if (room.hasActiveGroupCall(voip, ignoreDirectChats: false)) return true;
+    // На некоторых sync-пакетах SDK уже видит свежий call membership, но
+    // `hasActiveGroupCall()` ещё возвращает false. Для входящих нам важнее
+    // фактические неистёкшие участники звонка, иначе окно может закрыться сразу
+    // после старта рингтона.
+    return _callMembers(room).isNotEmpty;
+  }
 
   Iterable<String> _callMembers(Room room) => room
       .getCallMembershipsFromRoom(voip)
@@ -157,10 +167,10 @@ class VoipService extends ChangeNotifier {
   void _scan({bool markExistingAsSeen = false}) {
     for (final room in client.rooms) {
       if (!_roomHasCall(room)) {
-        _dismissRoomCall(room.id);
+        _scheduleRoomCallEnded(room.id);
         continue;
       }
-      _cancelSuppressClear(room.id);
+      _cancelRoomCallEnded(room.id);
       _considerIncomingRoom(room, markExistingAsSeen: markExistingAsSeen);
     }
   }
@@ -201,7 +211,7 @@ class VoipService extends ChangeNotifier {
     final myId = client.userID;
     if (active != null && active!.room.id == room.id) return; // я в звонке
     if (_shown.contains(room.id) || _suppress.contains(room.id)) return;
-    final others = _callMembers(room).where((id) => id != myId);
+    final others = _callMembers(room).where((id) => id != myId).toSet();
     if (others.isEmpty) return; // только моё членство — не входящий
     if (!_shouldRingForRoom(room)) {
       // В группах, каналах и чатах супергруппы звонок — это голосовой канал:
@@ -214,47 +224,49 @@ class VoipService extends ChangeNotifier {
       _suppress.add(room.id); // активен на старте → не звоним (покажет панель «войти»)
       return;
     }
+    OrexLog.d('Voip', 'incoming direct call room=${room.id} from=${others.join(',')}');
     _shown.add(room.id);
     _incoming.add(room);
   }
 
-  void _cancelSuppressClear(String roomId) {
-    _suppressClearTimers.remove(roomId)?.cancel();
+  void _cancelRoomCallEnded(String roomId) {
+    _endedDebounceTimers.remove(roomId)?.cancel();
   }
 
-  void _scheduleSuppressClear(String roomId) {
-    _cancelSuppressClear(roomId);
-    _suppressClearTimers[roomId] = Timer(_suppressClearDelay, () {
-      _suppressClearTimers.remove(roomId);
-      _suppress.remove(roomId);
+  void _scheduleRoomCallEnded(String roomId) {
+    if (!_shown.contains(roomId) && !_suppress.contains(roomId)) return;
+    if (_endedDebounceTimers.containsKey(roomId)) return;
+    _endedDebounceTimers[roomId] = Timer(_endedDebounceDelay, () {
+      _endedDebounceTimers.remove(roomId);
+      final room = client.getRoomById(roomId);
+      if (room != null && _roomHasCall(room)) return;
+      _finishRoomCallEnded(roomId);
     });
   }
 
-  void _dismissRoomCall(String roomId) {
+  void _finishRoomCallEnded(String roomId) {
     final wasShown = _shown.remove(roomId);
     if (wasShown) _dismiss.add(roomId);
-    if (_suppress.contains(roomId)) {
-      // После нашего выхода SDK может на один sync увидеть «звонка нет», а
-      // следующим sync снова увидеть членство собеседника. Не снимаем suppress
-      // мгновенно, иначе приложение начинает звонить тем же самым звонком.
-      _scheduleSuppressClear(roomId);
-    }
+    // Снимать suppress можно только когда звонок реально закончился. Если мы
+    // вышли, а собеседник остался внутри, это всё ещё тот же звонок — не нужно
+    // превращать его обратно во входящий вызов.
+    _suppress.remove(roomId);
   }
 
   void _handleIncomingGroupCall(GroupCallSession groupCall) {
     final room = groupCall.room;
     if (!_roomHasCall(room)) return;
-    _cancelSuppressClear(room.id);
+    _cancelRoomCallEnded(room.id);
     _considerIncomingRoom(room, markExistingAsSeen: false);
   }
 
   void _handleGroupCallEnded(GroupCallSession groupCall) {
-    _dismissRoomCall(groupCall.room.id);
+    _scheduleRoomCallEnded(groupCall.room.id);
   }
 
   /// Я вышел из звонка — не «перезванивать» по тому же продолжающемуся звонку.
   void markLeft(String roomId) {
-    _cancelSuppressClear(roomId);
+    _cancelRoomCallEnded(roomId);
     _suppress.add(roomId);
     if (_shown.remove(roomId)) _dismiss.add(roomId);
   }
@@ -349,10 +361,10 @@ class VoipService extends ChangeNotifier {
   void dispose() {
     _syncSub?.cancel();
     _toDeviceSub?.cancel();
-    for (final timer in _suppressClearTimers.values) {
+    for (final timer in _endedDebounceTimers.values) {
       timer.cancel();
     }
-    _suppressClearTimers.clear();
+    _endedDebounceTimers.clear();
     _incoming.close();
     _dismiss.close();
     super.dispose();

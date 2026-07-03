@@ -153,10 +153,7 @@ extension MatrixRoomsApi on MatrixService {
 
   /// В комнате идёт звонок (учитываем и личные чаты).
   bool roomHasActiveCall(Room room) {
-    final v = voip?.voip;
-    if (v == null) return false;
-    if (!room.hasActiveGroupCall(v, ignoreDirectChats: false)) return false;
-
+    if (voip?.voip == null) return false;
     final myId = client.userID;
     return callMemberIds(room).any((id) => id != myId);
   }

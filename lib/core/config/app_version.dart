@@ -6,7 +6,7 @@ class OrexAppVersion {
     required this.buildNumber,
   });
 
-  static const fallback = OrexAppVersion(version: '0.0.0', buildNumber: '0');
+  static const fallback = OrexAppVersion(version: '0.3.3', buildNumber: '3');
 
   final String version;
   final String buildNumber;
@@ -17,17 +17,19 @@ class OrexAppVersion {
   String get settingsSubtitle => 'Версия $version · Сборка $buildNumber';
 
   /// Android split-per-ABI APKs can expose a platform `versionCode` like
-  /// `2002` for logical build `2` (Flutter encodes ABI in the lower digits).
-  /// For user-facing labels we show the logical app build, not the Android
-  /// installer code. The real platform versionCode stays unchanged.
+  /// `2003` for logical build `3` (Flutter encodes ABI in the thousands and
+  /// keeps the app build in the lower three digits). For user-facing labels we
+  /// show the logical app build, not the Android installer code. The real
+  /// platform versionCode stays unchanged.
   static String displayBuildNumberFromPlatform(String raw) {
     final value = raw.trim();
     final code = int.tryParse(value);
     if (code == null) return value;
 
-    final abiSuffix = code % 1000;
-    if (code >= 1000 && abiSuffix >= 1 && abiSuffix <= 3) {
-      return (code ~/ 1000).toString();
+    final logicalBuild = code % 1000;
+    final abiPrefix = code ~/ 1000;
+    if (abiPrefix >= 1 && abiPrefix <= 9 && logicalBuild > 0) {
+      return logicalBuild.toString();
     }
     return value;
   }
@@ -35,7 +37,9 @@ class OrexAppVersion {
   static Future<OrexAppVersion> load() async {
     try {
       final info = await PackageInfo.fromPlatform();
-      final version = info.version.trim().isEmpty ? fallback.version : info.version.trim();
+      final platformVersion = info.version.trim();
+      final version =
+          platformVersion.isEmpty ? fallback.version : platformVersion;
       final rawBuild = info.buildNumber.trim();
       final build = rawBuild.isEmpty
           ? fallback.buildNumber

@@ -41,21 +41,12 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
       if (callId == _callId && mounted) Navigator.of(context).maybePop();
     });
     widget.matrix.audio.startIncomingRingtone();
-    widget.matrix.addListener(_onMatrix);
-  }
-
-  void _onMatrix() {
-    // Звонок завершился (инициатор повесил трубку) — закрываем входящий.
-    if (mounted && !widget.matrix.roomHasActiveCall(room)) {
-      Navigator.of(context).maybePop();
-    }
   }
 
   @override
   void dispose() {
     widget.matrix.audio.stopIncomingRingtone();
     _dismissSub?.cancel();
-    widget.matrix.removeListener(_onMatrix);
     super.dispose();
   }
 
@@ -68,20 +59,35 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     if (mounted) Navigator.of(context).maybePop();
   }
 
-  void _accept({required bool video}) {
-    widget.matrix.audio.stopIncomingRingtone();
-    widget.matrix.voip?.markCallHandled(room.id, _callId);
-    widget.matrix.call.start(room.id, video: video);
+  Future<void> _accept({required bool video}) async {
     final isWide = MediaQuery.sizeOf(context).width >= 900;
-    if (widget.asDialog || isWide) {
+    final navigator = Navigator.of(context, rootNavigator: true);
+    widget.matrix.audio.stopIncomingRingtone();
+    await widget.matrix.voip?.markCallHandled(room.id, _callId);
+    await widget.matrix.call.start(room.id, video: video);
+    if (!mounted) return;
+    if (!widget.matrix.call.isActive) {
+      navigator.maybePop();
+      return;
+    }
+    if (isWide) {
       widget.matrix.call.minimize(); // десктоп — звонок панелью над чатом
-      Navigator.of(context).maybePop();
+      if (mounted) navigator.maybePop();
     } else {
-      // Мобильный — разворачиваем на весь экран (а не свёрнуто).
+      // Мобильный — входящий был модальным overlay, а сам звонок открываем уже
+      // после ответа. Так звонок не выбивает пользователя из текущего чата до
+      // принятия вызова.
       widget.matrix.call.expand();
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
-      );
+      if (widget.asDialog) {
+        if (mounted) await navigator.maybePop();
+        navigator.push(
+          MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
+        );
+      } else if (mounted) {
+        navigator.pushReplacement(
+          MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
+        );
+      }
     }
   }
 
