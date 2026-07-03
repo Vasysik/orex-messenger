@@ -138,6 +138,14 @@ class VoipService extends ChangeNotifier {
   /// Входящие звонки: roomId комнаты, где идёт звонок, в который мы не вошли.
   Stream<Room> get onIncomingCall => _incoming.stream;
 
+  /// Уже обнаруженные входящие, которые могли попасть в broadcast stream до
+  /// готовности Navigator/UI. Main replays этот список после первого кадра,
+  /// иначе звонок можно было потерять до открытия любого чата.
+  List<Room> visibleIncomingRooms() => _shown
+      .map(client.getRoomById)
+      .whereType<Room>()
+      .toList(growable: false);
+
   /// Комнаты, по которым надо ЗАКРЫТЬ открытый входящий (звонок кончился или
   /// обработан на другом устройстве).
   Stream<String> get onDismissIncoming => _dismiss.stream;
@@ -156,12 +164,87 @@ class VoipService extends ChangeNotifier {
     return _callMembers(room).isNotEmpty;
   }
 
-  Iterable<String> _callMembers(Room room) => room
-      .getCallMembershipsFromRoom(voip)
-      .values
-      .expand((e) => e)
-      .where((m) => !m.isExpired)
-      .map((m) => m.userId);
+  Iterable<String> _callMembers(Room room) sync* {
+    final seen = <String>{};
+    for (final id in room
+        .getCallMembershipsFromRoom(voip)
+        .values
+        .expand((e) => e)
+        .where((m) => !m.isExpired)
+        .map((m) => m.userId)) {
+      if (seen.add(id)) yield id;
+    }
+
+    // Fallback for cold-start / not-yet-opened rooms: on Android the room tile
+    // can already receive an EventTypes.GroupCallMember timeline/state update
+    // (preview becomes "Звонок"), while matrix SDK call-membership helpers still
+    // return an empty list until a timeline is opened. Treat a fresh remote
+    // GroupCallMember lastEvent as an incoming direct-call signal so the phone
+    // rings without forcing the user to open the chat first.
+    final fallbackCaller = _fallbackCallerFromLastEvent(room);
+    if (fallbackCaller != null && seen.add(fallbackCaller)) {
+      yield fallbackCaller;
+    }
+  }
+
+  String? _fallbackCallerFromLastEvent(Room room) {
+    final event = room.lastEvent;
+    if (event == null || event.type != EventTypes.GroupCallMember) return null;
+    if (event.redacted || event.senderId == client.userID) return null;
+    if (!_groupCallMemberEventLooksActive(event)) return null;
+    return event.senderId;
+  }
+
+  static const Duration _timelineCallFallbackTtl = Duration(seconds: 90);
+
+  bool _groupCallMemberEventLooksActive(Event event) {
+    final now = DateTime.now();
+    if (now.difference(event.originServerTs) > _timelineCallFallbackTtl) {
+      return false;
+    }
+
+    final memberships = event.content['memberships'];
+    if (memberships is! List) return true;
+    if (memberships.isEmpty) return false;
+
+    var sawMembership = false;
+    for (final raw in memberships) {
+      if (raw is! Map) continue;
+      sawMembership = true;
+      if (_membershipContentLooksActive(raw, event.originServerTs, now)) {
+        return true;
+      }
+    }
+    return !sawMembership;
+  }
+
+  bool _membershipContentLooksActive(
+    Map raw,
+    DateTime eventTs,
+    DateTime now,
+  ) {
+    final expiresTs = _readInt(raw['expires_ts'] ?? raw['expiresTs']);
+    if (expiresTs != null) {
+      final absolute = DateTime.fromMillisecondsSinceEpoch(expiresTs);
+      return absolute.isAfter(now);
+    }
+
+    final expires = _readInt(raw['expires']);
+    if (expires == null) return true;
+    if (expires <= 0) return false;
+
+    final duration = expires < 24 * 60 * 60
+        ? Duration(seconds: expires)
+        : Duration(milliseconds: expires);
+    return eventTs.add(duration).isAfter(now);
+  }
+
+  int? _readInt(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value);
+    return null;
+  }
 
   /// Сканируем все комнаты на активные звонки.
   void _scan({bool markExistingAsSeen = false}) {

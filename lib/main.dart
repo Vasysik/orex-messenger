@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
+import 'package:matrix/matrix.dart' show Room;
 
 import 'core/config/orex_config.dart';
 import 'core/config/app_version.dart';
@@ -241,12 +242,49 @@ class _OrexAppState extends State<OrexApp> {
                 VerificationScreen(request: kv, matrix: widget.matrix)),
       );
     });
-    _incomingCallSub = widget.matrix.voip?.onIncomingCall.listen((room) {
-      final ctx = _navKey.currentContext;
-      if (ctx == null || !ctx.mounted) return;
+    _incomingCallSub =
+        widget.matrix.voip?.onIncomingCall.listen(_showIncomingCall);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      for (final room in
+          widget.matrix.voip?.visibleIncomingRooms() ?? const <Room>[]) {
+        _showIncomingCall(room);
+      }
+    });
+  }
+
+  void _showIncomingCall(Room room) {
+    if (!mounted) return;
+    final call = widget.matrix.call;
+    if (call.isActive && call.roomId == room.id) return;
+    if (!_incomingCallDialogs.add(room.id)) return;
+
+    void retryLater() {
+      Future<void>.delayed(const Duration(milliseconds: 200), () {
+        if (!mounted) {
+          _incomingCallDialogs.remove(room.id);
+          return;
+        }
+        _incomingCallDialogs.remove(room.id);
+        _showIncomingCall(room);
+      });
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        _incomingCallDialogs.remove(room.id);
+        return;
+      }
       final call = widget.matrix.call;
-      if (call.isActive && call.roomId == room.id) return;
-      if (!_incomingCallDialogs.add(room.id)) return;
+      if (call.isActive && call.roomId == room.id) {
+        _incomingCallDialogs.remove(room.id);
+        return;
+      }
+      final nav = _navKey.currentState;
+      final ctx = nav?.overlay?.context ?? _navKey.currentContext;
+      if (ctx == null || !ctx.mounted) {
+        retryLater();
+        return;
+      }
       showDialog<void>(
         context: ctx,
         barrierDismissible: false,
