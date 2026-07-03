@@ -12,7 +12,7 @@ import '../../shared/widgets/squirrel_mascot.dart';
 import '../calls/call_screen.dart';
 import '../calls/minimized_call_panel.dart';
 import '../chats/conversation/chat_view.dart';
-import '../chats/conversation/public_room_preview_view.dart';
+import '../chats/conversation/conversation_preview_view.dart';
 import '../chats/sidebar/chat_folder_controller.dart';
 import '../chats/sidebar/chat_list_panel.dart';
 import '../settings/settings_screen.dart';
@@ -40,7 +40,7 @@ enum _CreateRoomKind { group, channel, supergroup }
 
 class _HomeShellState extends State<HomeShell> {
   String? _selectedRoomId;
-  OrexRoomPreview? _previewRoom;
+  OrexConversationPreview? _previewTarget;
   bool _verifyBannerDismissed = false;
   double _chatListWidth = 360; // ширина левой колонки (можно тянуть мышью)
   late final ChatFolderController _folders;
@@ -93,12 +93,11 @@ class _HomeShellState extends State<HomeShell> {
   void _openSettings() {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) =>
-            SettingsScreen(
-              matrix: widget.matrix,
-              theme: widget.theme,
-              version: widget.version,
-            ),
+        builder: (_) => SettingsScreen(
+          matrix: widget.matrix,
+          theme: widget.theme,
+          version: widget.version,
+        ),
       ),
     );
   }
@@ -135,38 +134,41 @@ class _HomeShellState extends State<HomeShell> {
     final config = await _askRoom(kind);
     if (config == null || config.name.isEmpty) return;
     if (mounted) setState(() => _creatingRoom = true);
-    OrexLog.d('Home', 'create room kind=$kind name=${config.name} public=${config.public} alias=${config.localAlias}');
+    OrexLog.d(
+      'Home',
+      'create room kind=$kind name=${config.name} public=${config.public} alias=${config.localAlias}',
+    );
     try {
       final roomId = switch (kind) {
         _CreateRoomKind.group => await widget.matrix.createGroup(
-            config.name,
-            public: config.public,
-            localAlias: config.localAlias,
-          ),
+          config.name,
+          public: config.public,
+          localAlias: config.localAlias,
+        ),
         _CreateRoomKind.channel => await widget.matrix.createChannel(
-            config.name,
-            public: config.public,
-            localAlias: config.localAlias,
-          ),
+          config.name,
+          public: config.public,
+          localAlias: config.localAlias,
+        ),
         _CreateRoomKind.supergroup => await widget.matrix.createSupergroup(
-            config.name,
-            public: config.public,
-            localAlias: config.localAlias,
-          ),
+          config.name,
+          public: config.public,
+          localAlias: config.localAlias,
+        ),
       };
       if (mounted) {
         widget.matrix.setForegroundRoomId(roomId);
         setState(() {
-          _previewRoom = null;
+          _previewTarget = null;
           _selectedRoomId = roomId;
         });
       }
     } catch (e) {
       OrexLog.d('Home', 'create room failed kind=$kind name=${config.name}', e);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось создать: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Не удалось создать: $e')));
       }
     } finally {
       if (mounted) setState(() => _creatingRoom = false);
@@ -200,7 +202,9 @@ class _HomeShellState extends State<HomeShell> {
                   value: public,
                   title: const Text('Публичная'),
                   subtitle: Text(
-                    public ? 'Видна в публичных комнатах' : 'Только по приглашению',
+                    public
+                        ? 'Видна в публичных комнатах'
+                        : 'Только по приглашению',
                   ),
                   onChanged: (value) => setDialogState(() => public = value),
                 ),
@@ -225,14 +229,11 @@ class _HomeShellState extends State<HomeShell> {
               onPressed: () {
                 final roomName = name.text.trim();
                 if (roomName.isEmpty) return;
-                Navigator.pop(
-                  ctx,
-                  (
-                    name: roomName,
-                    public: public,
-                    localAlias: public ? alias.text.trim() : null,
-                  ),
-                );
+                Navigator.pop(ctx, (
+                  name: roomName,
+                  public: public,
+                  localAlias: public ? alias.text.trim() : null,
+                ));
               },
               child: const Text('Создать'),
             ),
@@ -246,17 +247,20 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   String _createDialogTitle(_CreateRoomKind kind) => switch (kind) {
-        _CreateRoomKind.group => 'Новая группа',
-        _CreateRoomKind.channel => 'Новый канал',
-        _CreateRoomKind.supergroup => 'Новая супергруппа',
-      };
+    _CreateRoomKind.group => 'Новая группа',
+    _CreateRoomKind.channel => 'Новый канал',
+    _CreateRoomKind.supergroup => 'Новая супергруппа',
+  };
 
-  void _openPublicRoomPreview(OrexRoomPreview preview) {
-    OrexLog.d('Home', 'open public preview room=${preview.roomId} name=${preview.name}');
+  void _openConversationPreview(OrexConversationPreview preview) {
+    OrexLog.d(
+      'Home',
+      'open conversation preview kind=${preview.kind.name} id=${preview.id} title=${preview.title}',
+    );
     widget.matrix.setForegroundRoomId(null);
     setState(() {
       _selectedRoomId = null;
-      _previewRoom = preview;
+      _previewTarget = preview;
     });
   }
 
@@ -264,7 +268,7 @@ class _HomeShellState extends State<HomeShell> {
     OrexLog.d('Home', 'select room source=$source room=$roomId');
     widget.matrix.setForegroundRoomId(roomId);
     setState(() {
-      _previewRoom = null;
+      _previewTarget = null;
       _selectedRoomId = roomId;
     });
   }
@@ -286,7 +290,7 @@ class _HomeShellState extends State<HomeShell> {
 
     final localPreview = widget.matrix.localPreviewForReference(ref);
     if (localPreview != null) {
-      _openPublicRoomPreview(localPreview);
+      _openConversationPreview(OrexConversationPreview.fromRoom(localPreview));
       return;
     }
 
@@ -294,7 +298,9 @@ class _HomeShellState extends State<HomeShell> {
       final publicPreview = await widget.matrix.publicPreviewForReference(ref);
       if (!mounted) return;
       if (publicPreview != null) {
-        _openPublicRoomPreview(publicPreview);
+        _openConversationPreview(
+          OrexConversationPreview.fromRoom(publicPreview),
+        );
         return;
       }
     } catch (e) {
@@ -373,7 +379,9 @@ class _HomeShellState extends State<HomeShell> {
       if (visibleChildId == null) return null;
       final visibleChild = widget.matrix.client.getRoomById(visibleChildId);
       if (visibleChild == null) return null;
-      return widget.matrix.roomHasActiveCall(visibleChild) ? visibleChild : null;
+      return widget.matrix.roomHasActiveCall(visibleChild)
+          ? visibleChild
+          : null;
     }
 
     return widget.matrix.roomHasActiveCall(room) ? room : null;
@@ -383,12 +391,12 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final isWide = MediaQuery.sizeOf(context).width >= _wideBreakpoint;
     return PopScope(
-      canPop: _selectedRoomId == null && _previewRoom == null,
+      canPop: _selectedRoomId == null && _previewTarget == null,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
-        if (_previewRoom != null) {
+        if (_previewTarget != null) {
           widget.matrix.setForegroundRoomId(_selectedRoomId);
-          setState(() => _previewRoom = null);
+          setState(() => _previewTarget = null);
         } else if (_selectedRoomId != null) {
           widget.matrix.setForegroundRoomId(null);
           setState(() => _selectedRoomId = null);
@@ -401,7 +409,10 @@ class _HomeShellState extends State<HomeShell> {
             children: [
               SafeArea(
                 child: ListenableBuilder(
-                  listenable: Listenable.merge([widget.matrix, widget.matrix.call]),
+                  listenable: Listenable.merge([
+                    widget.matrix,
+                    widget.matrix.call,
+                  ]),
                   builder: (context, _) {
                     return Column(
                       children: [
@@ -454,14 +465,14 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   Widget _chatList({required bool showSelection}) => ChatListPanel(
-        matrix: widget.matrix,
-        selectedRoomId: showSelection ? _selectedRoomId : null,
-        onSelect: (id) => _selectRoom(id, source: 'chat-list'),
-        onOpenPublicRoomPreview: _openPublicRoomPreview,
-        onOpenSettings: _openSettings,
-        onNewChat: _openNewChat,
-        folders: _folders,
-      );
+    matrix: widget.matrix,
+    selectedRoomId: showSelection ? _selectedRoomId : null,
+    onSelect: (id) => _selectRoom(id, source: 'chat-list'),
+    onOpenPreview: _openConversationPreview,
+    onOpenSettings: _openSettings,
+    onNewChat: _openNewChat,
+    folders: _folders,
+  );
 
   void _onVisibleSupergroupChildChanged(String spaceId, String childId) {
     if (!mounted || _visibleSupergroupChildBySpace[spaceId] == childId) return;
@@ -471,18 +482,19 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   Widget _conversationPane({VoidCallback? onBack}) {
-    final preview = _previewRoom;
+    final preview = _previewTarget;
     if (preview != null) {
-      return PublicRoomPreviewView(
-        key: ValueKey('preview-${preview.roomId}'),
+      return ConversationPreviewView(
+        key: ValueKey('preview-${preview.key}'),
         matrix: widget.matrix,
         preview: preview,
+        onEnter: widget.matrix.enterConversationPreview,
         onBack: onBack,
-        onJoined: (roomId) {
+        onEntered: (roomId) {
           if (!mounted) return;
           widget.matrix.setForegroundRoomId(roomId);
           setState(() {
-            _previewRoom = null;
+            _previewTarget = null;
             _selectedRoomId = roomId;
           });
         },
@@ -534,7 +546,7 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   Widget _buildNarrow() {
-    if (_selectedRoomId == null && _previewRoom == null) {
+    if (_selectedRoomId == null && _previewTarget == null) {
       return Padding(
         padding: const EdgeInsets.all(8),
         child: Column(
@@ -562,7 +574,7 @@ class _HomeShellState extends State<HomeShell> {
                 onBack: () {
                   widget.matrix.setForegroundRoomId(null);
                   setState(() {
-                    _previewRoom = null;
+                    _previewTarget = null;
                     _selectedRoomId = null;
                   });
                 },
@@ -605,13 +617,17 @@ class _VerifyBanner extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Сессия не подтверждена',
-                          style: TextStyle(
-                              color: OrexColors.cream,
-                              fontWeight: FontWeight.w700)),
-                      Text('Нажмите, чтобы подтвердить с другого устройства',
-                          style:
-                              TextStyle(color: OrexColors.cream, fontSize: 12)),
+                      Text(
+                        'Сессия не подтверждена',
+                        style: TextStyle(
+                          color: OrexColors.cream,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      Text(
+                        'Нажмите, чтобы подтвердить с другого устройства',
+                        style: TextStyle(color: OrexColors.cream, fontSize: 12),
+                      ),
                     ],
                   ),
                 ),
@@ -620,8 +636,11 @@ class _VerifyBanner extends StatelessWidget {
                   tooltip: 'Скрыть',
                   visualDensity: VisualDensity.compact,
                   onPressed: onClose,
-                  icon: const Icon(Icons.close,
-                      color: OrexColors.cream, size: 18),
+                  icon: const Icon(
+                    Icons.close,
+                    color: OrexColors.cream,
+                    size: 18,
+                  ),
                 ),
               ],
             ),

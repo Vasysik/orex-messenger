@@ -26,17 +26,17 @@ class _ChatTile extends StatelessWidget {
     final preview = isInvite
         ? 'Приглашение · нажмите, чтобы принять'
         : (membershipNotice?.text ??
-            (lastEvent == null
-            ? ''
-            : (lastEvent.type == EventTypes.GroupCallMember
-                ? 'Звонок'
-                : lastEvent.type == EventTypes.Encrypted
-                    ? 'Зашифровано'
-                    : lastEvent.calcLocalizedBodyFallback(
-                        const MatrixDefaultLocalizations(),
-                        hideReply: true,
-                        hideEdit: true,
-                      ))));
+              (lastEvent == null
+                  ? ''
+                  : (lastEvent.type == EventTypes.GroupCallMember
+                        ? 'Звонок'
+                        : lastEvent.type == EventTypes.Encrypted
+                        ? 'Зашифровано'
+                        : lastEvent.calcLocalizedBodyFallback(
+                            const MatrixDefaultLocalizations(),
+                            hideReply: true,
+                            hideEdit: true,
+                          ))));
     final unread = room.notificationCount;
 
     return RepaintBoundary(
@@ -93,13 +93,12 @@ class _ChatTile extends StatelessWidget {
                               preview,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
+                              style: Theme.of(context).textTheme.bodySmall
                                   ?.copyWith(
                                     color: isInvite ? OrexColors.copper : null,
-                                    fontWeight:
-                                        isInvite ? FontWeight.w600 : null,
+                                    fontWeight: isInvite
+                                        ? FontWeight.w600
+                                        : null,
                                   ),
                             ),
                           ),
@@ -146,18 +145,13 @@ class _GlobalPublicRoomTile extends StatelessWidget {
     final subtitle = displayAlias.isNotEmpty
         ? displayAlias
         : preview.topic?.isNotEmpty == true
-            ? preview.topic!
-            : preview.roomId;
-    return ListTile(
-      leading: MxcAvatar(
-        matrix: matrix,
-        name: preview.name,
-        mxc: preview.avatar,
-        size: 44,
-      ),
-      title: Text(preview.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
-      trailing: const Icon(Icons.chevron_right, color: OrexColors.copper),
+        ? preview.topic!
+        : preview.roomId;
+    return _GlobalSearchTile(
+      matrix: matrix,
+      title: preview.name,
+      subtitle: subtitle,
+      avatar: preview.avatar,
       onTap: onTap,
     );
   }
@@ -167,58 +161,82 @@ class _GlobalUserTile extends StatelessWidget {
   const _GlobalUserTile({
     required this.matrix,
     required this.profile,
-    required this.enabled,
     required this.onTap,
   });
 
   final MatrixService matrix;
   final Profile profile;
-  final bool enabled;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final compactId = matrix.compactUserId(profile.userId);
     final name = profile.displayName ?? compactId;
+    return _GlobalSearchTile(
+      matrix: matrix,
+      title: name,
+      subtitle: compactId,
+      avatar: profile.avatarUrl,
+      subtitleColor: OrexColors.copperBright,
+      onTap: onTap,
+    );
+  }
+}
+
+class _GlobalSearchTile extends StatelessWidget {
+  const _GlobalSearchTile({
+    required this.matrix,
+    required this.title,
+    required this.subtitle,
+    required this.avatar,
+    required this.onTap,
+    this.subtitleColor,
+  });
+
+  final MatrixService matrix;
+  final String title;
+  final String subtitle;
+  final Uri? avatar;
+  final VoidCallback onTap;
+  final Color? subtitleColor;
+
+  @override
+  Widget build(BuildContext context) {
     return RepaintBoundary(
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
-          onTap: enabled ? onTap : null,
+          onTap: onTap,
           child: Padding(
             padding: const EdgeInsets.all(10),
             child: Row(
               children: [
-                MxcAvatar(
-                  matrix: matrix,
-                  name: name,
-                  mxc: profile.avatarUrl,
-                  size: 48,
-                ),
+                MxcAvatar(matrix: matrix, name: title, mxc: avatar, size: 48),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        name,
+                        title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        compactId,
+                        subtitle,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: OrexColors.copperBright,
-                            ),
+                        style: Theme.of(
+                          context,
+                        ).textTheme.bodySmall?.copyWith(color: subtitleColor),
                       ),
                     ],
                   ),
                 ),
+                const Icon(Icons.chevron_right, color: OrexColors.copper),
               ],
             ),
           ),

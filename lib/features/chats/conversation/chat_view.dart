@@ -8,12 +8,12 @@ import '../../../core/matrix/matrix_service.dart';
 import '../../../core/logging/orex_logger.dart';
 import '../../../shared/theme/orex_theme.dart';
 import '../../../shared/widgets/mxc_avatar.dart';
-import '../../../shared/widgets/room_icon.dart';
 import '../../calls/call_screen.dart';
 import '../../calls/minimized_call_panel.dart';
 import 'message_bubble.dart';
-import 'public_room_preview_view.dart';
+import 'conversation_preview_view.dart';
 import 'room_settings_screen.dart';
+import 'supergroup_child_picker.dart';
 
 part 'chat_timeline_items.dart';
 part 'chat_header.dart';
@@ -42,7 +42,8 @@ class ChatView extends StatefulWidget {
   final List<OrexRoomPreview>? supergroupChildren;
   final ValueChanged<String>? onSupergroupChildSelected;
   final String? selectedSupergroupChildId;
-  final void Function(String spaceId, String childId)? onSupergroupChildVisibleChanged;
+  final void Function(String spaceId, String childId)?
+  onSupergroupChildVisibleChanged;
   final ValueChanged<String>? onOpenRoomReference;
   final bool showInlineCallPanel;
 
@@ -98,7 +99,8 @@ class _ChatViewState extends State<ChatView> {
       rawEvents.any(_isRenderableTimelineEvent);
 
   bool get _isAtLatestEdge =>
-      !_scroll.hasClients || _scroll.position.pixels <= _scroll.position.minScrollExtent + 80;
+      !_scroll.hasClients ||
+      _scroll.position.pixels <= _scroll.position.minScrollExtent + 80;
 
   void _jumpToLatestAfterFrame() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -116,7 +118,10 @@ class _ChatViewState extends State<ChatView> {
       final pos = _scroll.position;
       final delta = pos.maxScrollExtent - oldMaxScrollExtent;
       if (delta <= 0) return;
-      final target = (pos.pixels + delta).clamp(pos.minScrollExtent, pos.maxScrollExtent);
+      final target = (pos.pixels + delta).clamp(
+        pos.minScrollExtent,
+        pos.maxScrollExtent,
+      );
       if ((target - pos.pixels).abs() > 1) {
         _scroll.jumpTo(target.toDouble());
       }
@@ -191,8 +196,9 @@ class _ChatViewState extends State<ChatView> {
     setState(() => _loadingHistory = true);
     try {
       final beforeLen = timeline.events.length;
-      final oldMaxScrollExtent =
-          _scroll.hasClients ? _scroll.position.maxScrollExtent : null;
+      final oldMaxScrollExtent = _scroll.hasClients
+          ? _scroll.position.maxScrollExtent
+          : null;
       await timeline.requestHistory(historyCount: _historyPageSize);
       final afterLen = timeline.events.length;
 
@@ -218,7 +224,10 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _openRoomReference(String reference) {
-    OrexLog.d('Chat', 'open room reference ref=$reference from=${widget.roomId}');
+    OrexLog.d(
+      'Chat',
+      'open room reference ref=$reference from=${widget.roomId}',
+    );
     final handler = widget.onOpenRoomReference;
     if (handler == null) {
       if (!mounted) return;
@@ -244,17 +253,19 @@ class _ChatViewState extends State<ChatView> {
       if (mounted) setState(() => _room = room);
       return;
     }
-    final timeline = await room.getTimeline(onUpdate: () {
-      final events = _timeline?.events ?? const <Event>[];
-      final wasAtLatest = _isAtLatestEdge;
-      if (mounted) {
-        setState(() {
-          _buildChatItems(events);
-        });
-        if (wasAtLatest) _jumpToLatestAfterFrame();
-      }
-      _markRead(room);
-    });
+    final timeline = await room.getTimeline(
+      onUpdate: () {
+        final events = _timeline?.events ?? const <Event>[];
+        final wasAtLatest = _isAtLatestEdge;
+        if (mounted) {
+          setState(() {
+            _buildChatItems(events);
+          });
+          if (wasAtLatest) _jumpToLatestAfterFrame();
+        }
+        _markRead(room);
+      },
+    );
     await _markRead(room);
     if (mounted) {
       setState(() {
@@ -275,9 +286,11 @@ class _ChatViewState extends State<ChatView> {
   Future<void> _refreshTimelineOnOpen(Room room, Timeline timeline) async {
     if (!timeline.canRequestHistory) return;
     try {
-      for (var page = 0;
-          page < _openHistoryMaxPages && timeline.canRequestHistory;
-          page++) {
+      for (
+        var page = 0;
+        page < _openHistoryMaxPages && timeline.canRequestHistory;
+        page++
+      ) {
         final beforeLen = timeline.events.length;
         await timeline.requestHistory(historyCount: _historyPageSize);
         if (!mounted) return;
@@ -315,7 +328,10 @@ class _ChatViewState extends State<ChatView> {
     if (room == null) return;
     if (!widget.matrix.canSendMessages(room)) return;
     await widget.matrix.ensureCanSendToChannel(room);
-    OrexLog.d('Chat', 'send message room=${room.id} text=${text.length} files=${_attachedFiles.length}');
+    OrexLog.d(
+      'Chat',
+      'send message room=${room.id} text=${text.length} files=${_attachedFiles.length}',
+    );
 
     final attachedList = List<PlatformFile>.from(_attachedFiles);
     if (attachedList.isNotEmpty) {
@@ -339,7 +355,10 @@ class _ChatViewState extends State<ChatView> {
 
         final MatrixFile file = isImg
             ? MatrixImageFile(
-                bytes: data, name: attached.name, mimeType: 'image/$ext')
+                bytes: data,
+                name: attached.name,
+                mimeType: 'image/$ext',
+              )
             : MatrixFile(bytes: data, name: attached.name);
 
         final replyTo = _replyTo;
@@ -419,8 +438,10 @@ class _ChatViewState extends State<ChatView> {
   static const _maxAttachmentBatchBytes = 100 * 1024 * 1024;
 
   Future<void> _attach() async {
-    final res = await FilePicker.platform
-        .pickFiles(withData: true, allowMultiple: true);
+    final res = await FilePicker.platform.pickFiles(
+      withData: true,
+      allowMultiple: true,
+    );
     final picked = res?.files ?? const <PlatformFile>[];
     if (picked.isEmpty) return;
 
@@ -500,9 +521,11 @@ class _ChatViewState extends State<ChatView> {
     if (room == null) return;
     await widget.matrix.acceptInvite(room);
     if (!mounted) return;
-    final timeline = await room.getTimeline(onUpdate: () {
-      if (mounted) setState(() {});
-    });
+    final timeline = await room.getTimeline(
+      onUpdate: () {
+        if (mounted) setState(() {});
+      },
+    );
     if (mounted) setState(() => _timeline = timeline);
   }
 
@@ -530,10 +553,7 @@ class _ChatViewState extends State<ChatView> {
     Navigator.of(context).push(
       MaterialPageRoute(
         fullscreenDialog: true,
-        builder: (_) => RoomSettingsScreen(
-          matrix: widget.matrix,
-          room: room,
-        ),
+        builder: (_) => RoomSettingsScreen(matrix: widget.matrix, room: room),
       ),
     );
   }
@@ -551,9 +571,7 @@ class _ChatViewState extends State<ChatView> {
       decoration: BoxDecoration(
         color: (isDark ? Colors.black : Colors.white).withValues(alpha: 0.18),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: OrexColors.copper.withValues(alpha: 0.25),
-        ),
+        border: Border.all(color: OrexColors.copper.withValues(alpha: 0.25)),
       ),
       child: GridView.builder(
         padding: EdgeInsets.zero,
@@ -568,9 +586,7 @@ class _ChatViewState extends State<ChatView> {
           return InkWell(
             onTap: () => _insertEmoji(e),
             borderRadius: BorderRadius.circular(8),
-            child: Center(
-              child: Text(e, style: const TextStyle(fontSize: 22)),
-            ),
+            child: Center(child: Text(e, style: const TextStyle(fontSize: 22))),
           );
         },
       ),
@@ -681,15 +697,16 @@ class _ChatViewState extends State<ChatView> {
     }
 
     if (selectedRoom == null || selectedRoom.membership != Membership.join) {
-      return PublicRoomPreviewView(
+      return ConversationPreviewView(
         key: ValueKey('supergroup-preview-$selectedChildId'),
         matrix: widget.matrix,
-        preview: selectedPreview,
+        preview: OrexConversationPreview.fromRoom(selectedPreview),
+        onEnter: widget.matrix.enterConversationPreview,
         onBack: widget.onBack,
         parentSpace: space,
         supergroupChildren: childPreviews,
         onSupergroupChildSelected: selectChild,
-        onJoined: (roomId) {
+        onEntered: (roomId) {
           if (mounted) setState(() => _spaceChildId = roomId);
         },
       );
@@ -748,7 +765,8 @@ class _ChatViewState extends State<ChatView> {
             final bytes = await file.readAsBytes();
             final filename = file.name;
             loaded.add(
-                PlatformFile(name: filename, size: bytes.length, bytes: bytes));
+              PlatformFile(name: filename, size: bytes.length, bytes: bytes),
+            );
           }
           setState(() {
             _attachedFiles.addAll(loaded);
@@ -774,7 +792,9 @@ class _ChatViewState extends State<ChatView> {
               onSupergroupChildSelected: widget.onSupergroupChildSelected,
             ),
             Divider(
-                height: 1, color: OrexColors.copper.withValues(alpha: 0.12)),
+              height: 1,
+              color: OrexColors.copper.withValues(alpha: 0.12),
+            ),
             if (widget.showInlineCallPanel &&
                 widget.supergroupSpaceId != null &&
                 !widget.matrix.call.isActive &&
@@ -792,9 +812,12 @@ class _ChatViewState extends State<ChatView> {
                 controller: _scroll,
                 reverse: true,
                 physics: const AlwaysScrollableScrollPhysics(
-                    parent: BouncingScrollPhysics()),
-                padding:
-                    const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                  parent: BouncingScrollPhysics(),
+                ),
+                padding: const EdgeInsets.symmetric(
+                  vertical: 12,
+                  horizontal: 8,
+                ),
                 itemCount: _chatItems.length + (_loadingHistory ? 1 : 0),
                 itemBuilder: (_, i) {
                   if (i == _chatItems.length) {
@@ -805,7 +828,9 @@ class _ChatViewState extends State<ChatView> {
                           width: 24,
                           height: 24,
                           child: CircularProgressIndicator(
-                              strokeWidth: 2, color: OrexColors.copper),
+                            strokeWidth: 2,
+                            color: OrexColors.copper,
+                          ),
                         ),
                       ),
                     );
@@ -824,16 +849,24 @@ class _ChatViewState extends State<ChatView> {
                       onReact: (emoji) =>
                           room.sendReaction(item.leader.eventId, emoji),
                       onRedact: (rid) => room.redactEvent(rid),
-                      onEdit: liveTimeline == null ? null : () => _startEdit(item.leader),
+                      onEdit: liveTimeline == null
+                          ? null
+                          : () => _startEdit(item.leader),
                       onDelete: () => room.redactEvent(item.leader.eventId),
-                      onReply: liveTimeline == null ? null : () => _startReply(item.leader),
+                      onReply: liveTimeline == null
+                          ? null
+                          : () => _startReply(item.leader),
                       onOpenRoomReference: _openRoomReference,
                       onCancelSend: () async {
                         try {
                           await item.leader.cancelSend();
                           if (mounted) setState(() {});
                         } catch (e) {
-                          OrexLog.d('Chat', 'cancel send failed room=${room.id}', e);
+                          OrexLog.d(
+                            'Chat',
+                            'cancel send failed room=${room.id}',
+                            e,
+                          );
                         }
                       },
                       albumEvents: item.events,
@@ -849,16 +882,24 @@ class _ChatViewState extends State<ChatView> {
                       onReact: (emoji) =>
                           room.sendReaction(item.event.eventId, emoji),
                       onRedact: (rid) => room.redactEvent(rid),
-                      onEdit: liveTimeline == null ? null : () => _startEdit(item.event),
+                      onEdit: liveTimeline == null
+                          ? null
+                          : () => _startEdit(item.event),
                       onDelete: () => room.redactEvent(item.event.eventId),
-                      onReply: liveTimeline == null ? null : () => _startReply(item.event),
+                      onReply: liveTimeline == null
+                          ? null
+                          : () => _startReply(item.event),
                       onOpenRoomReference: _openRoomReference,
                       onCancelSend: () async {
                         try {
                           await item.event.cancelSend();
                           if (mounted) setState(() {});
                         } catch (e) {
-                          OrexLog.d('Chat', 'cancel send failed room=${room.id}', e);
+                          OrexLog.d(
+                            'Chat',
+                            'cancel send failed room=${room.id}',
+                            e,
+                          );
                         }
                       },
                     );

@@ -5,14 +5,15 @@ import '../../../core/matrix/matrix_service.dart';
 import '../../../shared/theme/glass.dart';
 import '../../../shared/theme/orex_theme.dart';
 import '../../../shared/widgets/mxc_avatar.dart';
-import '../../../shared/widgets/room_icon.dart';
+import 'supergroup_child_picker.dart';
 
-class PublicRoomPreviewView extends StatefulWidget {
-  const PublicRoomPreviewView({
+class ConversationPreviewView extends StatefulWidget {
+  const ConversationPreviewView({
     super.key,
     required this.matrix,
     required this.preview,
-    required this.onJoined,
+    required this.onEnter,
+    required this.onEntered,
     this.onBack,
     this.parentSpace,
     this.supergroupChildren = const <OrexRoomPreview>[],
@@ -20,33 +21,37 @@ class PublicRoomPreviewView extends StatefulWidget {
   });
 
   final MatrixService matrix;
-  final OrexRoomPreview preview;
-  final ValueChanged<String> onJoined;
+  final OrexConversationPreview preview;
+  final Future<String> Function(OrexConversationPreview preview) onEnter;
+  final ValueChanged<String> onEntered;
   final VoidCallback? onBack;
   final Room? parentSpace;
   final List<OrexRoomPreview> supergroupChildren;
   final ValueChanged<String>? onSupergroupChildSelected;
 
   @override
-  State<PublicRoomPreviewView> createState() => _PublicRoomPreviewViewState();
+  State<ConversationPreviewView> createState() =>
+      _ConversationPreviewViewState();
 }
 
-class _PublicRoomPreviewViewState extends State<PublicRoomPreviewView> {
+class _ConversationPreviewViewState extends State<ConversationPreviewView> {
   late Future<List<MatrixEvent>> _events = _loadEvents();
-  bool _joining = false;
+  bool _entering = false;
 
   @override
-  void didUpdateWidget(PublicRoomPreviewView oldWidget) {
+  void didUpdateWidget(ConversationPreviewView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.preview.roomId != widget.preview.roomId) {
+    if (oldWidget.preview.key != widget.preview.key) {
       _events = _loadEvents();
     }
   }
 
   Future<List<MatrixEvent>> _loadEvents() async {
+    final roomId = widget.preview.historyRoomId;
+    if (roomId == null || roomId.isEmpty) return const [];
     try {
       final res = await widget.matrix.client.getRoomEvents(
-        widget.preview.roomId,
+        roomId,
         Direction.b,
         limit: 50,
       );
@@ -59,20 +64,20 @@ class _PublicRoomPreviewViewState extends State<PublicRoomPreviewView> {
     }
   }
 
-  Future<void> _join() async {
-    if (_joining) return;
-    setState(() => _joining = true);
+  Future<void> _enter() async {
+    if (_entering) return;
+    setState(() => _entering = true);
     try {
-      final roomId = await widget.matrix.joinRoomPreview(widget.preview);
-      if (mounted) widget.onJoined(roomId);
+      final roomId = await widget.onEnter(widget.preview);
+      if (mounted) widget.onEntered(roomId);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось войти: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Не удалось войти: $e')));
       }
     } finally {
-      if (mounted) setState(() => _joining = false);
+      if (mounted) setState(() => _entering = false);
     }
   }
 
@@ -81,7 +86,7 @@ class _PublicRoomPreviewViewState extends State<PublicRoomPreviewView> {
     final preview = widget.preview;
     final parent = widget.parentSpace;
     final children = widget.supergroupChildren;
-    final title = parent?.getLocalizedDisplayname() ?? preview.name;
+    final title = parent?.getLocalizedDisplayname() ?? preview.title;
     final avatar = parent?.avatar ?? preview.avatar;
 
     return Column(
@@ -113,15 +118,15 @@ class _PublicRoomPreviewViewState extends State<PublicRoomPreviewView> {
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     if (parent != null && children.isNotEmpty)
-                      _PreviewChildPicker(
+                      OrexSupergroupChildPicker(
                         matrix: widget.matrix,
-                        value: preview.roomId,
+                        value: preview.id,
                         children: children,
                         onChanged: widget.onSupergroupChildSelected,
                       )
-                    else
+                    else if (preview.subtitle != null)
                       Text(
-                        _subtitle(preview),
+                        preview.subtitle!,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodySmall,
@@ -136,126 +141,98 @@ class _PublicRoomPreviewViewState extends State<PublicRoomPreviewView> {
         if ((preview.topic ?? '').isNotEmpty)
           _PreviewTopicPanel(topic: preview.topic!),
         Expanded(
-          child: FutureBuilder<List<MatrixEvent>>(
-            future: _events,
-            builder: (context, snap) {
-              if (snap.connectionState != ConnectionState.done) {
-                return const Center(
-                  child: CircularProgressIndicator(color: OrexColors.copper),
-                );
-              }
-              final events = snap.data ?? const <MatrixEvent>[];
-              if (events.isEmpty) {
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Text(
-                      preview.isSupergroupChild
-                          ? 'История этого чата будет доступна после входа.'
-                          : 'В этом публичном чате пока нет доступной истории.',
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                );
-              }
-              return ListView.builder(
-                reverse: true,
-                physics: const AlwaysScrollableScrollPhysics(
-                  parent: BouncingScrollPhysics(),
-                ),
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-                itemCount: events.length,
-                itemBuilder: (context, index) => _PublicPreviewBubble(
-                  matrix: widget.matrix,
-                  event: events[index],
-                ),
-              );
-            },
+          child: _PreviewBody(
+            matrix: widget.matrix,
+            preview: preview,
+            events: _events,
           ),
         ),
-        _JoinPublicRoomBar(joining: _joining, onJoin: _join),
+        _EnterPreviewBar(
+          entering: _entering,
+          label: preview.actionLabel,
+          progressLabel: preview.progressLabel,
+          onEnter: _enter,
+        ),
       ],
     );
   }
-
-  String _subtitle(OrexRoomPreview preview) {
-    final members = preview.memberCount;
-    final memberLine = members == null ? null : '$members участников';
-    final alias = OrexRoomAlias.displayAlias(preview.alias);
-    return alias.isNotEmpty
-        ? [alias, memberLine].whereType<String>().join(' · ')
-        : memberLine ?? preview.roomId;
-  }
 }
 
-class _PreviewChildPicker extends StatelessWidget {
-  const _PreviewChildPicker({
+class _PreviewBody extends StatelessWidget {
+  const _PreviewBody({
     required this.matrix,
-    required this.value,
-    required this.children,
-    required this.onChanged,
+    required this.preview,
+    required this.events,
   });
 
   final MatrixService matrix;
-  final String value;
-  final List<OrexRoomPreview> children;
-  final ValueChanged<String>? onChanged;
+  final OrexConversationPreview preview;
+  final Future<List<MatrixEvent>> events;
 
   @override
   Widget build(BuildContext context) {
-    return DropdownButtonHideUnderline(
-      child: DropdownButton<String>(
-        value: children.any((child) => child.roomId == value)
-            ? value
-            : children.first.roomId,
-        isDense: true,
-        isExpanded: true,
-        iconSize: 18,
-        items: children
-            .map(
-              (child) => DropdownMenuItem(
-                value: child.roomId,
-                child: Row(
-                  children: [
-                    Icon(_icon(child), size: 16, color: OrexColors.copper),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        child.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    if (_hasCall(child)) ...[
-                      const SizedBox(width: 6),
-                      const Icon(Icons.call, size: 14, color: OrexColors.online),
-                    ],
-                  ],
-                ),
-              ),
-            )
-            .toList(),
-        onChanged: (next) {
-          if (next == null || next == value) return;
-          onChanged?.call(next);
-        },
-      ),
+    if (preview.historyRoomId == null) {
+      return _PreviewEmptyState(
+        icon: Icons.person_add_alt,
+        text: preview.emptyBody,
+      );
+    }
+
+    return FutureBuilder<List<MatrixEvent>>(
+      future: events,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(
+            child: CircularProgressIndicator(color: OrexColors.copper),
+          );
+        }
+        final loadedEvents = snap.data ?? const <MatrixEvent>[];
+        if (loadedEvents.isEmpty) {
+          return _PreviewEmptyState(
+            icon: Icons.forum_outlined,
+            text: preview.emptyBody,
+          );
+        }
+        return ListView.builder(
+          reverse: true,
+          physics: const AlwaysScrollableScrollPhysics(
+            parent: BouncingScrollPhysics(),
+          ),
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+          itemCount: loadedEvents.length,
+          itemBuilder: (context, index) =>
+              _PreviewBubble(matrix: matrix, event: loadedEvents[index]),
+        );
+      },
     );
   }
+}
 
-  IconData _icon(OrexRoomPreview child) {
-    final previewIcon = child.iconKey;
-    if (previewIcon != null && previewIcon.isNotEmpty) {
-      return orexRoomIconData(previewIcon);
-    }
-    final local = matrix.client.getRoomById(child.roomId);
-    if (local == null) return orexRoomIconData('chat');
-    return orexRoomIconData(matrix.roomIconKey(local));
-  }
+class _PreviewEmptyState extends StatelessWidget {
+  const _PreviewEmptyState({required this.icon, required this.text});
 
-  bool _hasCall(OrexRoomPreview child) {
-    final local = matrix.client.getRoomById(child.roomId);
-    return local != null && matrix.roomHasActiveCall(local);
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 42, color: OrexColors.copper),
+            const SizedBox(height: 12),
+            Text(
+              text,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -293,8 +270,8 @@ class _PreviewTopicPanel extends StatelessWidget {
   }
 }
 
-class _PublicPreviewBubble extends StatelessWidget {
-  const _PublicPreviewBubble({required this.matrix, required this.event});
+class _PreviewBubble extends StatelessWidget {
+  const _PreviewBubble({required this.matrix, required this.event});
 
   final MatrixService matrix;
   final MatrixEvent event;
@@ -352,11 +329,18 @@ class _PublicPreviewBubble extends StatelessWidget {
   }
 }
 
-class _JoinPublicRoomBar extends StatelessWidget {
-  const _JoinPublicRoomBar({required this.joining, required this.onJoin});
+class _EnterPreviewBar extends StatelessWidget {
+  const _EnterPreviewBar({
+    required this.entering,
+    required this.label,
+    required this.progressLabel,
+    required this.onEnter,
+  });
 
-  final bool joining;
-  final VoidCallback onJoin;
+  final bool entering;
+  final String label;
+  final String progressLabel;
+  final VoidCallback onEnter;
 
   @override
   Widget build(BuildContext context) {
@@ -374,8 +358,8 @@ class _JoinPublicRoomBar extends StatelessWidget {
                 backgroundColor: OrexColors.copper,
                 minimumSize: const Size.fromHeight(48),
               ),
-              onPressed: joining ? null : onJoin,
-              icon: joining
+              onPressed: entering ? null : onEnter,
+              icon: entering
                   ? const SizedBox.square(
                       dimension: 18,
                       child: CircularProgressIndicator(
@@ -384,7 +368,7 @@ class _JoinPublicRoomBar extends StatelessWidget {
                       ),
                     )
                   : const Icon(Icons.login),
-              label: Text(joining ? 'Входим...' : 'Войти в чат'),
+              label: Text(entering ? progressLabel : label),
             ),
           ),
         ),

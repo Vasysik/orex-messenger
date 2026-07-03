@@ -26,14 +26,18 @@ class _InviteView extends StatelessWidget {
             children: [
               if (onBack != null)
                 IconButton(
-                    onPressed: onBack, icon: const Icon(Icons.arrow_back)),
+                  onPressed: onBack,
+                  icon: const Icon(Icons.arrow_back),
+                ),
               MxcAvatar(matrix: matrix, name: name, mxc: room.avatar, size: 42),
               const SizedBox(width: 12),
               Expanded(
-                child: Text(name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleMedium),
+                child: Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
               ),
             ],
           ),
@@ -49,11 +53,17 @@ class _InviteView extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     MxcAvatar(
-                        matrix: matrix, name: name, mxc: room.avatar, size: 88),
+                      matrix: matrix,
+                      name: name,
+                      mxc: room.avatar,
+                      size: 88,
+                    ),
                     const SizedBox(height: 16),
-                    Text('Вас пригласили в «$name»',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.titleMedium),
+                    Text(
+                      'Вас пригласили в «$name»',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
                     const SizedBox(height: 24),
                     Row(
                       children: [
@@ -67,7 +77,8 @@ class _InviteView extends StatelessWidget {
                         Expanded(
                           child: FilledButton(
                             style: FilledButton.styleFrom(
-                                backgroundColor: OrexColors.copper),
+                              backgroundColor: OrexColors.copper,
+                            ),
                             onPressed: onAccept,
                             child: const Text('Принять'),
                           ),
@@ -119,10 +130,7 @@ class _ChatHeader extends StatelessWidget {
       child: Row(
         children: [
           if (onBack != null)
-            IconButton(
-              onPressed: onBack,
-              icon: const Icon(Icons.arrow_back),
-            ),
+            IconButton(onPressed: onBack, icon: const Icon(Icons.arrow_back)),
           MxcAvatar(
             matrix: matrix,
             name: titleRoom.getLocalizedDisplayname(),
@@ -141,9 +149,9 @@ class _ChatHeader extends StatelessWidget {
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 if (inSupergroup)
-                  _SupergroupChildPicker(
+                  OrexSupergroupChildPicker(
                     matrix: matrix,
-                    room: room,
+                    value: room.id,
                     children: childPreviews,
                     onChanged: onSupergroupChildSelected,
                   )
@@ -186,82 +194,6 @@ class _ChatHeader extends StatelessWidget {
   }
 }
 
-class _SupergroupChildPicker extends StatelessWidget {
-  const _SupergroupChildPicker({
-    required this.matrix,
-    required this.room,
-    required this.children,
-    required this.onChanged,
-  });
-
-  final MatrixService matrix;
-  final Room room;
-  final List<OrexRoomPreview> children;
-  final ValueChanged<String>? onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final value = children.any((child) => child.roomId == room.id)
-        ? room.id
-        : children.first.roomId;
-    return DropdownButtonHideUnderline(
-      child: DropdownButton<String>(
-        value: value,
-        isDense: true,
-        isExpanded: true,
-        iconSize: 18,
-        items: children
-            .map(
-              (child) => DropdownMenuItem(
-                value: child.roomId,
-                child: Row(
-                  children: [
-                    Icon(
-                      _childIcon(child),
-                      size: 16,
-                      color: OrexColors.copper,
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        child.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    if (_hasCall(child)) ...[
-                      const SizedBox(width: 6),
-                      const Icon(Icons.call, size: 14, color: OrexColors.online),
-                    ],
-                  ],
-                ),
-              ),
-            )
-            .toList(),
-        onChanged: (next) {
-          if (next == null || next == value) return;
-          onChanged?.call(next);
-        },
-      ),
-    );
-  }
-
-  IconData _childIcon(OrexRoomPreview child) {
-    final previewIcon = child.iconKey;
-    if (previewIcon != null && previewIcon.isNotEmpty) {
-      return orexRoomIconData(previewIcon);
-    }
-    final local = matrix.client.getRoomById(child.roomId);
-    if (local == null) return orexRoomIconData('chat');
-    return orexRoomIconData(matrix.roomIconKey(local));
-  }
-
-  bool _hasCall(OrexRoomPreview child) {
-    final local = matrix.client.getRoomById(child.roomId);
-    return local != null && matrix.roomHasActiveCall(local);
-  }
-}
-
 class _PresenceLine extends StatelessWidget {
   const _PresenceLine({required this.room});
   final Room room;
@@ -272,8 +204,10 @@ class _PresenceLine extends StatelessWidget {
     final dmId = room.directChatMatrixID;
 
     if (dmId == null) {
-      return Text('${room.summary.mJoinedMemberCount ?? 0} участников',
-          style: style);
+      return Text(
+        '${room.summary.mJoinedMemberCount ?? 0} участников',
+        style: style,
+      );
     }
 
     return FutureBuilder<CachedPresence>(

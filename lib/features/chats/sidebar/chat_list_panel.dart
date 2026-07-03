@@ -23,7 +23,7 @@ class ChatListPanel extends StatefulWidget {
     required this.matrix,
     required this.selectedRoomId,
     required this.onSelect,
-    required this.onOpenPublicRoomPreview,
+    required this.onOpenPreview,
     required this.onOpenSettings,
     required this.onNewChat,
     required this.folders,
@@ -32,7 +32,7 @@ class ChatListPanel extends StatefulWidget {
   final MatrixService matrix;
   final String? selectedRoomId;
   final ValueChanged<String> onSelect;
-  final ValueChanged<OrexRoomPreview> onOpenPublicRoomPreview;
+  final ValueChanged<OrexConversationPreview> onOpenPreview;
   final VoidCallback onOpenSettings;
   final VoidCallback onNewChat;
   final ChatFolderController folders;
@@ -50,7 +50,6 @@ class _ChatListPanelState extends State<ChatListPanel> {
   List<Profile> _globalPeople = [];
   List<OrexRoomPreview> _globalPublicRooms = [];
   bool _globalLoading = false;
-  bool _openingGlobal = false;
   int _searchRun = 0;
 
   void _onSearch(String value) {
@@ -77,8 +76,10 @@ class _ChatListPanelState extends State<ChatListPanel> {
   Future<void> _runGlobalSearch(String q) async {
     final run = ++_searchRun;
     setState(() => _globalLoading = true);
-    final peopleFuture =
-        widget.matrix.searchUsers(q, includeMxidFallback: true);
+    final peopleFuture = widget.matrix.searchUsers(
+      q,
+      includeMxidFallback: true,
+    );
     final roomsFuture = widget.matrix.searchPublicRoomPreviews(q);
     final results = await peopleFuture;
     final publicRooms = await roomsFuture;
@@ -96,30 +97,12 @@ class _ChatListPanelState extends State<ChatListPanel> {
           .where((profile) => profile.userId != ownId)
           .where((profile) => !knownDirectIds.contains(profile.userId))
           .toList();
-      _globalPublicRooms = publicRooms
-          .where((preview) {
+      _globalPublicRooms = publicRooms.where((preview) {
         final local = widget.matrix.client.getRoomById(preview.roomId);
         return local == null || local.membership != Membership.join;
       }).toList();
       _globalLoading = false;
     });
-  }
-
-  Future<void> _openGlobalUser(Profile profile) async {
-    if (_openingGlobal) return;
-    setState(() => _openingGlobal = true);
-    try {
-      final roomId = await widget.matrix.startDirectChat(profile.userId);
-      if (mounted) widget.onSelect(roomId);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось открыть чат: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _openingGlobal = false);
-    }
   }
 
   Future<void> _confirmDelete(Room room) async {
@@ -225,8 +208,10 @@ class _ChatListPanelState extends State<ChatListPanel> {
       }
     }
     final rooms = byId.values.toList()
-      ..sort((a, b) =>
-          b.latestEventReceivedTime.compareTo(a.latestEventReceivedTime));
+      ..sort(
+        (a, b) =>
+            b.latestEventReceivedTime.compareTo(a.latestEventReceivedTime),
+      );
     return rooms;
   }
 
@@ -281,8 +266,9 @@ class _ChatListPanelState extends State<ChatListPanel> {
                     matrix: widget.matrix,
                     rooms: rooms,
                     selectedRoomId: widget.selectedRoomId,
-                    globalItemCount:
-                        index == selectedIndex ? _globalSectionItemCount : 0,
+                    globalItemCount: index == selectedIndex
+                        ? _globalSectionItemCount
+                        : 0,
                     globalItemBuilder: _globalSearchItem,
                     onSelect: widget.onSelect,
                     onDelete: _confirmDelete,
@@ -299,7 +285,8 @@ class _ChatListPanelState extends State<ChatListPanel> {
   int get _globalSectionItemCount {
     if (_query.isEmpty) return 0;
     if (_globalLoading) return 2;
-    final sections = (_globalPublicRooms.isNotEmpty ? 1 : 0) +
+    final sections =
+        (_globalPublicRooms.isNotEmpty ? 1 : 0) +
         (_globalPeople.isNotEmpty ? 1 : 0);
     return sections + _globalPublicRooms.length + _globalPeople.length;
   }
@@ -327,7 +314,8 @@ class _ChatListPanelState extends State<ChatListPanel> {
         return _GlobalPublicRoomTile(
           matrix: widget.matrix,
           preview: preview,
-          onTap: () => widget.onOpenPublicRoomPreview(preview),
+          onTap: () =>
+              widget.onOpenPreview(OrexConversationPreview.fromRoom(preview)),
         );
       }
       i -= _globalPublicRooms.length;
@@ -340,15 +328,18 @@ class _ChatListPanelState extends State<ChatListPanel> {
       return _GlobalUserTile(
         matrix: widget.matrix,
         profile: profile,
-        enabled: !_openingGlobal,
-        onTap: () => _openGlobalUser(profile),
+        onTap: () => widget.onOpenPreview(
+          OrexConversationPreview.direct(
+            profile,
+            compactUserId: widget.matrix.compactUserId(profile.userId),
+          ),
+        ),
       );
     }
 
     return const SizedBox.shrink();
   }
 }
-
 
 Set<String> _searchForms(String query) {
   final raw = query.trim().toLowerCase();
@@ -368,7 +359,10 @@ Set<String> _searchForms(String query) {
 
 bool _isStructuredRoomSearch(String query) {
   final q = query.trim().toLowerCase();
-  return q.startsWith('#') || q.startsWith('!') || q.startsWith('@') || q.contains(':');
+  return q.startsWith('#') ||
+      q.startsWith('!') ||
+      q.startsWith('@') ||
+      q.contains(':');
 }
 
 bool _matchesLocalRoomSearch(MatrixService matrix, Room room, String query) {
@@ -384,11 +378,11 @@ bool _matchesLocalRoomSearch(MatrixService matrix, Room room, String query) {
 }
 
 String _roomKindSearchLabel(OrexRoomKind kind) => switch (kind) {
-      OrexRoomKind.direct => 'личный direct private личка',
-      OrexRoomKind.group => 'группа group чат',
-      OrexRoomKind.channel => 'канал channel',
-      OrexRoomKind.supergroup => 'супергруппа supergroup space',
-    };
+  OrexRoomKind.direct => 'личный direct private личка',
+  OrexRoomKind.group => 'группа group чат',
+  OrexRoomKind.channel => 'канал channel',
+  OrexRoomKind.supergroup => 'супергруппа supergroup space',
+};
 
 Set<String> _localRoomSearchTerms(
   MatrixService matrix,
@@ -430,4 +424,3 @@ Set<String> _localRoomSearchTerms(
       .where((term) => term.isNotEmpty)
       .toSet();
 }
-

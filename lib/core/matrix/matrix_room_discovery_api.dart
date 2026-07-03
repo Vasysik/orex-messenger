@@ -21,8 +21,10 @@ extension MatrixRoomDiscoveryApi on MatrixService {
     final normalizedDirectoryQuery = _directoryQuery(q);
     if (normalizedDirectoryQuery != q) {
       try {
-        final res = await client.searchUserDirectory(normalizedDirectoryQuery,
-            limit: 30);
+        final res = await client.searchUserDirectory(
+          normalizedDirectoryQuery,
+          limit: 30,
+        );
         for (final p in res.results) {
           byId[p.userId] = p;
         }
@@ -31,8 +33,9 @@ extension MatrixRoomDiscoveryApi on MatrixService {
       }
     }
 
-    final candidates =
-        includeMxidFallback ? _mxidCandidates(q) : const <String>[];
+    final candidates = includeMxidFallback
+        ? _mxidCandidates(q)
+        : const <String>[];
     for (final candidate in candidates) {
       if (byId.containsKey(candidate)) continue;
       try {
@@ -101,6 +104,26 @@ extension MatrixRoomDiscoveryApi on MatrixService {
 
   Future<String> joinPublicRoom(PublishedRoomsChunk room) =>
       joinRoomPreview(OrexRoomPreview.fromPublicRoom(room));
+
+  Future<String> enterConversationPreview(
+    OrexConversationPreview preview,
+  ) async {
+    switch (preview.kind) {
+      case OrexConversationPreviewKind.publicRoom:
+      case OrexConversationPreviewKind.supergroupChild:
+        final roomPreview = preview.roomPreview;
+        if (roomPreview == null) {
+          throw StateError('Room preview is missing');
+        }
+        return joinRoomPreview(roomPreview);
+      case OrexConversationPreviewKind.direct:
+        final userId = preview.userId;
+        if (userId == null || userId.isEmpty) {
+          throw StateError('User id is missing');
+        }
+        return startDirectChat(userId);
+    }
+  }
 
   Future<String> joinRoomPreview(OrexRoomPreview preview) async {
     final parentSpaceId = preview.parentSpaceId;

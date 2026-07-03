@@ -2,6 +2,8 @@ import 'package:matrix/matrix.dart';
 
 enum OrexRoomKind { direct, group, channel, supergroup }
 
+enum OrexConversationPreviewKind { publicRoom, supergroupChild, direct }
+
 final class OrexRoomAlias {
   const OrexRoomAlias._();
 
@@ -89,4 +91,97 @@ final class OrexRoomPreview {
 
   String get idOrAlias => alias?.isNotEmpty == true ? alias! : roomId;
   bool get isSupergroupChild => parentSpaceId != null;
+}
+
+final class OrexConversationPreview {
+  const OrexConversationPreview._({
+    required this.kind,
+    required this.id,
+    required this.title,
+    required this.actionLabel,
+    required this.progressLabel,
+    required this.emptyBody,
+    this.subtitle,
+    this.avatar,
+    this.topic,
+    this.memberCount,
+    this.iconKey,
+    this.roomPreview,
+    this.userId,
+    this.historyRoomId,
+  });
+
+  factory OrexConversationPreview.fromRoom(OrexRoomPreview preview) {
+    final alias = OrexRoomAlias.displayAlias(preview.alias);
+    final memberLine = preview.memberCount == null
+        ? null
+        : '${preview.memberCount} участников';
+    final subtitle = alias.isNotEmpty
+        ? [alias, memberLine].whereType<String>().join(' · ')
+        : memberLine ?? preview.roomId;
+    final isChild = preview.isSupergroupChild;
+
+    return OrexConversationPreview._(
+      kind: isChild
+          ? OrexConversationPreviewKind.supergroupChild
+          : OrexConversationPreviewKind.publicRoom,
+      id: preview.roomId,
+      title: preview.name,
+      subtitle: subtitle,
+      avatar: preview.avatar,
+      topic: preview.topic,
+      memberCount: preview.memberCount,
+      iconKey: preview.iconKey,
+      roomPreview: preview,
+      historyRoomId: preview.roomId,
+      actionLabel: 'Войти в чат',
+      progressLabel: 'Входим...',
+      emptyBody: isChild
+          ? 'История этого чата будет доступна после входа.'
+          : 'В этом публичном чате пока нет доступной истории.',
+    );
+  }
+
+  factory OrexConversationPreview.direct(
+    Profile profile, {
+    required String compactUserId,
+  }) {
+    final displayName = profile.displayName?.trim();
+    final fallbackName = compactUserId.trim().isEmpty
+        ? profile.userId
+        : compactUserId.trim();
+    final title = displayName == null || displayName.isEmpty
+        ? fallbackName
+        : displayName;
+
+    return OrexConversationPreview._(
+      kind: OrexConversationPreviewKind.direct,
+      id: profile.userId,
+      title: title,
+      subtitle: fallbackName,
+      avatar: profile.avatarUrl,
+      userId: profile.userId,
+      actionLabel: 'Войти в личный чат',
+      progressLabel: 'Открываем...',
+      emptyBody:
+          'Личный чат будет создан только после входа. История появится после первого сообщения.',
+    );
+  }
+
+  final OrexConversationPreviewKind kind;
+  final String id;
+  final String title;
+  final String? subtitle;
+  final Uri? avatar;
+  final String? topic;
+  final int? memberCount;
+  final String? iconKey;
+  final OrexRoomPreview? roomPreview;
+  final String? userId;
+  final String? historyRoomId;
+  final String actionLabel;
+  final String progressLabel;
+  final String emptyBody;
+
+  String get key => '${kind.name}:$id';
 }
