@@ -102,11 +102,27 @@ class CallController extends ChangeNotifier {
     _session = s;
     s.addListener(notifyListeners);
     notifyListeners();
-    // Сигналинг (membership) — чтобы у собеседника зазвонило.
+    // Сигналинг (membership) — чтобы у собеседника зазвонило. Если он
+    // не прошёл, медиа не подключаем: иначе можно получить локальный фантомный
+    // звонок и зависшее состояние MatrixRTC.
     try {
       await matrix.voip?.enterCall(roomId);
     } catch (e) {
       OrexLog.d('Call', 'signaling failed room=$roomId', e);
+      s.removeListener(notifyListeners);
+      await s.hangUp();
+      s.dispose();
+      if (_session == s) {
+        _session = null;
+        minimized = false;
+        this.roomId = null;
+        listenOnly = false;
+        _initiator = false;
+        _start = null;
+        focusedParticipantIdentity = null;
+        notifyListeners();
+      }
+      return;
     }
     await s.connect(video: video);
     if (s.status == CallStatus.connected) {

@@ -145,7 +145,9 @@ class _CallScreenState extends State<CallScreen> {
               if (s == null) {
                 // Звонок завершён — закрываем экран.
                 WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (mounted) Navigator.of(context).maybePop();
+                  if (!mounted) return;
+                  final nav = Navigator.of(context);
+                  if (nav.canPop()) nav.pop();
                 });
                 return const SizedBox.shrink();
               }
@@ -267,7 +269,6 @@ class _CallScreenState extends State<CallScreen> {
           matrix: widget.matrix,
           room: room,
           voiceState: state,
-          speakerMuted: session.speakerMuted,
           zoomable: true,
           cornerIcon: Icons.close_fullscreen,
           cornerTooltip: 'Отменить приближение плитки',
@@ -314,7 +315,6 @@ class _CallScreenState extends State<CallScreen> {
                                     matrix: widget.matrix,
                                     room: room,
                                     voiceState: state,
-                                    speakerMuted: session.speakerMuted,
                                     onTap: () => _call.focusParticipant(p.identity),
                                     cornerIcon: Icons.open_in_full,
                                     cornerTooltip: 'Приблизить плитку',
@@ -647,7 +647,6 @@ class _ParticipantTile extends StatelessWidget {
     required this.matrix,
     required this.room,
     required this.voiceState,
-    required this.speakerMuted,
     required this.preferScreenShare,
     this.onTap,
     this.zoomable = false,
@@ -664,7 +663,6 @@ class _ParticipantTile extends StatelessWidget {
   final MatrixService matrix;
   final Room? room;
   final VoiceParticipantState voiceState;
-  final bool speakerMuted;
   final bool preferScreenShare;
   final VoidCallback? onTap;
   final bool zoomable;
@@ -690,8 +688,8 @@ class _ParticipantTile extends StatelessWidget {
       preferScreenShare: preferScreenShare,
     );
     final micMuted = orexParticipantMicMuted(participant);
-    final locallyMuted = speakerMuted && participant is lk.LocalParticipant;
-    final statusBadgeCount = (micMuted ? 1 : 0) + (locallyMuted ? 1 : 0);
+    final soundMuted = voiceState.speakerMuted;
+    final statusBadgeCount = (micMuted ? 1 : 0) + (soundMuted ? 1 : 0);
     final cameraButtonBottom = statusBadgeCount == 0
         ? 8.0
         : 8.0 + statusBadgeCount * 44.0;
@@ -799,11 +797,13 @@ class _ParticipantTile extends StatelessWidget {
                           icon: Icons.mic_off,
                           tooltip: 'Микрофон выключен',
                         ),
-                      if (locallyMuted) ...[
+                      if (soundMuted) ...[
                         if (micMuted) const SizedBox(height: 6),
-                        const _TileStatusBadge(
+                        _TileStatusBadge(
                           icon: Icons.volume_off,
-                          tooltip: 'Вы выключили звук звонка у себя',
+                          tooltip: participant is lk.LocalParticipant
+                              ? 'Вы выключили звук звонка у себя'
+                              : 'Участник выключил звук звонка у себя',
                         ),
                       ],
                     ],

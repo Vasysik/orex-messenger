@@ -68,7 +68,6 @@ class _ChatViewState extends State<ChatView> {
   String? _lastReportedSupergroupChildId;
 
   List<ChatItem> _chatItems = [];
-  bool _showingCachedTimeline = false;
 
   @override
   void initState() {
@@ -163,7 +162,6 @@ class _ChatViewState extends State<ChatView> {
 
       if (mounted) {
         setState(() {
-          widget.matrix.cacheTimelineEvents(widget.roomId, timeline.events);
           _buildChatItems(timeline.events);
         });
       }
@@ -207,21 +205,10 @@ class _ChatViewState extends State<ChatView> {
       if (mounted) setState(() => _room = room);
       return;
     }
-    final cached = widget.matrix.cachedTimelineEvents(room.id);
-    if (cached.isNotEmpty && mounted) {
-      setState(() {
-        _room = room;
-        _showingCachedTimeline = true;
-        _buildChatItems(cached);
-      });
-    }
-
     final timeline = await room.getTimeline(onUpdate: () {
       final events = _timeline?.events ?? const <Event>[];
-      if (events.isNotEmpty) widget.matrix.cacheTimelineEvents(room.id, events);
       if (mounted) {
         setState(() {
-          _showingCachedTimeline = false;
           _buildChatItems(events);
         });
       }
@@ -232,12 +219,22 @@ class _ChatViewState extends State<ChatView> {
       setState(() {
         _room = room;
         _timeline = timeline;
-        _showingCachedTimeline = false;
         _noMoreHistory = false;
-        widget.matrix.cacheTimelineEvents(room.id, timeline.events);
         _buildChatItems(timeline.events);
       });
-      _loadMoreHistory();
+    }
+    await _refreshTimelineOnOpen(room, timeline);
+    if (mounted) {
+      setState(() => _buildChatItems(timeline.events));
+    }
+  }
+
+  Future<void> _refreshTimelineOnOpen(Room room, Timeline timeline) async {
+    if (!timeline.canRequestHistory) return;
+    try {
+      await timeline.requestHistory(historyCount: 40);
+    } catch (e) {
+      OrexLog.d('Chat', 'open refresh failed room=${room.id}', e);
     }
   }
 
@@ -533,11 +530,7 @@ class _ChatViewState extends State<ChatView> {
   void dispose() {
     widget.matrix.removeListener(_onMatrix);
     _scroll.removeListener(_scrollListener);
-    final timeline = _timeline;
-    if (timeline != null) {
-      widget.matrix.cacheTimelineEvents(widget.roomId, timeline.events);
-    }
-    timeline?.cancelSubscriptions();
+    _timeline?.cancelSubscriptions();
     _input.dispose();
     _scroll.dispose();
     _focusNode.dispose();
@@ -732,17 +725,6 @@ class _ChatViewState extends State<ChatView> {
                   matrix: widget.matrix,
                   room: room,
                   onJoin: () => _openCall(false),
-                ),
-              ),
-            if (_showingCachedTimeline)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                color: OrexColors.copper.withValues(alpha: 0.10),
-                child: const Text(
-                  'Показываем кэш, обновляем ленту…',
-                  style: TextStyle(fontSize: 12),
-                  textAlign: TextAlign.center,
                 ),
               ),
             Expanded(

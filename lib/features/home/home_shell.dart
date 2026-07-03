@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 import '../../core/matrix/matrix_service.dart';
+import '../../core/config/app_version.dart';
 import '../../core/logging/orex_logger.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
@@ -24,10 +25,12 @@ class HomeShell extends StatefulWidget {
     super.key,
     required this.matrix,
     required this.theme,
+    required this.version,
   });
 
   final MatrixService matrix;
   final ThemeController theme;
+  final OrexAppVersion version;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -91,7 +94,11 @@ class _HomeShellState extends State<HomeShell> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) =>
-            SettingsScreen(matrix: widget.matrix, theme: widget.theme),
+            SettingsScreen(
+              matrix: widget.matrix,
+              theme: widget.theme,
+              version: widget.version,
+            ),
       ),
     );
   }

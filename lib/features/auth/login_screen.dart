@@ -1,12 +1,19 @@
 import 'package:flutter/material.dart';
 import '../../core/matrix/matrix_service.dart';
+import '../../core/config/app_version.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/squirrel_mascot.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key, required this.matrix, required this.onLoggedIn});
+  const LoginScreen({
+    super.key,
+    required this.matrix,
+    required this.version,
+    required this.onLoggedIn,
+  });
   final MatrixService matrix;
+  final OrexAppVersion version;
   final VoidCallback onLoggedIn;
 
   @override
@@ -100,6 +107,15 @@ class _LoginScreenState extends State<LoginScreen> {
                     const SizedBox(height: 4),
                     Text('Тепло. Быстро. Децентрализованно.',
                         style: Theme.of(context).textTheme.bodySmall),
+                    const SizedBox(height: 8),
+                    Text(
+                      '${widget.version.versionLine}\n${widget.version.buildLine}',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: OrexColors.cream.withValues(alpha: 0.74),
+                            height: 1.35,
+                          ),
+                    ),
                     const SizedBox(height: 24),
                     _Field(controller: _user, hint: 'Имя пользователя'),
                     const SizedBox(height: 12),

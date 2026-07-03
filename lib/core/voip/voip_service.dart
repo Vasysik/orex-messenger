@@ -153,32 +153,49 @@ class VoipService extends ChangeNotifier {
   /// Сканируем все комнаты на активные звонки.
   void _scan() {
     final firstScan = !_ready;
-    final myId = client.userID;
     for (final room in client.rooms) {
       if (!_roomHasCall(room)) {
-        // Звонок закончился — сбрасываем и закрываем открытый входящий.
-        final wasTracked = _shown.remove(room.id) | _suppress.remove(room.id);
-        if (wasTracked) _dismiss.add(room.id);
+        _dismissRoomCall(room.id);
         continue;
       }
-      if (active != null && active!.room.id == room.id) continue; // я в звонке
-      if (_shown.contains(room.id) || _suppress.contains(room.id)) continue;
-      final others = _callMembers(room).where((id) => id != myId);
-      if (others.isEmpty) continue; // только моё членство — не входящий
-      if (!room.isDirectChat) {
-        // В группах, каналах и чатах супергруппы звонок — это голосовой канал:
-        // не показываем системный входящий вызов всем участникам. Комната всё
-        // равно помечается активной, поэтому UI покажет «Идёт звонок · Войти».
-        _suppress.add(room.id);
-        continue;
-      }
-      if (firstScan) {
-        _suppress.add(room.id); // активен на старте → не звоним (покажет панель «войти»)
-        continue;
-      }
-      _shown.add(room.id);
-      _incoming.add(room);
+      _considerIncomingRoom(room, firstScan: firstScan);
     }
+  }
+
+  void _considerIncomingRoom(Room room, {required bool firstScan}) {
+    final myId = client.userID;
+    if (active != null && active!.room.id == room.id) return; // я в звонке
+    if (_shown.contains(room.id) || _suppress.contains(room.id)) return;
+    final others = _callMembers(room).where((id) => id != myId);
+    if (others.isEmpty) return; // только моё членство — не входящий
+    if (!room.isDirectChat) {
+      // В группах, каналах и чатах супергруппы звонок — это голосовой канал:
+      // не показываем системный входящий вызов всем участникам. Комната всё
+      // равно помечается активной, поэтому UI покажет «Идёт звонок · Войти».
+      _suppress.add(room.id);
+      return;
+    }
+    if (firstScan) {
+      _suppress.add(room.id); // активен на старте → не звоним (покажет панель «войти»)
+      return;
+    }
+    _shown.add(room.id);
+    _incoming.add(room);
+  }
+
+  void _dismissRoomCall(String roomId) {
+    final wasTracked = _shown.remove(roomId) | _suppress.remove(roomId);
+    if (wasTracked) _dismiss.add(roomId);
+  }
+
+  void _handleIncomingGroupCall(GroupCallSession groupCall) {
+    final room = groupCall.room;
+    if (!_roomHasCall(room)) return;
+    _considerIncomingRoom(room, firstScan: !_ready);
+  }
+
+  void _handleGroupCallEnded(GroupCallSession groupCall) {
+    _dismissRoomCall(groupCall.room.id);
   }
 
   /// Я вышел из звонка — не «перезванивать» по тому же продолжающемуся звонку.
@@ -229,7 +246,20 @@ class VoipService extends ChangeNotifier {
       preShareKey: false, 
     );
 
-    await gc.enter(); 
+    try {
+      await gc.enter();
+    } catch (_) {
+      try {
+        await gc.leave();
+      } catch (_) {}
+      try {
+        await room.removeFamedlyCallMemberEvent(gc.groupCallId, voip);
+      } catch (_) {}
+      voip.groupCalls.removeWhere(
+        (k, v) => k.roomId == room.id && k.callId == gc.groupCallId,
+      );
+      rethrow;
+    }
     active = gc;
     notifyListeners();
     return gc;
@@ -320,8 +350,12 @@ class _OrexCallDelegate implements WebRTCDelegate {
 
   // --- Групповые звонки: вход/выход обрабатываем сами через VoipService ---
   @override
-  Future<void> handleNewGroupCall(GroupCallSession groupCall) async {}
+  Future<void> handleNewGroupCall(GroupCallSession groupCall) async {
+    service._handleIncomingGroupCall(groupCall);
+  }
 
   @override
-  Future<void> handleGroupCallEnded(GroupCallSession groupCall) async {}
+  Future<void> handleGroupCallEnded(GroupCallSession groupCall) async {
+    service._handleGroupCallEnded(groupCall);
+  }
 }

@@ -155,7 +155,10 @@ extension MatrixRoomsApi on MatrixService {
   bool roomHasActiveCall(Room room) {
     final v = voip?.voip;
     if (v == null) return false;
-    return room.hasActiveGroupCall(v, ignoreDirectChats: false);
+    if (!room.hasActiveGroupCall(v, ignoreDirectChats: false)) return false;
+
+    final myId = client.userID;
+    return callMemberIds(room).any((id) => id != myId);
   }
 
   /// userId участников активного звонка в комнате — для панели «войти».

@@ -213,7 +213,6 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
             matrix: widget.call.matrix,
             room: room,
             voiceState: state,
-            speakerMuted: session.speakerMuted,
             zoomable: true,
             cornerIcon: Icons.close_fullscreen,
             cornerTooltip: 'Отменить приближение плитки',
@@ -303,7 +302,6 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                     matrix: widget.call.matrix,
                     room: room,
                     voiceState: state,
-                    speakerMuted: session.speakerMuted,
                     cornerIcon: Icons.open_in_full,
                     cornerTooltip: 'Приблизить плитку',
                     onCornerTap: () => widget.call.focusParticipant(p.identity),
@@ -681,7 +679,6 @@ class _MiniTile extends StatelessWidget {
     required this.matrix,
     required this.room,
     required this.voiceState,
-    required this.speakerMuted,
     required this.preferScreenShare,
     this.zoomable = false,
     this.onTap,
@@ -698,7 +695,6 @@ class _MiniTile extends StatelessWidget {
   final MatrixService matrix;
   final Room? room;
   final VoiceParticipantState voiceState;
-  final bool speakerMuted;
   final bool preferScreenShare;
   final bool zoomable;
   final VoidCallback? onTap;
@@ -722,8 +718,8 @@ class _MiniTile extends StatelessWidget {
       preferScreenShare: preferScreenShare,
     );
     final micMuted = orexParticipantMicMuted(participant);
-    final locallyMuted = speakerMuted && participant is lk.LocalParticipant;
-    final statusBadgeCount = (micMuted ? 1 : 0) + (locallyMuted ? 1 : 0);
+    final soundMuted = voiceState.speakerMuted;
+    final statusBadgeCount = (micMuted ? 1 : 0) + (soundMuted ? 1 : 0);
     final cameraButtonBottom = statusBadgeCount == 0
         ? 8.0
         : 8.0 + statusBadgeCount * 39.0;
@@ -800,11 +796,13 @@ class _MiniTile extends StatelessWidget {
                       icon: Icons.mic_off,
                       tooltip: 'Микрофон выключен',
                     ),
-                  if (locallyMuted) ...[
+                  if (soundMuted) ...[
                     if (micMuted) const SizedBox(height: 5),
-                    const _MiniTileStatusBadge(
+                    _MiniTileStatusBadge(
                       icon: Icons.volume_off,
-                      tooltip: 'Вы выключили звук звонка у себя',
+                      tooltip: participant is lk.LocalParticipant
+                          ? 'Вы выключили звук звонка у себя'
+                          : 'Участник выключил звук звонка у себя',
                     ),
                   ],
                 ],

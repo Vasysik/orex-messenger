@@ -20,10 +20,12 @@ class SettingsScreen extends StatefulWidget {
     super.key,
     required this.matrix,
     required this.theme,
+    required this.version,
   });
 
   final MatrixService matrix;
   final ThemeController theme;
+  final OrexAppVersion version;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -455,11 +457,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 16),
             OrexSettingsSection(
               title: 'О приложении',
-              children: const [
+              children: [
                 OrexSettingsTile(
                   icon: Icons.info_outline,
                   title: 'Orex Messenger',
-                  subtitle: 'Версия $orexAppVersion · сборка $orexAppBuildNumber',
+                  subtitle: widget.version.settingsSubtitle,
                 ),
               ],
             ),

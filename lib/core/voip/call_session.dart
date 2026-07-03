@@ -601,7 +601,15 @@ class CallSession extends ChangeNotifier {
   Future<void> toggleSpeakerMute() async {
     speakerMuted = !speakerMuted;
     _applySpeakerMute();
+    await _publishSpeakerMuteState();
     if (!_disposed) notifyListeners();
+  }
+
+  Future<void> _publishSpeakerMuteState() async {
+    final userId = client.userID;
+    if (userId == null || userId.isEmpty) return;
+    _voiceStates[userId] = localVoiceState.copyWith(speakerMuted: speakerMuted);
+    await _publishVoiceParticipantState();
   }
 
   void _applySpeakerMute() {
@@ -912,6 +920,7 @@ class CallSession extends ChangeNotifier {
         userId,
         {
           'hand_raised': state.handRaised,
+          'speaker_muted': state.speakerMuted,
           if (state.reaction != null) 'reaction': state.reaction,
           if (state.reactionTs != null) 'reaction_ts': state.reactionTs,
         },
@@ -965,13 +974,29 @@ class CallSession extends ChangeNotifier {
     if (!force && nextCameraId == _lastAppliedCameraDeviceId) return;
     if (nextCameraId != null && await _switchActiveCameraTrack(nextCameraId)) return;
 
+    await _recreateCameraTrack(lp);
+  }
+
+  Future<void> _recreateCameraTrack(lk.LocalParticipant lp) async {
+    final oldTrack = _localCameraTrack();
     try {
       await lp.setCameraEnabled(false);
-      await Future<void>.delayed(const Duration(milliseconds: 120));
-      await lp.setCameraEnabled(
-        true,
-        cameraCaptureOptions: _cameraCaptureOptions(),
-      );
+      try {
+        await oldTrack?.stop();
+      } catch (_) {}
+      try {
+        await oldTrack?.dispose();
+      } catch (_) {}
+      await Future<void>.delayed(const Duration(milliseconds: 180));
+
+      final options = _cameraCaptureOptions();
+      try {
+        final track = await lk.LocalVideoTrack.createCameraTrack(options);
+        await lp.publishVideoTrack(track);
+      } catch (e) {
+        OrexLog.d('Call', 'explicit camera recreate failed, fallback setCameraEnabled', e);
+        await lp.setCameraEnabled(true, cameraCaptureOptions: options);
+      }
       cameraError = null;
     } catch (e) {
       cameraError = '$e';
@@ -1029,6 +1054,7 @@ class CallSession extends ChangeNotifier {
   }
 
   Future<bool> _switchActiveCameraTrack(String deviceId) async {
+    if (!kIsWeb && _desktopNeedsExplicitSource) return false;
     final lp = _room?.localParticipant;
     if (lp == null || !lp.isCameraEnabled() || !canPublishMedia) return false;
     final track = _localCameraTrack();
@@ -1092,12 +1118,19 @@ class CallSession extends ChangeNotifier {
     final userId = client.userID;
     if (userId == null || userId.isEmpty) return;
     final state = localVoiceState;
-    if (!handRaised && !state.handRaised && state.reaction == null) return;
+    if (!handRaised &&
+        !state.handRaised &&
+        state.reaction == null &&
+        !state.speakerMuted) {
+      return;
+    }
     handRaised = false;
+    speakerMuted = false;
     _reactionClearTimer?.cancel();
     _reactionClearTimer = null;
     _voiceStates[userId] = state.copyWith(
       handRaised: false,
+      speakerMuted: false,
       clearReaction: true,
     );
     try {
@@ -1204,6 +1237,7 @@ class _Creds {
 class VoiceParticipantState {
   const VoiceParticipantState({
     this.handRaised = false,
+    this.speakerMuted = false,
     this.reaction,
     this.reactionTs,
   });
@@ -1217,23 +1251,27 @@ class VoiceParticipantState {
         DateTime.now().millisecondsSinceEpoch - reactionTs < 6000;
     return VoiceParticipantState(
       handRaised: content['hand_raised'] == true,
+      speakerMuted: content['speaker_muted'] == true,
       reaction: reactionFresh ? content['reaction']?.toString() : null,
       reactionTs: reactionFresh ? reactionTs : null,
     );
   }
 
   final bool handRaised;
+  final bool speakerMuted;
   final String? reaction;
   final int? reactionTs;
 
   VoiceParticipantState copyWith({
     bool? handRaised,
+    bool? speakerMuted,
     String? reaction,
     int? reactionTs,
     bool clearReaction = false,
   }) {
     return VoiceParticipantState(
       handRaised: handRaised ?? this.handRaised,
+      speakerMuted: speakerMuted ?? this.speakerMuted,
       reaction: clearReaction ? null : reaction ?? this.reaction,
       reactionTs: clearReaction ? null : reactionTs ?? this.reactionTs,
     );

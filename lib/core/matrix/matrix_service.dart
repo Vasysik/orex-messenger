@@ -101,11 +101,6 @@ class MatrixService extends ChangeNotifier {
   bool _notificationSnapshotReady = false;
   String? _foregroundRoomId;
 
-  final Map<String, List<Event>> _timelineEventCache = {};
-  final Map<String, DateTime> _timelineEventCacheAt = {};
-  static const Duration _timelineEventCacheTtl = Duration(minutes: 45);
-  static const int _timelineEventCacheMaxRooms = 24;
-  static const int _timelineEventCacheMaxEventsPerRoom = 80;
 
   /// Когда в последний раз ключи выгружались в бэкап (для показа в настройках).
   DateTime? lastBackup;
@@ -153,8 +148,6 @@ class MatrixService extends ChangeNotifier {
       _backupDisabledByUser = false;
       _notificationCounts.clear();
       _notificationSnapshotReady = false;
-      _timelineEventCache.clear();
-      _timelineEventCacheAt.clear();
       await _loadBackupPrefs();
       notifyListeners();
     });
@@ -204,33 +197,6 @@ class MatrixService extends ChangeNotifier {
     _foregroundRoomId = value == null || value.isEmpty ? null : value;
   }
 
-  List<Event> cachedTimelineEvents(String roomId) {
-    final cachedAt = _timelineEventCacheAt[roomId];
-    final cached = _timelineEventCache[roomId];
-    if (cachedAt == null || cached == null) return const <Event>[];
-    if (DateTime.now().difference(cachedAt) > _timelineEventCacheTtl) {
-      _timelineEventCacheAt.remove(roomId);
-      _timelineEventCache.remove(roomId);
-      return const <Event>[];
-    }
-    return List<Event>.unmodifiable(cached);
-  }
-
-  void cacheTimelineEvents(String roomId, List<Event> events) {
-    if (events.isEmpty) return;
-    _timelineEventCache[roomId] = List<Event>.unmodifiable(
-      events.take(_timelineEventCacheMaxEventsPerRoom),
-    );
-    _timelineEventCacheAt[roomId] = DateTime.now();
-    if (_timelineEventCache.length <= _timelineEventCacheMaxRooms) return;
-
-    final oldest = _timelineEventCacheAt.entries.toList()
-      ..sort((a, b) => a.value.compareTo(b.value));
-    for (final entry in oldest.take(_timelineEventCache.length - _timelineEventCacheMaxRooms)) {
-      _timelineEventCacheAt.remove(entry.key);
-      _timelineEventCache.remove(entry.key);
-    }
-  }
 
   /// Принудительно перерисовать слушателей (например, после завершения
   /// проверки сессии, чтобы плашка «не подтверждена» убралась без перезагрузки).

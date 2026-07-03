@@ -36,9 +36,10 @@ class OrexScrollBehavior extends MaterialScrollBehavior {
 }
 
 class _Services {
-  _Services(this.matrix, this.theme);
+  _Services(this.matrix, this.theme, this.version);
   final MatrixService matrix;
   final ThemeController theme;
+  final OrexAppVersion version;
 }
 
 class OrexBootstrap extends StatefulWidget {
@@ -49,10 +50,15 @@ class OrexBootstrap extends StatefulWidget {
 }
 
 class _OrexBootstrapState extends State<OrexBootstrap> {
+  late final Future<OrexAppVersion> _versionFuture = OrexAppVersion.load();
   late final Future<_Services> _future = _init();
 
   Future<_Services> _init() async {
-    OrexLog.d('Bootstrap', 'starting Orex Messenger $orexAppVersionLabel');
+    final version = await _versionFuture;
+    OrexLog.d(
+      'Bootstrap',
+      'starting Orex Messenger ${version.version}, Сборка ${version.buildNumber}',
+    );
     OrexConfig.validateSecurity();
     try {
       await vod.init().timeout(const Duration(seconds: 6));
@@ -73,7 +79,7 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
       database: database,
     );
     await matrix.init();
-    return _Services(matrix, theme);
+    return _Services(matrix, theme, version);
   }
 
   @override
@@ -85,9 +91,13 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
           return _MiniApp(child: _StartupError(error: snap.error.toString()));
         }
         if (!snap.hasData) {
-          return const _MiniApp(child: SplashScreen());
+          return _MiniApp(child: SplashScreen(versionFuture: _versionFuture));
         }
-        return OrexApp(matrix: snap.data!.matrix, theme: snap.data!.theme);
+        return OrexApp(
+          matrix: snap.data!.matrix,
+          theme: snap.data!.theme,
+          version: snap.data!.version,
+        );
       },
     );
   }
@@ -108,20 +118,50 @@ class _MiniApp extends StatelessWidget {
 }
 
 class SplashScreen extends StatelessWidget {
-  const SplashScreen({super.key});
+  const SplashScreen({super.key, required this.versionFuture});
+
+  final Future<OrexAppVersion> versionFuture;
 
   @override
   Widget build(BuildContext context) {
-    return const AmbientBackground(
+    return AmbientBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
         body: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SquirrelMascot(size: 132, caption: 'Orex Messenger'),
-              SizedBox(height: 28),
-              SizedBox(
+              const SquirrelMascot(size: 132, caption: 'Orex Messenger'),
+              const SizedBox(height: 10),
+              FutureBuilder<OrexAppVersion>(
+                future: versionFuture,
+                initialData: OrexAppVersion.fallback,
+                builder: (context, snap) {
+                  final version = snap.data ?? OrexAppVersion.fallback;
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        version.versionLine,
+                        style: const TextStyle(
+                          color: OrexColors.cream,
+                          fontSize: 13,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        version.buildLine,
+                        style: const TextStyle(
+                          color: OrexColors.cream,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 28),
+              const SizedBox(
                 width: 26,
                 height: 26,
                 child: CircularProgressIndicator(
@@ -169,9 +209,15 @@ class _StartupError extends StatelessWidget {
 }
 
 class OrexApp extends StatefulWidget {
-  const OrexApp({super.key, required this.matrix, required this.theme});
+  const OrexApp({
+    super.key,
+    required this.matrix,
+    required this.theme,
+    required this.version,
+  });
   final MatrixService matrix;
   final ThemeController theme;
+  final OrexAppVersion version;
 
   @override
   State<OrexApp> createState() => _OrexAppState();
@@ -195,7 +241,6 @@ class _OrexAppState extends State<OrexApp> {
       );
     });
     _incomingCallSub = widget.matrix.voip?.onIncomingCall.listen((room) {
-      widget.matrix.audio.startIncomingRingtone();
       final ctx = _navKey.currentContext;
       if (ctx == null || !ctx.mounted) return;
       final call = widget.matrix.call;
@@ -241,9 +286,14 @@ class _OrexAppState extends State<OrexApp> {
       darkTheme: OrexTheme.dark,
       themeMode: widget.theme.mode,
       home: widget.matrix.isLoggedIn
-          ? HomeShell(matrix: widget.matrix, theme: widget.theme)
+          ? HomeShell(
+              matrix: widget.matrix,
+              theme: widget.theme,
+              version: widget.version,
+            )
           : LoginScreen(
               matrix: widget.matrix,
+              version: widget.version,
               onLoggedIn: () => setState(() {}),
             ),
     );
