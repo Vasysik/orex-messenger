@@ -55,6 +55,9 @@ class _ChatViewState extends State<ChatView> {
   final _scroll = ScrollController();
   final FocusNode _focusNode = FocusNode();
 
+  static const int _historyPageSize = 40;
+  static const int _openHistoryMaxPages = 4;
+
   Timeline? _timeline;
   Room? _room;
   Event? _editing;
@@ -81,17 +84,48 @@ class _ChatViewState extends State<ChatView> {
     if (mounted) setState(() {});
   }
 
-  void _buildChatItems(List<Event> rawEvents) {
+  bool _isRenderableTimelineEvent(Event e) {
     final room = _room;
     final hideMemberEvents = room != null && widget.matrix.isChannel(room);
-    final events = rawEvents
-        .where((e) =>
-            (e.type == EventTypes.Message ||
-                e.type == EventTypes.Encrypted ||
-                (!hideMemberEvents && e.type == EventTypes.RoomMember)) &&
-            !e.redacted &&
-            e.relationshipType != RelationshipTypes.edit)
-        .toList();
+    return (e.type == EventTypes.Message ||
+            e.type == EventTypes.Encrypted ||
+            (!hideMemberEvents && e.type == EventTypes.RoomMember)) &&
+        !e.redacted &&
+        e.relationshipType != RelationshipTypes.edit;
+  }
+
+  bool _hasRenderableTimelineEvents(List<Event> rawEvents) =>
+      rawEvents.any(_isRenderableTimelineEvent);
+
+  bool get _isAtLatestEdge =>
+      !_scroll.hasClients || _scroll.position.pixels <= _scroll.position.minScrollExtent + 80;
+
+  void _jumpToLatestAfterFrame() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      final min = _scroll.position.minScrollExtent;
+      if ((_scroll.position.pixels - min).abs() > 1) {
+        _scroll.jumpTo(min);
+      }
+    });
+  }
+
+  void _preserveHistoryViewportAfterFrame(double oldMaxScrollExtent) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      final pos = _scroll.position;
+      final delta = pos.maxScrollExtent - oldMaxScrollExtent;
+      if (delta <= 0) return;
+      final target = (pos.pixels + delta).clamp(pos.minScrollExtent, pos.maxScrollExtent);
+      if ((target - pos.pixels).abs() > 1) {
+        _scroll.jumpTo(target.toDouble());
+      }
+    });
+  }
+
+  void _buildChatItems(List<Event> rawEvents) {
+    final events = rawEvents.where(_isRenderableTimelineEvent).toList()
+      ..sort((a, b) => b.originServerTs.compareTo(a.originServerTs));
 
     final List<ChatItem> items = [];
     int i = 0;
@@ -157,13 +191,18 @@ class _ChatViewState extends State<ChatView> {
     setState(() => _loadingHistory = true);
     try {
       final beforeLen = timeline.events.length;
-      await timeline.requestHistory(historyCount: 30);
+      final oldMaxScrollExtent =
+          _scroll.hasClients ? _scroll.position.maxScrollExtent : null;
+      await timeline.requestHistory(historyCount: _historyPageSize);
       final afterLen = timeline.events.length;
 
       if (mounted) {
         setState(() {
           _buildChatItems(timeline.events);
         });
+        if (oldMaxScrollExtent != null) {
+          _preserveHistoryViewportAfterFrame(oldMaxScrollExtent);
+        }
       }
 
       if (beforeLen == afterLen && !timeline.canRequestHistory) {
@@ -207,10 +246,12 @@ class _ChatViewState extends State<ChatView> {
     }
     final timeline = await room.getTimeline(onUpdate: () {
       final events = _timeline?.events ?? const <Event>[];
+      final wasAtLatest = _isAtLatestEdge;
       if (mounted) {
         setState(() {
           _buildChatItems(events);
         });
+        if (wasAtLatest) _jumpToLatestAfterFrame();
       }
       _markRead(room);
     });
@@ -222,17 +263,36 @@ class _ChatViewState extends State<ChatView> {
         _noMoreHistory = false;
         _buildChatItems(timeline.events);
       });
+      _jumpToLatestAfterFrame();
     }
     await _refreshTimelineOnOpen(room, timeline);
     if (mounted) {
       setState(() => _buildChatItems(timeline.events));
+      _jumpToLatestAfterFrame();
     }
   }
 
   Future<void> _refreshTimelineOnOpen(Room room, Timeline timeline) async {
     if (!timeline.canRequestHistory) return;
     try {
-      await timeline.requestHistory(historyCount: 40);
+      for (var page = 0;
+          page < _openHistoryMaxPages && timeline.canRequestHistory;
+          page++) {
+        final beforeLen = timeline.events.length;
+        await timeline.requestHistory(historyCount: _historyPageSize);
+        if (!mounted) return;
+        setState(() => _buildChatItems(timeline.events));
+
+        // Каналы скрывают member-события. В старой комнате первая страница
+        // истории может состоять только из них, из-за чего экран выглядит
+        // пустым, пока пользователь вручную не потянет ленту. На открытии
+        // догружаем ещё несколько страниц, но останавливаемся сразу после
+        // первого реально отображаемого события.
+        if (_hasRenderableTimelineEvents(timeline.events) ||
+            timeline.events.length == beforeLen) {
+          break;
+        }
+      }
     } catch (e) {
       OrexLog.d('Chat', 'open refresh failed room=${room.id}', e);
     }

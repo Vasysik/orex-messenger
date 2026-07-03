@@ -118,9 +118,9 @@ class _MiniApp extends StatelessWidget {
 }
 
 class SplashScreen extends StatelessWidget {
-  const SplashScreen({super.key, required this.versionFuture});
+  const SplashScreen({super.key, this.versionFuture});
 
-  final Future<OrexAppVersion> versionFuture;
+  final Future<OrexAppVersion>? versionFuture;
 
   @override
   Widget build(BuildContext context) {
