@@ -9,13 +9,12 @@ import '../../../shared/theme/orex_theme.dart';
 import '../../../shared/widgets/media_player.dart';
 import '../../../core/files/file_helper.dart';
 import '../../../core/config/orex_config.dart';
-import '../../../domain/rooms/member_event_text.dart';
+import '../../../core/matrix/matrix_member_event_text.dart';
 import '../../../domain/rooms/room_metadata.dart';
 import '../../../shared/widgets/media_gallery.dart';
 
 part 'message_attachments.dart';
 part 'message_system_cards.dart';
-
 
 class MessageBubble extends StatelessWidget {
   const MessageBubble({
@@ -49,7 +48,17 @@ class MessageBubble extends StatelessWidget {
   final VoidCallback? onCancelSend;
   final ValueChanged<String>? onOpenRoomReference;
 
-  static const _quickEmojis = ['👍', '❤️', '😂', '🎉', '🤯', '😢', '🔥', '🙏', '🐿️'];
+  static const _quickEmojis = [
+    '👍',
+    '❤️',
+    '😂',
+    '🎉',
+    '🤯',
+    '😢',
+    '🔥',
+    '🙏',
+    '🐿️',
+  ];
 
   Event? _repliedEvent() {
     final t = timeline;
@@ -67,8 +76,9 @@ class MessageBubble extends StatelessWidget {
     final t = timeline;
     if (t == null) return map;
     for (final r in event.aggregatedEvents(t, RelationshipTypes.reaction)) {
-      final key = r.content
-          .tryGetMap<String, Object?>('m.relates_to')?['key'] as String?;
+      final key =
+          r.content.tryGetMap<String, Object?>('m.relates_to')?['key']
+              as String?;
       if (key == null) continue;
       final info = map.putIfAbsent(key, () => _ReactionInfo());
       info.count++;
@@ -86,10 +96,10 @@ class MessageBubble extends StatelessWidget {
   Future<void> _showMenu(BuildContext context, Offset pos, String body) async {
     final canModify = isMine && !event.redacted;
     // Сообщение ещё не доставлено (отправляется или зависло с ошибкой)
-    final isUnsent = event.status == EventStatus.sending ||
+    final isUnsent =
+        event.status == EventStatus.sending ||
         event.status == EventStatus.error;
-    final overlay =
-        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
     final scrollController = ScrollController();
 
     final selected = await showMenu<String>(
@@ -100,9 +110,7 @@ class MessageBubble extends StatelessWidget {
         overlay.size.width - pos.dx,
         overlay.size.height - pos.dy,
       ),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       items: [
         // Быстрые реакции — только для доставленных сообщений
         if (onReact != null && !isUnsent)
@@ -115,7 +123,10 @@ class MessageBubble extends StatelessWidget {
                   if (pointerSignal is PointerScrollEvent) {
                     final double delta = pointerSignal.scrollDelta.dy;
                     scrollController.jumpTo(
-                      (scrollController.offset + delta).clamp(0.0, scrollController.position.maxScrollExtent),
+                      (scrollController.offset + delta).clamp(
+                        0.0,
+                        scrollController.position.maxScrollExtent,
+                      ),
                     );
                   }
                 },
@@ -126,14 +137,18 @@ class MessageBubble extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: _quickEmojis
-                        .map((e) => InkWell(
-                              onTap: () => Navigator.pop(context, 'react:$e'),
-                              child: Padding(
-                                padding: const EdgeInsets.all(5),
-                                child: Text(e,
-                                    style: const TextStyle(fontSize: 22)),
+                        .map(
+                          (e) => InkWell(
+                            onTap: () => Navigator.pop(context, 'react:$e'),
+                            child: Padding(
+                              padding: const EdgeInsets.all(5),
+                              child: Text(
+                                e,
+                                style: const TextStyle(fontSize: 22),
                               ),
-                            ))
+                            ),
+                          ),
+                        )
                         .toList(),
                   ),
                 ),
@@ -160,7 +175,11 @@ class MessageBubble extends StatelessWidget {
             value: 'copy',
             child: _MenuRow(icon: Icons.copy, label: 'Копировать'),
           ),
-        if (canModify && onEdit != null && !_isMedia && !_isCallSummary && !isUnsent)
+        if (canModify &&
+            onEdit != null &&
+            !_isMedia &&
+            !_isCallSummary &&
+            !isUnsent)
           const PopupMenuItem(
             value: 'edit',
             child: _MenuRow(icon: Icons.edit, label: 'Изменить'),
@@ -169,9 +188,10 @@ class MessageBubble extends StatelessWidget {
           const PopupMenuItem(
             value: 'delete',
             child: _MenuRow(
-                icon: Icons.delete_outline,
-                label: 'Удалить',
-                color: Color(0xFFCF6679)),
+              icon: Icons.delete_outline,
+              label: 'Удалить',
+              color: Color(0xFFCF6679),
+            ),
           ),
       ],
     );
@@ -183,9 +203,9 @@ class MessageBubble extends StatelessWidget {
     } else if (selected == 'copy') {
       await Clipboard.setData(ClipboardData(text: body));
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Скопировано')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Скопировано')));
       }
     } else if (selected == 'edit') {
       onEdit?.call();
@@ -201,7 +221,11 @@ class MessageBubble extends StatelessWidget {
       return Icon(Icons.schedule, size: 13, color: base.withValues(alpha: 0.6));
     }
     if (event.status == EventStatus.error) {
-      return const Icon(Icons.error_outline, size: 13, color: Color(0xFFCF6679));
+      return const Icon(
+        Icons.error_outline,
+        size: 13,
+        color: Color(0xFFCF6679),
+      );
     }
     final readByOther = event.room.receiptState.global.otherUsers.values.any(
       (r) => r.ts >= event.originServerTs.millisecondsSinceEpoch,
@@ -213,12 +237,11 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-  bool get _isCallSummary =>
-      event.content['com.orex.call_outcome'] is String;
+  bool get _isCallSummary => event.content['com.orex.call_outcome'] is String;
 
   @override
   Widget build(BuildContext context) {
-    final memberNotice = OrexMembershipNotices.fromEvent(event);
+    final memberNotice = event.toOrexMembershipNotice();
     if (memberNotice != null) {
       return _MembershipNoticeCard(data: memberNotice);
     }
@@ -231,23 +254,25 @@ class MessageBubble extends StatelessWidget {
         ? (isDark ? OrexColors.cream : OrexColors.walnutDeep)
         : (isDark ? OrexColors.darkText : OrexColors.lightText);
 
-    final displayEvent =
-        timeline != null ? event.getDisplayEvent(timeline!) : event;
+    final displayEvent = timeline != null
+        ? event.getDisplayEvent(timeline!)
+        : event;
     final redacted = displayEvent.redacted;
-    final edited = !redacted &&
+    final edited =
+        !redacted &&
         timeline != null &&
         event.hasAggregatedEvents(timeline!, RelationshipTypes.edit);
-    
+
     final body = redacted
         ? ''
         : (_isMedia
-            ? displayEvent.body
-            : displayEvent.calcLocalizedBodyFallback(
-                const MatrixDefaultLocalizations(),
-                hideReply: true,
-                hideEdit: true,
-              ));
-    
+              ? displayEvent.body
+              : displayEvent.calcLocalizedBodyFallback(
+                  const MatrixDefaultLocalizations(),
+                  hideReply: true,
+                  hideEdit: true,
+                ));
+
     final ts = event.originServerTs;
     final reactions = _reactions();
     final replied = _repliedEvent();
@@ -256,12 +281,14 @@ class MessageBubble extends StatelessWidget {
     return Align(
       alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
       child: Column(
-        crossAxisAlignment:
-            isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        crossAxisAlignment: isMine
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
         children: [
           GestureDetector(
-            onSecondaryTapDown:
-                redacted ? null : (d) => _showMenu(context, d.globalPosition, body),
+            onSecondaryTapDown: redacted
+                ? null
+                : (d) => _showMenu(context, d.globalPosition, body),
             onTapDown: (!isWide && !redacted)
                 ? (d) => _showMenu(context, d.globalPosition, body)
                 : null,
@@ -333,19 +360,36 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-  Widget _content(String body, bool redacted, Color textColor, BuildContext context) {
+  Widget _content(
+    String body,
+    bool redacted,
+    Color textColor,
+    BuildContext context,
+  ) {
     if (redacted) {
-      return Text('', style: TextStyle(color: textColor.withValues(alpha: 0.6)));
+      return Text(
+        '',
+        style: TextStyle(color: textColor.withValues(alpha: 0.6)),
+      );
     }
     if (event.type == EventTypes.Encrypted) {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.lock_outline, size: 15, color: textColor.withValues(alpha: 0.6)),
+          Icon(
+            Icons.lock_outline,
+            size: 15,
+            color: textColor.withValues(alpha: 0.6),
+          ),
           const SizedBox(width: 6),
           Flexible(
-            child: Text('Зашифровано — ключ недоступен',
-                style: TextStyle(color: textColor.withValues(alpha: 0.7), fontStyle: FontStyle.italic)),
+            child: Text(
+              'Зашифровано — ключ недоступен',
+              style: TextStyle(
+                color: textColor.withValues(alpha: 0.7),
+                fontStyle: FontStyle.italic,
+              ),
+            ),
           ),
         ],
       );
@@ -381,10 +425,17 @@ class MessageBubble extends StatelessWidget {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(outcome == 'answered' ? Icons.call : Icons.call_end, size: 18, color: color),
+          Icon(
+            outcome == 'answered' ? Icons.call : Icons.call_end,
+            size: 18,
+            color: color,
+          ),
           const SizedBox(width: 8),
           Flexible(
-            child: Text(body.replaceFirst('📞 ', ''), style: TextStyle(color: textColor)),
+            child: Text(
+              body.replaceFirst('📞 ', ''),
+              style: TextStyle(color: textColor),
+            ),
           ),
         ],
       );
@@ -405,13 +456,13 @@ class MessageBubble extends StatelessWidget {
     if (t == null) return const SizedBox.shrink();
 
     final isAlbum = albumEvents != null && albumEvents!.isNotEmpty;
-    
+
     String activeCaption = body;
     if (isAlbum) {
       activeCaption = '';
       for (final ev in albumEvents!) {
         final evFname = ev.content.tryGet<String>('filename') ?? '';
-        final evBody = ev.body; 
+        final evBody = ev.body;
         if (evFname.isNotEmpty && evBody.isNotEmpty && evBody != evFname) {
           activeCaption = evBody;
           break;
@@ -420,7 +471,9 @@ class MessageBubble extends StatelessWidget {
     }
 
     final filename = event.content.tryGet<String>('filename') ?? '';
-    final hasCaption = isAlbum ? activeCaption.isNotEmpty : (filename.isNotEmpty && body.isNotEmpty && body != filename);
+    final hasCaption = isAlbum
+        ? activeCaption.isNotEmpty
+        : (filename.isNotEmpty && body.isNotEmpty && body != filename);
 
     final bubbleKey = ValueKey(event.eventId);
 
@@ -430,16 +483,38 @@ class MessageBubble extends StatelessWidget {
     } else {
       switch (event.messageType) {
         case MessageTypes.Image:
-          mediaWidget = _AttachmentImage(key: bubbleKey, event: event, timeline: t, myUserId: myUserId ?? '');
+          mediaWidget = _AttachmentImage(
+            key: bubbleKey,
+            event: event,
+            timeline: t,
+            myUserId: myUserId ?? '',
+          );
           break;
         case MessageTypes.Video:
-          mediaWidget = _AttachmentMedia(key: bubbleKey, event: event, isVideo: true, timeline: t, myUserId: myUserId ?? '');
+          mediaWidget = _AttachmentMedia(
+            key: bubbleKey,
+            event: event,
+            isVideo: true,
+            timeline: t,
+            myUserId: myUserId ?? '',
+          );
           break;
         case MessageTypes.Audio:
-          mediaWidget = _AttachmentMedia(key: bubbleKey, event: event, isVideo: false, timeline: t, myUserId: myUserId ?? '');
+          mediaWidget = _AttachmentMedia(
+            key: bubbleKey,
+            event: event,
+            isVideo: false,
+            timeline: t,
+            myUserId: myUserId ?? '',
+          );
           break;
         case MessageTypes.File:
-          mediaWidget = _FileTile(key: bubbleKey, event: event, body: body, textColor: textColor);
+          mediaWidget = _FileTile(
+            key: bubbleKey,
+            event: event,
+            body: body,
+            textColor: textColor,
+          );
           break;
         default:
           return Text(body, style: TextStyle(color: textColor, height: 1.3));
@@ -451,12 +526,12 @@ class MessageBubble extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          mediaWidget, 
-          const SizedBox(height: 8), 
+          mediaWidget,
+          const SizedBox(height: 8),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 2),
             child: Text(
-              activeCaption, 
+              activeCaption,
               style: TextStyle(color: textColor, height: 1.35, fontSize: 14),
             ),
           ),
@@ -496,7 +571,11 @@ class MessageBubble extends StatelessWidget {
                                 padding: const EdgeInsets.all(1.5),
                                 child: SizedBox(
                                   height: 110,
-                                  child: _albumTile(r * cols + c, album, context),
+                                  child: _albumTile(
+                                    r * cols + c,
+                                    album,
+                                    context,
+                                  ),
                                 ),
                               )
                             : const SizedBox.shrink(),
@@ -518,8 +597,8 @@ class MessageBubble extends StatelessWidget {
     Widget tileChild;
     if (ev.messageType == MessageTypes.Image) {
       tileChild = _AttachmentImage(
-        key: bubbleKey, 
-        event: ev, 
+        key: bubbleKey,
+        event: ev,
         timeline: timeline!,
         myUserId: myUserId ?? '',
         width: double.infinity,
@@ -527,9 +606,9 @@ class MessageBubble extends StatelessWidget {
       );
     } else {
       tileChild = _AttachmentMedia(
-        key: bubbleKey, 
-        event: ev, 
-        isVideo: true, 
+        key: bubbleKey,
+        event: ev,
+        isVideo: true,
         timeline: timeline!,
         myUserId: myUserId ?? '',
         width: double.infinity,
@@ -584,20 +663,33 @@ class MessageBubble extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(8),
-        border: const Border(left: BorderSide(color: OrexColors.copper, width: 3)),
+        border: const Border(
+          left: BorderSide(color: OrexColors.copper, width: 3),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             replied.senderFromMemoryOrFallback.calcDisplayname(),
-            style: const TextStyle(color: OrexColors.copper, fontWeight: FontWeight.w600, fontSize: 12),
+            style: const TextStyle(
+              color: OrexColors.copper,
+              fontWeight: FontWeight.w600,
+              fontSize: 12,
+            ),
           ),
           Text(
-            replied.calcLocalizedBodyFallback(const MatrixDefaultLocalizations(), hideReply: true, hideEdit: true),
+            replied.calcLocalizedBodyFallback(
+              const MatrixDefaultLocalizations(),
+              hideReply: true,
+              hideEdit: true,
+            ),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: textColor.withValues(alpha: 0.8), fontSize: 12.5),
+            style: TextStyle(
+              color: textColor.withValues(alpha: 0.8),
+              fontSize: 12.5,
+            ),
           ),
         ],
       ),
@@ -625,11 +717,18 @@ class MessageBubble extends StatelessWidget {
               decoration: BoxDecoration(
                 color: mine
                     ? OrexColors.copper.withValues(alpha: 0.30)
-                    : (isDark ? Colors.black : Colors.white).withValues(alpha: 0.25),
+                    : (isDark ? Colors.black : Colors.white).withValues(
+                        alpha: 0.25,
+                      ),
                 borderRadius: BorderRadius.circular(12),
-                border: mine ? Border.all(color: OrexColors.copper, width: 1) : null,
+                border: mine
+                    ? Border.all(color: OrexColors.copper, width: 1)
+                    : null,
               ),
-              child: Text('${e.key} ${e.value.count}', style: const TextStyle(fontSize: 12.5)),
+              child: Text(
+                '${e.key} ${e.value.count}',
+                style: const TextStyle(fontSize: 12.5),
+              ),
             ),
           );
         }).toList(),
@@ -637,5 +736,3 @@ class MessageBubble extends StatelessWidget {
     );
   }
 }
-
-

@@ -1,5 +1,3 @@
-import 'package:matrix/matrix.dart';
-
 enum OrexMembershipNoticeKind { joined, left, invited, removed, banned }
 
 final class OrexMembershipNotice {
@@ -9,35 +7,39 @@ final class OrexMembershipNotice {
   final String text;
 }
 
-/// Human readable Matrix membership events for the chat timeline.
+/// Human readable membership changes for the chat timeline.
 final class OrexMembershipNotices {
   const OrexMembershipNotices._();
 
-  static OrexMembershipNotice? fromEvent(Event event) {
-    if (event.type != EventTypes.RoomMember) return null;
+  static OrexMembershipNotice? fromMembershipChange({
+    required String senderId,
+    required String senderName,
+    required String targetId,
+    required String? membership,
+    required String? previousMembership,
+    String? targetDisplayName,
+    String? previousTargetDisplayName,
+  }) {
+    final targetName = _displayName(
+      targetDisplayName,
+      previousTargetDisplayName,
+      targetId,
+    );
+    final actorName = _displayName(senderName, null, senderId);
+    final sameUser = senderId == targetId;
 
-    final content = event.content;
-    final prevContent = event.prevContent ?? const <String, Object?>{};
-
-    final membership = content['membership']?.toString();
-    final prevMembership = prevContent['membership']?.toString();
-    final targetId = event.stateKey ?? event.senderId;
-    final targetName = _displayName(content, prevContent, targetId);
-    final senderName = event.senderFromMemoryOrFallback.calcDisplayname();
-    final sameUser = event.senderId == targetId;
-
-    if (membership == 'join' && prevMembership != 'join') {
+    if (membership == 'join' && previousMembership != 'join') {
       return OrexMembershipNotice(
         kind: OrexMembershipNoticeKind.joined,
         text: '$targetName присоединился к комнате',
       );
     }
 
-    if (membership == 'leave' && prevMembership != 'leave') {
-      if (!sameUser && prevMembership == 'join') {
+    if (membership == 'leave' && previousMembership != 'leave') {
+      if (!sameUser && previousMembership == 'join') {
         return OrexMembershipNotice(
           kind: OrexMembershipNoticeKind.removed,
-          text: '$senderName удалил $targetName из комнаты',
+          text: '$actorName удалил $targetName из комнаты',
         );
       }
       return OrexMembershipNotice(
@@ -46,17 +48,17 @@ final class OrexMembershipNotices {
       );
     }
 
-    if (membership == 'invite' && prevMembership != 'invite') {
+    if (membership == 'invite' && previousMembership != 'invite') {
       return OrexMembershipNotice(
         kind: OrexMembershipNoticeKind.invited,
-        text: '$senderName пригласил $targetName',
+        text: '$actorName пригласил $targetName',
       );
     }
 
-    if (membership == 'ban' && prevMembership != 'ban') {
+    if (membership == 'ban' && previousMembership != 'ban') {
       return OrexMembershipNotice(
         kind: OrexMembershipNoticeKind.banned,
-        text: '$senderName заблокировал $targetName',
+        text: '$actorName заблокировал $targetName',
       );
     }
 
@@ -64,17 +66,19 @@ final class OrexMembershipNotices {
   }
 
   static String _displayName(
-    Map<String, Object?> content,
-    Map<String, Object?> prevContent,
+    String? displayName,
+    String? previousDisplayName,
     String userId,
   ) {
-    final current = content['displayname']?.toString().trim();
+    final current = displayName?.trim();
     if (current != null && current.isNotEmpty) return current;
 
-    final previous = prevContent['displayname']?.toString().trim();
+    final previous = previousDisplayName?.trim();
     if (previous != null && previous.isNotEmpty) return previous;
 
-    final localpart = userId.startsWith('@') ? userId.substring(1).split(':').first : userId;
+    final localpart = userId.startsWith('@')
+        ? userId.substring(1).split(':').first
+        : userId;
     return localpart.isEmpty ? userId : localpart;
   }
 }

@@ -7,7 +7,9 @@ import '../../../core/logging/orex_logger.dart';
 import '../../../shared/theme/glass.dart';
 import '../../../shared/theme/orex_theme.dart';
 import '../../../shared/widgets/mxc_avatar.dart';
+import '../../../shared/widgets/orex_dialogs.dart';
 import '../../../shared/widgets/orex_loading_overlay.dart';
+import '../../../shared/widgets/orex_profile_card.dart';
 import '../../../shared/widgets/orex_settings_components.dart';
 import '../../../shared/widgets/room_icon.dart';
 
@@ -28,10 +30,12 @@ class RoomSettingsScreen extends StatefulWidget {
 }
 
 class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
-  late final TextEditingController _name =
-      TextEditingController(text: widget.room.getLocalizedDisplayname());
-  late final TextEditingController _topic =
-      TextEditingController(text: widget.room.topic);
+  late final TextEditingController _name = TextEditingController(
+    text: widget.room.getLocalizedDisplayname(),
+  );
+  late final TextEditingController _topic = TextEditingController(
+    text: widget.room.topic,
+  );
   late final TextEditingController _alias = TextEditingController(
     text: widget.matrix.roomAliasLocalpart(widget.room),
   );
@@ -58,9 +62,9 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
     try {
       await action();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Сохранено')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Сохранено')));
       }
     } catch (e) {
       OrexLog.d('RoomSettings', 'action failed room=${widget.room.id}', e);
@@ -74,40 +78,37 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
     }
   }
 
-  Future<void> _saveDetails() => _guard(
-        () async {
-          final canChangeName =
-              widget.room.canChangeStateEvent(EventTypes.RoomName);
-          final canChangeTopic =
-              widget.room.canChangeStateEvent(EventTypes.RoomTopic);
-          if (canChangeName || canChangeTopic) {
-            await widget.matrix.updateRoomDetails(
-              widget.room,
-              name: canChangeName
-                  ? _name.text
-                  : widget.room.getLocalizedDisplayname(),
-              topic: canChangeTopic ? _topic.text : widget.room.topic,
-            );
-          }
-
-          final canChangeAccess = _canShowAccess(
-                widget.matrix.roomKind(widget.room),
-              ) &&
-              widget.room.canChangeJoinRules;
-          if (canChangeAccess) {
-            await widget.matrix.setRoomPublic(widget.room, _public);
-            if (_public && _alias.text.trim().isNotEmpty) {
-              await widget.matrix.setRoomLocalAlias(widget.room, _alias.text);
-            }
-          }
-          if (widget.room.canChangeHistoryVisibility) {
-            await widget.matrix.setRoomHistoryVisibility(
-              widget.room,
-              _historyVisibility,
-            );
-          }
-        },
+  Future<void> _saveDetails() => _guard(() async {
+    final canChangeName = widget.room.canChangeStateEvent(EventTypes.RoomName);
+    final canChangeTopic = widget.room.canChangeStateEvent(
+      EventTypes.RoomTopic,
+    );
+    if (canChangeName || canChangeTopic) {
+      await widget.matrix.updateRoomDetails(
+        widget.room,
+        name: canChangeName
+            ? _name.text
+            : widget.room.getLocalizedDisplayname(),
+        topic: canChangeTopic ? _topic.text : widget.room.topic,
       );
+    }
+
+    final canChangeAccess =
+        _canShowAccess(widget.matrix.roomKind(widget.room)) &&
+        widget.room.canChangeJoinRules;
+    if (canChangeAccess) {
+      await widget.matrix.setRoomPublic(widget.room, _public);
+      if (_public && _alias.text.trim().isNotEmpty) {
+        await widget.matrix.setRoomLocalAlias(widget.room, _alias.text);
+      }
+    }
+    if (widget.room.canChangeHistoryVisibility) {
+      await widget.matrix.setRoomHistoryVisibility(
+        widget.room,
+        _historyVisibility,
+      );
+    }
+  });
 
   bool _canShowAccess(OrexRoomKind kind) {
     if (widget.matrix.isSupergroupChild(widget.room)) return false;
@@ -132,9 +133,9 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
         file.name,
       );
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Аватар обновлён')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Аватар обновлён')));
       }
     } catch (e) {
       OrexLog.d('RoomSettings', 'action failed room=${widget.room.id}', e);
@@ -148,9 +149,8 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
     }
   }
 
-  Future<void> _removeAvatar() => _guard(
-        () => widget.matrix.removeRoomAvatar(widget.room),
-      );
+  Future<void> _removeAvatar() =>
+      _guard(() => widget.matrix.removeRoomAvatar(widget.room));
 
   Future<void> _inviteSelected() async {
     if (_selectedInviteIds.isEmpty) return;
@@ -165,31 +165,16 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
   }
 
   Future<void> _removeParticipant(User user) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Удалить участника?'),
-        content: Text(
-          widget.room.isSpace
-              ? 'Убрать ${user.calcDisplayname()} из супергруппы и всех её чатов?'
-              : 'Убрать ${user.calcDisplayname()} из комнаты?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFFCF6679),
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Удалить'),
-          ),
-        ],
-      ),
+    final ok = await showOrexConfirmDialog(
+      context,
+      title: 'Удалить участника?',
+      message: widget.room.isSpace
+          ? 'Убрать ${user.calcDisplayname()} из супергруппы и всех её чатов?'
+          : 'Убрать ${user.calcDisplayname()} из комнаты?',
+      confirmLabel: 'Удалить',
+      danger: true,
     );
-    if (ok != true) return;
+    if (!ok) return;
     await _guard(() => widget.matrix.removeUserFromRoom(widget.room, user));
     if (mounted) setState(() {});
   }
@@ -197,7 +182,10 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
   Future<void> _createChild() async {
     final details = await _askChildDetails();
     if (details == null || details.name.isEmpty) return;
-    OrexLog.d('RoomSettings', 'create child name=${details.name} icon=${details.icon} space=${widget.room.id}');
+    OrexLog.d(
+      'RoomSettings',
+      'create child name=${details.name} icon=${details.icon} space=${widget.room.id}',
+    );
     await _guard(
       () => widget.matrix
           .createSupergroupChild(
@@ -212,213 +200,64 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
   }
 
   Future<({String name, String icon})?> _askChildDetails() async {
-    final controller = TextEditingController();
-    var iconKey = 'chat';
-    final result = await showDialog<({String name, String icon})>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
-          title: const Text('Новый чат'),
-          content: SizedBox(
-            width: 360,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: controller,
-                  autofocus: true,
-                  decoration: const InputDecoration(labelText: 'Название'),
-                ),
-                const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
-                  initialValue: iconKey,
-                  decoration: const InputDecoration(
-                    labelText: 'Значок',
-                    prefixIcon: Icon(Icons.category_outlined),
-                  ),
-                  items: orexRoomIconChoices
-                      .map(
-                        (choice) => DropdownMenuItem(
-                          value: choice.key,
-                          child: Row(
-                            children: [
-                              Icon(choice.icon, size: 18),
-                              const SizedBox(width: 8),
-                              Text(choice.label),
-                            ],
-                          ),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (value) {
-                    if (value == null) return;
-                    setDialogState(() => iconKey = value);
-                  },
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Отмена'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(
-                ctx,
-                (name: controller.text.trim(), icon: iconKey),
-              ),
-              child: const Text('Создать'),
-            ),
-          ],
-        ),
-      ),
+    return _showChildRoomEditorDialog(
+      context,
+      title: 'Новый чат',
+      actionLabel: 'Создать',
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      controller.dispose();
-    });
-    return result;
   }
 
   Future<void> _editChild(Room child) async {
-    final controller =
-        TextEditingController(text: child.getLocalizedDisplayname());
-    var iconKey = widget.matrix.roomIconKey(child);
-    final result = await showDialog<({String name, String icon})>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
-          title: const Text('Редактировать чат'),
-          content: SizedBox(
-            width: 360,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: controller,
-                  autofocus: true,
-                  decoration: const InputDecoration(labelText: 'Название'),
-                ),
-                const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
-                  initialValue: iconKey,
-                  decoration: const InputDecoration(
-                    labelText: 'Значок',
-                    prefixIcon: Icon(Icons.category_outlined),
-                  ),
-                  items: orexRoomIconChoices
-                      .map(
-                        (choice) => DropdownMenuItem(
-                          value: choice.key,
-                          child: Row(
-                            children: [
-                              Icon(choice.icon, size: 18),
-                              const SizedBox(width: 8),
-                              Text(choice.label),
-                            ],
-                          ),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (value) {
-                    if (value == null) return;
-                    setDialogState(() => iconKey = value);
-                  },
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Отмена'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(
-                ctx,
-                (name: controller.text.trim(), icon: iconKey),
-              ),
-              child: const Text('Сохранить'),
-            ),
-          ],
-        ),
-      ),
+    final result = await _showChildRoomEditorDialog(
+      context,
+      title: 'Редактировать чат',
+      actionLabel: 'Сохранить',
+      initialName: child.getLocalizedDisplayname(),
+      initialIcon: widget.matrix.roomIconKey(child),
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      controller.dispose();
-    });
     if (result == null || result.name.isEmpty) return;
-    await _guard(
-      () async {
-        await widget.matrix.updateRoomDetails(
-          child,
-          name: result.name,
-          topic: child.topic,
-        );
-        await widget.matrix.setRoomIcon(child, result.icon);
-        await widget.matrix.updateSupergroupChildPreview(
-          widget.room,
-          child,
-          name: result.name,
-          icon: result.icon,
-        );
-      },
-    );
+    await _guard(() async {
+      await widget.matrix.updateRoomDetails(
+        child,
+        name: result.name,
+        topic: child.topic,
+      );
+      await widget.matrix.setRoomIcon(child, result.icon);
+      await widget.matrix.updateSupergroupChildPreview(
+        widget.room,
+        child,
+        name: result.name,
+        icon: result.icon,
+      );
+    });
     if (mounted) setState(() {});
   }
 
   Future<void> _deleteChild(Room child) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Удалить чат?'),
-        content: Text(
-            '«${child.getLocalizedDisplayname()}» будет удалён из супергруппы.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFFCF6679),
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Удалить'),
-          ),
-        ],
-      ),
+    final ok = await showOrexConfirmDialog(
+      context,
+      title: 'Удалить чат?',
+      message:
+          '«${child.getLocalizedDisplayname()}» будет удалён из супергруппы.',
+      confirmLabel: 'Удалить',
+      danger: true,
     );
-    if (ok != true) return;
+    if (!ok) return;
     await _guard(() => widget.matrix.removeSupergroupChild(widget.room, child));
     if (mounted) setState(() {});
   }
 
   Future<void> _deleteForEveryone() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Удалить для всех?'),
-        content: const Text(
+    final ok = await showOrexConfirmDialog(
+      context,
+      title: 'Удалить для всех?',
+      message:
           'Владелец выйдет из комнаты, остальные участники будут удалены. '
           'Для супергруппы это также затронет её чаты.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFFCF6679),
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Удалить'),
-          ),
-        ],
-      ),
+      confirmLabel: 'Удалить',
+      danger: true,
     );
-    if (ok != true) return;
+    if (!ok) return;
     await _guard(() => widget.matrix.deleteRoomForEveryone(widget.room));
     if (mounted) Navigator.pop(context);
   }
@@ -434,19 +273,21 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
     final ownId = widget.matrix.client.userID;
     final usersById = <String, User>{};
     for (final room in widget.matrix.client.rooms) {
-      for (final user in room.getParticipants(
-        const [Membership.join, Membership.invite],
-      )) {
+      for (final user in room.getParticipants(const [
+        Membership.join,
+        Membership.invite,
+      ])) {
         if (user.id == ownId || existing.contains(user.id)) continue;
         usersById[user.id] = user;
       }
     }
-    final users = usersById.values.where((user) {
-      final name = user.calcDisplayname().toLowerCase();
-      final id = widget.matrix.compactUserId(user.id).toLowerCase();
-      return name.contains(q) || id.contains(q);
-    }).toList()
-      ..sort((a, b) => a.calcDisplayname().compareTo(b.calcDisplayname()));
+    final users =
+        usersById.values.where((user) {
+            final name = user.calcDisplayname().toLowerCase();
+            final id = widget.matrix.compactUserId(user.id).toLowerCase();
+            return name.contains(q) || id.contains(q);
+          }).toList()
+          ..sort((a, b) => a.calcDisplayname().compareTo(b.calcDisplayname()));
     return users.take(30).toList();
   }
 
@@ -462,7 +303,9 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
     final canChangeTopic =
         canManage && room.canChangeStateEvent(EventTypes.RoomTopic);
     final canChangeAvatar =
-        canManage && !childRoom && room.canChangeStateEvent(EventTypes.RoomAvatar);
+        canManage &&
+        !childRoom &&
+        room.canChangeStateEvent(EventTypes.RoomAvatar);
     final canEditProfile =
         !childRoom && (canChangeName || canChangeTopic || canChangeAvatar);
     final canInvite = canManage && room.canInvite;
@@ -472,7 +315,9 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
     final showAccess = canChangeAccess || showHistory;
     final showSave = canEditProfile || showAccess || showHistory;
     final canManageSupergroupRooms =
-        canManage && isSupergroup && room.canChangeStateEvent(EventTypes.SpaceChild);
+        canManage &&
+        isSupergroup &&
+        room.canChangeStateEvent(EventTypes.SpaceChild);
 
     return AmbientBackground(
       child: Scaffold(
@@ -509,8 +354,9 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
                               controller: _name,
                               decoration: const InputDecoration(
                                 labelText: 'Название',
-                                prefixIcon:
-                                    Icon(Icons.drive_file_rename_outline),
+                                prefixIcon: Icon(
+                                  Icons.drive_file_rename_outline,
+                                ),
                               ),
                             ),
                           ),
@@ -538,9 +384,11 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
                         if (canChangeAccess) ...[
                           SwitchListTile(
                             value: _public,
-                            onChanged: (value) => setState(() => _public = value),
-                            contentPadding:
-                                const EdgeInsets.symmetric(horizontal: 14),
+                            onChanged: (value) =>
+                                setState(() => _public = value),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                            ),
                             secondary: Icon(
                               _public ? Icons.public : Icons.lock_outline,
                               color: OrexColors.copper,
@@ -602,9 +450,10 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
                     title: 'Участники',
                     children: [
                       FutureBuilder<List<User>>(
-                        future: room.requestParticipants(
-                          const [Membership.join, Membership.invite],
-                        ),
+                        future: room.requestParticipants(const [
+                          Membership.join,
+                          Membership.invite,
+                        ]),
                         builder: (context, snap) {
                           final users = snap.data;
                           if (users == null) {
@@ -616,9 +465,11 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
                           return Column(
                             children: users.take(80).map((user) {
                               final name = user.calcDisplayname();
-                              final owner = widget.matrix
-                                  .isOwnerPowerLevel(user.powerLevel);
-                              final canRemove = canManage &&
+                              final owner = widget.matrix.isOwnerPowerLevel(
+                                user.powerLevel,
+                              );
+                              final canRemove =
+                                  canManage &&
                                   user.canKick &&
                                   user.id != widget.matrix.client.userID;
                               final trailing = <Widget>[

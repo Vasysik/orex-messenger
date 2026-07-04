@@ -1,0 +1,13 @@
+# Copy this file to android/key.properties on the release machine.
+# Do not commit android/key.properties or the keystore itself.
+
+storeFile=../secrets/orex-release.jks
+storePassword=change-me
+keyAlias=orex
+keyPassword=change-me
+
+# The same values can be provided through environment variables:
+# OREX_ANDROID_STORE_FILE
+# OREX_ANDROID_STORE_PASSWORD
+# OREX_ANDROID_KEY_ALIAS
+# OREX_ANDROID_KEY_PASSWORD

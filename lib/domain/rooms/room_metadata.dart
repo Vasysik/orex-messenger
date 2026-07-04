@@ -1,5 +1,3 @@
-import 'package:matrix/matrix.dart';
-
 enum OrexRoomKind { direct, group, channel, supergroup }
 
 enum OrexConversationPreviewKind { publicRoom, supergroupChild, direct }
@@ -44,12 +42,20 @@ final class OrexRoomAlias {
     final localpart = value.substring(1).split(':').first.trim();
     return localpart.isEmpty ? value : '@$localpart';
   }
+}
 
-  static String localpartFromRoom(Room room) {
-    final alias = room.canonicalAlias;
-    if (!alias.startsWith('#')) return '';
-    return alias.substring(1).split(':').first;
-  }
+final class OrexUserPreview {
+  const OrexUserPreview({
+    required this.userId,
+    required this.compactUserId,
+    this.displayName,
+    this.avatar,
+  });
+
+  final String userId;
+  final String compactUserId;
+  final String? displayName;
+  final Uri? avatar;
 }
 
 final class OrexRoomPreview {
@@ -64,20 +70,6 @@ final class OrexRoomPreview {
     this.via = const <String>[],
     this.parentSpaceId,
   });
-
-  factory OrexRoomPreview.fromPublicRoom(PublishedRoomsChunk room) {
-    final displayAlias = OrexRoomAlias.displayAlias(room.canonicalAlias);
-    final name =
-        room.name ?? (displayAlias.isNotEmpty ? displayAlias : room.roomId);
-    return OrexRoomPreview(
-      roomId: room.roomId,
-      name: name,
-      alias: room.canonicalAlias,
-      avatar: room.avatarUrl,
-      topic: room.topic,
-      memberCount: room.numJoinedMembers,
-    );
-  }
 
   final String roomId;
   final String name;
@@ -142,25 +134,22 @@ final class OrexConversationPreview {
     );
   }
 
-  factory OrexConversationPreview.direct(
-    Profile profile, {
-    required String compactUserId,
-  }) {
-    final displayName = profile.displayName?.trim();
-    final fallbackName = compactUserId.trim().isEmpty
-        ? profile.userId
-        : compactUserId.trim();
+  factory OrexConversationPreview.direct(OrexUserPreview user) {
+    final displayName = user.displayName?.trim();
+    final fallbackName = user.compactUserId.trim().isEmpty
+        ? user.userId
+        : user.compactUserId.trim();
     final title = displayName == null || displayName.isEmpty
         ? fallbackName
         : displayName;
 
     return OrexConversationPreview._(
       kind: OrexConversationPreviewKind.direct,
-      id: profile.userId,
+      id: user.userId,
       title: title,
       subtitle: fallbackName,
-      avatar: profile.avatarUrl,
-      userId: profile.userId,
+      avatar: user.avatar,
+      userId: user.userId,
       actionLabel: 'Войти в личный чат',
       progressLabel: 'Открываем...',
       emptyBody:

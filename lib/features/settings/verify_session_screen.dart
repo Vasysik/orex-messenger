@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
+import '../../shared/widgets/orex_dialogs.dart';
 import 'verification_screen.dart';
 
 /// Экран подтверждения ТЕКУЩЕЙ сессии. Решает проблему «владелец не подтверждён»
@@ -39,8 +39,9 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
       if (!mounted) return;
       await Navigator.of(context).push(
         MaterialPageRoute(
-            builder: (_) =>
-                VerificationScreen(request: kv, matrix: widget.matrix)),
+          builder: (_) =>
+              VerificationScreen(request: kv, matrix: widget.matrix),
+        ),
       );
       if (mounted) Navigator.of(context).maybePop();
     } catch (e) {
@@ -51,28 +52,13 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
   }
 
   Future<void> _verifyWithRecoveryKey() async {
-    final controller = TextEditingController();
-    final key = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Ключ восстановления'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          obscureText: true,
-          decoration: const InputDecoration(
-            hintText: 'Ключ восстановления или passphrase',
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: const Text('Подтвердить'),
-          ),
-        ],
-      ),
+    final key = await showOrexTextInputDialog(
+      context,
+      title: 'Ключ восстановления',
+      hintText: 'Ключ восстановления или passphrase',
+      confirmLabel: 'Подтвердить',
+      obscureText: true,
+      trim: true,
     );
     if (key == null || key.isEmpty) return;
 
@@ -83,14 +69,15 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
     try {
       await widget.matrix.verifyWithRecoveryKey(key);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Сессия подтверждена')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Сессия подтверждена')));
       Navigator.of(context).maybePop();
     } catch (e) {
       if (mounted) {
         setState(
-            () => _error = 'Не удалось: проверьте ключ восстановления.\n$e');
+          () => _error = 'Не удалось: проверьте ключ восстановления.\n$e',
+        );
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -98,27 +85,12 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
   }
 
   Future<String?> _askPassword() {
-    final c = TextEditingController();
-    return showDialog<String>(
-      context: context,
+    return showOrexTextInputDialog(
+      context,
+      title: 'Подтвердите паролем',
+      hintText: 'Пароль от аккаунта',
+      obscureText: true,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Подтвердите паролем'),
-        content: TextField(
-          controller: c,
-          autofocus: true,
-          obscureText: true,
-          decoration: const InputDecoration(hintText: 'Пароль от аккаунта'),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, c.text),
-            child: const Text('ОК'),
-          ),
-        ],
-      ),
     );
   }
 
@@ -128,8 +100,9 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
       _error = null;
     });
     try {
-      final recoveryKey =
-          await widget.matrix.setupCrossSigning(askPassword: _askPassword);
+      final recoveryKey = await widget.matrix.setupCrossSigning(
+        askPassword: _askPassword,
+      );
       if (!mounted) return;
       await _showRecoveryKey(recoveryKey);
       if (mounted) Navigator.of(context).maybePop();
@@ -141,53 +114,15 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
   }
 
   Future<void> _showRecoveryKey(String key) {
-    return showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Сохраните ключ восстановления'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Это ваш ключ безопасности. Запишите его и храните в надёжном '
-              'месте: им подтверждают новые сессии и восстанавливают доступ к '
-              'зашифрованным сообщениям. Без него восстановить переписку нельзя.',
-            ),
-            const SizedBox(height: 16),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.25),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: SelectableText(
-                key,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 15),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: key));
-              if (ctx.mounted) {
-                ScaffoldMessenger.of(ctx).showSnackBar(
-                  const SnackBar(content: Text('Скопировано')),
-                );
-              }
-            },
-            child: const Text('Копировать'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Я сохранил'),
-          ),
-        ],
-      ),
+    return showOrexRecoveryKeyDialog(
+      context,
+      title: 'Сохраните ключ восстановления',
+      message:
+          'Это ваш ключ безопасности. Запишите его и храните в надёжном '
+          'месте: им подтверждают новые сессии и восстанавливают доступ к '
+          'зашифрованным сообщениям. Без него восстановить переписку нельзя.',
+      recoveryKey: key,
+      copiedMessage: 'Скопировано',
     );
   }
 
@@ -221,12 +156,13 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
       children: [
         const Icon(Icons.verified_user, size: 54, color: OrexColors.copper),
         const SizedBox(height: 16),
-        Text('Подтвердите эту сессию',
-            textAlign: TextAlign.center,
-            style: Theme.of(context)
-                .textTheme
-                .titleMedium
-                ?.copyWith(fontSize: 18)),
+        Text(
+          'Подтвердите эту сессию',
+          textAlign: TextAlign.center,
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontSize: 18),
+        ),
         const SizedBox(height: 8),
         Text(
           'Пока сессия не подтверждена, другие ваши клиенты помечают её как '
@@ -261,9 +197,11 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
         ],
         if (_error != null) ...[
           const SizedBox(height: 16),
-          Text(_error!,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Color(0xFFCF6679))),
+          Text(
+            _error!,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Color(0xFFCF6679)),
+          ),
         ],
       ],
     );
@@ -275,12 +213,13 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
       children: [
         const Icon(Icons.shield_outlined, size: 54, color: OrexColors.copper),
         const SizedBox(height: 16),
-        Text('Настроить проверку подлинности',
-            textAlign: TextAlign.center,
-            style: Theme.of(context)
-                .textTheme
-                .titleMedium
-                ?.copyWith(fontSize: 18)),
+        Text(
+          'Настроить проверку подлинности',
+          textAlign: TextAlign.center,
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontSize: 18),
+        ),
         const SizedBox(height: 8),
         Text(
           'На аккаунте ещё нет кросс-подписи и ключа восстановления. Создайте их '
@@ -307,9 +246,11 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
           ),
         if (_error != null) ...[
           const SizedBox(height: 16),
-          Text(_error!,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Color(0xFFCF6679))),
+          Text(
+            _error!,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Color(0xFFCF6679)),
+          ),
         ],
       ],
     );

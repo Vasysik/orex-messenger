@@ -1,4 +1,4 @@
-part of 'chat_view.dart';
+import 'package:matrix/matrix.dart';
 
 abstract class ChatItem {
   String get id;
@@ -21,48 +21,85 @@ class AlbumItem extends ChatItem {
   String get id => leader.eventId;
 }
 
-class OrexTimelineAdapter {
-  static List<ChatItem> transform(List<Event> events) {
-    final List<ChatItem> items = [];
-    int i = 0;
+class OrexTimelineGroup<T> {
+  const OrexTimelineGroup(this.items) : assert(items.length > 0);
+
+  final List<T> items;
+
+  T get leader => items.first;
+  bool get isAlbum => items.length > 1;
+}
+
+class OrexTimelineGrouper {
+  const OrexTimelineGrouper._();
+
+  static List<OrexTimelineGroup<T>> transform<T>(
+    List<T> rawEvents, {
+    required bool Function(T event) isRenderable,
+    required bool Function(T event) isMedia,
+    required bool Function(T event) isRedacted,
+    required String Function(T event) senderId,
+    required DateTime Function(T event) originServerTs,
+  }) {
+    final events = rawEvents.where(isRenderable).toList()
+      ..sort((a, b) => originServerTs(b).compareTo(originServerTs(a)));
+
+    final groups = <OrexTimelineGroup<T>>[];
+    var i = 0;
     while (i < events.length) {
       final current = events[i];
-      if (current.redacted ||
-          (current.messageType != MessageTypes.Image &&
-              current.messageType != MessageTypes.Video)) {
-        items.add(SingleEventItem(current));
+      if (isRedacted(current) || !isMedia(current)) {
+        groups.add(OrexTimelineGroup([current]));
         i++;
         continue;
       }
 
-      final List<Event> albumList = [current];
-      int j = i + 1;
+      final album = <T>[current];
+      var j = i + 1;
       while (j < events.length) {
         final next = events[j];
-        if (!next.redacted &&
-            (next.messageType == MessageTypes.Image ||
-                next.messageType == MessageTypes.Video) &&
-            next.senderId == current.senderId &&
-            next.originServerTs
-                    .difference(current.originServerTs)
-                    .abs()
-                    .inMinutes <
+        if (!isRedacted(next) &&
+            isMedia(next) &&
+            senderId(next) == senderId(current) &&
+            originServerTs(
+                  next,
+                ).difference(originServerTs(current)).abs().inMinutes <
                 1) {
-          albumList.add(next);
+          album.add(next);
           j++;
         } else {
           break;
         }
       }
 
-      if (albumList.length > 1) {
-        items.add(AlbumItem(leader: current, events: albumList));
-        i = j;
-      } else {
-        items.add(SingleEventItem(current));
-        i++;
-      }
+      groups.add(OrexTimelineGroup(album));
+      i = j;
     }
-    return items;
+    return groups;
+  }
+}
+
+class OrexTimelineAdapter {
+  const OrexTimelineAdapter._();
+
+  static List<ChatItem> transform(
+    List<Event> rawEvents, {
+    required bool Function(Event event) isRenderable,
+  }) {
+    return OrexTimelineGrouper.transform<Event>(
+      rawEvents,
+      isRenderable: isRenderable,
+      isMedia: (event) =>
+          event.messageType == MessageTypes.Image ||
+          event.messageType == MessageTypes.Video,
+      isRedacted: (event) => event.redacted,
+      senderId: (event) => event.senderId,
+      originServerTs: (event) => event.originServerTs,
+    ).map((group) {
+      if (group.isAlbum) {
+        return AlbumItem(leader: group.leader, events: group.items);
+      }
+      return SingleEventItem(group.leader);
+    }).toList();
   }
 }

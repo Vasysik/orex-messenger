@@ -29,101 +29,75 @@ class _FolderManagerState extends State<_FolderManager> {
     final controller = TextEditingController(text: folder?.label ?? '');
     var filter = folder?.filter ?? OrexFolderFilter.all;
     var roomIds = List<String>.of(folder?.roomIds ?? const []);
-    final result = await showDialog<OrexChatFolder>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) {
-          Future<void> pickRooms() async {
-            final selected = await showDialog<List<String>>(
-              context: ctx,
-              builder: (_) => _RoomPickerDialog(
-                matrix: widget.matrix,
-                initialRoomIds: roomIds,
-              ),
-            );
-            if (selected != null) {
-              setDialogState(() => roomIds = selected);
-            }
-          }
-
-          return AlertDialog(
-            title: Text(folder == null ? 'Новая папка' : 'Папка'),
-            content: SizedBox(
-              width: 420,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: controller,
-                    autofocus: true,
-                    decoration: const InputDecoration(labelText: 'Название'),
-                  ),
-                  const SizedBox(height: 12),
-                  DropdownButtonFormField<OrexFolderFilter>(
-                    initialValue: filter,
-                    decoration: const InputDecoration(
-                      labelText: 'Что показывать',
-                    ),
-                    items: OrexFolderFilter.values
-                        .map(
-                          (value) => DropdownMenuItem(
-                            value: value,
-                            child: Text(value.label),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: (value) {
-                      if (value == null) return;
-                      setDialogState(() => filter = value);
-                    },
-                  ),
-                  const SizedBox(height: 10),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.folder_copy_outlined),
-                    title: Text(
-                      filter == OrexFolderFilter.custom
-                          ? 'Состав папки'
-                          : 'Дополнительные чаты',
-                    ),
-                    subtitle: Text(
-                      roomIds.isEmpty
-                          ? 'Не выбрано'
-                          : 'Выбрано: ${roomIds.length}',
-                    ),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: pickRooms,
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Отмена'),
-              ),
-              FilledButton(
-                onPressed: () {
-                  final label = controller.text.trim();
-                  Navigator.pop(
-                    ctx,
-                    OrexChatFolder(
-                      id: folder?.id ??
-                          DateTime.now().microsecondsSinceEpoch.toString(),
-                      label: label.isEmpty ? filter.label : label,
-                      filter: filter,
-                      roomIds: roomIds,
-                    ),
-                  );
-                },
-                child: const Text('Готово'),
-              ),
-            ],
+    final result = await showOrexStatefulFormDialog<OrexChatFolder>(
+      context,
+      title: folder == null ? 'Новая папка' : 'Папка',
+      confirmLabel: 'Готово',
+      contentBuilder: (ctx, setDialogState) {
+        Future<void> pickRooms() async {
+          final selected = await _showRoomPickerDialog(
+            ctx,
+            matrix: widget.matrix,
+            initialRoomIds: roomIds,
           );
-        },
-      ),
-    );
-    controller.dispose();
+          if (selected != null) {
+            setDialogState(() => roomIds = selected);
+          }
+        }
+
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: 'Название'),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<OrexFolderFilter>(
+              initialValue: filter,
+              decoration: const InputDecoration(labelText: 'Что показывать'),
+              items: OrexFolderFilter.values
+                  .map(
+                    (value) => DropdownMenuItem(
+                      value: value,
+                      child: Text(value.label),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (value) {
+                if (value == null) return;
+                setDialogState(() => filter = value);
+              },
+            ),
+            const SizedBox(height: 10),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.folder_copy_outlined),
+              title: Text(
+                filter == OrexFolderFilter.custom
+                    ? 'Состав папки'
+                    : 'Дополнительные чаты',
+              ),
+              subtitle: Text(
+                roomIds.isEmpty ? 'Не выбрано' : 'Выбрано: ${roomIds.length}',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: pickRooms,
+            ),
+          ],
+        );
+      },
+      onSubmit: () {
+        final label = controller.text.trim();
+        return OrexChatFolder(
+          id: folder?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
+          label: label.isEmpty ? filter.label : label,
+          filter: filter,
+          roomIds: roomIds,
+        );
+      },
+    ).whenComplete(controller.dispose);
     return result;
   }
 
@@ -189,9 +163,7 @@ class _FolderManagerState extends State<_FolderManager> {
                           onEdit: () => _editAt(index),
                           onDelete: _folders.length == 1
                               ? null
-                              : () => setState(
-                                    () => _folders.removeAt(index),
-                                  ),
+                              : () => setState(() => _folders.removeAt(index)),
                         );
                       },
                     ),
@@ -272,35 +244,27 @@ class _FolderManagerTile extends StatelessWidget {
   }
 }
 
-class _RoomPickerDialog extends StatefulWidget {
-  const _RoomPickerDialog({
-    required this.matrix,
-    required this.initialRoomIds,
-  });
+Future<List<String>?> _showRoomPickerDialog(
+  BuildContext context, {
+  required MatrixService matrix,
+  required List<String> initialRoomIds,
+}) {
+  final selected = initialRoomIds.toSet();
+  var query = '';
 
-  final MatrixService matrix;
-  final List<String> initialRoomIds;
+  return showOrexStatefulFormDialog<List<String>>(
+    context,
+    title: 'Выбрать чаты',
+    confirmLabel: 'Готово',
+    width: 460,
+    contentBuilder: (ctx, setDialogState) {
+      final q = query.toLowerCase();
+      final rooms = matrix.rooms.where((room) {
+        if (q.isEmpty) return true;
+        return _matchesLocalRoomSearch(matrix, room, q);
+      }).toList();
 
-  @override
-  State<_RoomPickerDialog> createState() => _RoomPickerDialogState();
-}
-
-class _RoomPickerDialogState extends State<_RoomPickerDialog> {
-  late final Set<String> _selected = widget.initialRoomIds.toSet();
-  String _query = '';
-
-  @override
-  Widget build(BuildContext context) {
-    final q = _query.toLowerCase();
-    final rooms = widget.matrix.rooms.where((room) {
-      if (q.isEmpty) return true;
-      return _matchesLocalRoomSearch(widget.matrix, room, q);
-    }).toList();
-
-    return AlertDialog(
-      title: const Text('Выбрать чаты'),
-      content: SizedBox(
-        width: 460,
+      return SizedBox(
         height: 520,
         child: Column(
           children: [
@@ -310,7 +274,7 @@ class _RoomPickerDialogState extends State<_RoomPickerDialog> {
                 hintText: 'Поиск по локальным чатам',
                 prefixIcon: Icon(Icons.search),
               ),
-              onChanged: (value) => setState(() => _query = value),
+              onChanged: (value) => setDialogState(() => query = value),
             ),
             const SizedBox(height: 10),
             Expanded(
@@ -320,21 +284,21 @@ class _RoomPickerDialogState extends State<_RoomPickerDialog> {
                       itemCount: rooms.length,
                       itemBuilder: (context, index) {
                         final room = rooms[index];
-                        final checked = _selected.contains(room.id);
+                        final checked = selected.contains(room.id);
                         final name = room.getLocalizedDisplayname();
                         return CheckboxListTile(
                           value: checked,
                           onChanged: (value) {
-                            setState(() {
+                            setDialogState(() {
                               if (value == true) {
-                                _selected.add(room.id);
+                                selected.add(room.id);
                               } else {
-                                _selected.remove(room.id);
+                                selected.remove(room.id);
                               }
                             });
                           },
                           secondary: MxcAvatar(
-                            matrix: widget.matrix,
+                            matrix: matrix,
                             name: name,
                             mxc: room.avatar,
                             size: 38,
@@ -344,35 +308,25 @@ class _RoomPickerDialogState extends State<_RoomPickerDialog> {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
-                          subtitle: Text(_kindLabel(widget.matrix, room)),
+                          subtitle: Text(_folderRoomKindLabel(matrix, room)),
                         );
                       },
                     ),
             ),
           ],
         ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Отмена'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, _selected.toList()),
-          child: const Text('Готово'),
-        ),
-      ],
-    );
-  }
-
-  String _kindLabel(MatrixService matrix, Room room) =>
-      switch (matrix.roomKind(room)) {
-        OrexRoomKind.direct => 'Личный чат',
-        OrexRoomKind.group =>
-          matrix.isPublicRoom(room) ? 'Публичная группа' : 'Группа',
-        OrexRoomKind.channel =>
-          matrix.isPublicRoom(room) ? 'Публичный канал' : 'Канал',
-        OrexRoomKind.supergroup => 'Супергруппа',
-      };
+      );
+    },
+    onSubmit: () => selected.toList(),
+  );
 }
 
+String _folderRoomKindLabel(MatrixService matrix, Room room) =>
+    switch (matrix.roomKind(room)) {
+      OrexRoomKind.direct => 'Личный чат',
+      OrexRoomKind.group =>
+        matrix.isPublicRoom(room) ? 'Публичная группа' : 'Группа',
+      OrexRoomKind.channel =>
+        matrix.isPublicRoom(room) ? 'Публичный канал' : 'Канал',
+      OrexRoomKind.supergroup => 'Супергруппа',
+    };

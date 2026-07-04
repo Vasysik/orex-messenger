@@ -67,6 +67,13 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     await widget.matrix.call.start(room.id, video: video);
     if (!mounted) return;
     if (!widget.matrix.call.isActive) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.matrix.call.lastError ?? 'Не удалось принять звонок',
+          ),
+        ),
+      );
       navigator.maybePop();
       return;
     }
@@ -139,13 +146,18 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
       mainAxisSize: MainAxisSize.min,
       children: [
         MxcAvatar(
-            matrix: widget.matrix, name: name, mxc: room.avatar, size: size),
+          matrix: widget.matrix,
+          name: name,
+          mxc: room.avatar,
+          size: size,
+        ),
         const SizedBox(height: 16),
-        Text(name,
-            style: Theme.of(context)
-                .textTheme
-                .titleLarge
-                ?.copyWith(fontWeight: FontWeight.w700)),
+        Text(
+          name,
+          style: Theme.of(
+            context,
+          ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+        ),
         const SizedBox(height: 4),
         Text('Входящий звонок…', style: Theme.of(context).textTheme.bodyMedium),
       ],

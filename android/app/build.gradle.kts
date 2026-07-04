@@ -1,3 +1,31 @@
+import java.util.Properties
+
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
+}
+
+fun signingValue(name: String): String? {
+    val fromFile = keystoreProperties.getProperty(name)?.trim()
+    if (!fromFile.isNullOrEmpty()) return fromFile
+    val envName = "OREX_ANDROID_" + name
+        .replace(Regex("([a-z])([A-Z])"), "\$1_\$2")
+        .uppercase()
+    return System.getenv(envName)?.trim()?.takeIf { it.isNotEmpty() }
+}
+
+val releaseStoreFile = signingValue("storeFile")
+val releaseKeyAlias = signingValue("keyAlias")
+val releaseKeyPassword = signingValue("keyPassword")
+val releaseStorePassword = signingValue("storePassword")
+val hasReleaseSigning = listOf(
+    releaseStoreFile,
+    releaseKeyAlias,
+    releaseKeyPassword,
+    releaseStorePassword,
+).all { !it.isNullOrEmpty() }
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -6,7 +34,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.orex_messenger"
+    namespace = "ru.orex.messenger"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -19,9 +47,19 @@ android {
         jvmTarget = JavaVersion.VERSION_17.toString()
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.orex_messenger"
+        applicationId = "ru.orex.messenger"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         // flutter_webrtc / livekit_client требуют minSdk >= 23 (звонки).
@@ -33,9 +71,9 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 }

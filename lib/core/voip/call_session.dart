@@ -1,18 +1,19 @@
-import 'dart:convert';
 import 'dart:async';
-import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
-import 'package:record/record.dart' as rec;
 import 'package:matrix/matrix.dart';
 
 import '../audio/audio_device_utils.dart';
-import '../audio/audio_cue_service.dart';
 import '../audio/native_audio_devices.dart';
-import '../config/orex_config.dart';
 import '../logging/orex_logger.dart';
+import 'camera_device_controller.dart';
+import 'livekit_credentials_client.dart';
+import 'livekit_track_access.dart';
+import 'screen_share_controller.dart';
+import 'voice_gate_controller.dart';
+import 'voice_participant_state.dart';
+import 'voice_state_repository.dart';
 
 enum CallStatus { connecting, connected, failed, ended }
 
@@ -38,7 +39,23 @@ class CallSession extends ChangeNotifier {
     this.speakingThresholdDbProvider,
     this.speakingThresholdEnabledProvider,
     this.callMicPreferenceSink,
-  });
+    OrexLiveKitCredentialsClient? credentialsClient,
+  }) : _credentialsClient =
+           credentialsClient ?? const OrexLiveKitCredentialsClient() {
+    _voiceStates = OrexVoiceStateRepository(
+      localUserIdProvider: () => client.userID,
+      readContent: (userId) => client
+          .getRoomById(matrixRoomId)
+          ?.getState(orexVoiceParticipantEventType, userId)
+          ?.content,
+      writeContent: (userId, content) => client.setRoomStateWithKey(
+        matrixRoomId,
+        orexVoiceParticipantEventType,
+        userId,
+        content,
+      ),
+    );
+  }
 
   final Client client;
   final String matrixRoomId;
@@ -53,6 +70,7 @@ class CallSession extends ChangeNotifier {
   final double Function()? speakingThresholdDbProvider;
   final bool Function()? speakingThresholdEnabledProvider;
   final FutureOr<void> Function(bool enabled)? callMicPreferenceSink;
+  final OrexLiveKitCredentialsClient _credentialsClient;
 
   CallStatus status = CallStatus.connecting;
   String? error;
@@ -60,36 +78,34 @@ class CallSession extends ChangeNotifier {
   lk.Room? _room;
   lk.Room? get room => _room;
   bool _disposed = false;
-  bool screenShareOn = false;
-  bool _screenShareBusy = false;
-  lk.LocalVideoTrack? _screenShareTrack;
+  final OrexScreenShareController _screenShare = OrexScreenShareController();
+  late final OrexCameraDeviceController _camera = OrexCameraDeviceController(
+    videoInputDeviceIdProvider: videoInputDeviceIdProvider,
+    cameraDeviceIdSink: cameraDeviceIdSink,
+  );
+  late final OrexVoiceGateController _voiceGate = OrexVoiceGateController(
+    participantProvider: () => _room?.localParticipant,
+    canPublishMediaProvider: () => canPublishMedia,
+    disposedProvider: () => _disposed,
+    audioInputDeviceIdProvider: audioInputDeviceIdProvider,
+    speakingThresholdDbProvider: speakingThresholdDbProvider,
+    speakingThresholdEnabledProvider: speakingThresholdEnabledProvider,
+  );
+  bool get screenShareOn => _screenShare.isOn;
   bool handRaised = false;
-  final Map<String, VoiceParticipantState> _voiceStates = <String, VoiceParticipantState>{};
+  late final OrexVoiceStateRepository _voiceStates;
   Timer? _reactionClearTimer;
   Timer? _voiceStateRefreshTimer;
   Timer? _mediaRecoveryTimer;
   String? _lastAppliedInputDeviceId;
-  String? _lastAppliedCameraDeviceId;
-  String? _lastRequestedCameraDeviceId;
-  rec.AudioRecorder? _voiceGateRecorder;
-  StreamSubscription<Uint8List>? _voiceGatePcmSub;
-  bool _voiceGateStarting = false;
-  bool _voiceGateAppliedMuted = false;
   bool speakerMuted = false;
-  bool _voiceGateTrackAccessFailed = false;
   int _lastRemoteParticipantCount = 0;
-  DateTime _lastVoiceAboveThreshold = DateTime.fromMillisecondsSinceEpoch(0);
 
   VoiceParticipantState voiceStateForUser(String userId) {
-    final cached = _voiceStates[userId];
-    if (cached != null) return cached;
-    final content =
-        client.getRoomById(matrixRoomId)?.getState('ru.orex.voice.participant', userId)?.content;
-    return VoiceParticipantState.fromContent(content);
+    return _voiceStates.stateForUser(userId);
   }
 
-  VoiceParticipantState get localVoiceState =>
-      voiceStateForUser(client.userID ?? '');
+  VoiceParticipantState get localVoiceState => _voiceStates.localState;
 
   /// Подключался ли хоть кто-то ещё (для итогового сообщения «ответили/пропущен»).
   bool sawRemote = false;
@@ -99,9 +115,9 @@ class CallSession extends ChangeNotifier {
   bool get canPublishMedia => canUseMic && !listenOnly;
 
   List<lk.Participant> get participants => [
-        if (_room?.localParticipant != null) _room!.localParticipant!,
-        ...?_room?.remoteParticipants.values,
-      ];
+    if (_room?.localParticipant != null) _room!.localParticipant!,
+    ...?_room?.remoteParticipants.values,
+  ];
 
   Future<void> connect({required bool video}) async {
     status = CallStatus.connecting;
@@ -124,15 +140,15 @@ class CallSession extends ChangeNotifier {
       } else {
         await room.localParticipant?.setMicrophoneEnabled(false);
       }
-      await _syncVoiceGate();
+      await _voiceGate.sync();
       if (video) {
         // Камера может быть недоступна (занята другим окном/приложением —
         // NotReadableError). Не валим весь звонок: продолжаем со звуком.
         try {
           await room.localParticipant?.setCameraEnabled(
-          true,
-          cameraCaptureOptions: _cameraCaptureOptions(),
-        );
+            true,
+            cameraCaptureOptions: _camera.captureOptions(),
+          );
         } catch (e) {
           cameraError = '$e';
         }
@@ -177,14 +193,13 @@ class CallSession extends ChangeNotifier {
         await applyAudioOutput();
         await _restartMicIfInputChanged(force: forceMicRestart);
         await _restartCameraIfInputChanged();
-        await _syncVoiceGate();
+        await _voiceGate.sync();
         _applySpeakerMute();
       } catch (e) {
         OrexLog.d('Call', 'media recovery failed', e);
       }
     });
   }
-
 
   void _startVoiceStateRefresh() {
     _voiceStateRefreshTimer?.cancel();
@@ -216,7 +231,7 @@ class CallSession extends ChangeNotifier {
           await lp.setMicrophoneEnabled(false);
         }
       } catch (_) {}
-      await _stopVoiceGate(resetTrack: true);
+      await _voiceGate.stop(resetTrack: true);
       try {
         if (lp.isCameraEnabled()) {
           await lp.setCameraEnabled(false);
@@ -229,17 +244,16 @@ class CallSession extends ChangeNotifier {
       }
     }
 
-
     if (nextCanUseMic && handRaised) {
-      final userId = client.userID;
-      if (userId != null && userId.isNotEmpty) {
+      if (_voiceStates.hasLocalUser) {
         handRaised = false;
-        _voiceStates[userId] = localVoiceState.copyWith(handRaised: false);
+        _voiceStates.updateLocal((state) => state.copyWith(handRaised: false));
         await _publishVoiceParticipantState();
       }
     }
 
-    if (nextCanUseMic && error == 'В режиме просмотра трансляция экрана недоступна') {
+    if (nextCanUseMic &&
+        error == 'В режиме просмотра трансляция экрана недоступна') {
       error = null;
     }
     if (!_disposed) notifyListeners();
@@ -256,7 +270,7 @@ class CallSession extends ChangeNotifier {
     );
     final sink = callMicPreferenceSink;
     if (sink != null) await sink(next);
-    await _syncVoiceGate();
+    await _voiceGate.sync();
     if (!_disposed) notifyListeners();
   }
 
@@ -283,7 +297,7 @@ class CallSession extends ChangeNotifier {
     await applyAudioOutput();
     await _restartMicIfInputChanged();
     await _restartCameraIfInputChanged();
-    await _syncVoiceGate();
+    await _voiceGate.sync();
   }
 
   Future<void> _restartMicIfInputChanged({bool force = false}) async {
@@ -293,7 +307,7 @@ class CallSession extends ChangeNotifier {
     final nextInputId = _normalizedInputDeviceId();
     if (!force && nextInputId == _lastAppliedInputDeviceId) return;
 
-    await _stopVoiceGate(resetTrack: true);
+    await _voiceGate.stop(resetTrack: true);
     try {
       await lp.setMicrophoneEnabled(false);
       await Future<void>.delayed(const Duration(milliseconds: 90));
@@ -304,7 +318,7 @@ class CallSession extends ChangeNotifier {
     } catch (e) {
       error = 'Не удалось восстановить микрофон: $e';
     }
-    await _syncVoiceGate();
+    await _voiceGate.sync();
   }
 
   Future<void> applyAudioOutput() async {
@@ -334,269 +348,7 @@ class CallSession extends ChangeNotifier {
     }
   }
 
-  Future<void> syncVoiceGateFromSettings() => _syncVoiceGate();
-
-  bool get _voiceGateEnabled =>
-      speakingThresholdEnabledProvider?.call() ?? false;
-
-  double get _voiceGateThresholdDb =>
-      (speakingThresholdDbProvider?.call() ??
-              AudioCueService.defaultSpeakingThresholdDb)
-          .clamp(
-            AudioCueService.minSpeakingThresholdDb,
-            AudioCueService.maxSpeakingThresholdDb,
-          )
-          .toDouble();
-
-  Future<void> _syncVoiceGate() async {
-    final lp = _room?.localParticipant;
-    final shouldRun = lp != null &&
-        lp.isMicrophoneEnabled() &&
-        canPublishMedia &&
-        _voiceGateEnabled &&
-        !_disposed;
-
-    if (!shouldRun) {
-      await _stopVoiceGate(resetTrack: true);
-      return;
-    }
-    await _startVoiceGate();
-  }
-
-  Future<void> _startVoiceGate() async {
-    if (_voiceGateRecorder != null || _voiceGateStarting) return;
-    _voiceGateStarting = true;
-    rec.AudioRecorder? recorder;
-    try {
-      recorder = rec.AudioRecorder();
-      final allowed = await recorder.hasPermission();
-      if (!allowed) throw StateError('Нет разрешения на микрофон');
-
-      final device = await _recordDeviceFor(
-        recorder,
-        audioInputDeviceIdProvider?.call(),
-      );
-      final stream = await recorder.startStream(
-        rec.RecordConfig(
-          encoder: rec.AudioEncoder.pcm16bits,
-          sampleRate: 16000,
-          numChannels: 1,
-          autoGain: false,
-          echoCancel: false,
-          noiseSuppress: false,
-          device: device,
-          streamBufferSize: 480,
-        ),
-      );
-      _voiceGatePcmSub = stream.listen(_onVoiceGatePcm, onError: (Object e) {
-        OrexLog.d('Call', 'voice gate pcm stream failed', e);
-      });
-      _voiceGateRecorder = recorder;
-      _voiceGateStarting = false;
-      _lastVoiceAboveThreshold = DateTime.fromMillisecondsSinceEpoch(0);
-      _setVoiceGateMuted(true);
-      OrexLog.d('Call', 'voice gate started device=${device?.id ?? 'default'}');
-    } catch (e, st) {
-      _voiceGateStarting = false;
-      OrexLog.d('Call', 'voice gate start failed stack=$st', e);
-      try {
-        await recorder?.dispose();
-      } catch (_) {}
-    }
-  }
-
-  Future<rec.InputDevice?> _recordDeviceFor(
-    rec.AudioRecorder recorder,
-    String? selectedId,
-  ) async {
-    final normalized = selectedId?.trim();
-    if (normalized == null || normalized.isEmpty || normalized == 'default') {
-      return null;
-    }
-    try {
-      final devices = await recorder.listInputDevices();
-      for (final device in devices) {
-        if (device.id == normalized) return device;
-      }
-    } catch (e) {
-      OrexLog.d('Call', 'voice gate device match failed', e);
-    }
-    return null;
-  }
-
-  void _onVoiceGatePcm(Uint8List data) {
-    if (_disposed) return;
-    final db = _dbFromPcm16(data);
-    final now = DateTime.now();
-    final threshold = _voiceGateThresholdDb;
-    if (db >= threshold) {
-      _lastVoiceAboveThreshold = now;
-    }
-
-    final active = db >= threshold ||
-        now.difference(_lastVoiceAboveThreshold) <
-            const Duration(milliseconds: 220);
-
-    if (!_voiceGateEnabled || !canPublishMedia) {
-      unawaited(_stopVoiceGate(resetTrack: true));
-      return;
-    }
-    _setVoiceGateMuted(!active);
-  }
-
-  double _dbFromPcm16(Uint8List bytes) {
-    if (bytes.length < 2) return AudioCueService.minSpeakingThresholdDb;
-    final data = ByteData.sublistView(bytes);
-    var sumSquares = 0.0;
-    var count = 0;
-    for (var i = 0; i + 1 < bytes.length; i += 2) {
-      final sample = data.getInt16(i, Endian.little) / 32768.0;
-      sumSquares += sample * sample;
-      count++;
-    }
-    if (count == 0 || sumSquares <= 0) return AudioCueService.minSpeakingThresholdDb;
-    final rms = math.sqrt(sumSquares / count);
-    if (rms <= 0) return AudioCueService.minSpeakingThresholdDb;
-    return (20 * math.log(rms) / math.ln10)
-        .clamp(AudioCueService.minSpeakingThresholdDb, 0.0)
-        .toDouble();
-  }
-
-  void _setVoiceGateMuted(bool muted) {
-    if (_voiceGateAppliedMuted == muted) return;
-    if (!_setLocalMicTrackEnabled(!muted)) {
-      if (!_voiceGateTrackAccessFailed) {
-        _voiceGateTrackAccessFailed = true;
-        OrexLog.d('Call', 'voice gate cannot access local microphone track');
-      }
-      return;
-    }
-    _voiceGateAppliedMuted = muted;
-  }
-
-  bool _setLocalMicTrackEnabled(bool enabled) {
-    final pub = _localMicrophonePublication();
-    final track = pub == null ? null : _readDynamic(pub, 'track');
-    return _setMediaTrackEnabled(track, enabled) ||
-        _setMediaTrackEnabled(pub, enabled);
-  }
-
-  dynamic _localMicrophonePublication() {
-    final lp = _room?.localParticipant;
-    if (lp == null) return null;
-    try {
-      final dynamic dynamicParticipant = lp;
-      final pub = dynamicParticipant.getTrackPublicationBySource(
-        lk.TrackSource.microphone,
-      );
-      if (pub != null) return pub;
-    } catch (_) {}
-    try {
-      final dynamic dynamicParticipant = lp;
-      for (final dynamic pub in _dynamicValues(dynamicParticipant.audioTrackPublications)) {
-        if (_readDynamic(pub, 'source') == lk.TrackSource.microphone) return pub;
-      }
-    } catch (_) {}
-    try {
-      final dynamic dynamicParticipant = lp;
-      for (final dynamic pub in _dynamicValues(dynamicParticipant.trackPublications)) {
-        if (_readDynamic(pub, 'source') == lk.TrackSource.microphone) return pub;
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  Iterable<dynamic> _dynamicValues(dynamic value) sync* {
-    if (value == null) return;
-    if (value is Map) {
-      yield* value.values;
-      return;
-    }
-    if (value is Iterable) yield* value;
-  }
-
-  bool _setMediaTrackEnabled(dynamic candidate, bool enabled) {
-    if (candidate == null) return false;
-    if (_trySetEnabled(candidate, enabled)) return true;
-
-    for (final getter in const [
-      'mediaStreamTrack',
-      'rtcTrack',
-      'track',
-      'senderTrack',
-    ]) {
-      final nested = _readDynamic(candidate, getter);
-      if (_trySetEnabled(nested, enabled)) return true;
-    }
-
-    for (final getter in const ['mediaStream', 'stream']) {
-      final mediaStream = _readDynamic(candidate, getter);
-      if (_setAudioTracksEnabled(mediaStream, enabled)) return true;
-    }
-
-    return false;
-  }
-
-  bool _trySetEnabled(dynamic candidate, bool enabled) {
-    if (candidate == null) return false;
-    try {
-      candidate.enabled = enabled;
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  bool _setAudioTracksEnabled(dynamic mediaStream, bool enabled) {
-    if (mediaStream == null) return false;
-    try {
-      final tracks = mediaStream.getAudioTracks() as List<dynamic>;
-      var changed = false;
-      for (final rawTrack in tracks) {
-        if (_trySetEnabled(rawTrack, enabled)) changed = true;
-      }
-      return changed;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  dynamic _readDynamic(dynamic object, String getterName) {
-    if (object == null) return null;
-    try {
-      return switch (getterName) {
-        'track' => object.track,
-        'source' => object.source,
-        'mediaStream' => object.mediaStream,
-        'stream' => object.stream,
-        'mediaStreamTrack' => object.mediaStreamTrack,
-        'rtcTrack' => object.rtcTrack,
-        'senderTrack' => object.senderTrack,
-        _ => null,
-      };
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<void> _stopVoiceGate({required bool resetTrack}) async {
-    final recorder = _voiceGateRecorder;
-    _voiceGateRecorder = null;
-    _voiceGateStarting = false;
-    await _voiceGatePcmSub?.cancel();
-    _voiceGatePcmSub = null;
-    try {
-      await recorder?.stop();
-    } catch (_) {}
-    try {
-      await recorder?.dispose();
-    } catch (_) {}
-    if (resetTrack && _voiceGateAppliedMuted) {
-      _setVoiceGateMuted(false);
-    }
-    _voiceGateAppliedMuted = false;
-  }
-
+  Future<void> syncVoiceGateFromSettings() => _voiceGate.sync();
 
   Future<void> toggleSpeakerMute() async {
     speakerMuted = !speakerMuted;
@@ -606,9 +358,11 @@ class CallSession extends ChangeNotifier {
   }
 
   Future<void> _publishSpeakerMuteState() async {
-    final userId = client.userID;
-    if (userId == null || userId.isEmpty) return;
-    _voiceStates[userId] = localVoiceState.copyWith(speakerMuted: speakerMuted);
+    if (!_voiceStates.updateLocal(
+      (state) => state.copyWith(speakerMuted: speakerMuted),
+    )) {
+      return;
+    }
     await _publishVoiceParticipantState();
   }
 
@@ -617,25 +371,8 @@ class CallSession extends ChangeNotifier {
     if (room == null) return;
     final enabled = !speakerMuted;
     for (final participant in room.remoteParticipants.values) {
-      _setParticipantAudioEnabled(participant, enabled);
+      OrexLiveKitTrackAccess.setParticipantAudioEnabled(participant, enabled);
     }
-  }
-
-  void _setParticipantAudioEnabled(lk.Participant participant, bool enabled) {
-    try {
-      final dynamic dynamicParticipant = participant;
-      for (final dynamic pub in _dynamicValues(dynamicParticipant.audioTrackPublications)) {
-        _setMediaTrackEnabled(pub, enabled);
-      }
-    } catch (_) {}
-    try {
-      final dynamic dynamicParticipant = participant;
-      for (final dynamic pub in _dynamicValues(dynamicParticipant.trackPublications)) {
-        if (_readDynamic(pub, 'source') == lk.TrackSource.microphone) {
-          _setMediaTrackEnabled(pub, enabled);
-        }
-      }
-    } catch (_) {}
   }
 
   Future<void> toggleScreenShare({
@@ -644,287 +381,54 @@ class CallSession extends ChangeNotifier {
     String? sourceType,
   }) async {
     final lp = _room?.localParticipant;
-    if (lp == null || _screenShareBusy) return;
-    _screenShareBusy = true;
-    try {
-      // Android media projection requires native foreground-service wiring
-      // outside lib/. До этого не открываем системный picker, чтобы не ловить
-      // native crash после выбора экрана.
-      if (!canPublishMedia) {
-        error = 'В режиме просмотра трансляция экрана недоступна';
-        if (!_disposed) notifyListeners();
-        return;
-      }
-      if (defaultTargetPlatform == TargetPlatform.android) {
-        error = 'Трансляция экрана на Android будет реализована позже';
-        if (!_disposed) notifyListeners();
-        return;
-      }
-
-      final next = !screenShareOn;
-      if (!next) {
-        await _stopScreenShare(lp: lp);
-        error = null;
-        return;
-      }
-
-      if (sourceId == null && _desktopNeedsExplicitSource) {
-        error = 'Выберите источник экрана';
-        if (!_disposed) notifyListeners();
-        return;
-      }
-
-      final sourceLabel = sourceName?.trim().isNotEmpty == true
-          ? sourceName!.trim()
-          : sourceId ?? 'default';
-      OrexLog.d(
-        'Call',
-        'screen share start requested sourceId=$sourceId type=$sourceType name=$sourceLabel',
-      );
-
-      if (!kIsWeb && _desktopNeedsExplicitSource && sourceId != null) {
-        Object? lastError;
-        StackTrace? lastStack;
-        final candidates = _screenShareCandidateIds(
-          sourceId: sourceId,
-          sourceType: sourceType,
-          sourceName: sourceName,
-        );
-        for (final candidateId in candidates) {
-          final options = _screenShareOptions(candidateId);
-          try {
-            OrexLog.d(
-              'Call',
-              'screen share candidate sourceId=${candidateId ?? 'default'} originalId=$sourceId type=$sourceType name=$sourceLabel',
-            );
-            await _publishScreenShareTrack(
-              lp: lp,
-              options: options,
-              sourceId: candidateId,
-              sourceType: sourceType,
-              sourceLabel: sourceLabel,
-            );
-            lastError = null;
-            lastStack = null;
-            break;
-          } catch (e, st) {
-            lastError = e;
-            lastStack = st;
-            OrexLog.d(
-              'Call',
-              'createScreenShareTrack failed candidate=${candidateId ?? 'default'} originalId=$sourceId type=$sourceType name=$sourceLabel stack=$st',
-              e,
-            );
-            await _cleanupScreenShareLocals();
-          }
-        }
-
-        if (!screenShareOn && lastError != null) {
-          if (!_isDesktopScreenSource(sourceType)) {
-            // Для окна не падаем молча на весь экран: можно расшарить лишнее.
-            final options = _screenShareOptions(sourceId);
-            try {
-              await lp.setScreenShareEnabled(
-                true,
-                screenShareCaptureOptions: options,
-              );
-              screenShareOn = true;
-              OrexLog.d('Call', 'screen share started via setScreenShareEnabled sourceId=$sourceId');
-            } catch (e, st) {
-              lastError = e;
-              lastStack = st;
-            }
-          } else {
-            // Последний шанс для экранов: вызвать helper без options вообще.
-            // В некоторых сборках flutter_webrtc это отличается от options
-            // без sourceId и даёт системный default-display path.
-            try {
-              OrexLog.d('Call', 'screen share final fallback setScreenShareEnabled without options');
-              await lp.setScreenShareEnabled(true);
-              screenShareOn = true;
-              lastError = null;
-              lastStack = null;
-            } catch (e, st) {
-              lastError = e;
-              lastStack = st;
-            }
-          }
-        }
-
-        if (!screenShareOn && lastError != null) {
-          Error.throwWithStackTrace(lastError, lastStack ?? StackTrace.current);
-        }
-      } else {
-        final options = _screenShareOptions(sourceId);
-        await lp.setScreenShareEnabled(
-          true,
-          screenShareCaptureOptions: options,
-        );
-        screenShareOn = true;
-        OrexLog.d('Call', 'screen share started via setScreenShareEnabled sourceId=$sourceId');
-      }
-      error = null;
-    } catch (e, st) {
-      await _cleanupScreenShareLocals();
-      screenShareOn = false;
-      OrexLog.d(
-        'Call',
-        'screen share failed sourceId=$sourceId type=$sourceType name=${sourceName ?? ''} stack=$st',
-        e,
-      );
-      final sourcePart = sourceName?.trim().isNotEmpty == true
-          ? ' для "${sourceName!.trim()}"'
-          : '';
-      error = 'Не удалось включить трансляцию экрана$sourcePart: $e';
-    } finally {
-      _screenShareBusy = false;
-      if (!_disposed) notifyListeners();
-    }
-  }
-
-  lk.ScreenShareCaptureOptions _screenShareOptions(String? sourceId) {
-    final normalized = sourceId?.trim();
-    if (normalized == null || normalized.isEmpty) {
-      return const lk.ScreenShareCaptureOptions(maxFrameRate: 15.0);
-    }
-    return lk.ScreenShareCaptureOptions(sourceId: normalized, maxFrameRate: 15.0);
-  }
-
-  List<String?> _screenShareCandidateIds({
-    required String? sourceId,
-    required String? sourceType,
-    required String? sourceName,
-  }) {
-    final result = <String?>[];
-    void add(String? value) {
-      final normalized = value?.trim();
-      final candidate = normalized == null || normalized.isEmpty ? null : normalized;
-      if (result.contains(candidate)) return;
-      result.add(candidate);
-    }
-
-    add(sourceId);
-    if (_isDesktopScreenSource(sourceType)) {
-      final index = _screenIndexFromName(sourceName);
-      if (index != null) add('screen:$index:0');
-      final rawId = sourceId?.trim();
-      if (rawId != null && rawId.isNotEmpty) {
-        add('screen:$rawId:0');
-      }
-      add(null);
-    }
-    return result;
-  }
-
-  int? _screenIndexFromName(String? sourceName) {
-    if (sourceName == null) return null;
-    final match = RegExp(r'(\d+)').firstMatch(sourceName);
-    if (match == null) return null;
-    final number = int.tryParse(match.group(1) ?? '');
-    if (number == null) return null;
-    return number <= 0 ? 0 : number - 1;
-  }
-
-  Future<void> _publishScreenShareTrack({
-    required lk.LocalParticipant lp,
-    required lk.ScreenShareCaptureOptions options,
-    required String? sourceId,
-    required String? sourceType,
-    required String sourceLabel,
-  }) async {
-    final track = await lk.LocalVideoTrack.createScreenShareTrack(options);
-    await lp.publishVideoTrack(track);
-    _screenShareTrack = track;
-    screenShareOn = true;
-    OrexLog.d(
-      'Call',
-      'screen share started via createScreenShareTrack sourceId=${sourceId ?? 'default'} type=$sourceType name=$sourceLabel',
+    if (lp == null || _screenShare.isBusy) return;
+    final result = await _screenShare.toggle(
+      participant: lp,
+      canPublishMedia: canPublishMedia,
+      sourceId: sourceId,
+      sourceName: sourceName,
+      sourceType: sourceType,
     );
+    error = result.error;
+    if (!_disposed) notifyListeners();
   }
-
-  bool _isDesktopScreenSource(String? sourceType) =>
-      sourceType == null || sourceType == 'screen';
 
   Future<void> _stopScreenShare({lk.LocalParticipant? lp}) async {
-    final participant = lp ?? _room?.localParticipant;
-    // Не используем LocalParticipant.unpublishTrack(): в части версий
-    // livekit_client этот метод отсутствует/не экспортируется, из-за чего
-    // flutter analyze падает. Для screen-share LiveKit умеет выключать
-    // публикацию по TrackSource через setScreenShareEnabled(false), а локальный
-    // track ниже дополнительно останавливается и dispose-ится.
-    if (participant != null) {
-      try {
-        await participant.setScreenShareEnabled(false);
-      } catch (_) {}
-    }
-
-    await _cleanupScreenShareLocals();
-    screenShareOn = false;
-  }
-
-  Future<void> _cleanupScreenShareLocals() async {
-    final track = _screenShareTrack;
-    _screenShareTrack = null;
-    try {
-      await track?.stop();
-    } catch (_) {}
-    try {
-      await track?.dispose();
-    } catch (_) {}
-  }
-
-  bool get _desktopNeedsExplicitSource {
-    if (kIsWeb) return false;
-    return defaultTargetPlatform == TargetPlatform.windows ||
-        defaultTargetPlatform == TargetPlatform.macOS ||
-        defaultTargetPlatform == TargetPlatform.linux;
+    await _screenShare.stop(participant: lp ?? _room?.localParticipant);
   }
 
   Future<void> toggleHandRaised({bool? force}) async {
-    final userId = client.userID;
-    if (userId == null || userId.isEmpty) return;
+    if (!_voiceStates.hasLocalUser) return;
     final next = force ?? !handRaised;
     if (handRaised == next) return;
     handRaised = next;
-    _voiceStates[userId] = localVoiceState.copyWith(handRaised: next);
+    _voiceStates.updateLocal((state) => state.copyWith(handRaised: next));
     await _publishVoiceParticipantState();
     if (!_disposed) notifyListeners();
   }
 
   Future<void> sendVoiceReaction(String emoji) async {
-    final userId = client.userID;
-    if (userId == null || userId.isEmpty) return;
+    if (!_voiceStates.hasLocalUser) return;
     _reactionClearTimer?.cancel();
-    _voiceStates[userId] = localVoiceState.copyWith(
-      reaction: emoji,
-      reactionTs: DateTime.now().millisecondsSinceEpoch,
+    _voiceStates.updateLocal(
+      (state) => state.copyWith(
+        reaction: emoji,
+        reactionTs: DateTime.now().millisecondsSinceEpoch,
+      ),
     );
     await _publishVoiceParticipantState();
     if (!_disposed) notifyListeners();
     _reactionClearTimer = Timer(const Duration(seconds: 4), () async {
       if (_disposed) return;
-      _voiceStates[userId] = localVoiceState.copyWith(clearReaction: true);
+      _voiceStates.updateLocal((state) => state.copyWith(clearReaction: true));
       await _publishVoiceParticipantState();
       if (!_disposed) notifyListeners();
     });
   }
 
   Future<void> _publishVoiceParticipantState() async {
-    final userId = client.userID;
-    if (userId == null || userId.isEmpty) return;
-    final state = localVoiceState;
     try {
-      await client.setRoomStateWithKey(
-        matrixRoomId,
-        'ru.orex.voice.participant',
-        userId,
-        {
-          'hand_raised': state.handRaised,
-          'speaker_muted': state.speakerMuted,
-          if (state.reaction != null) 'reaction': state.reaction,
-          if (state.reactionTs != null) 'reaction_ts': state.reactionTs,
-        },
-      );
+      await _voiceStates.publishLocal();
     } catch (e) {
       error = 'Не удалось обновить состояние голосового канала: $e';
       // Voice participant state is UX-only; failed state publish must not break
@@ -944,7 +448,7 @@ class CallSession extends ChangeNotifier {
       final next = !lp.isCameraEnabled();
       await lp.setCameraEnabled(
         next,
-        cameraCaptureOptions: next ? _cameraCaptureOptions() : null,
+        cameraCaptureOptions: next ? _camera.captureOptions() : null,
       );
       cameraError = null;
     } catch (e) {
@@ -953,170 +457,45 @@ class CallSession extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  lk.CameraCaptureOptions _cameraCaptureOptions() {
-    final normalized = _normalizedCameraDeviceId();
-    _lastAppliedCameraDeviceId = normalized;
-    return lk.CameraCaptureOptions(deviceId: normalized);
-  }
-
-  String? _normalizedCameraDeviceId() {
-    final normalized = videoInputDeviceIdProvider?.call()?.trim();
-    return normalized == null || normalized.isEmpty || normalized == 'default'
-        ? null
-        : normalized;
-  }
-
   Future<void> _restartCameraIfInputChanged({bool force = false}) async {
-    final lp = _room?.localParticipant;
-    if (lp == null || !lp.isCameraEnabled() || !canPublishMedia) return;
-
-    final nextCameraId = _normalizedCameraDeviceId();
-    if (!force && nextCameraId == _lastAppliedCameraDeviceId) return;
-    if (nextCameraId != null && await _switchActiveCameraTrack(nextCameraId)) return;
-
-    await _recreateCameraTrack(lp);
-  }
-
-  Future<void> _recreateCameraTrack(lk.LocalParticipant lp) async {
-    final oldTrack = _localCameraTrack();
-    try {
-      await lp.setCameraEnabled(false);
-      try {
-        await oldTrack?.stop();
-      } catch (_) {}
-      try {
-        await oldTrack?.dispose();
-      } catch (_) {}
-      await Future<void>.delayed(const Duration(milliseconds: 180));
-
-      final options = _cameraCaptureOptions();
-      try {
-        final track = await lk.LocalVideoTrack.createCameraTrack(options);
-        await lp.publishVideoTrack(track);
-      } catch (e) {
-        OrexLog.d('Call', 'explicit camera recreate failed, fallback setCameraEnabled', e);
-        await lp.setCameraEnabled(true, cameraCaptureOptions: options);
-      }
-      cameraError = null;
-    } catch (e) {
-      cameraError = '$e';
-    }
+    _applyCameraResult(
+      await _camera.restartIfInputChanged(
+        participant: _room?.localParticipant,
+        canPublishMedia: canPublishMedia,
+        force: force,
+      ),
+    );
   }
 
   Future<void> selectCameraDevice(String? deviceId) async {
-    final normalized = _normalizeSelectedDeviceId(deviceId);
-    await _saveCameraDeviceId(normalized);
-    if (normalized != null && await _switchActiveCameraTrack(normalized)) {
-      if (!_disposed) notifyListeners();
-      return;
-    }
-    await _restartCameraIfInputChanged(force: true);
+    _applyCameraResult(
+      await _camera.selectDevice(
+        participant: _room?.localParticipant,
+        canPublishMedia: canPublishMedia,
+        deviceId: deviceId,
+      ),
+    );
     if (!_disposed) notifyListeners();
   }
 
   Future<void> cycleCameraDevice(List<OrexAudioDevice> devices) async {
-    final ids = <String>[];
-    for (final device in devices) {
-      final id = device.id.trim();
-      if (id.isNotEmpty && !ids.contains(id)) ids.add(id);
-    }
-    if (ids.isEmpty) return;
-
-    final activeTrackId = _currentCameraDeviceIdFromTrack();
-    final current = _normalizedCameraDeviceId() ??
-        _lastRequestedCameraDeviceId ??
-        activeTrackId;
-    var index = current == null ? 0 : ids.indexOf(current);
-    if (index < 0) index = 0;
-    final nextIndex = ids.length == 1 ? 0 : (index + 1) % ids.length;
-    final next = ids[nextIndex];
-    await _saveCameraDeviceId(next);
-    if (await _switchActiveCameraTrack(next)) {
-      if (!_disposed) notifyListeners();
-      return;
-    }
-    await _restartCameraIfInputChanged(force: true);
+    _applyCameraResult(
+      await _camera.cycleDevice(
+        participant: _room?.localParticipant,
+        canPublishMedia: canPublishMedia,
+        devices: devices,
+      ),
+    );
     if (!_disposed) notifyListeners();
   }
 
-  String? _normalizeSelectedDeviceId(String? deviceId) {
-    final normalized = deviceId?.trim();
-    if (normalized == null || normalized.isEmpty || normalized == 'default') {
-      return null;
-    }
-    return normalized;
-  }
-
-  Future<void> _saveCameraDeviceId(String? deviceId) async {
-    _lastRequestedCameraDeviceId = deviceId;
-    final sink = cameraDeviceIdSink;
-    if (sink != null) await sink(deviceId);
-  }
-
-  Future<bool> _switchActiveCameraTrack(String deviceId) async {
-    if (!kIsWeb && _desktopNeedsExplicitSource) return false;
-    final lp = _room?.localParticipant;
-    if (lp == null || !lp.isCameraEnabled() || !canPublishMedia) return false;
-    final track = _localCameraTrack();
-    if (track == null) return false;
-    try {
-      await lk.LocalVideoTrackExt(track).switchCamera(deviceId, fastSwitch: true);
-      _lastAppliedCameraDeviceId = deviceId;
-      cameraError = null;
-      OrexLog.d('Call', 'camera switched via LiveKit track device=$deviceId');
-      return true;
-    } catch (e) {
-      OrexLog.d('Call', 'camera fast switch failed device=$deviceId', e);
-      return false;
-    }
-  }
-
-  lk.LocalVideoTrack? _localCameraTrack() {
-    final lp = _room?.localParticipant;
-    if (lp == null) return null;
-    for (final pub in _localVideoPublications(lp)) {
-      if (_readDynamic(pub, 'source') != lk.TrackSource.camera) continue;
-      final track = _readDynamic(pub, 'track');
-      if (track is lk.LocalVideoTrack) return track;
-      if (pub is lk.LocalVideoTrack) return pub;
-    }
-    return null;
-  }
-
-  Iterable<dynamic> _localVideoPublications(lk.LocalParticipant lp) sync* {
-    final dynamic dynamicParticipant = lp;
-    try {
-      yield* _dynamicValues(dynamicParticipant.videoTrackPublications);
-    } catch (_) {}
-    try {
-      yield* _dynamicValues(dynamicParticipant.trackPublications);
-    } catch (_) {}
-  }
-
-  String? _currentCameraDeviceIdFromTrack() {
-    final track = _localCameraTrack();
-    if (track == null) return null;
-    for (final candidate in [
-      _readDynamic(track, 'mediaStreamTrack'),
-      _readDynamic(track, 'rtcTrack'),
-      _readDynamic(track, 'track'),
-      track,
-    ]) {
-      try {
-        final settings = candidate.getSettings();
-        if (settings is Map) {
-          final id = settings['deviceId'] ?? settings['device_id'];
-          final normalized = _normalizeSelectedDeviceId(id?.toString());
-          if (normalized != null) return normalized;
-        }
-      } catch (_) {}
-    }
-    return null;
+  void _applyCameraResult(OrexCameraDeviceResult result) {
+    if (!result.changed) return;
+    cameraError = result.error;
   }
 
   Future<void> _clearLocalVoiceUiState() async {
-    final userId = client.userID;
-    if (userId == null || userId.isEmpty) return;
+    if (!_voiceStates.hasLocalUser) return;
     final state = localVoiceState;
     if (!handRaised &&
         !state.handRaised &&
@@ -1128,10 +507,12 @@ class CallSession extends ChangeNotifier {
     speakerMuted = false;
     _reactionClearTimer?.cancel();
     _reactionClearTimer = null;
-    _voiceStates[userId] = state.copyWith(
-      handRaised: false,
-      speakerMuted: false,
-      clearReaction: true,
+    _voiceStates.updateLocal(
+      (state) => state.copyWith(
+        handRaised: false,
+        speakerMuted: false,
+        clearReaction: true,
+      ),
     );
     try {
       await _publishVoiceParticipantState();
@@ -1145,7 +526,7 @@ class CallSession extends ChangeNotifier {
     _voiceStateRefreshTimer = null;
     _mediaRecoveryTimer?.cancel();
     _mediaRecoveryTimer = null;
-    await _stopVoiceGate(resetTrack: true);
+    await _voiceGate.stop(resetTrack: true);
     final room = _room;
     _room = null;
     if (room != null) {
@@ -1170,44 +551,13 @@ class CallSession extends ChangeNotifier {
   }
 
   // OpenID-токен Matrix -> lk-jwt-service /sfu/get -> {url, jwt}
-  Future<_Creds> _fetchCredentials() async {
-    final userId = client.userID!;
-
-    final openId = await client.requestOpenIdToken(userId, <String, Object?>{});
-
-    final resp = await http
-        .post(
-          OrexConfig.jwtServiceUri.replace(path: '/sfu/get'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'room': matrixRoomId,
-            'openid_token': {
-              'access_token': openId.accessToken,
-              'token_type': openId.tokenType,
-              'matrix_server_name': openId.matrixServerName,
-            },
-            'device_id': client.deviceID ?? '',
-          }),
-        )
-        .timeout(const Duration(seconds: 12));
-    if (resp.statusCode != 200) {
-      // Не добавляем resp.body: backend-ошибки иногда содержат диагностические
-      // поля, которые не должны попадать в UI/log вместе с auth-контекстом.
-      throw Exception('lk-jwt-service ${resp.statusCode}');
-    }
-    final json = jsonDecode(resp.body) as Map<String, dynamic>;
-    final url = json['url'] as String?;
-    final jwt = json['jwt'] as String?;
-    if (url == null || jwt == null || jwt.isEmpty) {
-      throw StateError('lk-jwt-service вернул неполные credentials');
-    }
-    final uri = Uri.tryParse(url);
-    if (uri == null ||
-        uri.host.isEmpty ||
-        (uri.scheme != 'wss' && uri.scheme != 'https')) {
-      throw StateError('LiveKit URL должен быть wss:// или https://');
-    }
-    return _Creds(url: url, jwt: jwt);
+  Future<OrexLiveKitCredentials> _fetchCredentials() {
+    return _credentialsClient.fetch(
+      client: client,
+      matrixRoomId: matrixRoomId,
+      canPublishMedia: canPublishMedia,
+      listenOnly: listenOnly,
+    );
   }
 
   @override
@@ -1216,8 +566,8 @@ class CallSession extends ChangeNotifier {
     _reactionClearTimer?.cancel();
     _voiceStateRefreshTimer?.cancel();
     _mediaRecoveryTimer?.cancel();
-    _voiceGatePcmSub?.cancel();
-    _voiceGateRecorder?.dispose();
+    _voiceGate.dispose();
+    unawaited(_screenShare.cleanupLocals());
     _room?.removeListener(_onRoom);
     _room?.dispose();
     _room = null;
@@ -1225,55 +575,5 @@ class CallSession extends ChangeNotifier {
       unawaited(OrexNativeAudioDevices.selectOutput(null, inCall: false));
     }
     super.dispose();
-  }
-}
-
-class _Creds {
-  _Creds({required this.url, required this.jwt});
-  final String url;
-  final String jwt;
-}
-
-class VoiceParticipantState {
-  const VoiceParticipantState({
-    this.handRaised = false,
-    this.speakerMuted = false,
-    this.reaction,
-    this.reactionTs,
-  });
-
-  factory VoiceParticipantState.fromContent(Map<dynamic, dynamic>? content) {
-    if (content == null) return const VoiceParticipantState();
-    final reactionTs = content['reaction_ts'] is num
-        ? (content['reaction_ts'] as num).toInt()
-        : null;
-    final reactionFresh = reactionTs != null &&
-        DateTime.now().millisecondsSinceEpoch - reactionTs < 6000;
-    return VoiceParticipantState(
-      handRaised: content['hand_raised'] == true,
-      speakerMuted: content['speaker_muted'] == true,
-      reaction: reactionFresh ? content['reaction']?.toString() : null,
-      reactionTs: reactionFresh ? reactionTs : null,
-    );
-  }
-
-  final bool handRaised;
-  final bool speakerMuted;
-  final String? reaction;
-  final int? reactionTs;
-
-  VoiceParticipantState copyWith({
-    bool? handRaised,
-    bool? speakerMuted,
-    String? reaction,
-    int? reactionTs,
-    bool clearReaction = false,
-  }) {
-    return VoiceParticipantState(
-      handRaised: handRaised ?? this.handRaised,
-      speakerMuted: speakerMuted ?? this.speakerMuted,
-      reaction: clearReaction ? null : reaction ?? this.reaction,
-      reactionTs: clearReaction ? null : reactionTs ?? this.reactionTs,
-    );
   }
 }

@@ -4,11 +4,12 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 
+import '../../../core/matrix/matrix_member_event_text.dart';
 import '../../../core/matrix/matrix_service.dart';
-import '../../../domain/rooms/member_event_text.dart';
 import '../../../shared/theme/glass.dart';
 import '../../../shared/theme/orex_theme.dart';
 import '../../../shared/widgets/mxc_avatar.dart';
+import '../../../shared/widgets/orex_dialogs.dart';
 import '../../../shared/widgets/squirrel_mascot.dart';
 import 'chat_folder_controller.dart';
 
@@ -106,30 +107,16 @@ class _ChatListPanelState extends State<ChatListPanel> {
   }
 
   Future<void> _confirmDelete(Room room) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Удалить чат?'),
-        content: Text(
+    final ok = await showOrexConfirmDialog(
+      context,
+      title: 'Удалить чат?',
+      message:
           'Чат «${room.getLocalizedDisplayname()}» исчезнет из списка. '
           'Вы выйдете из комнаты.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFFCF6679),
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Удалить'),
-          ),
-        ],
-      ),
+      confirmLabel: 'Удалить',
+      danger: true,
     );
-    if (ok == true) {
+    if (ok) {
       await widget.matrix.deleteRoom(room);
     }
   }
@@ -330,8 +317,9 @@ class _ChatListPanelState extends State<ChatListPanel> {
         profile: profile,
         onTap: () => widget.onOpenPreview(
           OrexConversationPreview.direct(
-            profile,
-            compactUserId: widget.matrix.compactUserId(profile.userId),
+            profile.toOrexUserPreview(
+              compactUserId: widget.matrix.compactUserId(profile.userId),
+            ),
           ),
         ),
       );

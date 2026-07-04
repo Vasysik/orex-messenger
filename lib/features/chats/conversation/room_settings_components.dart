@@ -1,19 +1,82 @@
 part of 'room_settings_screen.dart';
 
 String _historyLabel(HistoryVisibility visibility) => switch (visibility) {
-      HistoryVisibility.invited => 'С момента приглашения',
-      HistoryVisibility.joined => 'С момента входа',
-      HistoryVisibility.shared => 'С общей историей комнаты',
-      HistoryVisibility.worldReadable => 'Видна всем',
-    };
-
+  HistoryVisibility.invited => 'С момента приглашения',
+  HistoryVisibility.joined => 'С момента входа',
+  HistoryVisibility.shared => 'С общей историей комнаты',
+  HistoryVisibility.worldReadable => 'Видна всем',
+};
 
 String _roomKindLabel(OrexRoomKind kind) => switch (kind) {
-      OrexRoomKind.direct => 'Личный чат',
-      OrexRoomKind.group => 'Групповой чат',
-      OrexRoomKind.channel => 'Канал',
-      OrexRoomKind.supergroup => 'Супергруппа',
-    };
+  OrexRoomKind.direct => 'Личный чат',
+  OrexRoomKind.group => 'Групповой чат',
+  OrexRoomKind.channel => 'Канал',
+  OrexRoomKind.supergroup => 'Супергруппа',
+};
+
+Future<({String name, String icon})?> _showChildRoomEditorDialog(
+  BuildContext context, {
+  required String title,
+  required String actionLabel,
+  String initialName = '',
+  String initialIcon = 'chat',
+}) async {
+  final name = TextEditingController(text: initialName);
+  var iconKey = _validRoomIconKey(initialIcon);
+  try {
+    return showOrexStatefulFormDialog<({String name, String icon})>(
+      context,
+      title: title,
+      confirmLabel: actionLabel,
+      width: 360,
+      contentBuilder: (ctx, setDialogState) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: name,
+            autofocus: true,
+            decoration: const InputDecoration(labelText: 'Название'),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: iconKey,
+            decoration: const InputDecoration(
+              labelText: 'Значок',
+              prefixIcon: Icon(Icons.category_outlined),
+            ),
+            items: [
+              for (final choice in orexRoomIconChoices)
+                DropdownMenuItem(
+                  value: choice.key,
+                  child: Row(
+                    children: [
+                      Icon(choice.icon, size: 18),
+                      const SizedBox(width: 8),
+                      Text(choice.label),
+                    ],
+                  ),
+                ),
+            ],
+            onChanged: (value) {
+              if (value == null) return;
+              setDialogState(() => iconKey = value);
+            },
+          ),
+        ],
+      ),
+      onSubmit: () => (name: name.text.trim(), icon: iconKey),
+    );
+  } finally {
+    name.dispose();
+  }
+}
+
+String _validRoomIconKey(String key) {
+  for (final choice in orexRoomIconChoices) {
+    if (choice.key == key) return key;
+  }
+  return 'chat';
+}
 
 class _RoomProfileCard extends StatelessWidget {
   const _RoomProfileCard({
@@ -40,79 +103,14 @@ class _RoomProfileCard extends StatelessWidget {
     final alias = OrexRoomAlias.displayAlias(room.canonicalAlias);
     final address = alias.isNotEmpty ? alias : room.id;
 
-    return GlassPanel(
-      borderRadius: 22,
-      padding: const EdgeInsets.all(20),
-      child: Row(
-        children: [
-          GestureDetector(
-            onTap: allowAvatar && !busy ? onAvatar : null,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                MxcAvatar(
-                  matrix: matrix,
-                  name: name,
-                  mxc: room.avatar,
-                  size: 72,
-                ),
-                if (busy)
-                  const CircularProgressIndicator(color: OrexColors.cream),
-                if (allowAvatar && !busy)
-                  Positioned(
-                    right: 0,
-                    bottom: 0,
-                    child: Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: OrexColors.walnutDeep,
-                      ),
-                      child: const Icon(
-                        Icons.photo_camera,
-                        size: 14,
-                        color: OrexColors.cream,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontSize: 18),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  '$kindLabel · $address',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
-            ),
-          ),
-          if (allowAvatar && onRemoveAvatar != null)
-            IconButton(
-              tooltip: 'Убрать аватар',
-              onPressed: onRemoveAvatar,
-              icon: const Icon(
-                Icons.no_photography_outlined,
-                color: OrexColors.copper,
-              ),
-            ),
-        ],
-      ),
+    return OrexProfileCard(
+      matrix: matrix,
+      name: name,
+      subtitle: '$kindLabel · $address',
+      avatar: room.avatar,
+      busy: busy,
+      onAvatar: allowAvatar && !busy ? onAvatar : null,
+      onRemoveAvatar: allowAvatar ? onRemoveAvatar : null,
     );
   }
 }
@@ -204,9 +202,9 @@ class _RoleChip extends StatelessWidget {
       child: Text(
         label,
         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: OrexColors.copper,
-              fontWeight: FontWeight.w700,
-            ),
+          color: OrexColors.copper,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }
@@ -279,13 +277,13 @@ class _SupergroupRoomsSection extends StatelessWidget {
             final iconKey = preview.iconKey?.isNotEmpty == true
                 ? preview.iconKey!
                 : local == null
-                    ? 'chat'
-                    : matrix.roomIconKey(local);
+                ? 'chat'
+                : matrix.roomIconKey(local);
             final subtitle = local == null
                 ? 'Чат супергруппы · предпросмотр'
                 : matrix.isPublicRoom(local)
-                    ? 'Публичный чат супергруппы'
-                    : 'Чат супергруппы';
+                ? 'Публичный чат супергруппы'
+                : 'Чат супергруппы';
 
             return ListTile(
               leading: Icon(

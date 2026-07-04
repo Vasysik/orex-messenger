@@ -3,10 +3,12 @@ part of 'matrix_service.dart';
 extension MatrixRoomsApi on MatrixService {
   /// Список комнат, отсортированный как в Telegram — по последней активности.
   List<Room> get rooms {
-    final list =
-        client.rooms.where((room) => !isSupergroupChild(room)).toList();
-    list.sort((a, b) =>
-        b.latestEventReceivedTime.compareTo(a.latestEventReceivedTime));
+    final list = client.rooms
+        .where((room) => !isSupergroupChild(room))
+        .toList();
+    list.sort(
+      (a, b) => b.latestEventReceivedTime.compareTo(a.latestEventReceivedTime),
+    );
     return list;
   }
 
@@ -16,8 +18,11 @@ extension MatrixRoomsApi on MatrixService {
   OrexRoomKind roomKind(Room room) {
     if (room.isDirectChat) return OrexRoomKind.direct;
 
-    final explicitKind =
-        room.getState(_orexRoomKindEvent)?.content['kind']?.toString().trim();
+    final explicitKind = room
+        .getState(_orexRoomKindEvent)
+        ?.content['kind']
+        ?.toString()
+        .trim();
     switch (explicitKind) {
       case 'channel':
         return OrexRoomKind.channel;
@@ -54,7 +59,7 @@ extension MatrixRoomsApi on MatrixService {
     final events = powerLevels['events'];
     final messageLevel = events is Map
         ? _asInt(events[EventTypes.Message]) ??
-            _asInt(events[EventTypes.Encrypted])
+              _asInt(events[EventTypes.Encrypted])
         : null;
     final eventsDefault = _asInt(powerLevels['events_default']);
     final usersDefault = _asInt(powerLevels['users_default']) ?? 0;
@@ -68,64 +73,17 @@ extension MatrixRoomsApi on MatrixService {
     return null;
   }
 
+  bool canSpeakInVoice(Room room, String? userId) =>
+      voicePermissions.canSpeak(room, userId);
 
-  bool canSpeakInVoice(Room room, String? userId) {
-    if (!isChannel(room)) return true;
-    if (userId == null || userId.isEmpty) return false;
-    if (userId == client.userID && canManageRoomSettings(room)) return true;
-    final state = room.getState(_orexVoicePermissionsEvent);
-    final users = state?.content['users'];
-    return users is Map && users[userId] == true;
-  }
-
-
-
-  Future<void> ensureVoiceParticipantStatePowerLevels(Room room) async {
-    if (!isChannel(room) || !canManageRoomSettings(room)) return;
-    try {
-      await _applyChannelPowerLevels(room);
-    } catch (e) {
-      _log('Rooms', 'ensure voice state power levels failed room=${room.id}', e);
-    }
-  }
+  Future<void> ensureVoiceParticipantStatePowerLevels(Room room) =>
+      voicePermissions.ensureParticipantStatePowerLevels(room);
 
   Future<void> grantVoiceInChannel(Room room, String userId) =>
-      _setVoicePermissionInChannel(room, userId, allowed: true);
+      voicePermissions.grant(room, userId);
 
   Future<void> revokeVoiceInChannel(Room room, String userId) =>
-      _setVoicePermissionInChannel(room, userId, allowed: false);
-
-  Future<void> _setVoicePermissionInChannel(
-    Room room,
-    String userId, {
-    required bool allowed,
-  }) async {
-    if (!isChannel(room) || !canManageRoomSettings(room)) return;
-    final current = Map<String, Object?>.from(
-      room.getState(_orexVoicePermissionsEvent)?.content ??
-          const <String, Object?>{},
-    );
-    final users = Map<String, Object?>.from(
-      (current['users'] as Map?) ?? const <String, Object?>{},
-    );
-    if (allowed) {
-      users[userId] = true;
-    } else {
-      users.remove(userId);
-    }
-    current['users'] = users;
-    await client.setRoomStateWithKey(
-      room.id,
-      _orexVoicePermissionsEvent,
-      '',
-      current,
-    );
-    _log(
-      'Rooms',
-      '${allowed ? 'grant' : 'revoke'} voice room=${room.id} user=$userId',
-    );
-    _emitChange();
-  }
+      voicePermissions.revoke(room, userId);
 
   bool canSendMessages(Room room) {
     if (room.canSendDefaultMessages) return true;
@@ -177,7 +135,11 @@ extension MatrixRoomsApi on MatrixService {
       powerLevel.level >= PowerLevel.defaultAdminLevel;
 
   String matrixRoomIconKey(Room room, String? fallback) {
-    final explicit = room.getState(_orexRoomIconEvent)?.content['icon']?.toString().trim();
+    final explicit = room
+        .getState(_orexRoomIconEvent)
+        ?.content['icon']
+        ?.toString()
+        .trim();
     if (explicit != null && explicit.isNotEmpty) return explicit;
     if (fallback != null && fallback.isNotEmpty) return fallback;
     if (isChannel(room)) return 'announce';

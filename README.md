@@ -97,7 +97,7 @@ lib/
 ├─ main.dart                         # bootstrap: vodozemac -> БД -> Matrix -> UI
 ├─ core/                             # инфраструктура приложения, без Flutter-экранов
 │  ├─ config/
-│  │  └─ orex_config.dart            # homeserver, lk-jwt-service, security flags
+│  │  └─ orex_config.dart            # environments, homeserver, lk-jwt-service, security flags
 │  ├─ logging/
 │  │  └─ orex_logger.dart            # единая точка dev-логов Orex ([Orex][Area])
 │  ├─ audio/
@@ -211,6 +211,36 @@ Matrix-сущность.
 flutter run --dart-define=OREX_DEBUG_LOGS=false
 ```
 
+### Конфигурация окружений
+
+По умолчанию Orex стартует в `production` и использует публичные production
+endpoint-ы проекта. Для dev/staging endpoint-ы надо задавать явно через
+`--dart-define`, чтобы тестовая сборка случайно не ходила в production backend:
+
+```bash
+flutter run \
+  --dart-define=OREX_ENV=staging \
+  --dart-define=OREX_HOMESERVER=https://matrix.staging.example.org \
+  --dart-define=OREX_JWT_SERVICE=https://jwt.staging.example.org
+```
+
+Поддерживаемые define-ы:
+
+```text
+OREX_ENV=dev|staging|production
+OREX_HOMESERVER=https://...
+OREX_JWT_SERVICE=https://...
+OREX_ELEMENT_CALL_BASE=https://...
+OREX_REQUIRE_VODOZEMAC=true|false
+OREX_DEBUG_LOGS=true|false
+OREX_ALLOW_INSECURE_DESKTOP_CACHE=true|false
+```
+
+`dev` и `staging` без явных `OREX_HOMESERVER` и `OREX_JWT_SERVICE` считаются
+ошибкой конфигурации на старте.
+`OREX_ALLOW_INSECURE_DESKTOP_CACHE` по умолчанию `false`; включайте его только
+для внутреннего Windows/Linux dogfooding, пока desktop SQLCipher не закреплён.
+
 ---
 
 ## 5. Шифрование (E2EE)
@@ -250,8 +280,11 @@ flutter run -d chrome \
 
 - Приватные Matrix-комнаты должны создаваться с шифрованием.
 - Публичные комнаты и каналы не стоит автоматически считать E2EE-комнатами.
-- Локальная БД на Android/iOS/macOS может использовать SQLCipher. Windows/Linux
-  desktop-шифрование нужно дополнительно закрепить перед публичным релизом.
+- Локальная БД на Android/iOS/macOS открывается через SQLCipher. Windows/Linux
+  сейчас используют обычный SQLite FFI, поэтому production-старт на этих
+  платформах fail-closed, если явно не передан
+  `--dart-define=OREX_ALLOW_INSECURE_DESKTOP_CACHE=true`. Это escape hatch для
+  dogfooding, не замена desktop SQLCipher перед публичным релизом.
 
 ---
 
@@ -292,14 +325,19 @@ flutter run -d chrome \
 `livekit_client`, а токен берётся у **вашего** `lk-jwt-service` по OpenID:
 
 1. `client.requestOpenIdToken(...)` → OpenID-токен Matrix.
-2. `POST {lk-jwt-service}/sfu/get` с этим токеном и `room` → `{url, jwt}` LiveKit.
+2. `POST {lk-jwt-service}/sfu/get` с этим токеном, `room`,
+   `device_id` и `requested_livekit_grants` → `{url, jwt}` LiveKit.
 3. `livekit_client` подключается к вашему SFU; сетка участников рисуется внутри Orex.
 
-Настройка в `core/config/orex_config.dart`:
+Endpoint `lk-jwt-service` задаётся через `OREX_JWT_SERVICE`; для staging/dev
+используйте отдельный сервис и отдельный LiveKit backend.
 
-```dart
-static const String jwtService = 'https://jwt.vasys.ru';
-```
+`requested_livekit_grants` содержит `can_publish`, `can_subscribe` и
+`listen_only`. Backend обязан сам перепроверять Matrix room state/power-levels и
+выдавать LiveKit JWT с `canPublish=false` для listen-only участников. Клиент
+дополнительно откажется использовать явно publish-capable JWT, если текущий
+пользователь вошёл в канал без права голоса, но это не заменяет серверный
+security enforcement.
 
 Важно: MatrixRTC signaling и LiveKit transport уже вынесены в нашу архитектуру,
 но media E2EE для звонков нужно проверять отдельно на уровне SFrame/key-provider,
@@ -379,7 +417,7 @@ flutter build windows
 - Удобное переключение по плиткам: открытие стрима или вебки на весь экран,
   приближение отдельных участков видео/стрима.
 - Реакции и поднятие руки в голосовых каналах отображаются как state участника звонка, а не как сообщения в чате.
-- Для каналов обычный участник входит в listen-only: без микрофона, камеры и трансляции экрана. Право говорить должно дополнительно проверяться на стороне lk-jwt-service, иначе альтернативный клиент сможет попытаться публиковать media-track напрямую.
+- Для каналов обычный участник входит в listen-only: без микрофона, камеры и трансляции экрана. Клиент отправляет `requested_livekit_grants`, а `lk-jwt-service` должен выдавать listen-only JWT после собственной проверки Matrix permissions; иначе альтернативный клиент сможет попытаться публиковать media-track напрямую.
 - Desktop screen share использует Orex source picker с вкладками «Экраны»/«Окна»,
   превью-карточками и отдельной загрузкой типов источников. На desktop доступны
   экраны и top-level окна; вкладки браузера как отдельный тип есть только в web-потоке browser picker.

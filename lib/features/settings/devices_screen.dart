@@ -4,6 +4,7 @@ import 'package:matrix/matrix.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
+import '../../shared/widgets/orex_dialogs.dart';
 import 'verification_screen.dart';
 
 class DevicesScreen extends StatefulWidget {
@@ -24,8 +25,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
   }
 
   void _reload() => setState(() {
-        _future = widget.matrix.devices();
-      });
+    _future = widget.matrix.devices();
+  });
 
   Future<void> _verify(Device d) async {
     final kv = await widget.matrix.verifyDevice(d.deviceId);
@@ -40,28 +41,20 @@ class _DevicesScreenState extends State<DevicesScreen> {
     if (mounted) {
       Navigator.of(context).push(
         MaterialPageRoute(
-            builder: (_) =>
-                VerificationScreen(request: kv, matrix: widget.matrix)),
+          builder: (_) =>
+              VerificationScreen(request: kv, matrix: widget.matrix),
+        ),
       );
     }
   }
 
   Future<void> _rename(Device d) async {
-    final controller = TextEditingController(text: d.displayName ?? '');
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Имя устройства'),
-        content: TextField(controller: controller, autofocus: true),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: const Text('Сохранить'),
-          ),
-        ],
-      ),
+    final name = await showOrexTextInputDialog(
+      context,
+      title: 'Имя устройства',
+      initialValue: d.displayName,
+      confirmLabel: 'Сохранить',
+      trim: true,
     );
     if (name == null || name.isEmpty) return;
     await widget.matrix.renameDevice(d.deviceId, name);
@@ -70,38 +63,14 @@ class _DevicesScreenState extends State<DevicesScreen> {
 
   Future<void> _delete(Device d) async {
     // Удаление устройства требует пароль (User-Interactive Auth).
-    final pwdController = TextEditingController();
-    final password = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Удалить устройство?'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Сессия «${d.displayName ?? d.deviceId}» будет завершена.'),
-            const SizedBox(height: 14),
-            TextField(
-              controller: pwdController,
-              obscureText: true,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'Пароль для подтверждения',
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
-          FilledButton(
-            style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFCF6679)),
-            onPressed: () => Navigator.pop(ctx, pwdController.text),
-            child: const Text('Удалить'),
-          ),
-        ],
-      ),
+    final password = await showOrexTextInputDialog(
+      context,
+      title: 'Удалить устройство?',
+      message: 'Сессия «${d.displayName ?? d.deviceId}» будет завершена.',
+      labelText: 'Пароль для подтверждения',
+      confirmLabel: 'Удалить',
+      obscureText: true,
+      danger: true,
     );
     if (password == null || password.isEmpty) return;
 
@@ -110,9 +79,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
       _reload();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось удалить: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Не удалось удалить: $e')));
       }
     }
   }
@@ -134,7 +103,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
               return const Center(child: CircularProgressIndicator());
             }
             final devices = snap.data!
-              ..sort((a, b) => (b.lastSeenTs ?? 0).compareTo(a.lastSeenTs ?? 0));
+              ..sort(
+                (a, b) => (b.lastSeenTs ?? 0).compareTo(a.lastSeenTs ?? 0),
+              );
             return ListView.separated(
               padding: const EdgeInsets.all(16),
               itemCount: devices.length,
@@ -191,8 +162,10 @@ class _DevicesScreenState extends State<DevicesScreen> {
                         if (!isCurrent && !verified)
                           IconButton(
                             tooltip: 'Подтвердить',
-                            icon: const Icon(Icons.verified_user,
-                                color: OrexColors.copper),
+                            icon: const Icon(
+                              Icons.verified_user,
+                              color: OrexColors.copper,
+                            ),
                             onPressed: () => _verify(d),
                           ),
                         PopupMenuButton<String>(
@@ -204,13 +177,18 @@ class _DevicesScreenState extends State<DevicesScreen> {
                           itemBuilder: (_) => [
                             if (!isCurrent)
                               const PopupMenuItem(
-                                  value: 'verify',
-                                  child: Text('Подтвердить')),
+                                value: 'verify',
+                                child: Text('Подтвердить'),
+                              ),
                             const PopupMenuItem(
-                                value: 'rename', child: Text('Переименовать')),
+                              value: 'rename',
+                              child: Text('Переименовать'),
+                            ),
                             if (!isCurrent)
                               const PopupMenuItem(
-                                  value: 'delete', child: Text('Удалить')),
+                                value: 'delete',
+                                child: Text('Удалить'),
+                              ),
                           ],
                         ),
                       ],

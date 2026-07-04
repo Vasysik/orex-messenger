@@ -11,6 +11,7 @@ import '../voip/call_controller.dart';
 import '../logging/orex_logger.dart';
 import '../../domain/rooms/room_metadata.dart';
 import '../voip/voip_service.dart';
+import '../voip/voice_participant_state.dart';
 
 export '../../domain/rooms/room_metadata.dart';
 
@@ -18,10 +19,12 @@ part 'matrix_auth_api.dart';
 part 'matrix_rooms_api.dart';
 part 'matrix_room_reference_api.dart';
 part 'matrix_room_discovery_api.dart';
+part 'matrix_room_metadata_mappers.dart';
 part 'matrix_supergroup_api.dart';
 part 'matrix_room_identity_api.dart';
 part 'matrix_room_creation_api.dart';
 part 'matrix_room_admin_api.dart';
+part 'matrix_voice_permissions_service.dart';
 part 'matrix_security_api.dart';
 part 'matrix_account_api.dart';
 part 'matrix_media_api.dart';
@@ -30,7 +33,7 @@ const _orexRoomKindEvent = 'ru.orex.room.kind';
 const _orexRoomIconEvent = 'ru.orex.room.icon';
 const _orexSpaceChildPreviewEvent = 'ru.orex.space.child.preview';
 const _orexVoicePermissionsEvent = 'ru.orex.voice.permissions';
-const _orexVoiceParticipantEvent = 'ru.orex.voice.participant';
+const _orexVoiceParticipantEvent = orexVoiceParticipantEventType;
 
 const _kLastBackup = 'orex_last_backup_ms';
 const _kAutoBackup = 'orex_auto_backup';
@@ -75,6 +78,10 @@ class MatrixService extends ChangeNotifier {
   /// Короткие звуки приложения: уведомления, входящий вызов, вход в голос.
   late final AudioCueService audio = AudioCueService();
 
+  /// Голосовые права каналов и Matrix state для raised-hand/reactions.
+  late final MatrixVoicePermissionsService voicePermissions =
+      MatrixVoicePermissionsService(this);
+
   /// Локально отслеживаемая версия бэкапа на сервере.
   /// null означает, что бэкап на сервере отсутствует или недоступен.
   String? _serverBackupVersion;
@@ -94,13 +101,15 @@ class MatrixService extends ChangeNotifier {
   /// может прийти через несколько секунд, а UI должен показать название и
   /// иконку сразу после создания, без закрытия настроек и переоткрытия чата.
   final Map<String, Map<String, Map<String, Object?>>>
-      _spaceChildPreviewOverrides = {};
+  _spaceChildPreviewOverrides = {};
   final Map<String, List<String>> _spaceChildOrderOverrides = {};
 
   final Map<String, int> _notificationCounts = {};
   bool _notificationSnapshotReady = false;
   String? _foregroundRoomId;
-
+  StreamSubscription? _syncSub;
+  StreamSubscription? _loginStateSub;
+  StreamSubscription? _userProfileSub;
 
   /// Когда в последний раз ключи выгружались в бэкап (для показа в настройках).
   DateTime? lastBackup;
@@ -129,7 +138,7 @@ class MatrixService extends ChangeNotifier {
     await client.init(
       waitForFirstSync: false, // покажем кэш сразу, не ждём сеть
     );
-    client.onSync.stream.listen((_) {
+    _syncSub = client.onSync.stream.listen((_) {
       _playNotificationCueIfNeeded();
       // Проверяем версию бэкапа только один раз после логина,
       // и только если пользователь не выключал его вручную в этой сессии.
@@ -140,7 +149,7 @@ class MatrixService extends ChangeNotifier {
       }
       notifyListeners();
     });
-    client.onLoginStateChanged.stream.listen((_) async {
+    _loginStateSub = client.onLoginStateChanged.stream.listen((_) async {
       // При логауте/смене аккаунта сбрасываем runtime-статус и перечитываем
       // сохранённое намерение пользователя для текущего аккаунта.
       _checkedServerBackup = false;
@@ -154,7 +163,7 @@ class MatrixService extends ChangeNotifier {
     // Обновление профиля меняет сам MXC URI. Не чистим весь media-cache на
     // каждый sync/profile-event: иначе аватарки моргают и постоянно refetch-ятся.
     // Если URI реально поменялся, MxcAvatar сам подхватит новые байты.
-    client.onUserProfileUpdate.stream.listen((_) {
+    _userProfileSub = client.onUserProfileUpdate.stream.listen((_) {
       notifyListeners();
     });
     // VoIP-сигналинг (звонки). Изолируем сбой, чтобы он не ронял запуск.
@@ -173,7 +182,6 @@ class MatrixService extends ChangeNotifier {
       });
     }
   }
-
 
   void _playNotificationCueIfNeeded() {
     if (!client.isLogged()) return;
@@ -197,7 +205,6 @@ class MatrixService extends ChangeNotifier {
     _foregroundRoomId = value == null || value.isEmpty ? null : value;
   }
 
-
   /// Принудительно перерисовать слушателей (например, после завершения
   /// проверки сессии, чтобы плашка «не подтверждена» убралась без перезагрузки).
   void refresh() => notifyListeners();
@@ -216,6 +223,11 @@ class MatrixService extends ChangeNotifier {
   @override
   void dispose() {
     _autoBackupTimer?.cancel();
+    _syncSub?.cancel();
+    _loginStateSub?.cancel();
+    _userProfileSub?.cancel();
+    call.dispose();
+    voip?.dispose();
     audio.dispose();
     client.dispose();
     super.dispose();

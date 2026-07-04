@@ -10,12 +10,13 @@ import '../../../shared/theme/orex_theme.dart';
 import '../../../shared/widgets/mxc_avatar.dart';
 import '../../calls/call_screen.dart';
 import '../../calls/minimized_call_panel.dart';
+import 'chat_timeline_items.dart';
 import 'message_bubble.dart';
+import 'message_composer_controller.dart';
 import 'conversation_preview_view.dart';
 import 'room_settings_screen.dart';
 import 'supergroup_child_picker.dart';
 
-part 'chat_timeline_items.dart';
 part 'chat_header.dart';
 part 'chat_input_bar.dart';
 
@@ -61,12 +62,10 @@ class _ChatViewState extends State<ChatView> {
 
   Timeline? _timeline;
   Room? _room;
-  Event? _editing;
-  Event? _replyTo;
   bool _loadingHistory = false;
   bool _noMoreHistory = false;
-  bool _showEmojiPicker = false;
-  List<PlatformFile> _attachedFiles = [];
+  final OrexMessageComposerController<Event> _composer =
+      OrexMessageComposerController();
   String? _spaceChildId;
   String? _accessRepairedSpaceId;
   String? _lastReportedSupergroupChildId;
@@ -129,48 +128,10 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _buildChatItems(List<Event> rawEvents) {
-    final events = rawEvents.where(_isRenderableTimelineEvent).toList()
-      ..sort((a, b) => b.originServerTs.compareTo(a.originServerTs));
-
-    final List<ChatItem> items = [];
-    int i = 0;
-    while (i < events.length) {
-      final current = events[i];
-      if (current.messageType != MessageTypes.Image &&
-          current.messageType != MessageTypes.Video) {
-        items.add(SingleEventItem(current));
-        i++;
-        continue;
-      }
-
-      final List<Event> albumList = [current];
-      int j = i + 1;
-      while (j < events.length) {
-        final next = events[j];
-        if ((next.messageType == MessageTypes.Image ||
-                next.messageType == MessageTypes.Video) &&
-            next.senderId == current.senderId &&
-            next.originServerTs
-                    .difference(current.originServerTs)
-                    .abs()
-                    .inMinutes <
-                1) {
-          albumList.add(next);
-          j++;
-        } else {
-          break;
-        }
-      }
-
-      if (albumList.length > 1) {
-        items.add(AlbumItem(leader: current, events: albumList));
-        i = j;
-      } else {
-        items.add(SingleEventItem(current));
-        i++;
-      }
-    }
-    _chatItems = items;
+    _chatItems = OrexTimelineAdapter.transform(
+      rawEvents,
+      isRenderable: _isRenderableTimelineEvent,
+    );
   }
 
   void _scrollListener() {
@@ -330,16 +291,14 @@ class _ChatViewState extends State<ChatView> {
     await widget.matrix.ensureCanSendToChannel(room);
     OrexLog.d(
       'Chat',
-      'send message room=${room.id} text=${text.length} files=${_attachedFiles.length}',
+      'send message room=${room.id} text=${text.length} files=${_composer.attachments.length}',
     );
 
-    final attachedList = List<PlatformFile>.from(_attachedFiles);
+    final attachedList = _composer.attachmentSnapshot();
     if (attachedList.isNotEmpty) {
+      final replyTo = _composer.replyTo;
       setState(() {
-        _attachedFiles = [];
-        _replyTo = null;
-        _editing = null;
-        _showEmojiPicker = false;
+        _composer.clearAfterAttachmentSend();
       });
       _input.clear();
       _focusNode.requestFocus();
@@ -361,7 +320,6 @@ class _ChatViewState extends State<ChatView> {
               )
             : MatrixFile(bytes: data, name: attached.name);
 
-        final replyTo = _replyTo;
         final fileCaption = (i == 0) ? text : '';
 
         final Map<String, Object?> extraContent = {
@@ -379,16 +337,12 @@ class _ChatViewState extends State<ChatView> {
       }
     } else {
       if (text.isEmpty) return;
-      final editing = _editing;
-      final replyTo = _replyTo;
+      final editing = _composer.editing;
+      final replyTo = _composer.replyTo;
       _input.clear();
       _focusNode.requestFocus();
 
-      setState(() {
-        _editing = null;
-        _replyTo = null;
-        _showEmojiPicker = false;
-      });
+      setState(_composer.clearAfterTextSend);
       if (editing != null) {
         await room.sendTextEvent(text, editEventId: editing.eventId);
       } else {
@@ -401,41 +355,49 @@ class _ChatViewState extends State<ChatView> {
     final body = e
         .getDisplayEvent(_timeline!)
         .calcLocalizedBodyFallback(const MatrixDefaultLocalizations());
-    setState(() {
-      _editing = e;
-      _replyTo = null;
-      _attachedFiles = [];
-      _showEmojiPicker = false;
-    });
+    setState(() => _composer.startEdit(e));
     _input.text = body;
     _input.selection = TextSelection.collapsed(offset: _input.text.length);
     _focusNode.requestFocus();
   }
 
   void _cancelEdit() {
-    setState(() => _editing = null);
+    setState(_composer.cancelEdit);
     _input.clear();
     _focusNode.requestFocus();
   }
 
   void _startReply(Event e) {
-    setState(() {
-      _replyTo = e;
-      _editing = null;
-      _showEmojiPicker = false;
-    });
+    setState(() => _composer.startReply(e));
     _focusNode.requestFocus();
   }
 
   void _cancelReply() {
-    setState(() => _replyTo = null);
+    setState(_composer.cancelReply);
     _focusNode.requestFocus();
   }
 
   static const _imgExts = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'};
-  static const _maxAttachedFiles = 10;
-  static const _maxAttachmentBytes = 50 * 1024 * 1024;
-  static const _maxAttachmentBatchBytes = 100 * 1024 * 1024;
+  void _showAttachmentRejectedSnack(int rejected) {
+    if (rejected <= 0 || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Часть файлов не добавлена: максимум 10 файлов, 50 МБ на файл и 100 МБ за раз.',
+        ),
+      ),
+    );
+  }
+
+  void _queueAttachments(List<PlatformFile> files) {
+    if (files.isEmpty || !mounted) return;
+    final result = _composer.queueAttachments(files);
+    if (result.hasAccepted && mounted) {
+      setState(() {});
+      _focusNode.requestFocus();
+    }
+    _showAttachmentRejectedSnack(result.rejectedCount);
+  }
 
   Future<void> _attach() async {
     final res = await FilePicker.platform.pickFiles(
@@ -445,41 +407,65 @@ class _ChatViewState extends State<ChatView> {
     final picked = res?.files ?? const <PlatformFile>[];
     if (picked.isEmpty) return;
 
+    _queueAttachments(picked);
+  }
+
+  Future<void> _attachDroppedFiles(DropDoneDetails details) async {
+    if (details.files.isEmpty) return;
+
     final accepted = <PlatformFile>[];
-    var batchBytes = _attachedFiles.fold<int>(0, (sum, f) => sum + f.size);
+    var pendingBytes = 0;
     var rejected = 0;
-    for (final file in picked) {
-      if (_attachedFiles.length + accepted.length >= _maxAttachedFiles ||
-          file.size > _maxAttachmentBytes ||
-          batchBytes + file.size > _maxAttachmentBatchBytes) {
+    for (final file in details.files) {
+      final int size;
+      try {
+        size = await file.length();
+      } catch (e) {
+        OrexLog.d('Chat', 'drop file length failed name=${file.name}', e);
         rejected++;
         continue;
       }
-      accepted.add(file);
-      batchBytes += file.size;
-    }
+      if (!mounted) return;
+      if (!_composer.attachments.canAcceptSize(
+        fileBytes: size,
+        pendingCount: accepted.length,
+        pendingBytes: pendingBytes,
+      )) {
+        rejected++;
+        continue;
+      }
 
-    if (accepted.isNotEmpty) {
-      setState(() {
-        _attachedFiles.addAll(accepted);
-        _editing = null;
-      });
-      _focusNode.requestFocus();
-    }
-    if (rejected > 0 && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Часть файлов не добавлена: максимум 10 файлов, 50 МБ на файл и 100 МБ за раз.',
-          ),
+      final Uint8List bytes;
+      try {
+        bytes = await file.readAsBytes();
+      } catch (e) {
+        OrexLog.d('Chat', 'drop file read failed name=${file.name}', e);
+        rejected++;
+        continue;
+      }
+      if (!mounted) return;
+      accepted.add(
+        PlatformFile(
+          name: file.name,
+          size: size,
+          bytes: bytes,
+          path: file.path.isEmpty ? null : file.path,
         ),
       );
+      pendingBytes += size;
     }
+
+    final result = _composer.queueAttachments(accepted);
+    if (result.hasAccepted && mounted) {
+      setState(() {});
+      _focusNode.requestFocus();
+    }
+    _showAttachmentRejectedSnack(rejected + result.rejectedCount);
   }
 
   void _cancelAttachment(int index) {
     setState(() {
-      _attachedFiles.removeAt(index);
+      _composer.attachments.removeAt(index);
     });
     _focusNode.requestFocus();
   }
@@ -504,15 +490,11 @@ class _ChatViewState extends State<ChatView> {
       _focusNode.unfocus();
       Future.delayed(const Duration(milliseconds: 250), () {
         if (mounted) {
-          setState(() {
-            _showEmojiPicker = true;
-          });
+          setState(_composer.showEmojiPickerAfterKeyboardHide);
         }
       });
     } else {
-      setState(() {
-        _showEmojiPicker = !_showEmojiPicker;
-      });
+      setState(_composer.toggleEmojiPicker);
     }
   }
 
@@ -536,8 +518,19 @@ class _ChatViewState extends State<ChatView> {
     if (mounted) widget.onBack?.call();
   }
 
-  void _openCall(bool video) {
-    widget.matrix.call.start(widget.roomId, video: video);
+  Future<void> _openCall(bool video) async {
+    await widget.matrix.call.start(widget.roomId, video: video);
+    if (!mounted) return;
+    if (!widget.matrix.call.isActive) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.matrix.call.lastError ?? 'Не удалось начать звонок',
+          ),
+        ),
+      );
+      return;
+    }
     final isWide = MediaQuery.sizeOf(context).width >= 900;
     if (isWide) {
       widget.matrix.call.minimize();
@@ -758,22 +751,7 @@ class _ChatViewState extends State<ChatView> {
     }
 
     return DropTarget(
-      onDragDone: (details) async {
-        if (details.files.isNotEmpty) {
-          final List<PlatformFile> loaded = [];
-          for (final file in details.files) {
-            final bytes = await file.readAsBytes();
-            final filename = file.name;
-            loaded.add(
-              PlatformFile(name: filename, size: bytes.length, bytes: bytes),
-            );
-          }
-          setState(() {
-            _attachedFiles.addAll(loaded);
-            _editing = null;
-          });
-        }
-      },
+      onDragDone: _attachDroppedFiles,
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
         onTap: () {
@@ -913,23 +891,23 @@ class _ChatViewState extends State<ChatView> {
               focusNode: _focusNode,
               canSend: widget.matrix.canSendMessages(room),
               onSend: _send,
-              editing: _editing != null,
+              editing: _composer.isEditing,
               onCancelEdit: _cancelEdit,
-              replyTo: _replyTo,
+              replyTo: _composer.replyTo,
               onCancelReply: _cancelReply,
               onPickEmoji: _insertEmoji,
               onAttach: _attach,
-              attachedFiles: _attachedFiles,
+              attachedFiles: _composer.attachments.files,
               onCancelAttachment: _cancelAttachment,
-              showEmojiPicker: _showEmojiPicker,
+              showEmojiPicker: _composer.showEmojiPicker,
               onToggleEmojiPicker: _toggleEmojiPicker,
               onTapInput: () {
-                if (_showEmojiPicker) {
-                  setState(() => _showEmojiPicker = false);
+                if (_composer.showEmojiPicker) {
+                  setState(_composer.hideEmojiPicker);
                 }
               },
             ),
-            if (_showEmojiPicker) _buildResponsiveEmojiPicker(context),
+            if (_composer.showEmojiPicker) _buildResponsiveEmojiPicker(context),
           ],
         ),
       ),

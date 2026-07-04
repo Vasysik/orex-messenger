@@ -13,7 +13,8 @@ extension MatrixRoomReferenceApi on MatrixService {
       if (room.canonicalAlias == ref) return room.id;
       final aliasState = room.getState(EventTypes.RoomCanonicalAlias)?.content;
       final altAliases = aliasState?['alt_aliases'];
-      if (altAliases is List && altAliases.map((e) => e.toString()).contains(ref)) {
+      if (altAliases is List &&
+          altAliases.map((e) => e.toString()).contains(ref)) {
         return room.id;
       }
     }
@@ -59,11 +60,11 @@ extension MatrixRoomReferenceApi on MatrixService {
       final rooms = await searchPublicRooms(query);
       for (final room in rooms) {
         if (room.roomId == ref || room.canonicalAlias == ref) {
-          return OrexRoomPreview.fromPublicRoom(room);
+          return room.toOrexRoomPreview();
         }
       }
       if (rooms.length == 1) {
-        return OrexRoomPreview.fromPublicRoom(rooms.single);
+        return rooms.single.toOrexRoomPreview();
       }
     }
     return null;

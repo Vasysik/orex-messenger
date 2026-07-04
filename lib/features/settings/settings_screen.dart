@@ -1,6 +1,5 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart';
 
 import '../../core/matrix/matrix_service.dart';
@@ -8,7 +7,8 @@ import '../../core/config/app_version.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/theme/theme_controller.dart';
-import '../../shared/widgets/mxc_avatar.dart';
+import '../../shared/widgets/orex_dialogs.dart';
+import '../../shared/widgets/orex_profile_card.dart';
 import '../../shared/widgets/orex_settings_components.dart';
 import 'audio_devices_screen.dart';
 import 'devices_screen.dart';
@@ -64,25 +64,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _editName() async {
-    final controller = TextEditingController(text: _profile?.displayName ?? '');
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Имя профиля'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'Как вас называть'),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: const Text('Сохранить'),
-          ),
-        ],
-      ),
+    final name = await showOrexTextInputDialog(
+      context,
+      title: 'Имя профиля',
+      initialValue: _profile?.displayName,
+      hintText: 'Как вас называть',
+      confirmLabel: 'Сохранить',
+      trim: true,
     );
     if (name == null || name.isEmpty) return;
     await widget.matrix.setDisplayName(name);
@@ -90,69 +78,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<String?> _askPassword(BuildContext context) {
-    final c = TextEditingController();
-    return showDialog<String>(
-      context: context,
+    return showOrexTextInputDialog(
+      context,
+      title: 'Подтвердите паролем',
+      hintText: 'Пароль от аккаунта',
+      obscureText: true,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Подтвердите паролем'),
-        content: TextField(
-          controller: c,
-          autofocus: true,
-          obscureText: true,
-          decoration: const InputDecoration(hintText: 'Пароль от аккаунта'),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, c.text),
-            child: const Text('ОК'),
-          ),
-        ],
-      ),
     );
   }
 
   /// Полный принудительный сброс серверных настроек безопасности.
   Future<void> _resetSecurityDialog() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Сбросить серверные настройки безопасности?'),
-        content: const Text(
+    final ok = await showOrexConfirmDialog(
+      context,
+      title: 'Сбросить серверные настройки безопасности?',
+      message:
           'Это действие удалит текущие серверные настройки безопасности: ключ восстановления, кросс-подпись и резервные копии ключей.\n\n'
           'Все остальные ваши сессии станут недоверенными. Будет сгенерирован совершенно новый ключ восстановления. Продолжить?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFCF6679)),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Сбросить настройки'),
-          ),
-        ],
-      ),
+      confirmLabel: 'Сбросить настройки',
+      danger: true,
     );
 
-    if (ok != true) return;
+    if (!ok) return;
     if (!mounted) return;
 
     final password = await _askPassword(context);
     if (password == null || password.isEmpty) return;
     if (!mounted) return;
 
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const Center(
-        child: CircularProgressIndicator(color: OrexColors.copper),
-      ),
-    );
+    showOrexBlockingProgressDialog(context);
 
     try {
       final newKey = await widget.matrix.resetSecurity(
@@ -165,61 +119,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (e) {
       if (mounted) {
         Navigator.pop(context); // закрываем индикатор
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ошибка сброса: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Ошибка сброса: $e')));
       }
     }
   }
 
   Future<void> _showNewRecoveryKey(String key) {
-    return showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Новый ключ восстановления'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Серверные настройки безопасности успешно сброшены. Создан новый ключ восстановления. '
-              'Запишите его и храните в надёжном месте. Без него расшифровать переписку на новых сессиях будет невозможно.',
-            ),
-            const SizedBox(height: 16),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.25),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: SelectableText(
-                key,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 15),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: key));
-              if (ctx.mounted) {
-                ScaffoldMessenger.of(ctx).showSnackBar(
-                  const SnackBar(
-                      content: Text('Ключ скопирован в буфер обмена')),
-                );
-              }
-            },
-            child: const Text('Копировать'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Я сохранил'),
-          ),
-        ],
-      ),
+    return showOrexRecoveryKeyDialog(
+      context,
+      title: 'Новый ключ восстановления',
+      message:
+          'Серверные настройки безопасности успешно сброшены. Создан новый '
+          'ключ восстановления. Запишите его и храните в надёжном месте. '
+          'Без него расшифровать переписку на новых сессиях будет невозможно.',
+      recoveryKey: key,
     );
   }
 
@@ -230,116 +145,100 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final confirmCtrl = TextEditingController();
     final formKey = GlobalKey<FormState>();
 
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Смена пароля'),
-        content: Form(
-          key: formKey,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextFormField(
-                  controller: oldCtrl,
-                  obscureText: true,
-                  decoration:
-                      const InputDecoration(labelText: 'Текущий пароль'),
-                  validator: (v) => (v == null || v.isEmpty)
-                      ? 'Введите текущий пароль'
-                      : null,
+    final passwords =
+        await showOrexStatefulFormDialog<
+              ({String currentPassword, String newPassword})
+            >(
+              context,
+              title: 'Смена пароля',
+              confirmLabel: 'Сменить',
+              contentBuilder: (ctx, setDialogState) => Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextFormField(
+                      controller: oldCtrl,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Текущий пароль',
+                      ),
+                      validator: (v) => (v == null || v.isEmpty)
+                          ? 'Введите текущий пароль'
+                          : null,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: newCtrl,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Новый пароль',
+                      ),
+                      validator: (v) => (v == null || v.length < 6)
+                          ? 'Пароль должен быть от 6 символов'
+                          : null,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: confirmCtrl,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Подтвердите пароль',
+                      ),
+                      validator: (v) =>
+                          v != newCtrl.text ? 'Пароли не совпадают' : null,
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: newCtrl,
-                  obscureText: true,
-                  decoration: const InputDecoration(labelText: 'Новый пароль'),
-                  validator: (v) => (v == null || v.length < 6)
-                      ? 'Пароль должен быть от 6 символов'
-                      : null,
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: confirmCtrl,
-                  obscureText: true,
-                  decoration:
-                      const InputDecoration(labelText: 'Подтвердите пароль'),
-                  validator: (v) =>
-                      v != newCtrl.text ? 'Пароли не совпадают' : null,
-                ),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () {
-              if (formKey.currentState?.validate() ?? false) {
-                Navigator.pop(ctx, true);
-              }
-            },
-            child: const Text('Сменить'),
-          ),
-        ],
-      ),
-    );
+              ),
+              onSubmit: () {
+                if (!(formKey.currentState?.validate() ?? false)) return null;
+                return (
+                  currentPassword: oldCtrl.text,
+                  newPassword: newCtrl.text,
+                );
+              },
+            )
+            .whenComplete(() {
+              oldCtrl.dispose();
+              newCtrl.dispose();
+              confirmCtrl.dispose();
+            });
 
-    if (ok != true) return;
+    if (passwords == null) return;
     if (!mounted) return;
 
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const Center(
-        child: CircularProgressIndicator(color: OrexColors.copper),
-      ),
-    );
+    showOrexBlockingProgressDialog(context);
     try {
       await widget.matrix.changePassword(
-        currentPassword: oldCtrl.text,
-        newPassword: newCtrl.text,
+        currentPassword: passwords.currentPassword,
+        newPassword: passwords.newPassword,
       );
       if (mounted) {
         Navigator.pop(context); // закрываем индикатор
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Пароль изменён успешно')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Пароль изменён успешно')));
       }
     } catch (e) {
       if (mounted) {
         Navigator.pop(context); // закрываем индикатор
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ошибка смены пароля: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Ошибка смены пароля: $e')));
       }
     }
   }
 
   Future<void> _logout() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Выйти из аккаунта?'),
-        content:
-            const Text('Текущая сессия будет завершена на этом устройстве.'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Отмена')),
-          FilledButton(
-            style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFCF6679)),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Выйти'),
-          ),
-        ],
-      ),
+    final ok = await showOrexConfirmDialog(
+      context,
+      title: 'Выйти из аккаунта?',
+      message: 'Текущая сессия будет завершена на этом устройстве.',
+      confirmLabel: 'Выйти',
+      danger: true,
     );
-    if (ok != true) return;
+    if (!ok) return;
     await widget.matrix.logout();
     if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
   }
@@ -367,9 +266,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 16),
             OrexSettingsSection(
               title: 'Оформление',
-              children: [
-                _ThemeSelector(theme: widget.theme),
-              ],
+              children: [_ThemeSelector(theme: widget.theme)],
             ),
             const SizedBox(height: 16),
             OrexSettingsSection(
@@ -413,14 +310,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         : 'Иначе другие клиенты считают её непроверенной',
                     onTap: () => Navigator.of(context)
                         .push(
-                      MaterialPageRoute(
-                        builder: (_) =>
-                            VerifySessionScreen(matrix: widget.matrix),
-                      ),
-                    )
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                VerifySessionScreen(matrix: widget.matrix),
+                          ),
+                        )
                         .then((_) {
-                      if (mounted) setState(() {});
-                    }),
+                          if (mounted) setState(() {});
+                        }),
                   ),
                 if (widget.matrix.encryptionEnabled)
                   OrexSettingsTile(
@@ -433,13 +330,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         : 'Выключено — настройте, чтобы не терять переписку',
                     onTap: () => Navigator.of(context)
                         .push(
-                      MaterialPageRoute(
-                        builder: (_) => KeyStorageScreen(matrix: widget.matrix),
-                      ),
-                    )
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                KeyStorageScreen(matrix: widget.matrix),
+                          ),
+                        )
                         .then((_) {
-                      if (mounted) setState(() {});
-                    }),
+                          if (mounted) setState(() {});
+                        }),
                   ),
                 OrexSettingsTile(
                   icon: Icons.devices,
@@ -523,64 +421,14 @@ class _ProfileCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final name = profile?.displayName ?? client.userID ?? '';
 
-    return GlassPanel(
-      borderRadius: 22,
-      padding: const EdgeInsets.all(20),
-      child: Row(
-        children: [
-          GestureDetector(
-            onTap: savingAvatar ? null : onAvatar,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                MxcAvatar(
-                  matrix: matrix,
-                  name: name,
-                  mxc: profile?.avatarUrl,
-                  size: 72,
-                ),
-                if (savingAvatar)
-                  const CircularProgressIndicator(color: OrexColors.cream),
-                Positioned(
-                  right: 0,
-                  bottom: 0,
-                  child: Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: const BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: OrexColors.walnutDeep,
-                    ),
-                    child: const Icon(Icons.photo_camera,
-                        size: 14, color: OrexColors.cream),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleMedium
-                        ?.copyWith(fontSize: 18)),
-                const SizedBox(height: 2),
-                Text(client.userID ?? '',
-                    style: Theme.of(context).textTheme.bodySmall),
-              ],
-            ),
-          ),
-          IconButton(
-            onPressed: onName,
-            icon: const Icon(Icons.edit, color: OrexColors.copper),
-          ),
-        ],
-      ),
+    return OrexProfileCard(
+      matrix: matrix,
+      name: name,
+      subtitle: client.userID ?? '',
+      avatar: profile?.avatarUrl,
+      busy: savingAvatar,
+      onAvatar: savingAvatar ? null : onAvatar,
+      onEdit: onName,
     );
   }
 }
@@ -604,11 +452,17 @@ class _ThemeSelector extends StatelessWidget {
               showSelectedIcon: false,
               segments: const [
                 ButtonSegment(
-                    value: ThemeMode.system, icon: Icon(Icons.brightness_auto)),
+                  value: ThemeMode.system,
+                  icon: Icon(Icons.brightness_auto),
+                ),
                 ButtonSegment(
-                    value: ThemeMode.light, icon: Icon(Icons.light_mode)),
+                  value: ThemeMode.light,
+                  icon: Icon(Icons.light_mode),
+                ),
                 ButtonSegment(
-                    value: ThemeMode.dark, icon: Icon(Icons.dark_mode)),
+                  value: ThemeMode.dark,
+                  icon: Icon(Icons.dark_mode),
+                ),
               ],
               selected: {theme.mode},
               onSelectionChanged: (s) => theme.setMode(s.first),

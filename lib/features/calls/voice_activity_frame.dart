@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
 
 import '../../core/matrix/matrix_service.dart';
+import '../../core/voip/livekit_track_access.dart';
 import '../../shared/theme/orex_theme.dart';
 
 double orexAudioLevelToDb(double level) {
@@ -164,20 +165,5 @@ class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
 }
 
 bool orexParticipantMicMuted(lk.Participant participant) {
-  try {
-    final dynamic dyn = participant;
-    final enabled = dyn.isMicrophoneEnabled();
-    if (enabled is bool) return !enabled;
-  } catch (_) {}
-
-  var sawMic = false;
-  for (final pub in participant.audioTrackPublications) {
-    try {
-      if (pub.source != lk.TrackSource.microphone) continue;
-      sawMic = true;
-      if (pub.muted) return true;
-      if (!pub.subscribed || pub.track == null) return true;
-    } catch (_) {}
-  }
-  return !sawMic;
+  return OrexLiveKitTrackAccess.participantMicrophoneMuted(participant);
 }

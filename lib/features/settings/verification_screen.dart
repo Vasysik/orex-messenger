@@ -4,6 +4,7 @@ import 'package:matrix/encryption/utils/key_verification.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
+import '../../shared/widgets/orex_dialogs.dart';
 
 /// Наш экран подтверждения сессии по эмодзи (SAS) — аналог проверки в Element,
 /// но свой. Убирает предупреждение «зашифровано устройством, не проверенным
@@ -48,27 +49,11 @@ class _VerificationScreenState extends State<VerificationScreen> {
   }
 
   Future<void> _enterRecoveryKey() async {
-    final c = TextEditingController();
-    final value = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Ключ восстановления'),
-        content: TextField(
-          controller: c,
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: 'Ключ восстановления или passphrase',
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, c.text.trim()),
-            child: const Text('ОК'),
-          ),
-        ],
-      ),
+    final value = await showOrexTextInputDialog(
+      context,
+      title: 'Ключ восстановления',
+      hintText: 'Ключ восстановления или passphrase',
+      trim: true,
     );
     if (value != null && value.isNotEmpty) {
       await kv.openSSSS(keyOrPassphrase: value);
@@ -158,30 +143,40 @@ class _VerificationScreenState extends State<VerificationScreen> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text('Сравните эмодзи',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(fontSize: 18)),
+        Text(
+          'Сравните эмодзи',
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontSize: 18),
+        ),
         const SizedBox(height: 8),
-        Text('Они должны совпадать на обеих сессиях, в том же порядке.',
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodySmall),
+        Text(
+          'Они должны совпадать на обеих сессиях, в том же порядке.',
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
         const SizedBox(height: 20),
         Wrap(
           alignment: WrapAlignment.center,
           spacing: 14,
           runSpacing: 16,
           children: emojis
-              .map((e) => SizedBox(
-                    width: 88,
-                    child: Column(
-                      children: [
-                        Text(e.emoji, style: const TextStyle(fontSize: 40)),
-                        const SizedBox(height: 4),
-                        Text(e.name,
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context).textTheme.bodySmall),
-                      ],
-                    ),
-                  ))
+              .map(
+                (e) => SizedBox(
+                  width: 88,
+                  child: Column(
+                    children: [
+                      Text(e.emoji, style: const TextStyle(fontSize: 40)),
+                      const SizedBox(height: 4),
+                      Text(
+                        e.name,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+              )
               .toList(),
         ),
         const SizedBox(height: 24),
@@ -207,13 +202,19 @@ class _VerificationScreenState extends State<VerificationScreen> {
       children: [
         Icon(icon, size: 54, color: iconColor ?? OrexColors.copper),
         const SizedBox(height: 16),
-        Text(title,
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(fontSize: 18)),
+        Text(
+          title,
+          textAlign: TextAlign.center,
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontSize: 18),
+        ),
         const SizedBox(height: 8),
-        Text(subtitle,
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodySmall),
+        Text(
+          subtitle,
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
         const SizedBox(height: 24),
         Row(children: actions),
       ],

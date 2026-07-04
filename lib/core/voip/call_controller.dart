@@ -34,6 +34,7 @@ class CallController extends ChangeNotifier {
   bool _initiator = false; // мы начали этот звонок (а не присоединились)
   DateTime? _start;
   String? focusedParticipantIdentity;
+  String? lastError;
 
   void focusParticipant(String? identity) {
     if (focusedParticipantIdentity == identity) return;
@@ -46,7 +47,7 @@ class CallController extends ChangeNotifier {
     if (room == null) return true;
     final kind = matrix.roomKind(room);
     return kind != OrexRoomKind.channel ||
-        matrix.canSpeakInVoice(room, matrix.client.userID);
+        matrix.voicePermissions.canSpeak(room, matrix.client.userID);
   }
 
   Future<void> refreshVoicePermissions() async {
@@ -65,6 +66,7 @@ class CallController extends ChangeNotifier {
     bool? initialMicOn,
   }) async {
     if (_session != null) await hangUp();
+    lastError = null;
     this.roomId = roomId;
     this.video = video;
     minimized = false;
@@ -72,11 +74,12 @@ class CallController extends ChangeNotifier {
     final room = matrix.client.getRoomById(roomId);
     final kind = room != null ? matrix.roomKind(room) : OrexRoomKind.group;
     if (room != null && kind == OrexRoomKind.channel) {
-      await matrix.ensureVoiceParticipantStatePowerLevels(room);
+      await matrix.voicePermissions.ensureParticipantStatePowerLevels(room);
     }
     final canSpeak = _canUseMicNowFor(roomId);
     listenOnly = !canSpeak;
-    final micInitiallyOn = initialMicOn ??
+    final micInitiallyOn =
+        initialMicOn ??
         matrix.audio.callMicEnabledOverride ??
         (room?.isDirectChat == true ? true : false);
     _initiator = room != null && !matrix.roomHasActiveCall(room);
@@ -91,7 +94,8 @@ class CallController extends ChangeNotifier {
       audioInputDeviceIdProvider: () => matrix.audio.inputDeviceId,
       audioOutputDeviceIdProvider: () => matrix.audio.outputDeviceId,
       videoInputDeviceIdProvider: () => matrix.audio.cameraDeviceId,
-      cameraDeviceIdSink: (deviceId) => matrix.audio.setCameraDeviceId(deviceId),
+      cameraDeviceIdSink: (deviceId) =>
+          matrix.audio.setCameraDeviceId(deviceId),
       speakingThresholdDbProvider: () => matrix.audio.speakingThresholdDb,
       speakingThresholdEnabledProvider: () =>
           matrix.audio.speakingThresholdEnabled,
@@ -105,29 +109,66 @@ class CallController extends ChangeNotifier {
     // Сигналинг (membership) — чтобы у собеседника зазвонило. Если он
     // не прошёл, медиа не подключаем: иначе можно получить локальный фантомный
     // звонок и зависшее состояние MatrixRTC.
+    final voip = matrix.voip;
+    if (voip == null) {
+      OrexLog.d('Call', 'signaling unavailable room=$roomId');
+      await _failStart(
+        s,
+        'Звонки сейчас недоступны: MatrixRTC signaling не запущен',
+      );
+      return;
+    }
     try {
-      await matrix.voip?.enterCall(roomId);
+      await voip.enterCall(roomId);
     } catch (e) {
       OrexLog.d('Call', 'signaling failed room=$roomId', e);
-      s.removeListener(notifyListeners);
-      await s.hangUp();
-      s.dispose();
-      if (_session == s) {
-        _session = null;
-        minimized = false;
-        this.roomId = null;
-        listenOnly = false;
-        _initiator = false;
-        _start = null;
-        focusedParticipantIdentity = null;
-        notifyListeners();
-      }
+      await _failStart(s, 'Не удалось запустить сигналинг звонка');
       return;
     }
     await s.connect(video: video);
+    if (s.status != CallStatus.connected) {
+      final message = s.error?.trim().isNotEmpty == true
+          ? s.error!.trim()
+          : 'Не удалось подключиться к медиа звонка';
+      OrexLog.d(
+        'Call',
+        'media connect failed room=$roomId status=${s.status} error=$message',
+      );
+      await _failStart(s, message, leaveSignaling: true);
+      return;
+    }
     if (s.status == CallStatus.connected) {
       await matrix.audio.playVoiceJoin();
     }
+  }
+
+  Future<void> _failStart(
+    CallSession session,
+    String message, {
+    bool leaveSignaling = false,
+  }) async {
+    lastError = message;
+    session.removeListener(notifyListeners);
+    await session.hangUp();
+    session.dispose();
+    if (leaveSignaling) {
+      try {
+        await matrix.voip?.leaveCurrent();
+      } catch (e) {
+        OrexLog.d('Call', 'leave failed after start rollback', e);
+      }
+    }
+    if (_session == session) {
+      _session = null;
+      minimized = false;
+      roomId = null;
+      video = false;
+      listenOnly = false;
+      _initiator = false;
+      _start = null;
+      focusedParticipantIdentity = null;
+    }
+    notifyListeners();
   }
 
   void minimize() {
@@ -150,6 +191,7 @@ class CallController extends ChangeNotifier {
     _session = null;
     minimized = false;
     roomId = null;
+    video = false;
     listenOnly = false;
     _initiator = false;
     _start = null;
@@ -168,15 +210,19 @@ class CallController extends ChangeNotifier {
   }
 
   Future<void> _postCallSummary(
-      String roomId, bool answered, DateTime? start) async {
+    String roomId,
+    bool answered,
+    DateTime? start,
+  ) async {
     final room = matrix.client.getRoomById(roomId);
     if (room == null || matrix.roomKind(room) == OrexRoomKind.channel) return;
     String outcome;
     String text;
     if (answered) {
       outcome = 'answered';
-      final secs =
-          start != null ? DateTime.now().difference(start).inSeconds : 0;
+      final secs = start != null
+          ? DateTime.now().difference(start).inSeconds
+          : 0;
       text = secs > 0 ? '📞 Звонок · ${_fmtDur(secs)}' : '📞 Звонок';
     } else if (matrix.voip?.wasRejected(roomId) ?? false) {
       outcome = 'rejected';

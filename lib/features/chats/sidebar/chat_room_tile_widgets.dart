@@ -20,9 +20,7 @@ class _ChatTile extends StatelessWidget {
     final name = room.getLocalizedDisplayname();
     final isInvite = matrix.isInvite(room);
     final lastEvent = room.lastEvent;
-    final membershipNotice = lastEvent == null
-        ? null
-        : OrexMembershipNotices.fromEvent(lastEvent);
+    final membershipNotice = lastEvent?.toOrexMembershipNotice();
     final preview = isInvite
         ? 'Приглашение · нажмите, чтобы принять'
         : (membershipNotice?.text ??

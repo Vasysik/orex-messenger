@@ -4,13 +4,14 @@ import 'package:matrix/matrix.dart';
 import '../../core/files/file_helper.dart';
 import '../theme/orex_theme.dart';
 import 'media_player.dart';
+import 'orex_dialogs.dart';
 
 class MediaGalleryDialog extends StatefulWidget {
   const MediaGalleryDialog({
     super.key,
     required this.timeline,
     required this.initialEventId,
-    required this.myUserId, 
+    required this.myUserId,
   });
 
   final Timeline timeline;
@@ -30,15 +31,19 @@ class _MediaGalleryDialogState extends State<MediaGalleryDialog> {
   void initState() {
     super.initState();
     _mediaEvents = widget.timeline.events
-        .where((e) =>
-            !e.redacted &&
-            (e.messageType == MessageTypes.Image ||
-                e.messageType == MessageTypes.Video))
+        .where(
+          (e) =>
+              !e.redacted &&
+              (e.messageType == MessageTypes.Image ||
+                  e.messageType == MessageTypes.Video),
+        )
         .toList()
-        .reversed 
+        .reversed
         .toList();
 
-    _currentIndex = _mediaEvents.indexWhere((e) => e.eventId == widget.initialEventId);
+    _currentIndex = _mediaEvents.indexWhere(
+      (e) => e.eventId == widget.initialEventId,
+    );
     if (_currentIndex == -1) _currentIndex = 0;
 
     _pageController = PageController(initialPage: _currentIndex);
@@ -52,38 +57,27 @@ class _MediaGalleryDialogState extends State<MediaGalleryDialog> {
 
   Future<void> _deleteCurrent() async {
     final event = _mediaEvents[_currentIndex];
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Удалить медиафайл?'),
-        content: const Text('Это сообщение будет удалено для всех участников чата.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFCF6679)),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Удалить'),
-          ),
-        ],
-      ),
+    final ok = await showOrexConfirmDialog(
+      context,
+      title: 'Удалить медиафайл?',
+      message: 'Это сообщение будет удалено для всех участников чата.',
+      confirmLabel: 'Удалить',
+      danger: true,
     );
-    if (ok == true) {
+    if (ok) {
       try {
         await event.room.redactEvent(event.eventId);
         if (mounted) {
-          Navigator.pop(context); 
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Удалено')),
-          );
+          Navigator.pop(context);
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('Удалено')));
         }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Ошибка удаления: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Ошибка удаления: $e')));
         }
       }
     }
@@ -147,9 +141,16 @@ class _MediaGalleryDialogState extends State<MediaGalleryDialog> {
               bottom: 0,
               child: Center(
                 child: Container(
-                  decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.black54),
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.black54,
+                  ),
                   child: IconButton(
-                    icon: const Icon(Icons.chevron_left, color: Colors.white, size: 36),
+                    icon: const Icon(
+                      Icons.chevron_left,
+                      color: Colors.white,
+                      size: 36,
+                    ),
                     onPressed: () {
                       _pageController.previousPage(
                         duration: const Duration(milliseconds: 250),
@@ -167,9 +168,16 @@ class _MediaGalleryDialogState extends State<MediaGalleryDialog> {
               bottom: 0,
               child: Center(
                 child: Container(
-                  decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.black54),
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.black54,
+                  ),
                   child: IconButton(
-                    icon: const Icon(Icons.chevron_right, color: Colors.white, size: 36),
+                    icon: const Icon(
+                      Icons.chevron_right,
+                      color: Colors.white,
+                      size: 36,
+                    ),
                     onPressed: () {
                       _pageController.nextPage(
                         duration: const Duration(milliseconds: 250),
@@ -189,15 +197,16 @@ class _MediaGalleryDialogState extends State<MediaGalleryDialog> {
     final event = _mediaEvents[_currentIndex];
     try {
       final file = await event.downloadAndDecryptAttachment();
-      final filename = event.content.tryGet<String>('filename') ??
+      final filename =
+          event.content.tryGet<String>('filename') ??
           event.content.tryGet<String>('body') ??
           'file';
       await FileHelper.saveAndOpenFile(filename, file.bytes);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ошибка скачивания: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Ошибка скачивания: $e')));
       }
     }
   }
@@ -214,7 +223,8 @@ class _GalleryItem extends StatefulWidget {
 class _GalleryItemState extends State<_GalleryItem> {
   Uint8List? _bytes;
   bool _failed = false;
-  final TransformationController _transformController = TransformationController();
+  final TransformationController _transformController =
+      TransformationController();
   double _currentScale = 1.0;
 
   @override
@@ -256,16 +266,22 @@ class _GalleryItemState extends State<_GalleryItem> {
   Widget build(BuildContext context) {
     if (_failed) {
       return const Center(
-        child: Text('Ошибка загрузки медиафайла', style: TextStyle(color: Colors.white70)),
+        child: Text(
+          'Ошибка загрузки медиафайла',
+          style: TextStyle(color: Colors.white70),
+        ),
       );
     }
 
     if (_bytes == null) {
-      return const Center(child: CircularProgressIndicator(color: OrexColors.copper));
+      return const Center(
+        child: CircularProgressIndicator(color: OrexColors.copper),
+      );
     }
 
     final isVideo = widget.event.messageType == MessageTypes.Video;
-    final filename = widget.event.content.tryGet<String>('filename') ??
+    final filename =
+        widget.event.content.tryGet<String>('filename') ??
         widget.event.content.tryGet<String>('body') ??
         'video.mp4';
 
@@ -276,26 +292,25 @@ class _GalleryItemState extends State<_GalleryItem> {
               transformationController: _transformController,
               minScale: 0.5, // Позволяет отдалять медиа
               maxScale: 4.0,
-              panEnabled: _currentScale > 1.0, 
+              panEnabled: _currentScale > 1.0,
               onInteractionUpdate: _onInteractionUpdate,
               onInteractionEnd: _onInteractionEnd,
               child: Center(
-                child: OrexMediaPlayer(bytes: _bytes!, filename: filename, isVideo: true),
+                child: OrexMediaPlayer(
+                  bytes: _bytes!,
+                  filename: filename,
+                  isVideo: true,
+                ),
               ),
             )
           : InteractiveViewer(
               transformationController: _transformController,
               minScale: 0.5, // Позволяет отдалять изображение
               maxScale: 4.0,
-              panEnabled: _currentScale > 1.0, 
+              panEnabled: _currentScale > 1.0,
               onInteractionUpdate: _onInteractionUpdate,
               onInteractionEnd: _onInteractionEnd,
-              child: Center(
-                child: Image.memory(
-                  _bytes!,
-                  fit: BoxFit.contain, 
-                ),
-              ),
+              child: Center(child: Image.memory(_bytes!, fit: BoxFit.contain)),
             ),
     );
   }

@@ -64,7 +64,7 @@ extension MatrixRoomIdentityApi on MatrixService {
   }
 
   String roomAliasLocalpart(Room room) {
-    return OrexRoomAlias.localpartFromRoom(room);
+    return room.orexAliasLocalpart;
   }
 
   Future<void> setRoomLocalAlias(Room room, String? localAlias) async {

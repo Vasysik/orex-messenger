@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
+import '../../shared/widgets/orex_dialogs.dart';
 
 /// Хранилище ключей (онлайн-бэкап ключей сообщений): статус,
 /// время последнего бэкапа и тумблер автоматического.
@@ -36,75 +36,33 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
 
   /// Запрашивает пароль от аккаунта (нужен для UIA при включении бэкапа).
   Future<String?> _askPassword(BuildContext context) {
-    final c = TextEditingController();
-    return showDialog<String>(
-      context: context,
+    return showOrexTextInputDialog(
+      context,
+      title: 'Требуется пароль',
+      hintText: 'Пароль от аккаунта',
+      obscureText: true,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Требуется пароль'),
-        content: TextField(
-          controller: c,
-          autofocus: true,
-          obscureText: true,
-          decoration: const InputDecoration(hintText: 'Пароль от аккаунта'),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, c.text),
-              child: const Text('ОК')),
-        ],
-      ),
     );
   }
 
   /// Запрашивает ключ восстановления (нужен когда SSSS заблокирован).
   Future<String?> _askRecoveryKey(BuildContext context) {
-    final c = TextEditingController();
-    return showDialog<String>(
-      context: context,
+    return showOrexTextInputDialog(
+      context,
+      title: 'Ключ восстановления',
+      message:
+          'Ключи безопасности локально заблокированы.\n'
+          'Введите ключ восстановления (или passphrase), чтобы открыть к ним доступ и загрузить хранилище на сервер.',
+      hintText: 'Ключ восстановления',
+      obscureText: true,
+      trim: true,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Ключ восстановления'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Ключи безопасности локально заблокированы.\n'
-              'Введите ключ восстановления (или passphrase), чтобы открыть к ним доступ и загрузить хранилище на сервер.',
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: c,
-              autofocus: true,
-              obscureText: true,
-              decoration:
-                  const InputDecoration(hintText: 'Ключ восстановления'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, c.text.trim()),
-              child: const Text('ОК')),
-        ],
-      ),
     );
   }
 
   /// Показывает индикатор загрузки поверх экрана.
   void _showProgress(BuildContext context) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const Center(
-        child: CircularProgressIndicator(color: OrexColors.copper),
-      ),
-    );
+    showOrexBlockingProgressDialog(context);
   }
 
   /// Включает хранилище ключей. Если SSSS заблокирован — запрашивает
@@ -130,7 +88,8 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
           } else {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                  content: Text('Хранилище ключей успешно включено')),
+                content: Text('Хранилище ключей успешно включено'),
+              ),
             );
           }
         }
@@ -171,83 +130,29 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
 
   /// Показывает сгенерированный новый ключ восстановления на экране
   Future<void> _showNewRecoveryKey(BuildContext context, String key) {
-    return showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Новый ключ восстановления'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Хранилище ключей включено, и для него создан новый ключ восстановления. '
-              'Скопируйте его и храните в надёжном месте:',
-            ),
-            const SizedBox(height: 16),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.25),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: SelectableText(
-                key,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 15),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: key));
-              if (ctx.mounted) {
-                ScaffoldMessenger.of(ctx).showSnackBar(
-                  const SnackBar(
-                      content: Text('Ключ скопирован в буфер обмена')),
-                );
-              }
-            },
-            child: const Text('Копировать'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Я сохранил'),
-          ),
-        ],
-      ),
+    return showOrexRecoveryKeyDialog(
+      context,
+      title: 'Новый ключ восстановления',
+      message:
+          'Хранилище ключей включено, и для него создан новый ключ '
+          'восстановления. Скопируйте его и храните в надёжном месте:',
+      recoveryKey: key,
     );
   }
 
   /// Запрашивает подтверждение и отключает хранилище ключей.
   Future<void> _confirmDisable(BuildContext context) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Отключить хранилище?'),
-        content: const Text(
+    final ok = await showOrexConfirmDialog(
+      context,
+      title: 'Отключить хранилище?',
+      message:
           'Резервная копия ваших ключей на сервере будет удалена. '
           'При выходе из учётной записи на этом устройстве вы можете навсегда потерять доступ к зашифрованной переписке.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFFCF6679),
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Отключить'),
-          ),
-        ],
-      ),
+      confirmLabel: 'Отключить',
+      danger: true,
     );
 
-    if (ok != true) return;
+    if (!ok) return;
 
     try {
       await widget.matrix.disableKeyBackup();
@@ -258,9 +163,9 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ошибка при отключении: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Ошибка при отключении: $e')));
       }
     }
   }
@@ -327,8 +232,9 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
                                     enabled
                                         ? 'Ключи сообщений хранятся на сервере — история восстановится на новых устройствах.'
                                         : 'Нажмите, чтобы запустить и настроить облачное хранилище ключей на сервере.',
-                                    style:
-                                        Theme.of(context).textTheme.bodySmall,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodySmall,
                                   ),
                                 ],
                               ),
@@ -360,8 +266,10 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
                         children: [
                           const Row(
                             children: [
-                              Icon(Icons.warning_amber_rounded,
-                                  color: Color(0xFFE0A03A)),
+                              Icon(
+                                Icons.warning_amber_rounded,
+                                color: Color(0xFFE0A03A),
+                              ),
                               SizedBox(width: 8),
                               Text(
                                 'Автобэкап выключен',
@@ -381,7 +289,8 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
                           const SizedBox(height: 12),
                           FilledButton(
                             style: FilledButton.styleFrom(
-                                backgroundColor: OrexColors.copper),
+                              backgroundColor: OrexColors.copper,
+                            ),
                             onPressed: () => widget.matrix.setAutoBackup(true),
                             child: const Text('Включить автоматический бэкап'),
                           ),
@@ -397,18 +306,23 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
                     child: Column(
                       children: [
                         ListTile(
-                          leading: const Icon(Icons.schedule,
-                              color: OrexColors.copper),
+                          leading: const Icon(
+                            Icons.schedule,
+                            color: OrexColors.copper,
+                          ),
                           title: const Text('Последний бэкап'),
                           subtitle: Text(_ago(widget.matrix.lastBackup)),
                         ),
                         const Divider(height: 1),
                         SwitchListTile(
-                          secondary: const Icon(Icons.autorenew,
-                              color: OrexColors.copper),
+                          secondary: const Icon(
+                            Icons.autorenew,
+                            color: OrexColors.copper,
+                          ),
                           title: const Text('Автоматический бэкап'),
                           subtitle: const Text(
-                              'Новые сообщения сохраняются автоматически'),
+                            'Новые сообщения сохраняются автоматически',
+                          ),
                           value: widget.matrix.autoBackup,
                           onChanged: widget.matrix.setAutoBackup,
                         ),
@@ -426,12 +340,16 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
                             width: 18,
                             height: 18,
                             child: CircularProgressIndicator(
-                                strokeWidth: 2, color: OrexColors.cream),
+                              strokeWidth: 2,
+                              color: OrexColors.cream,
+                            ),
                           )
                         : const Icon(Icons.backup),
-                    label: Text(widget.matrix.backupInProgress
-                        ? 'Бэкап…'
-                        : 'Создать резервную копию сейчас'),
+                    label: Text(
+                      widget.matrix.backupInProgress
+                          ? 'Бэкап…'
+                          : 'Создать резервную копию сейчас',
+                    ),
                     onPressed: widget.matrix.backupInProgress
                         ? null
                         : widget.matrix.backupNow,

@@ -5,8 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:record/record.dart' as rec;
 
 import '../../core/audio/audio_cue_service.dart';
+import '../../core/audio/pcm_audio_level.dart';
 import '../../core/logging/orex_logger.dart';
 import '../../core/matrix/matrix_service.dart';
+import '../../core/voip/voice_gate_controller.dart';
 import '../../shared/theme/orex_theme.dart';
 
 class OrexMicLevelTester extends StatefulWidget {
@@ -86,7 +88,10 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
       final allowed = await recorder.hasPermission();
       if (!allowed) throw StateError('Нет разрешения на микрофон');
 
-      final device = await _recordDeviceFor(recorder, widget.inputDeviceId);
+      final device = await OrexVoiceGateController.recordDeviceFor(
+        recorder,
+        widget.inputDeviceId,
+      );
       final stream = await recorder.startStream(
         rec.RecordConfig(
           encoder: rec.AudioEncoder.pcm16bits,
@@ -100,20 +105,26 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
         ),
       );
 
-      _pcmSub = stream.listen((data) {
-        _updateLevel(_dbFromPcm16(data));
-      }, onError: (Object e) {
-        if (!mounted) return;
-        setState(() => _error = '$e');
-      });
+      _pcmSub = stream.listen(
+        (data) {
+          _updateLevel(OrexPcmAudioLevel.dbFromPcm16(data));
+        },
+        onError: (Object e) {
+          if (!mounted) return;
+          setState(() => _error = '$e');
+        },
+      );
       _ampSub = recorder
           .onAmplitudeChanged(const Duration(milliseconds: 60))
-          .listen((amp) {
-        _updateLevel(_normalizeDb(amp.current));
-      }, onError: (Object e) {
-        if (!mounted) return;
-        setState(() => _error = '$e');
-      });
+          .listen(
+            (amp) {
+              _updateLevel(_normalizeDb(amp.current));
+            },
+            onError: (Object e) {
+              if (!mounted) return;
+              setState(() => _error = '$e');
+            },
+          );
 
       if (!mounted) {
         await recorder.stop();
@@ -125,7 +136,10 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
         _testing = true;
         _starting = false;
       });
-      OrexLog.d('AudioDevices', 'mic level test started device=${device?.id ?? 'default'}');
+      OrexLog.d(
+        'AudioDevices',
+        'mic level test started device=${device?.id ?? 'default'}',
+      );
     } catch (e, st) {
       OrexLog.d('AudioDevices', 'mic level test failed stack=$st', e);
       try {
@@ -160,27 +174,6 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
     });
   }
 
-  Future<rec.InputDevice?> _recordDeviceFor(
-    rec.AudioRecorder recorder,
-    String? selectedId,
-  ) async {
-    final normalized = selectedId?.trim();
-    if (normalized == null || normalized.isEmpty || normalized == 'default') {
-      return null;
-    }
-    try {
-      final devices = await recorder.listInputDevices();
-      for (final device in devices) {
-        if (device.id == normalized) return device;
-      }
-      // WebRTC and record can expose different IDs for the same physical mic.
-      // If exact ID is unavailable, use default rather than failing the test.
-    } catch (e) {
-      OrexLog.d('AudioDevices', 'record device match failed', e);
-    }
-    return null;
-  }
-
   void _updateLevel(double db) {
     if (!mounted) return;
     setState(() {
@@ -193,29 +186,7 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
     if (value.isNaN || value.isInfinite) {
       return AudioCueService.minSpeakingThresholdDb;
     }
-    return value
-        .clamp(AudioCueService.minSpeakingThresholdDb, 0)
-        .toDouble();
-  }
-
-  double _dbFromPcm16(Uint8List bytes) {
-    if (bytes.length < 2) return AudioCueService.minSpeakingThresholdDb;
-    final data = ByteData.sublistView(bytes);
-    var sumSquares = 0.0;
-    var count = 0;
-    for (var i = 0; i + 1 < bytes.length; i += 2) {
-      final sample = data.getInt16(i, Endian.little) / 32768.0;
-      sumSquares += sample * sample;
-      count++;
-    }
-    if (count == 0 || sumSquares <= 0) {
-      return AudioCueService.minSpeakingThresholdDb;
-    }
-    final rms = math.sqrt(sumSquares / count);
-    if (rms <= 0) return AudioCueService.minSpeakingThresholdDb;
-    return (20 * math.log(rms) / math.ln10)
-        .clamp(AudioCueService.minSpeakingThresholdDb, 0.0)
-        .toDouble();
+    return value.clamp(AudioCueService.minSpeakingThresholdDb, 0).toDouble();
   }
 
   @override
@@ -263,9 +234,9 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
                 child: Text(
                   '${_levelDb.round()} dBFS',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: active ? OrexColors.online : Colors.white70,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
+                    color: active ? OrexColors.online : Colors.white70,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
                 ),
               );
               final testButton = FilledButton.icon(
@@ -290,9 +261,10 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
                   value: widget.thresholdDb,
                   min: AudioCueService.minSpeakingThresholdDb,
                   max: AudioCueService.maxSpeakingThresholdDb,
-                  divisions: (AudioCueService.maxSpeakingThresholdDb -
-                          AudioCueService.minSpeakingThresholdDb)
-                      .round(),
+                  divisions:
+                      (AudioCueService.maxSpeakingThresholdDb -
+                              AudioCueService.minSpeakingThresholdDb)
+                          .round(),
                   label: '${widget.thresholdDb.round()} dBFS',
                   onChanged: widget.thresholdEnabled
                       ? widget.onThresholdChanged
@@ -304,13 +276,7 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Row(
-                      children: [
-                        levelLabel,
-                        const Spacer(),
-                        testButton,
-                      ],
-                    ),
+                    Row(children: [levelLabel, const Spacer(), testButton]),
                     const SizedBox(height: 8),
                     slider,
                   ],
@@ -330,17 +296,17 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
             const SizedBox(height: 6),
             Text(
               _error!,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: const Color(0xFFCF6679),
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: const Color(0xFFCF6679)),
             ),
           ],
           const SizedBox(height: 4),
           Text(
             'Тест показывает dBFS почти в реальном времени. Чем ближе порог к 0, тем сильнее отсекаются клавиатура и тихий шум.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Colors.white60,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: Colors.white60),
           ),
         ],
       ),
@@ -379,7 +345,9 @@ class _MicMeter extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.08),
+                  ),
                 ),
               ),
               AnimatedContainer(

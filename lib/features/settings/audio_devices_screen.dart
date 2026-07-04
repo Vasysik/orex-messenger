@@ -1,13 +1,11 @@
-import 'package:flutter/material.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
+import 'dart:async';
 
-import '../../core/audio/audio_cue_service.dart';
-import '../../core/audio/audio_device_utils.dart';
+import 'package:flutter/material.dart';
+
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
-import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/orex_settings_components.dart';
-import 'mic_level_tester.dart';
+import 'audio_device_settings_content.dart';
 
 class AudioDevicesScreen extends StatefulWidget {
   const AudioDevicesScreen({super.key, required this.matrix});
@@ -19,132 +17,46 @@ class AudioDevicesScreen extends StatefulWidget {
 }
 
 class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
-  bool _loading = true;
-  String? _error;
-  List<OrexAudioDevice> _devices = const [];
-  List<OrexAudioDevice> _cameras = const [];
-  String? _inputId;
-  String? _outputId;
-  String? _cameraId;
-  double _thresholdDb = AudioCueService.defaultSpeakingThresholdDb;
-  bool _thresholdEnabled = AudioCueService.defaultSpeakingThresholdEnabled;
+  late final OrexAudioDeviceSettingsController _controller;
 
   @override
   void initState() {
     super.initState();
-    _readPrefs();
-    _load();
+    _controller = OrexAudioDeviceSettingsController(
+      matrix: widget.matrix,
+      includeCallRoutes: false,
+    )..addListener(_handleControllerChanged);
+    unawaited(_controller.load());
   }
 
-  void _readPrefs() {
-    _inputId = widget.matrix.audio.inputDeviceId;
-    _outputId = widget.matrix.audio.outputDeviceId;
-    _cameraId = widget.matrix.audio.cameraDeviceId;
-    _thresholdDb = widget.matrix.audio.speakingThresholdDb;
-    _thresholdEnabled = widget.matrix.audio.speakingThresholdEnabled;
+  @override
+  void dispose() {
+    _controller.removeListener(_handleControllerChanged);
+    _controller.dispose();
+    super.dispose();
   }
 
-  Future<void> _load({bool requestPermission = false}) async {
-    if (mounted) {
-      setState(() {
-        _loading = true;
-        _error = null;
-      });
-    }
-    try {
-      final devices = await enumerateOrexAudioDevices(
-        requestPermission: requestPermission,
-        includeCallRoutes: false,
-      );
-      final cameras = await enumerateOrexCameraDevices(
-        requestPermission: requestPermission,
-      );
-      if (!mounted) return;
-      setState(() {
-        _devices = devices;
-        _cameras = cameras;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _error = '$e');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
+  void _handleControllerChanged() {
+    if (mounted) setState(() {});
   }
-
-  Future<void> _testOutput() => widget.matrix.audio.playNotification();
 
   Future<void> _testMic() async {
     try {
-      final stream = await rtc.navigator.mediaDevices.getUserMedia({
-        'audio': _inputId == null
-            ? true
-            : {
-                'deviceId': {'exact': _inputId},
-              },
-        'video': false,
-      });
-      for (final track in stream.getTracks()) {
-        track.stop();
-      }
+      await _controller.testMic();
       if (!mounted) return;
-      await _load(requestPermission: false);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Микрофон доступен')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Микрофон доступен')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Микрофон недоступен: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Микрофон недоступен: $e')));
     }
   }
-
-  Future<void> _resetSoundSettings() async {
-    await widget.matrix.audio.resetSoundSettings();
-    if (!mounted) return;
-    setState(_readPrefs);
-    await _load(requestPermission: false);
-  }
-
-  Future<void> _selectInput(String? id) async {
-    await widget.matrix.audio.setInputDeviceId(id);
-    if (!mounted) return;
-    setState(() => _inputId = widget.matrix.audio.inputDeviceId);
-  }
-
-  Future<void> _selectOutput(String? id) async {
-    await widget.matrix.audio.setOutputDeviceId(id);
-    if (!mounted) return;
-    setState(() => _outputId = widget.matrix.audio.outputDeviceId);
-  }
-
-  Future<void> _selectCamera(String? id) async {
-    await widget.matrix.audio.setCameraDeviceId(id);
-    if (!mounted) return;
-    setState(() => _cameraId = widget.matrix.audio.cameraDeviceId);
-  }
-
-  List<OrexAudioDevice> _byKind(String kind) {
-    final devices = _devices.where((d) => d.kind == kind);
-    if (orexIsAndroidNativePlatform && kind == 'audiooutput') {
-      return devices.where((d) => d.category != 'speaker').toList();
-    }
-    return devices.toList();
-  }
-
-  IconData _inputIcon(OrexAudioDevice device) => orexInputDeviceIcon(device);
-
-  IconData _outputIcon(OrexAudioDevice device) => orexOutputDeviceIcon(device);
-
-  IconData _cameraIcon(OrexAudioDevice device) => orexCameraDeviceIcon(device);
 
   @override
   Widget build(BuildContext context) {
-    final inputs = _byKind('audioinput');
-    final outputs = _byKind('audiooutput');
-
     return AmbientBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
@@ -161,16 +73,16 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                 OrexSettingsTile(
                   icon: Icons.refresh,
                   title: 'Обновить список устройств',
-                  subtitle: _loading
-                      ? 'Загрузка…'
+                  subtitle: _controller.loading
+                      ? 'Загрузка...'
                       : 'Перечитать устройства и разблокировать их названия',
-                  onTap: () => _load(requestPermission: true),
+                  onTap: () => _controller.load(requestPermission: true),
                 ),
                 OrexSettingsTile(
                   icon: Icons.volume_up,
                   title: 'Проверить звук',
                   subtitle: 'Проиграть звук уведомления',
-                  onTap: _testOutput,
+                  onTap: _controller.testOutput,
                 ),
                 OrexSettingsTile(
                   icon: Icons.mic,
@@ -181,118 +93,23 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
               ],
             ),
             const SizedBox(height: 16),
-            if (_error != null) ...[
+            if (_controller.error != null) ...[
               OrexSettingsSection(
                 title: 'Ошибка',
                 children: [
                   OrexSettingsTile(
                     icon: Icons.error_outline,
                     title: 'Не удалось получить устройства',
-                    subtitle: _error,
+                    subtitle: _controller.error,
                     danger: true,
                   ),
                 ],
               ),
               const SizedBox(height: 16),
             ],
-            OrexSettingsSection(
-              title: 'Устройство ввода',
-              children: [
-                _DeviceRadioTile(
-                  icon: Icons.settings_input_component,
-                  title: 'Системный микрофон',
-                  subtitle: 'Использовать устройство по умолчанию',
-                  selected: _inputId == null,
-                  onTap: () => _selectInput(null),
-                ),
-                for (final d in inputs)
-                  _DeviceRadioTile(
-                    icon: _inputIcon(d),
-                    title: d.label,
-                    subtitle: null,
-                    selected: _inputId == d.id,
-                    onTap: () => _selectInput(d.id),
-                  ),
-                if (!_loading && inputs.isEmpty)
-                  const _EmptyDeviceHint(
-                    text: 'Сейчас доступен только системный вход. Нажмите «Проверить микрофон» или проверьте системные разрешения микрофона.',
-                  ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            OrexSettingsSection(
-              title: 'Устройство вывода',
-              children: [
-                _DeviceRadioTile(
-                  icon: Icons.speaker,
-                  title: orexIsAndroidNativePlatform
-                      ? 'Динамик телефона'
-                      : 'Системный вывод',
-                  subtitle: orexIsAndroidNativePlatform
-                      ? 'Стандартный вывод Android вне звонка'
-                      : 'Использовать устройство по умолчанию',
-                  selected: _outputId == null ||
-                      orexIsAndroidSpeakerOutputDeviceId(_outputId),
-                  onTap: () => _selectOutput(null),
-                ),
-                for (final d in outputs)
-                  _DeviceRadioTile(
-                    icon: _outputIcon(d),
-                    title: d.label,
-                    subtitle: null,
-                    selected: _outputId == d.id,
-                    onTap: () => _selectOutput(d.id),
-                  ),
-                if (!_loading && outputs.isEmpty)
-                  const _EmptyDeviceHint(
-                    text: 'Сейчас доступен только системный вывод. Нажмите «Обновить список устройств» и проверьте, видит ли устройство операционная система.',
-                  ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            OrexSettingsSection(
-              title: 'Камера',
-              children: [
-                _DeviceRadioTile(
-                  icon: Icons.videocam,
-                  title: 'Системная камера',
-                  subtitle: 'Использовать камеру по умолчанию',
-                  selected: _cameraId == null,
-                  onTap: () => _selectCamera(null),
-                ),
-                for (final camera in _cameras)
-                  _DeviceRadioTile(
-                    icon: _cameraIcon(camera),
-                    title: camera.label,
-                    subtitle: null,
-                    selected: _cameraId == camera.id,
-                    onTap: () => _selectCamera(camera.id),
-                  ),
-                if (!_loading && _cameras.isEmpty)
-                  const _EmptyDeviceHint(
-                    text: 'Камеры не найдены. Нажмите «Обновить список устройств» и проверьте системные разрешения камеры.',
-                  ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            OrexSettingsSection(
-              title: 'Порог говорения',
-              children: [
-                OrexMicLevelTester(
-                  matrix: widget.matrix,
-                  inputDeviceId: _inputId,
-                  thresholdDb: _thresholdDb,
-                  thresholdEnabled: _thresholdEnabled,
-                  onThresholdChanged: (value) async {
-                    setState(() => _thresholdDb = value);
-                    await widget.matrix.audio.setSpeakingThresholdDb(value);
-                  },
-                  onThresholdEnabledChanged: (value) async {
-                    setState(() => _thresholdEnabled = value);
-                    await widget.matrix.audio.setSpeakingThresholdEnabled(value);
-                  },
-                ),
-              ],
+            OrexAudioDeviceSettingsContent(
+              controller: _controller,
+              layout: OrexAudioDeviceSettingsLayout.screen,
             ),
             const SizedBox(height: 16),
             Text(
@@ -306,68 +123,15 @@ class _AudioDevicesScreenState extends State<AudioDevicesScreen> {
                 OrexSettingsTile(
                   icon: Icons.restart_alt,
                   title: 'Сбросить настройки звука',
-                  subtitle: 'Вернуть системный микрофон, системный вывод, системную камеру и стандартный порог',
-                  onTap: _resetSoundSettings,
+                  subtitle:
+                      'Вернуть системный микрофон, системный вывод, системную камеру и стандартный порог',
+                  onTap: _controller.resetSoundSettings,
                   danger: true,
                 ),
               ],
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _EmptyDeviceHint extends StatelessWidget {
-  const _EmptyDeviceHint({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-      child: Text(
-        text,
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Colors.white60,
-            ),
-      ),
-    );
-  }
-}
-
-class _DeviceRadioTile extends StatelessWidget {
-  const _DeviceRadioTile({
-    required this.icon,
-    required this.title,
-    required this.selected,
-    required this.onTap,
-    this.subtitle,
-  });
-
-  final IconData icon;
-  final String title;
-  final String? subtitle;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      type: MaterialType.transparency,
-      child: ListTile(
-        leading: Icon(icon, color: OrexColors.copper),
-        title: Text(title),
-        subtitle: subtitle == null
-            ? null
-            : Text(subtitle!, maxLines: 1, overflow: TextOverflow.ellipsis),
-        trailing: Icon(
-          selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
-          color: selected ? OrexColors.copper : Colors.white38,
-        ),
-        onTap: onTap,
       ),
     );
   }

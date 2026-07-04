@@ -1,4 +1,4 @@
-package com.example.orex_messenger
+package ru.orex.messenger
 
 import android.content.Context
 import android.media.AudioDeviceInfo

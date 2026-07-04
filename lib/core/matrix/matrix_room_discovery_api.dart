@@ -99,11 +99,11 @@ extension MatrixRoomDiscoveryApi on MatrixService {
 
   Future<List<OrexRoomPreview>> searchPublicRoomPreviews(String query) async {
     final rooms = await searchPublicRooms(query);
-    return rooms.map(OrexRoomPreview.fromPublicRoom).toList();
+    return rooms.map((room) => room.toOrexRoomPreview()).toList();
   }
 
   Future<String> joinPublicRoom(PublishedRoomsChunk room) =>
-      joinRoomPreview(OrexRoomPreview.fromPublicRoom(room));
+      joinRoomPreview(room.toOrexRoomPreview());
 
   Future<String> enterConversationPreview(
     OrexConversationPreview preview,
