@@ -47,8 +47,14 @@ class VoipService extends ChangeNotifier {
         final roomId = ev.content['room_id'] as String?;
         if (roomId != null) {
           _rejected[roomId] = DateTime.now();
-          Future.delayed(
-              const Duration(seconds: 60), () => _rejected.remove(roomId));
+          _rejectedCleanupTimers.remove(roomId)?.cancel();
+          _rejectedCleanupTimers[roomId] = Timer(
+            const Duration(seconds: 60),
+            () {
+              _rejectedCleanupTimers.remove(roomId);
+              _rejected.remove(roomId);
+            },
+          );
         }
       }
     });
@@ -59,8 +65,10 @@ class VoipService extends ChangeNotifier {
     _scan(markExistingAsSeen: true);
     // Чистим СВОИ зависшие членства (после перезагрузки/закрытия вкладки во
     // время звонка) — иначе другой аккаунт видит нас «в звонке» (фантом).
-    Future.delayed(
-        const Duration(seconds: 4), _cleanupOwnStaleMemberships);
+    _staleMembershipCleanupTimer = Timer(
+      const Duration(seconds: 4),
+      _cleanupOwnStaleMemberships,
+    );
   }
 
   /// Удаляем своё членство в звонках, в которых мы на самом деле не находимся.
@@ -68,7 +76,9 @@ class VoipService extends ChangeNotifier {
     final myId = client.userID;
     for (final room in client.rooms) {
       if (!_callMembers(room).contains(myId)) continue;
-      if (active != null && active!.room.id == room.id) continue; // реально в звонке
+      if (active != null && active!.room.id == room.id) {
+        continue; // реально в звонке
+      }
       try {
         await room.removeFamedlyCallMemberEvent(room.id, voip);
         OrexLog.d('Voip', 'removed phantom call membership room=${room.id}');
@@ -83,11 +93,16 @@ class VoipService extends ChangeNotifier {
 
   /// roomId → когда собеседник отклонил звонок (для текста итогового сообщения).
   final Map<String, DateTime> _rejected = {};
+  final Map<String, Timer> _rejectedCleanupTimers = <String, Timer>{};
+  Timer? _staleMembershipCleanupTimer;
 
   /// Собеседник отклонил звонок в этой комнате (недавно).
   bool wasRejected(String roomId) => _rejected.containsKey(roomId);
 
-  void clearRejected(String roomId) => _rejected.remove(roomId);
+  void clearRejected(String roomId) {
+    _rejectedCleanupTimers.remove(roomId)?.cancel();
+    _rejected.remove(roomId);
+  }
 
   /// Сообщить инициатору (другим участникам комнаты), что мы отклонили звонок.
   Future<void> notifyRejected(String roomId) async {
@@ -130,7 +145,8 @@ class VoipService extends ChangeNotifier {
   // no-call state instead.
   static const Duration _endedDebounceDelay = Duration(milliseconds: 1800);
 
-  final Set<String> _shown = <String>{}; // по этим комнатам сейчас показан входящий
+  final Set<String> _shown =
+      <String>{}; // по этим комнатам сейчас показан входящий
   final Set<String> _suppress =
       <String>{}; // не звонить: вышли / было при старте / обработано
   final Map<String, Timer> _endedDebounceTimers = <String, Timer>{};
@@ -141,10 +157,8 @@ class VoipService extends ChangeNotifier {
   /// Уже обнаруженные входящие, которые могли попасть в broadcast stream до
   /// готовности Navigator/UI. Main replays этот список после первого кадра,
   /// иначе звонок можно было потерять до открытия любого чата.
-  List<Room> visibleIncomingRooms() => _shown
-      .map(client.getRoomById)
-      .whereType<Room>()
-      .toList(growable: false);
+  List<Room> visibleIncomingRooms() =>
+      _shown.map(client.getRoomById).whereType<Room>().toList(growable: false);
 
   /// Комнаты, по которым надо ЗАКРЫТЬ открытый входящий (звонок кончился или
   /// обработан на другом устройстве).
@@ -166,12 +180,13 @@ class VoipService extends ChangeNotifier {
 
   Iterable<String> _callMembers(Room room) sync* {
     final seen = <String>{};
-    for (final id in room
-        .getCallMembershipsFromRoom(voip)
-        .values
-        .expand((e) => e)
-        .where((m) => !m.isExpired)
-        .map((m) => m.userId)) {
+    for (final id
+        in room
+            .getCallMembershipsFromRoom(voip)
+            .values
+            .expand((e) => e)
+            .where((m) => !m.isExpired)
+            .map((m) => m.userId)) {
       if (seen.add(id)) yield id;
     }
 
@@ -218,11 +233,7 @@ class VoipService extends ChangeNotifier {
     return !sawMembership;
   }
 
-  bool _membershipContentLooksActive(
-    Map raw,
-    DateTime eventTs,
-    DateTime now,
-  ) {
+  bool _membershipContentLooksActive(Map raw, DateTime eventTs, DateTime now) {
     final expiresTs = _readInt(raw['expires_ts'] ?? raw['expiresTs']);
     if (expiresTs != null) {
       final absolute = DateTime.fromMillisecondsSinceEpoch(expiresTs);
@@ -284,9 +295,9 @@ class VoipService extends ChangeNotifier {
 
     // Если member-list неполный, но активный звонок пришёл ровно от одного
     // удалённого участника и комната явно не канал/супергруппа — тоже звоним.
-    final remoteCallMembers = _callMembers(room)
-        .where((id) => id != client.userID)
-        .toSet();
+    final remoteCallMembers = _callMembers(
+      room,
+    ).where((id) => id != client.userID).toSet();
     return joined.length <= 2 && remoteCallMembers.length == 1;
   }
 
@@ -304,10 +315,15 @@ class VoipService extends ChangeNotifier {
       return;
     }
     if (markExistingAsSeen) {
-      _suppress.add(room.id); // активен на старте → не звоним (покажет панель «войти»)
+      _suppress.add(
+        room.id,
+      ); // активен на старте → не звоним (покажет панель «войти»)
       return;
     }
-    OrexLog.d('Voip', 'incoming direct call room=${room.id} from=${others.join(',')}');
+    OrexLog.d(
+      'Voip',
+      'incoming direct call room=${room.id} from=${others.join(',')}',
+    );
     _shown.add(room.id);
     _incoming.add(room);
   }
@@ -369,7 +385,11 @@ class VoipService extends ChangeNotifier {
         },
       );
     } catch (e) {
-      OrexLog.d('Voip', 'mark call handled failed room=$roomId call=$callId', e);
+      OrexLog.d(
+        'Voip',
+        'mark call handled failed room=$roomId call=$callId',
+        e,
+      );
     }
   }
 
@@ -384,27 +404,46 @@ class VoipService extends ChangeNotifier {
     final backend = LiveKitBackend(
       livekitServiceUrl: OrexConfig.jwtServiceUri.toString(),
       livekitAlias: roomId,
-      e2eeEnabled: true, 
+      // Orex does not provide a MatrixRTC/LiveKit media key provider yet, so
+      // calls must not be advertised as media-E2EE capable.
+      e2eeEnabled: false,
     );
 
     final gc = await voip.fetchOrCreateGroupCall(
-      roomId, 
+      roomId,
       room,
       backend,
       'm.call',
       'm.room',
-      preShareKey: false, 
+      preShareKey: false,
     );
 
     try {
       await gc.enter();
-    } catch (_) {
+    } catch (e) {
+      OrexLog.d(
+        'Voip',
+        'enter call failed room=$roomId call=${gc.groupCallId}',
+        e,
+      );
       try {
         await gc.leave();
-      } catch (_) {}
+      } catch (leaveError) {
+        OrexLog.d(
+          'Voip',
+          'rollback leave failed room=$roomId call=${gc.groupCallId}',
+          leaveError,
+        );
+      }
       try {
         await room.removeFamedlyCallMemberEvent(gc.groupCallId, voip);
-      } catch (_) {}
+      } catch (removeError) {
+        OrexLog.d(
+          'Voip',
+          'rollback membership cleanup failed room=$roomId call=${gc.groupCallId}',
+          removeError,
+        );
+      }
       voip.groupCalls.removeWhere(
         (k, v) => k.roomId == room.id && k.callId == gc.groupCallId,
       );
@@ -431,7 +470,13 @@ class VoipService extends ChangeNotifier {
       // справился) — иначе остаёмся «фантомом» в звонке для остальных.
       try {
         await gc.room.removeFamedlyCallMemberEvent(gc.groupCallId, voip);
-      } catch (_) {}
+      } catch (e) {
+        OrexLog.d(
+          'Voip',
+          'membership cleanup after leave failed room=${gc.room.id} call=${gc.groupCallId}',
+          e,
+        );
+      }
       // И чистим локальную карту, чтобы будущие звонки не глохли (VoipId не
       // экспортируется — фильтруем по полям ключа).
       voip.groupCalls.removeWhere(
@@ -444,6 +489,11 @@ class VoipService extends ChangeNotifier {
   void dispose() {
     _syncSub?.cancel();
     _toDeviceSub?.cancel();
+    _staleMembershipCleanupTimer?.cancel();
+    for (final timer in _rejectedCleanupTimers.values) {
+      timer.cancel();
+    }
+    _rejectedCleanupTimers.clear();
     for (final timer in _endedDebounceTimers.values) {
       timer.cancel();
     }
@@ -469,8 +519,7 @@ class _OrexCallDelegate implements WebRTCDelegate {
   Future<RTCPeerConnection> createPeerConnection(
     Map<String, dynamic> configuration, [
     Map<String, dynamic> constraints = const {},
-  ]) =>
-      rtc.createPeerConnection(configuration, constraints);
+  ]) => rtc.createPeerConnection(configuration, constraints);
 
   @override
   bool get isWeb => kIsWeb;

@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.gradle.api.GradleException
 
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
@@ -25,6 +26,10 @@ val hasReleaseSigning = listOf(
     releaseKeyPassword,
     releaseStorePassword,
 ).all { !it.isNullOrEmpty() }
+
+val allowUnsignedRelease = System.getenv("OREX_ALLOW_UNSIGNED_ANDROID_RELEASE")
+    ?.trim()
+    ?.equals("true", ignoreCase = true) == true
 
 plugins {
     id("com.android.application")
@@ -75,6 +80,23 @@ android {
                 signingConfig = signingConfigs.getByName("release")
             }
         }
+    }
+}
+
+gradle.taskGraph.whenReady {
+    val releaseArtifactRequested = allTasks.any { task ->
+        val taskName = task.name
+        taskName.equals("assembleRelease", ignoreCase = true) ||
+            taskName.equals("bundleRelease", ignoreCase = true) ||
+            taskName.equals("packageRelease", ignoreCase = true)
+    }
+    if (releaseArtifactRequested && !hasReleaseSigning && !allowUnsignedRelease) {
+        throw GradleException(
+            "Android release signing is not configured. Provide android/key.properties " +
+                "or OREX_ANDROID_STORE_FILE, OREX_ANDROID_STORE_PASSWORD, " +
+                "OREX_ANDROID_KEY_ALIAS and OREX_ANDROID_KEY_PASSWORD. " +
+                "Set OREX_ALLOW_UNSIGNED_ANDROID_RELEASE=true only for CI compile checks."
+        )
     }
 }
 

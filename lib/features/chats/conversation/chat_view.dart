@@ -58,7 +58,7 @@ class _ChatViewState extends State<ChatView> {
   final FocusNode _focusNode = FocusNode();
 
   static const int _historyPageSize = 40;
-  static const int _openHistoryMaxPages = 4;
+  static const int _openHistoryMaxPages = 32;
 
   Timeline? _timeline;
   Room? _room;
@@ -245,7 +245,10 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _refreshTimelineOnOpen(Room room, Timeline timeline) async {
-    if (!timeline.canRequestHistory) return;
+    if (!timeline.canRequestHistory) {
+      if (mounted) setState(() => _noMoreHistory = true);
+      return;
+    }
     try {
       for (
         var page = 0;
@@ -257,15 +260,16 @@ class _ChatViewState extends State<ChatView> {
         if (!mounted) return;
         setState(() => _buildChatItems(timeline.events));
 
-        // Каналы скрывают member-события. В старой комнате первая страница
-        // истории может состоять только из них, из-за чего экран выглядит
-        // пустым, пока пользователь вручную не потянет ленту. На открытии
-        // догружаем ещё несколько страниц, но останавливаемся сразу после
-        // первого реально отображаемого события.
+        // Channels hide member events. In old low-traffic channels the first
+        // page can be made only of hidden state/member events, so open-time
+        // warm-up walks a wider history window before making the user scroll.
         if (_hasRenderableTimelineEvents(timeline.events) ||
             timeline.events.length == beforeLen) {
           break;
         }
+      }
+      if (mounted && !timeline.canRequestHistory) {
+        setState(() => _noMoreHistory = true);
       }
     } catch (e) {
       OrexLog.d('Chat', 'open refresh failed room=${room.id}', e);

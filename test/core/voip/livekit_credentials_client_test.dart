@@ -12,11 +12,28 @@ void main() {
           'url': 'wss://livekit.example.org',
           'jwt': _jwt(canPublish: false),
         }),
-        canPublishMedia: false,
       );
 
       expect(credentials.url, 'wss://livekit.example.org');
       expect(credentials.jwt, isNotEmpty);
+    });
+
+    test('builds upstream-compatible legacy sfu request body', () {
+      final body = OrexLiveKitCredentialsClient.legacySfuGetRequestBody(
+        matrixRoomId: '!voice:example.org',
+        accessToken: 'openid-token',
+        tokenType: 'Bearer',
+        matrixServerName: 'example.org',
+        deviceId: 'DEVICE',
+      );
+
+      expect(body.keys, containsAll(['room', 'openid_token', 'device_id']));
+      expect(body, isNot(contains('requested_livekit_grants')));
+      expect(body['openid_token'], {
+        'access_token': 'openid-token',
+        'token_type': 'Bearer',
+        'matrix_server_name': 'example.org',
+      });
     });
 
     test('rejects non-success status without leaking response body', () {
@@ -24,7 +41,6 @@ void main() {
         () => OrexLiveKitCredentialsClient.parseResponse(
           statusCode: 500,
           body: '{"secret":"diagnostic"}',
-          canPublishMedia: true,
         ),
         throwsA(
           isA<Exception>().having(
@@ -36,12 +52,42 @@ void main() {
       );
     });
 
+    test('keeps safe non-success diagnostics', () {
+      expect(
+        () => OrexLiveKitCredentialsClient.parseResponse(
+          statusCode: 400,
+          body: jsonEncode({
+            'errcode': 'M_BAD_JSON',
+            'request_id': 'req-123',
+            'secret': 'diagnostic',
+          }),
+        ),
+        throwsA(
+          isA<Exception>()
+              .having(
+                (error) => error.toString(),
+                'message',
+                contains('errcode=M_BAD_JSON'),
+              )
+              .having(
+                (error) => error.toString(),
+                'message',
+                contains('request_id=req-123'),
+              )
+              .having(
+                (error) => error.toString(),
+                'message',
+                isNot(contains('diagnostic')),
+              ),
+        ),
+      );
+    });
+
     test('rejects missing credentials fields', () {
       expect(
         () => OrexLiveKitCredentialsClient.parseResponse(
           statusCode: 200,
           body: jsonEncode({'url': 'wss://livekit.example.org'}),
-          canPublishMedia: true,
         ),
         throwsStateError,
       );
@@ -55,21 +101,6 @@ void main() {
             'url': 'http://livekit.example.org',
             'jwt': _jwt(canPublish: false),
           }),
-          canPublishMedia: false,
-        ),
-        throwsStateError,
-      );
-    });
-
-    test('rejects publish-capable token for listen-only request', () {
-      expect(
-        () => OrexLiveKitCredentialsClient.parseResponse(
-          statusCode: 200,
-          body: jsonEncode({
-            'url': 'wss://livekit.example.org',
-            'jwt': _jwt(canPublish: true),
-          }),
-          canPublishMedia: false,
         ),
         throwsStateError,
       );

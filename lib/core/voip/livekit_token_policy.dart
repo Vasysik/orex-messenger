@@ -3,31 +3,6 @@ import 'dart:convert';
 final class OrexLiveKitTokenPolicy {
   const OrexLiveKitTokenPolicy._();
 
-  static Map<String, Object?> requestedGrants({
-    required bool canPublishMedia,
-    required bool listenOnly,
-  }) {
-    return {
-      'can_subscribe': true,
-      'can_publish': canPublishMedia,
-      'listen_only': listenOnly,
-    };
-  }
-
-  static void assertCompatibleWithRequestedGrants({
-    required String jwt,
-    required bool canPublishMedia,
-  }) {
-    if (canPublishMedia) return;
-
-    final tokenCanPublish = canPublishFromJwt(jwt);
-    if (tokenCanPublish == true) {
-      throw StateError(
-        'lk-jwt-service returned a publish-capable token for listen-only mode',
-      );
-    }
-  }
-
   static bool? canPublishFromJwt(String jwt) {
     final parts = jwt.split('.');
     if (parts.length < 2) return null;

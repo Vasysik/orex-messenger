@@ -1,230 +1,49 @@
-# Orex Messenger — архитектура (Lead Flutter Architect)
+# Orex Messenger
 
-Тёплый ореховый мессенджер на **Flutter** поверх **Matrix (Synapse)**, со
-сквозным шифрованием сообщений через **vodozemac** и нативными звонками на
-стеке **MatrixRTC / Element Call** поверх вашего **LiveKit**. Единая кодовая
-база: **Web · Android · Windows**.
+Orex Messenger is a Flutter messenger built on Matrix, with a native Orex call UI over MatrixRTC and LiveKit. The current target is a desktop-first private alpha / dogfood build, not a public secure-messenger release yet.
 
----
+Current app version: `0.3.3+2`.
 
-## 1. Стек
+## What Works
 
-| Слой     | Решение                               | Заметки |
-|----------|---------------------------------------|---------|
-| UI       | Flutter 3.24+, Material 3             | Glassmorphism, тёплая медная гамма, адаптивный двухпанельный интерфейс |
-| Протокол | Matrix CS API / Synapse               | Логин, sync, сообщения, профиль, устройства, rooms/spaces |
-| Клиент   | `matrix` (Famedly) 7.3.x              | Классический `/sync`, локальный кэш, E2EE-обвязка |
-| E2EE     | `flutter_vodozemac` 0.5.x             | Rust/vodozemac вместо устаревшего olm |
-| Звонки   | `livekit_client` + MatrixRTC signaling | Наш Flutter UI, токены через lk-jwt-service |
-| Кэш      | sqflite_sqlcipher / ffi / IndexedDB   | SQLCipher на мобильных/macOS, desktop-шифрование требует отдельного закрепления |
+- Matrix login, session restore, sync and local cache.
+- End-to-end encrypted Matrix messages through the Matrix SDK / vodozemac stack.
+- Room list, folders, global search, direct rooms, groups, channels and Matrix Space based supergroups.
+- Unified conversation preview flow for public rooms, DMs and room references.
+- Chat timeline with message grouping, replies, editing, attachments, drag-and-drop limits and MXC media rendering.
+- Native Orex calls over MatrixRTC + LiveKit, without embedding call.element.io.
+- Incoming direct-call overlay, active call panel, minimized call panel and full-screen call UI.
+- Voice-channel behavior for groups/channels/supergroup chats: listen-only UI, raised hands, reactions and admin voice grants.
+- Desktop screen-share picker, audio device settings, camera switching and call controls shared between full and minimized call UI.
+- Characterization tests for config, storage policy, room metadata, timeline grouping, attachments, composer state, home coordinator and call components.
+- CI-style local gate: analyze, tests, Android builds and Windows builds.
 
----
+## Honest Security Status
 
-## 2. Что реализовано
+Messages are E2EE at the Matrix layer. Calls use MatrixRTC signaling and LiveKit media transport, but Orex does not yet claim media E2EE for calls. SFrame/key-provider work is still future work.
 
-- **Авторизация и сессии:** логин по паролю, восстановление сессии из локальной БД,
-  корректная инициализация Matrix-клиента и загрузка ключей.
-- **E2EE для сообщений:** `vodozemac` инициализируется до `client.init()`. По
-  умолчанию приложение не должно тихо запускаться без криптослоя.
-- **Список чатов:** папки, поиск, аватары, превью, время, счётчики непрочитанных,
-  адаптивный layout. Локальные комнаты ищутся не только по названию и описанию,
-  но и по Matrix-alias/tag вида `#room:server` или `#room`. Дочерние чаты
-  супергрупп не показываются как отдельные комнаты в левой колонке: они живут
-  внутри своей супергруппы.
-- **Глобальный поиск:** единая зона discovery в левой панели. Сейчас там ищутся
-  **люди** и **публичные комнаты**, поэтому отдельный поиск внутри окна
-  «Новый чат» больше не нужен. Серверный Matrix-поиск используется как есть:
-  если homeserver возвращает широкую выдачу по части домена, клиент не скрывает
-  эти результаты искусственными фильтрами.
-- **Создание комнат:** кнопка-карандаш не открывает отдельный экран, а показывает
-  компактный выбор создаваемого типа: группа, канал, супергруппа.
-- **Переписка:** баблы сообщений, отправка текста и вложений, автоматическая
-  пометка прочитанного, жесты под мобильные устройства. Вход, выход, приглашение,
-  удаление и блокировка участников отображаются аккуратными системными плашками
-  в ленте, а не сырым `m.room.member`. Системные сообщения Orex-приглашений
-  оформляются отдельной карточкой. Клик по карточке сначала
-  открывает локальную комнату или invite, затем пробует public preview, а при
-  необходимости выполняет join по alias/roomId с понятной ошибкой в UI и логах.
-- **Публичный preview:** предпросмотр публичной комнаты встроен в правый блок чата.
-  Это не отдельный экран: пользователь видит чат как обычную переписку, а снизу
-  вместо поля ввода находится кнопка входа.
-- **Супергруппы:** супергруппа реализуется как Matrix Space. При создании
-  супергруппы дочерние чаты больше не создаются автоматически: это снижает риск
-  rate-limit / `Too Many Requests`, а пустая супергруппа сама предлагает
-  администратору добавить первый чат. Дочерние чаты не рассылают инвайты всем
-  участникам автоматически: пользователь видит их внутри супергруппы и вступает
-  сам. Если пользователя нет в супергруппе, вход в дочерний чат блокируется.
-  Внутренние чаты не дублируются в общем списке слева.
-- **Метаданные чатов супергруппы:** название и иконка дочернего чата сохраняются
-  не только в самой комнате, но и в `m.space.child`, чтобы список чатов и preview
-  показывали нормальный вид ещё до вступления в дочернюю комнату. В UI Matrix
-  alias отображается в локальном виде `#room`, без серверного суффикса, потому
-  что Orex сейчас рассчитан на один homeserver без федеративного UX.
-- **Настройки:** общие настройки и настройки чата приведены к единому визуальному
-  стержню: полноэкранное окно, профильная карточка, длинные кнопки на всю ширину,
-  единые секции и glass-панели.
-- **Пакетная отправка и альбомы:** плиточное прикрепление очереди файлов в строке
-  ввода. При отправке медиа группируются в компактную сетку-альбом, описание
-  выносится под медиаблок.
-- **Ленивая загрузка медиа:** предпросмотры и вложения не должны повторно
-  дешифроваться и скачиваться при каждом скролле. Для MXC-аватаров добавлен
-  RAM-кэш с TTL, чтобы аватарки не моргали, но обновлялись при смене URI.
-- **Кастомный медиаплеер:** Orex-style аудио/видео-плеер для Web, системное
-  открытие медиа на desktop/mobile через условные экспорты.
-- **Галерея:** PageView, десктопные стрелки, pinch zoom, панорамирование при
-  приближении, удаление своих отправленных медиа.
-- **Звонки и голосовые каналы:** нативный интерфейс на LiveKit, без встраивания call.element.io.
-  Signaling берётся из MatrixRTC, а подключение к SFU идёт через ваш
-  `lk-jwt-service`. Для групп, каналов и чатов супергруппы звонок ведёт себя как
-  голосовой канал: он отображается в UI, но не должен насильно вызывать всех
-  участников. Для личных комнат входящий вызов показывается модальным окном
-  поверх текущего экрана, а не выбивает пользователя из открытого чата. Панель
-  активного/доступного звонка выводится над правым блоком
-  разговора только для текущего открытого чата; в выпадающем списке супергруппы
-  остальные активные звонки помечаются отдельной иконкой. В голосовой слой
-  добавлены звуковые cue через `assets/sounds/`, вход в групповые голосовые
-  каналы с выключенным микрофоном по умолчанию, режим просмотра для каналов,
-  поднятие руки и реакции как состояние участника звонка, screen share foundation,
-  fullscreen-плитка с zoom и настройки аудиоустройств в общих настройках.
-- **Иконка приложения:** генерируется из `assets/icon/app_icon.png`.
+Voice permissions in channels are currently enforced by the Orex client UX and Matrix state, not by a hardened server-side LiveKit authorization gateway. This is acceptable for dogfood, but it is not a security boundary against modified clients.
 
----
+Desktop cache security is intentionally strict:
 
-## 3. Структура
+- Android/iOS/macOS can use encrypted storage paths provided by the current database stack.
+- Windows/Linux desktop SQLCipher is not wired yet.
+- Production desktop builds fail closed at runtime if they would use an unencrypted Matrix cache.
+- `OREX_ALLOW_INSECURE_DESKTOP_CACHE=true` is only a dogfood escape hatch, not a public release setting.
 
-```
-lib/
-├─ main.dart                         # bootstrap: vodozemac -> БД -> Matrix -> UI
-├─ core/                             # инфраструктура приложения, без Flutter-экранов
-│  ├─ config/
-│  │  └─ orex_config.dart            # environments, homeserver, lk-jwt-service, security flags
-│  ├─ logging/
-│  │  └─ orex_logger.dart            # единая точка dev-логов Orex ([Orex][Area])
-│  ├─ audio/
-│  │  └─ audio_cue_service.dart      # системные звуки: уведомления, звонок, вход в голос
-│  ├─ storage/
-│  │  ├─ database.dart               # условный экспорт БД
-│  │  ├─ database_io.dart            # SQLite / SQLCipher для IO-платформ
-│  │  └─ database_web.dart           # IndexedDB/Web storage слой
-│  ├─ files/
-│  │  ├─ file_helper.dart            # условный экспорт скачивания/открытия файлов
-│  │  ├─ file_helper_io.dart         # системный запуск файлов
-│  │  └─ file_helper_web.dart        # blob-скачивание через package:web
-│  ├─ matrix/
-│  │  ├─ matrix_service.dart         # ядро MatrixService, lifecycle, sync, состояние
-│  │  ├─ matrix_auth_api.dart        # логин, регистрация, logout
-│  │  ├─ matrix_rooms_api.dart       # базовая классификация комнат и отправка
-│  │  ├─ matrix_room_reference_api.dart  # open/join по roomId, alias и preview
-│  │  ├─ matrix_room_discovery_api.dart  # поиск людей и публичных комнат
-│  │  ├─ matrix_supergroup_api.dart      # spaces, child-чаты, preview metadata
-│  │  ├─ matrix_room_identity_api.dart   # alias/MXID helpers single-homeserver UX
-│  │  ├─ matrix_room_creation_api.dart   # создание групп, каналов и супергрупп
-│  │  ├─ matrix_room_admin_api.dart      # права, visibility, invite/kick/delete
-│  │  ├─ matrix_security_api.dart    # E2EE, key backup, verification, security reset
-│  │  ├─ matrix_account_api.dart     # профиль, устройства, пароль
-│  │  └─ matrix_media_api.dart       # MXC download/cache
-│  └─ voip/
-│     ├─ call_controller.dart        # состояние активного звонка на уровне приложения
-│     ├─ call_session.dart           # LiveKit session + lk-jwt-service handshake, mic/cam/share
-│     └─ voip_service.dart           # MatrixRTC-события и входящие вызовы
-├─ domain/                           # доменная модель Orex, независимая от UI
-│  └─ rooms/
-│     ├─ room_metadata.dart          # OrexRoomKind, OrexRoomAlias
-│     └─ member_event_text.dart      # человекочитаемые тексты m.room.member
-├─ shared/                           # переиспользуемый UI/тема, не привязан к feature
-│  ├─ theme/
-│  │  ├─ orex_theme.dart
-│  │  ├─ glass.dart
-│  │  └─ theme_controller.dart
-│  └─ widgets/
-│     ├─ mxc_avatar.dart             # аватары Matrix с кэшем MXC
-│     ├─ room_icon.dart              # иконки комнат по доменному типу
-│     ├─ orex_settings_components.dart
-│     ├─ orex_loading_overlay.dart
-│     ├─ media_gallery.dart
-│     ├─ media_player.dart
-│     ├─ media_player_io.dart
-│     ├─ media_player_web.dart
-│     └─ squirrel_mascot.dart
-└─ features/                         # продуктовые вертикали
-   ├─ auth/
-   │  └─ login_screen.dart
-   ├─ home/
-   │  └─ home_shell.dart             # двухпанельный shell: список слева, чат/preview справа
-   ├─ chats/
-   │  ├─ sidebar/
-   │  │  ├─ chat_list_panel.dart     # state левой панели и глобальный поиск
-   │  │  ├─ chat_list_layout_widgets.dart
-   │  │  ├─ chat_folder_manager_widgets.dart
-   │  │  ├─ chat_room_tile_widgets.dart
-   │  │  └─ chat_folder_controller.dart
-   │  └─ conversation/
-   │     ├─ chat_view.dart           # основной экран переписки
-   │     ├─ chat_header.dart
-   │     ├─ chat_input_bar.dart
-   │     ├─ chat_timeline_items.dart
-   │     ├─ message_bubble.dart
-   │     ├─ message_attachments.dart
-   │     ├─ message_system_cards.dart
-   │     ├─ public_room_preview_view.dart
-   │     ├─ room_settings_screen.dart
-   │     └─ room_settings_components.dart
-   ├─ calls/
-   │  ├─ call_screen.dart
-   │  ├─ incoming_call_screen.dart
-   │  ├─ minimized_call_panel.dart
-   │  └─ audio_device_settings_dialog.dart
-   └─ settings/
-      ├─ settings_screen.dart
-      ├─ devices_screen.dart
-      ├─ key_storage_screen.dart
-      ├─ verification_screen.dart
-      └─ verify_session_screen.dart
-```
+## Runtime Configuration
 
-Ключевая идея структуры: `core/` содержит инфраструктуру и интеграции,
-`domain/` — чистые доменные сущности Orex, `shared/` — переиспользуемую тему и
-виджеты, а `features/` — пользовательские сценарии. UI-фичи не лежат рядом с
-Matrix-интеграцией, а `core/matrix/` не знает про экраны.
-
-Matrix-room логика разделена на reference/discovery/supergroup/creation/admin
-слои, левая панель чатов разложена по sidebar-компонентам, а системные карточки
-сообщений вынесены из основного bubble. `voice` не является отдельным типом
-комнаты: голосовой канал — это возможность каждой комнаты, а не отдельная
-Matrix-сущность.
-
----
-
-## 4. Диагностика
-
-Внутренние dev-логи проекта идут через `OrexLog` в формате:
+Production defaults:
 
 ```text
-[Orex][Area] message
+OREX_ENV=production
+OREX_HOMESERVER=https://vasys.ru
+OREX_JWT_SERVICE=https://jwt.vasys.ru
 ```
 
-Это сделано по тому же принципу, что и SDK-логи вида `[Matrix] ...`: во время
-разработки видно, какой слой сработал — Home, Chat, Rooms, Voip, Security.
-Выключение шума:
+For `dev` and `staging`, both endpoints must be passed explicitly. This prevents accidental testing against production when a build is meant to target another backend.
 
-```bash
-flutter run --dart-define=OREX_DEBUG_LOGS=false
-```
-
-### Конфигурация окружений
-
-По умолчанию Orex стартует в `production` и использует публичные production
-endpoint-ы проекта. Для dev/staging endpoint-ы надо задавать явно через
-`--dart-define`, чтобы тестовая сборка случайно не ходила в production backend:
-
-```bash
-flutter run \
-  --dart-define=OREX_ENV=staging \
-  --dart-define=OREX_HOMESERVER=https://matrix.staging.example.org \
-  --dart-define=OREX_JWT_SERVICE=https://jwt.staging.example.org
-```
-
-Поддерживаемые define-ы:
+Supported dart-defines:
 
 ```text
 OREX_ENV=dev|staging|production
@@ -236,230 +55,230 @@ OREX_DEBUG_LOGS=true|false
 OREX_ALLOW_INSECURE_DESKTOP_CACHE=true|false
 ```
 
-`dev` и `staging` без явных `OREX_HOMESERVER` и `OREX_JWT_SERVICE` считаются
-ошибкой конфигурации на старте.
-`OREX_ALLOW_INSECURE_DESKTOP_CACHE` по умолчанию `false`; включайте его только
-для внутреннего Windows/Linux dogfooding, пока desktop SQLCipher не закреплён.
+## Build Number Policy
 
----
+Every distributable build must bump `pubspec.yaml`:
 
-## 5. Шифрование (E2EE)
-
-`vodozemac` должен инициализироваться **до** `client.init()`, иначе Matrix SDK не
-поднимет криптослой корректно.
-
-```dart
-await vod.init();
-await matrix.init();
+```yaml
+version: 0.3.3+N
 ```
 
-Важный принцип: защищённый клиент не должен незаметно деградировать в режим
-«без E2EE». Поэтому в конфигурации есть явное требование криптослоя:
+The `+N` build number is what Orex shows as `Сборка N`. The previous committed build was `0.3.3+1`, so the current build is `0.3.3+2`.
 
-```dart
-static const bool requireVodozemac = true;
+## Build And Run
+
+Install dependencies:
+
+```powershell
+flutter pub get
 ```
 
-- Android / Windows / desktop — `flutter_vodozemac` собирает Rust через cargokit.
-  Для desktop-сборки нужен **Rust toolchain** (`rustup`).
-- Web — vodozemac это **wasm**, и его надо собрать в `web/pkg/`:
+Run web with cross-origin isolation for vodozemac / WebAssembly:
 
-```bash
-./tool/setup_web_vodozemac.sh          # bash / git-bash / WSL
-```
-
-Для запуска Web с E2EE нужны cross-origin isolation заголовки:
-
-```bash
-flutter run -d chrome \
-  --web-header=Cross-Origin-Opener-Policy=same-origin \
+```powershell
+flutter run -d chrome `
+  --web-header=Cross-Origin-Opener-Policy=same-origin `
   --web-header=Cross-Origin-Embedder-Policy=require-corp
 ```
 
-Замечания:
+Build web:
 
-- Приватные Matrix-комнаты должны создаваться с шифрованием.
-- Публичные комнаты и каналы не стоит автоматически считать E2EE-комнатами.
-- Локальная БД на Android/iOS/macOS открывается через SQLCipher. Windows/Linux
-  сейчас используют обычный SQLite FFI, поэтому production-старт на этих
-  платформах fail-closed, если явно не передан
-  `--dart-define=OREX_ALLOW_INSECURE_DESKTOP_CACHE=true`. Это escape hatch для
-  dogfooding, не замена desktop SQLCipher перед публичным релизом.
-
----
-
-## 6. Звонки (нативно, стек Element Call)
-
-### Голосовые каналы
-
-Голос в Orex не является отдельным типом Matrix-комнаты. У каждой группы,
-канала и чата супергруппы может быть активный голосовой канал. Для обычных
-групп и чатов супергруппы вход в голос по умолчанию происходит с выключенным
-микрофоном — это снижает шанс, что Bluetooth-наушники сразу переключатся в
-режим гарнитуры. Если пользователь включает микрофон, дальнейшее поведение
-маршрутизации звука зависит от ОС и драйвера устройства.
-
-В каналах обычные участники входят в режим просмотра. Они могут поднять руку,
-а администратор может выдавать право голоса через `ru.orex.voice.permissions`.
-Поднятие руки и реакции хранятся как состояние участника звонка
-`ru.orex.voice.participant`, а не как сообщения в чат. В каналах системные
-плашки входа/выхода участников скрываются, чтобы история канала не засорялась.
-
-В звонках доступны:
-
-- звуковые cue из `assets/sounds/` для уведомлений, входящих вызовов, входа в
-  голосовой канал и реакций;
-- screen share: Android отложен до native MediaProjection; на Windows/macOS/Linux
-  используется native-safe выбор источника через `desktopCapturer.getSources` без
-  миниатюр, чтобы не задевать crash-prone thumbnail callbacks. На Android пока
-  показывается сообщение «будет реализовано позже», потому что для стабильной
-  трансляции нужен native MediaProjection + foreground service;
-- плитки участников с открытием на весь экран и zoom через `InteractiveViewer`;
-- fullscreen-фокус на плитку и в развёрнутом, и в свёрнутом виде звонка;
-- реакции и поднятие руки как state участника звонка, видимые в правом верхнем
-  углу плиток в полном и свёрнутом звонке;
-- настройка микрофона и устройства вывода в общих настройках.
-
-
-Мы **не встраиваем** call.element.io. Звонок реализован в нашем интерфейсе на
-`livekit_client`, а токен берётся у **вашего** `lk-jwt-service` по OpenID:
-
-1. `client.requestOpenIdToken(...)` → OpenID-токен Matrix.
-2. `POST {lk-jwt-service}/sfu/get` с этим токеном, `room`,
-   `device_id` и `requested_livekit_grants` → `{url, jwt}` LiveKit.
-3. `livekit_client` подключается к вашему SFU; сетка участников рисуется внутри Orex.
-
-Endpoint `lk-jwt-service` задаётся через `OREX_JWT_SERVICE`; для staging/dev
-используйте отдельный сервис и отдельный LiveKit backend.
-
-`requested_livekit_grants` содержит `can_publish`, `can_subscribe` и
-`listen_only`. Backend обязан сам перепроверять Matrix room state/power-levels и
-выдавать LiveKit JWT с `canPublish=false` для listen-only участников. Клиент
-дополнительно откажется использовать явно publish-capable JWT, если текущий
-пользователь вошёл в канал без права голоса, но это не заменяет серверный
-security enforcement.
-
-Важно: MatrixRTC signaling и LiveKit transport уже вынесены в нашу архитектуру,
-но media E2EE для звонков нужно проверять отдельно на уровне SFrame/key-provider,
-а не заявлять только по факту наличия MatrixRTC.
-
----
-
-## 7. Иконка приложения
-
-```bash
-flutter pub get
-dart run flutter_launcher_icons   # генерит иконки для всех платформ из PNG
+```powershell
+flutter build web `
+  --dart-define=OREX_ENV=production `
+  --dart-define=OREX_DEBUG_LOGS=false
 ```
 
----
+Build Android debug:
 
-## 8. Сборка и запуск
-
-Репозиторий хранит только исходники (`lib/`, `pubspec.yaml`, `assets/`, `tool/`).
-Платформенные папки можно регенерировать:
-
-```bash
-flutter create --platforms=web,android,windows .
-flutter pub get
-dart run flutter_launcher_icons
-./tool/setup_web_vodozemac.sh
-
-# звуки Orex: используются assets/sounds/ и зависимость audioplayers
+```powershell
+flutter build apk --debug
 ```
 
-Web-запуск с cross-origin isolation:
+Build Android release:
 
-```bash
-flutter run -d chrome \
-  --web-header=Cross-Origin-Opener-Policy=same-origin \
-  --web-header=Cross-Origin-Embedder-Policy=require-corp
+```powershell
+flutter build apk --release `
+  --dart-define=OREX_ENV=production `
+  --dart-define=OREX_DEBUG_LOGS=false
 ```
 
-Android:
+Android release builds fail closed unless release signing is configured. Put secrets outside Git in `android/key.properties`:
 
-```bash
-flutter build apk --split-per-abi
+```properties
+storeFile=C:/secure/path/orex-release.jks
+storePassword=...
+keyAlias=orex
+keyPassword=...
 ```
 
-Windows:
+or pass the equivalent environment variables:
 
-```bash
-flutter build windows
+```text
+OREX_ANDROID_STORE_FILE
+OREX_ANDROID_STORE_PASSWORD
+OREX_ANDROID_KEY_ALIAS
+OREX_ANDROID_KEY_PASSWORD
 ```
 
-Мелочи:
+`OREX_ALLOW_UNSIGNED_ANDROID_RELEASE=true` is reserved for CI compile checks only. Do not use it for a distributable APK.
 
-- Android: в `AndroidManifest.xml` нужны `INTERNET`, а для звонков —
-  `RECORD_AUDIO`, `CAMERA`, `MODIFY_AUDIO_SETTINGS`, `BLUETOOTH` и
-  `android.permission.FOREGROUND_SERVICE`. minSdkVersion ≥ 23.
-- Web: нужен CORS на Synapse и собранный `web/pkg/` для vodozemac.
-- Windows: нужен Rust toolchain для E2EE-сборки.
+Build a runnable Windows dogfood release without `OREX_ALLOW_INSECURE_DESKTOP_CACHE`:
 
-### Что не коммитится в Git
+```powershell
+flutter build windows --release `
+  --dart-define=OREX_ENV=dev `
+  --dart-define=OREX_HOMESERVER=https://vasys.ru `
+  --dart-define=OREX_JWT_SERVICE=https://jwt.vasys.ru `
+  --dart-define=OREX_DEBUG_LOGS=false
+```
 
-`.gitignore` исключает платформенные папки, `build/`, `.dart_tool/` и временные
-артефакты. После `git clone` платформы восстанавливаются командами выше. Если
-`web/pkg/` не хранится в Git, wasm для vodozemac пересобирается через
-`tool/setup_web_vodozemac.sh`.
+That build is intentionally marked `dev`, even if it points at the real backend. It is for internal dogfood while Windows encrypted cache is unfinished.
 
----
+For a true public Windows production build, do not use `OREX_ALLOW_INSECURE_DESKTOP_CACHE`. Wire SQLCipher or another encrypted desktop storage path first, then build with:
 
-## 9. Дорожная карта
+```powershell
+flutter build windows --release `
+  --dart-define=OREX_ENV=production `
+  --dart-define=OREX_DEBUG_LOGS=false
+```
 
-### 9.1. Звуки и голосовые каналы
+Web does not need `OREX_ALLOW_INSECURE_DESKTOP_CACHE`; that policy applies to IO desktop cache, not browser IndexedDB.
 
-- Звуки уведомлений, входящих вызовов и подключения к голосовым каналам.
-- Переработка аудио-режима звонка: звук не должен забирать весь канал наушников
-  и переключать Bluetooth-наушники в низкокачественный headset-режим без нужды.
-  Нужна нормальная микшируемая модель звука.
-- Режим трансляции экрана.
-- Удобное переключение по плиткам: открытие стрима или вебки на весь экран,
-  приближение отдельных участков видео/стрима.
-- Реакции и поднятие руки в голосовых каналах отображаются как state участника звонка, а не как сообщения в чате.
-- Для каналов обычный участник входит в listen-only: без микрофона, камеры и трансляции экрана. Клиент отправляет `requested_livekit_grants`, а `lk-jwt-service` должен выдавать listen-only JWT после собственной проверки Matrix permissions; иначе альтернативный клиент сможет попытаться публиковать media-track напрямую.
-- Desktop screen share использует Orex source picker с вкладками «Экраны»/«Окна»,
-  превью-карточками и отдельной загрузкой типов источников. На desktop доступны
-  экраны и top-level окна; вкладки браузера как отдельный тип есть только в web-потоке browser picker.
-- Настройка и проверка аудио-устройств.
+## LiveKit JWT Contract
 
-### 9.2. Чаты и сообщения
+Orex currently talks to an upstream-compatible `lk-jwt-service` legacy endpoint:
 
-- Отправка голосовых сообщений.
-- Отправка видео-кружков и других коротких видео-форматов: квадратики,
-  треугольники, ромбы и кастомные модели.
-- Голосования.
-- Стикеры и создание собственных стикер-паков.
-- Выделение сообщений группами через зажатие и управление выбранными сообщениями.
-- Собственный кроссплатформенный мультимедийный плеер как единый Orex-компонент.
+```text
+POST {OREX_JWT_SERVICE}/sfu/get
+```
 
-### 9.3. Мобильное приложение
+The request body must stay legacy-compatible:
 
-- Звонки должны проходить как настоящие Android-вызовы.
-- Уведомления и вызовы должны приходить, когда приложение не открыто.
-- Переключение камеры в видеозвонках.
-- Работа звонков в фоне, включая заблокированный экран.
-- Слуховой режим: при прикладывании телефона к уху экран гасится, звук ведёт себя
-  как голосовая связь.
-- Вибро-отклик.
+```json
+{
+  "room": "!room:server",
+  "openid_token": {
+    "access_token": "...",
+    "token_type": "Bearer",
+    "matrix_server_name": "server"
+  },
+  "device_id": "DEVICE"
+}
+```
 
-### 9.4. Инфраструктура и качество
+Do not send `requested_livekit_grants` to this endpoint. Upstream-compatible services reject unknown fields with HTTP 400.
 
-- Push-уведомления через нормальный Matrix push gateway / mobile push pipeline.
-- Desktop SQLCipher для Windows/Linux или отдельная защищённая storage-модель.
-- Закрепление media E2EE для звонков на уровне LiveKit SFrame/key-provider.
-- Постепенное вынесение сложных UI-состояний из виджетов в контроллеры.
-- Тесты на Matrix room/space сценарии: создание супергрупп, дочерние комнаты,
-  join restrictions, kick cascade.
+Future server-side voice enforcement should use a separate Orex-specific authorization gateway, for example:
 
----
+```text
+POST /orex/sfu/get/v1
+```
 
-## 10. Заметки
+That gateway must compute effective LiveKit grants from Matrix room state, power levels and `ru.orex.voice.permissions`. The client may request intent, but the server must make the final decision.
 
-- Лицензия Matrix SDK — AGPL-3.0. Перед релизом нужно отдельно проверить
-  совместимость лицензий всех зависимостей с моделью распространения Orex.
-- После первой стабильной сборки стоит закрепить версии пакетов: у Matrix SDK
-  бывают breaking changes между мажорными версиями.
-- README описывает текущую архитектуру приложения и ближайшее направление. Если
-  код меняется структурно, этот файл нужно обновлять вместе с изменениями, а не
-  после нескольких крупных коммитов.
+## Local Quality Gate
+
+Before a release candidate:
+
+```powershell
+flutter analyze --no-pub
+flutter test --no-pub
+flutter build apk --debug --no-pub
+flutter build windows --debug --no-pub
+flutter build apk --release --no-pub     # requires release signing
+flutter build windows --release --no-pub
+```
+
+For a CI-only Android release compile check without signing secrets, set `OREX_ALLOW_UNSIGNED_ANDROID_RELEASE=true`. Never use that flag for release artifacts.
+
+Android currently emits a Kotlin Gradle Plugin future-compatibility warning. It does not fail the current build, but it must be addressed before future Flutter upgrades.
+
+## Architecture Map
+
+```text
+lib/
+  core/
+    config/       runtime config, app version
+    storage/      platform database selection and cache security policy
+    matrix/       MatrixService facade and Matrix APIs
+    voip/         CallController, CallSession, LiveKit credentials, media controllers
+    audio/        audio cues and device preferences
+  domain/
+    rooms/        Orex room/domain preview models independent from Matrix UI
+  features/
+    home/         shell and conversation coordinator
+    chats/        sidebar, chat view, timeline adapter, composer, attachments
+    calls/        call presentation, participant tiles, controls and UI actions
+    settings/     settings screens and reusable settings content
+  shared/
+    theme/        Orex theme/glass styling
+    widgets/      dialogs, avatars, profile cards, reusable UI
+test/
+  core/
+  domain/
+  features/
+```
+
+## Roadmap
+
+### 9.1 Calls And Voice Channels - Done In 0.3.3
+
+Done:
+
+- Native Orex call UI over LiveKit and MatrixRTC.
+- Full-screen and minimized call layouts.
+- Shared call presentation model, controls and UI actions.
+- Participant tiles, screen-share preference, focused participant view and zoom.
+- Reactions, raised hands and voice-state rendering.
+- Audio device settings shared between dialog and settings screen.
+- Desktop source picker for screen sharing.
+- Call lifecycle rollback for missing VoIP signaling and failed media connect.
+
+Still not claimed:
+
+- Media E2EE for calls.
+- Server-side LiveKit authorization gateway for voice permissions.
+- Android native MediaProjection / foreground service for robust mobile screen sharing.
+
+### 9.2 Mobile And Production Infrastructure
+
+Postponed until after the current 0.3.3 stabilization:
+
+- Matrix push gateway, FCM/APNs and background notifications.
+- Incoming calls while the app is killed or backgrounded.
+- Android foreground call service and proper call lifecycle integration.
+- Server-side Orex authorization gateway for LiveKit token grants.
+- Media E2EE for calls through LiveKit SFrame/key-provider.
+- Windows/Linux encrypted desktop cache.
+- Crash reporting and telemetry for login, sync, calls and media.
+- Release CI with signed artifacts and retained build outputs.
+
+### 9.3 Chats And Message UX
+
+- Voice messages.
+- Short video notes and richer custom media formats.
+- Stickers and user-created sticker packs.
+- Multi-select message actions.
+- Dedicated `ChatTimelineController` to continue shrinking `ChatView`.
+- Cross-platform media player polish.
+
+### 9.4 MatrixService Migration
+
+Keep `MatrixService` as a compatibility facade, then gradually move APIs behind narrower services:
+
+- `matrix.rooms`
+- `matrix.discovery`
+- `matrix.security`
+- `matrix.media`
+- `matrix.supergroups`
+
+This should happen after call/chat stabilization and contract tests, not as another risky big-bang rewrite.
+
+## Current Readiness
+
+- Previous architecture-plan completion: about 80-85%.
+- Desktop-first dogfood readiness: about 65-70%.
+- Public cross-platform secure-messenger readiness: about 50-55%.
+
+The remaining work is no longer mostly "giant widget cleanup". The big blockers are backend contracts, encrypted desktop storage, mobile push/background flows, call media E2EE and release operations.

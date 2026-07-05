@@ -230,17 +230,23 @@ class CallSession extends ChangeNotifier {
         if (lp.isMicrophoneEnabled()) {
           await lp.setMicrophoneEnabled(false);
         }
-      } catch (_) {}
+      } catch (e) {
+        OrexLog.d('Call', 'voice revoke microphone disable failed', e);
+      }
       await _voiceGate.stop(resetTrack: true);
       try {
         if (lp.isCameraEnabled()) {
           await lp.setCameraEnabled(false);
         }
-      } catch (_) {}
+      } catch (e) {
+        OrexLog.d('Call', 'voice revoke camera disable failed', e);
+      }
       if (screenShareOn) {
         try {
           await _stopScreenShare(lp: lp);
-        } catch (_) {}
+        } catch (e) {
+          OrexLog.d('Call', 'voice revoke screen share stop failed', e);
+        }
       }
     }
 
@@ -344,7 +350,13 @@ class CallSession extends ChangeNotifier {
       OrexLog.d('Call', 'apply audio output failed id=$id', e);
       try {
         await rtc.Helper.selectAudioOutput(id);
-      } catch (_) {}
+      } catch (fallbackError) {
+        OrexLog.d(
+          'Call',
+          'fallback audio output select failed id=$id',
+          fallbackError,
+        );
+      }
     }
   }
 
@@ -516,7 +528,9 @@ class CallSession extends ChangeNotifier {
     );
     try {
       await _publishVoiceParticipantState();
-    } catch (_) {}
+    } catch (e) {
+      OrexLog.d('Call', 'clear local voice ui state failed', e);
+    }
   }
 
   Future<void> hangUp() async {
@@ -536,16 +550,26 @@ class CallSession extends ChangeNotifier {
         if (screenShareOn) {
           await _stopScreenShare(lp: room.localParticipant);
         }
-      } catch (_) {}
+      } catch (e) {
+        OrexLog.d('Call', 'hangup screen share stop failed', e);
+      }
       try {
         await room.disconnect();
-      } catch (_) {}
+      } catch (e) {
+        OrexLog.d('Call', 'hangup room disconnect failed', e);
+      }
       try {
         await room.dispose();
-      } catch (_) {}
+      } catch (e) {
+        OrexLog.d('Call', 'hangup room dispose failed', e);
+      }
     }
     if (orexIsAndroidNativePlatform) {
-      await OrexNativeAudioDevices.selectOutput(null, inCall: false);
+      try {
+        await OrexNativeAudioDevices.selectOutput(null, inCall: false);
+      } catch (e) {
+        OrexLog.d('Call', 'hangup reset native audio route failed', e);
+      }
     }
     if (!_disposed) notifyListeners();
   }

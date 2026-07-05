@@ -121,6 +121,7 @@ class MatrixService extends ChangeNotifier {
   bool backupInProgress = false;
 
   Timer? _autoBackupTimer;
+  final List<Timer> _deferredKeyBackupRestoreTimers = <Timer>[];
 
   final Map<String, Uint8List> _mediaCache = {};
   final Map<String, DateTime> _mediaCachedAt = {};
@@ -177,9 +178,11 @@ class MatrixService extends ChangeNotifier {
 
     // Восстанавливаем ключи из бэкапа с задержкой — только если бэкап не выключен.
     for (final s in const [3, 8]) {
-      Future.delayed(Duration(seconds: s), () {
-        if (!_backupDisabledByUser) restoreKeyBackup();
-      });
+      _deferredKeyBackupRestoreTimers.add(
+        Timer(Duration(seconds: s), () {
+          if (!_backupDisabledByUser) restoreKeyBackup();
+        }),
+      );
     }
   }
 
@@ -223,6 +226,10 @@ class MatrixService extends ChangeNotifier {
   @override
   void dispose() {
     _autoBackupTimer?.cancel();
+    for (final timer in _deferredKeyBackupRestoreTimers) {
+      timer.cancel();
+    }
+    _deferredKeyBackupRestoreTimers.clear();
     _syncSub?.cancel();
     _loginStateSub?.cancel();
     _userProfileSub?.cancel();

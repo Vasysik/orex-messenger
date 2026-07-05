@@ -7,6 +7,10 @@ on:
       - main
       - master
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   flutter:
     name: Flutter checks
@@ -21,17 +25,39 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install dependencies
         run: flutter pub get
 
       - name: Analyze
-        run: flutter analyze
+        run: flutter analyze --no-pub
 
       - name: Test
-        run: flutter test
+        run: flutter test --no-pub
+
+      - name: Web release build
+        run: >
+          flutter build web --no-pub
+          --dart-define=OREX_ENV=production
+          --dart-define=OREX_DEBUG_LOGS=false
 
       - name: Android debug build
-        run: flutter build apk --debug
+        run: flutter build apk --debug --no-pub
 
-      - name: Windows debug build
-        run: flutter build windows --debug
+      - name: Android release build
+        env:
+          OREX_ALLOW_UNSIGNED_ANDROID_RELEASE: "true"
+        run: >
+          flutter build apk --release --no-pub
+          --dart-define=OREX_ENV=production
+          --dart-define=OREX_DEBUG_LOGS=false
+
+      - name: Windows release build
+        run: >
+          flutter build windows --release --no-pub
+          --dart-define=OREX_ENV=dev
+          --dart-define=OREX_HOMESERVER=https://vasys.ru
+          --dart-define=OREX_JWT_SERVICE=https://jwt.vasys.ru
+          --dart-define=OREX_DEBUG_LOGS=false
