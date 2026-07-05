@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../../core/matrix/matrix_service.dart';
+import '../../core/voip/call_session.dart';
 import '../../shared/theme/orex_theme.dart';
+import 'call_device_quick_sheet.dart';
 
 class OrexBalancedControlRows extends StatelessWidget {
   const OrexBalancedControlRows({
@@ -217,6 +220,153 @@ class _OrexCallControlButtonState extends State<OrexCallControlButton> {
       ),
       width: width,
     );
+  }
+}
+
+enum OrexCallControlsBarMode { full, minimized }
+
+class OrexCallControlsBar extends StatelessWidget {
+  const OrexCallControlsBar({
+    super.key,
+    required this.mode,
+    required this.matrix,
+    required this.session,
+    required this.reactionButtonKey,
+    required this.onReactionTap,
+    required this.onScreenShareTap,
+    required this.onHangUpTap,
+  });
+
+  final OrexCallControlsBarMode mode;
+  final MatrixService matrix;
+  final CallSession session;
+  final GlobalKey reactionButtonKey;
+  final VoidCallback onReactionTap;
+  final VoidCallback onScreenShareTap;
+  final VoidCallback onHangUpTap;
+
+  bool get _isFull => mode == OrexCallControlsBarMode.full;
+
+  OrexCallControlButtonStyle get _style => _isFull
+      ? OrexCallControlButtonStyle.full
+      : OrexCallControlButtonStyle.minimized;
+
+  EdgeInsets get _padding => _isFull
+      ? const EdgeInsets.only(bottom: 24, top: 8, left: 16, right: 16)
+      : const EdgeInsets.only(bottom: 8, top: 2, left: 8, right: 8);
+
+  double get _spacing => _isFull ? 12 : 10;
+
+  double get _runSpacing => _isFull ? 10 : 8;
+
+  @override
+  Widget build(BuildContext context) {
+    final controls = <Widget>[
+      if (session.canPublishMedia) ...[
+        _button(
+          context,
+          tooltip: 'Микрофон · зажмите для выбора устройства',
+          icon: session.micOn ? Icons.mic : Icons.mic_off,
+          selected: !session.micOn,
+          onTap: () {
+            session.toggleMic();
+          },
+          onLongPress: () => showOrexInputQuickSheet(context, matrix: matrix),
+        ),
+        _button(
+          context,
+          tooltip: 'Камера · зажмите для выбора устройства',
+          icon: session.camOn ? Icons.videocam : Icons.videocam_off,
+          selected: !session.camOn,
+          onTap: () {
+            session.toggleCam();
+          },
+          onLongPress: () => showOrexCameraQuickSheet(
+            context,
+            matrix: matrix,
+            session: session,
+          ),
+        ),
+      ],
+      _button(
+        context,
+        tooltip: 'Звук · зажмите для выбора вывода',
+        icon: session.speakerMuted ? Icons.volume_off : Icons.volume_up,
+        selected: session.speakerMuted,
+        onTap: () {
+          session.toggleSpeakerMute();
+        },
+        onLongPress: () => showOrexOutputQuickSheet(context, matrix: matrix),
+      ),
+      if (session.canPublishMedia)
+        _button(
+          context,
+          tooltip: 'Трансляция экрана',
+          icon: session.screenShareOn
+              ? Icons.stop_screen_share
+              : Icons.screen_share,
+          selected: session.screenShareOn,
+          onTap: onScreenShareTap,
+        ),
+      _button(
+        context,
+        tooltip: session.handRaised ? 'Опустить руку' : 'Поднять руку',
+        icon: session.handRaised ? Icons.back_hand : Icons.back_hand_outlined,
+        selected: session.handRaised,
+        onTap: () {
+          session.toggleHandRaised();
+        },
+      ),
+      _button(
+        context,
+        key: reactionButtonKey,
+        tooltip: 'Реакция',
+        icon: Icons.emoji_emotions,
+        onTap: onReactionTap,
+      ),
+      _button(
+        context,
+        tooltip: 'Завершить',
+        icon: Icons.call_end,
+        background: const Color(0xFFCF6679),
+        onTap: onHangUpTap,
+      ),
+    ];
+
+    return Padding(
+      padding: _padding,
+      child: OrexBalancedControlRows(
+        buttonCount: controls.length,
+        buttonExtent: _style.size,
+        spacing: _spacing,
+        runSpacing: _runSpacing,
+        children: controls,
+      ),
+    );
+  }
+
+  Widget _button(
+    BuildContext context, {
+    Key? key,
+    required IconData icon,
+    required VoidCallback onTap,
+    VoidCallback? onLongPress,
+    String? tooltip,
+    Color? background,
+    bool selected = false,
+  }) {
+    final child = OrexCallControlButton(
+      key: key,
+      icon: icon,
+      style: _style,
+      background: background,
+      selected: selected,
+      onTap: onTap,
+      onLongPress: onLongPress,
+    );
+    return _isFull && tooltip != null
+        ? Tooltip(message: tooltip, child: child)
+        : child;
   }
 }
 

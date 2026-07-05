@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 
@@ -9,6 +11,91 @@ import '../../shared/widgets/orex_settings_components.dart';
 import 'mic_level_tester.dart';
 
 enum OrexAudioDeviceSettingsLayout { dialog, screen }
+
+typedef OrexAudioDeviceSettingsBuilder =
+    Widget Function(
+      BuildContext context,
+      OrexAudioDeviceSettingsController controller,
+      OrexAudioDeviceSettingsActions actions,
+    );
+
+class OrexAudioDeviceSettingsHost extends StatefulWidget {
+  const OrexAudioDeviceSettingsHost({
+    super.key,
+    required this.matrix,
+    required this.includeCallRoutes,
+    required this.builder,
+  });
+
+  final MatrixService matrix;
+  final bool includeCallRoutes;
+  final OrexAudioDeviceSettingsBuilder builder;
+
+  @override
+  State<OrexAudioDeviceSettingsHost> createState() =>
+      _OrexAudioDeviceSettingsHostState();
+}
+
+class _OrexAudioDeviceSettingsHostState
+    extends State<OrexAudioDeviceSettingsHost> {
+  late final OrexAudioDeviceSettingsController _controller;
+  late final OrexAudioDeviceSettingsActions _actions;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = OrexAudioDeviceSettingsController(
+      matrix: widget.matrix,
+      includeCallRoutes: widget.includeCallRoutes,
+    )..addListener(_handleControllerChanged);
+    _actions = OrexAudioDeviceSettingsActions._(_controller);
+    unawaited(_controller.load());
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_handleControllerChanged);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _handleControllerChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return widget.builder(context, _controller, _actions);
+  }
+}
+
+class OrexAudioDeviceSettingsActions {
+  const OrexAudioDeviceSettingsActions._(this._controller);
+
+  final OrexAudioDeviceSettingsController _controller;
+
+  Future<void> refresh({bool requestPermission = true}) =>
+      _controller.load(requestPermission: requestPermission);
+
+  Future<void> testOutput() => _controller.testOutput();
+
+  Future<void> resetSoundSettings() => _controller.resetSoundSettings();
+
+  Future<void> testMic(BuildContext context) async {
+    try {
+      await _controller.testMic();
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Микрофон доступен')));
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Микрофон недоступен: $e')));
+    }
+  }
+}
 
 class OrexAudioDeviceSettingsController extends ChangeNotifier {
   OrexAudioDeviceSettingsController({

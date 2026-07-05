@@ -10,10 +10,9 @@ import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/mxc_avatar.dart';
 import '../../core/voip/call_session.dart';
 import 'call_controls.dart';
-import 'call_device_quick_sheet.dart';
-import 'call_media_actions.dart';
 import 'call_participant_tile.dart';
-import 'call_voice_actions.dart';
+import 'call_presentation.dart';
+import 'call_ui_actions.dart';
 import 'voice_activity_frame.dart';
 
 /// Свёрнутый звонок панелью над чатом (как в Discord): плитки участников +
@@ -43,66 +42,24 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
   double? _tilesHeight; // null → дефолт = 1/3 высоты экрана
   double? _dragStartTilesHeight;
   final GlobalKey _reactionButtonKey = GlobalKey();
-  final Map<String, bool> _preferScreenShareByIdentity = <String, bool>{};
+  final OrexCallVideoPreferences _videoPreferences = OrexCallVideoPreferences();
+
+  OrexCallUiActions get _actions => OrexCallUiActions(
+    context: context,
+    matrix: widget.call.matrix,
+    call: widget.call,
+    reactionButtonKey: _reactionButtonKey,
+    isMounted: () => mounted,
+    reactionEmojiSize: 24,
+  );
 
   bool _preferScreenShareFor(lk.Participant participant) =>
-      _preferScreenShareByIdentity[participant.identity] ?? true;
+      _videoPreferences.prefersParticipantScreenShare(participant);
 
   void _toggleParticipantVideoSource(lk.Participant participant) {
     setState(() {
-      _preferScreenShareByIdentity[participant.identity] =
-          !_preferScreenShareFor(participant);
+      _videoPreferences.toggleParticipant(participant);
     });
-  }
-
-  Future<void> _showReactions(CallSession session) async {
-    await orexShowCallReaction(
-      context: context,
-      anchorKey: _reactionButtonKey,
-      matrix: widget.call.matrix,
-      session: session,
-      emojiSize: 24,
-    );
-  }
-
-  Future<void> _toggleScreenShare(CallSession session) async {
-    await orexToggleScreenShare(
-      context: context,
-      session: session,
-      isMounted: () => mounted,
-    );
-  }
-
-  bool _canGrantVoice(Room? room, String userId) =>
-      orexCanGrantVoice(widget.call.matrix, room, userId);
-
-  bool _canRevokeVoice(Room? room, String userId) =>
-      orexCanRevokeVoice(widget.call.matrix, room, userId);
-
-  Future<void> _grantVoice(Room room, String userId) async {
-    await orexGrantVoice(
-      matrix: widget.call.matrix,
-      call: widget.call,
-      room: room,
-      userId: userId,
-    );
-    if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Голос выдан')));
-  }
-
-  Future<void> _revokeVoice(Room room, String userId) async {
-    await orexRevokeVoice(
-      matrix: widget.call.matrix,
-      call: widget.call,
-      room: room,
-      userId: userId,
-    );
-    if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Голос забран')));
   }
 
   @override
@@ -118,14 +75,11 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
       builder: (context, _) {
         final session = call.session;
         if (session == null) return const SizedBox.shrink();
-        final room = call.roomId != null
-            ? call.matrix.client.getRoomById(call.roomId!)
-            : null;
-        final people = session.participants;
-        final focused = call.focusedParticipantIdentity;
-        final visiblePeople = focused == null
-            ? people
-            : people.where((p) => p.identity == focused).toList();
+        final presentation = OrexCallPresentation.from(
+          matrix: call.matrix,
+          call: call,
+          session: session,
+        );
 
         return Stack(
           children: [
@@ -138,16 +92,11 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (session.cameraError != null)
-                    _miniNote('Камера недоступна — звонок идёт со звуком.'),
-                  if (session.error != null) _miniNote(session.error!),
-                  if (!session.canPublishMedia)
-                    _miniNote(
-                      'Режим просмотра: микрофон, камера и трансляция экрана недоступны.',
-                    ),
+                  for (final notice in presentation.notices)
+                    _noticeText(notice),
                   SizedBox(
                     height: tilesH,
-                    child: people.isEmpty
+                    child: presentation.participants.isEmpty
                         ? const Center(
                             child: Text(
                               'Соединение…',
@@ -158,12 +107,7 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                             onTap: widget.onExpand,
                             child: Padding(
                               padding: const EdgeInsets.all(6),
-                              child: _miniTiles(
-                                session: session,
-                                people: visiblePeople,
-                                room: room,
-                                pinned: focused != null,
-                              ),
+                              child: _miniTiles(presentation: presentation),
                             ),
                           ),
                   ),
@@ -178,13 +122,11 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
     );
   }
 
-  Widget _miniTiles({
-    required CallSession session,
-    required List<lk.Participant> people,
-    required Room? room,
-    required bool pinned,
-  }) {
-    if (pinned) {
+  Widget _miniTiles({required OrexCallPresentation presentation}) {
+    final session = presentation.session;
+    final room = presentation.room;
+    final people = presentation.visibleParticipants;
+    if (presentation.hasFocusedParticipant) {
       final p = people.isNotEmpty ? people.first : null;
       if (p == null) return const SizedBox.shrink();
       final userId = orexMatrixUserIdFromParticipantIdentity(p.identity);
@@ -207,13 +149,13 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                 ? () => _toggleParticipantVideoSource(p)
                 : null,
             onCycleCamera: p is lk.LocalParticipant
-                ? () => _cycleCamera(session)
+                ? () => _actions.cycleCamera(session)
                 : null,
-            onGrantVoice: _canGrantVoice(room, userId)
-                ? () => _grantVoice(room!, userId)
+            onGrantVoice: _actions.canGrantVoice(room, userId)
+                ? () => _actions.grantVoice(room!, userId)
                 : null,
-            onRevokeVoice: _canRevokeVoice(room, userId)
-                ? () => _revokeVoice(room!, userId)
+            onRevokeVoice: _actions.canRevokeVoice(room, userId)
+                ? () => _actions.revokeVoice(room!, userId)
                 : null,
           ),
         ),
@@ -298,13 +240,13 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                       ? () => _toggleParticipantVideoSource(p)
                       : null,
                   onCycleCamera: p is lk.LocalParticipant
-                      ? () => _cycleCamera(session)
+                      ? () => _actions.cycleCamera(session)
                       : null,
-                  onGrantVoice: _canGrantVoice(room, userId)
-                      ? () => _grantVoice(room!, userId)
+                  onGrantVoice: _actions.canGrantVoice(room, userId)
+                      ? () => _actions.grantVoice(room!, userId)
                       : null,
-                  onRevokeVoice: _canRevokeVoice(room, userId)
-                      ? () => _revokeVoice(room!, userId)
+                  onRevokeVoice: _actions.canRevokeVoice(room, userId)
+                      ? () => _actions.revokeVoice(room!, userId)
                       : null,
                 );
               },
@@ -313,10 +255,6 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
         );
       },
     );
-  }
-
-  Future<void> _cycleCamera(CallSession session) async {
-    await orexCycleCamera(session);
   }
 
   /// Нижняя кромка-«ручка»: тянуть вверх/вниз, чтобы менять высоту плиток.
@@ -365,100 +303,20 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
     );
   }
 
-  Widget _controls(CallSession session) {
-    final controls = <Widget>[
-      if (session.canPublishMedia) ...[
-        _btn(
-          icon: session.micOn ? Icons.mic : Icons.mic_off,
-          selected: !session.micOn,
-          onTap: () {
-            session.toggleMic();
-          },
-          onLongPress: () =>
-              showOrexInputQuickSheet(context, matrix: widget.call.matrix),
-        ),
-        _btn(
-          icon: session.camOn ? Icons.videocam : Icons.videocam_off,
-          selected: !session.camOn,
-          onTap: () {
-            session.toggleCam();
-          },
-          onLongPress: () => showOrexCameraQuickSheet(
-            context,
-            matrix: widget.call.matrix,
-            session: session,
-          ),
-        ),
-      ],
-      _btn(
-        icon: session.speakerMuted ? Icons.volume_off : Icons.volume_up,
-        selected: session.speakerMuted,
-        onTap: () {
-          session.toggleSpeakerMute();
-        },
-        onLongPress: () =>
-            showOrexOutputQuickSheet(context, matrix: widget.call.matrix),
-      ),
-      if (session.canPublishMedia)
-        _btn(
-          icon: session.screenShareOn
-              ? Icons.stop_screen_share
-              : Icons.screen_share,
-          selected: session.screenShareOn,
-          onTap: () {
-            _toggleScreenShare(session);
-          },
-        ),
-      _btn(
-        icon: session.handRaised ? Icons.back_hand : Icons.back_hand_outlined,
-        selected: session.handRaised,
-        onTap: () {
-          session.toggleHandRaised();
-        },
-      ),
-      _btn(
-        key: _reactionButtonKey,
-        icon: Icons.emoji_emotions,
-        onTap: () {
-          _showReactions(session);
-        },
-      ),
-      _btn(
-        icon: Icons.call_end,
-        bg: const Color(0xFFCF6679),
-        onTap: () {
-          widget.call.hangUp();
-        },
-      ),
-    ];
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8, top: 2, left: 8, right: 8),
-      child: OrexBalancedControlRows(
-        buttonCount: controls.length,
-        buttonExtent: 42,
-        spacing: 10,
-        runSpacing: 8,
-        children: controls,
-      ),
-    );
-  }
-
-  Widget _btn({
-    Key? key,
-    required IconData icon,
-    required VoidCallback onTap,
-    VoidCallback? onLongPress,
-    Color? bg,
-    bool selected = false,
-  }) => OrexCallControlButton(
-    key: key,
-    icon: icon,
-    style: OrexCallControlButtonStyle.minimized,
-    selected: selected,
-    background: bg,
-    onTap: onTap,
-    onLongPress: onLongPress,
+  Widget _controls(CallSession session) => OrexCallControlsBar(
+    mode: OrexCallControlsBarMode.minimized,
+    matrix: widget.call.matrix,
+    session: session,
+    reactionButtonKey: _reactionButtonKey,
+    onReactionTap: () {
+      _actions.showReactions(session);
+    },
+    onScreenShareTap: () {
+      _actions.toggleScreenShare(session);
+    },
+    onHangUpTap: () {
+      _actions.hangUp();
+    },
   );
 
   Widget _miniNote(String text) => Container(
@@ -476,6 +334,18 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
       style: const TextStyle(color: Colors.white, fontSize: 12),
     ),
   );
+
+  Widget _noticeText(OrexCallNotice notice) {
+    return switch (notice.kind) {
+      OrexCallNoticeKind.camera => _miniNote(
+        'Камера недоступна — звонок идёт со звуком.',
+      ),
+      OrexCallNoticeKind.error => _miniNote(notice.message ?? ''),
+      OrexCallNoticeKind.listenOnly => _miniNote(
+        'Режим просмотра: микрофон, камера и трансляция экрана недоступны.',
+      ),
+    };
+  }
 }
 
 /// Панель «Идёт звонок» для звонка в комнате, в который мы НЕ вошли: аватары
