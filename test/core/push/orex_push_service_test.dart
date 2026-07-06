@@ -14,7 +14,10 @@ void main() {
       'orex_delivery_id': 'delivery-1',
     });
     final platform = _FakePushPlatform(initialOpen: open);
-    final client = Client('OrexPushTest');
+    final client = Client(
+      'OrexPushTest',
+      database: MatrixSdkDatabase.buildWithoutOpen('OrexPushTest'),
+    );
     final service = OrexPushService(
       client: client,
       gateway: null,
@@ -37,12 +40,15 @@ void main() {
 
     await subscription.cancel();
     await service.dispose();
-    client.dispose();
+    await client.dispose(closeDatabase: false);
   });
 
   test('same native delivery id is not published twice', () async {
     final platform = _FakePushPlatform();
-    final client = Client('OrexPushDedupTest');
+    final client = Client(
+      'OrexPushDedupTest',
+      database: MatrixSdkDatabase.buildWithoutOpen('OrexPushDedupTest'),
+    );
     final service = OrexPushService(
       client: client,
       gateway: null,
@@ -67,7 +73,7 @@ void main() {
 
     await subscription.cancel();
     await service.dispose();
-    client.dispose();
+    await client.dispose(closeDatabase: false);
   });
 }
 

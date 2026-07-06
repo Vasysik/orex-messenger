@@ -11,11 +11,10 @@ import 'push_registration_service.dart';
 class OrexPushService {
   OrexPushService({
     required Client client,
-    required Uri? gateway,
+    required this.gateway,
     OrexPushPlatform? platform,
     OrexPushTokenStore? tokenStore,
   })  : _client = client,
-        _gateway = gateway,
         _platform = platform ?? OrexNativePushPlatform(),
         _tokenStore = tokenStore ?? const _SharedPreferencesPushTokenStore() {
     _openController = StreamController<OrexPushOpen>.broadcast(
@@ -37,7 +36,7 @@ class OrexPushService {
   }
 
   final Client _client;
-  final Uri? _gateway;
+  final Uri? gateway;
   final OrexPushPlatform _platform;
   final OrexPushTokenStore _tokenStore;
   late final OrexPushRegistrationService _registration;
@@ -54,7 +53,7 @@ class OrexPushService {
 
   Stream<OrexPushOpen> get onNotificationOpened => _openController.stream;
 
-  bool get isConfigured => _gateway != null;
+  bool get isConfigured => gateway != null;
 
   /// Поднимает только локальный bridge и подписки. Сетевой pusher sync не
   /// блокирует bootstrap: он запускается отдельно и имеет собственный error
@@ -229,7 +228,7 @@ class OrexPushService {
   }
 
   OrexPushRegistrationConfig? _registrationConfig() {
-    final gateway = _gateway;
+    final gateway = this.gateway;
     final identity = _platform.identity;
     final deviceId = _client.deviceID?.trim();
     if (gateway == null ||

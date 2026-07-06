@@ -153,7 +153,7 @@ class OrexPushRegistrationService {
     final operation = _serial.then<void>((_) => action());
     _serial = operation.then<void>(
       (_) {},
-      onError: (Object _, StackTrace __) {},
+      onError: (Object _, StackTrace _) {},
     );
     return operation;
   }
