@@ -63,6 +63,7 @@ object OrexPushBridge {
     private var activity: Activity? = null
     private var channel: MethodChannel? = null
     private var pendingPermissionResult: MethodChannel.Result? = null
+    private var firebaseConfigurationWarningLogged = false
 
     fun attach(activity: Activity, messenger: BinaryMessenger) {
         this.activity = activity
@@ -92,6 +93,7 @@ object OrexPushBridge {
         val token = rawToken.trim()
         if (token.isEmpty()) return
         prefs(context).edit().putString(PREF_TOKEN, token).apply()
+        Log.i(TAG, "FCM registration token refreshed")
         invokeOnMainThread("onTokenRefresh", token)
     }
 
@@ -104,6 +106,7 @@ object OrexPushBridge {
 
         val normalized = normalizePayload(payload)
         if (normalized.isEmpty()) return
+        Log.i(TAG, "FCM data message received keys=${normalized.keys.sorted()}")
         showNotification(context.applicationContext, normalized)
     }
 
@@ -139,7 +142,15 @@ object OrexPushBridge {
     private fun isFirebaseConfigured(): Boolean {
         val context = activity?.applicationContext ?: return false
         return try {
-            FirebaseApp.getApps(context).isNotEmpty()
+            val configured = FirebaseApp.getApps(context).isNotEmpty()
+            if (!configured && !firebaseConfigurationWarningLogged) {
+                firebaseConfigurationWarningLogged = true
+                Log.e(
+                    TAG,
+                    "Firebase is not configured; google-services.json is missing or invalid",
+                )
+            }
+            configured
         } catch (error: Throwable) {
             Log.w(TAG, "Firebase configuration check failed", error)
             false
@@ -158,6 +169,7 @@ object OrexPushBridge {
                     val token = task.result?.trim().orEmpty()
                     if (token.isNotEmpty()) {
                         prefs(context).edit().putString(PREF_TOKEN, token).apply()
+                        Log.i(TAG, "FCM registration token is available")
                         result.success(token)
                     } else {
                         result.success(null)

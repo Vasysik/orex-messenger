@@ -28,7 +28,7 @@ val hasReleaseSigning = listOf(
 ).all { !it.isNullOrEmpty() }
 
 val googleServicesJson = file("google-services.json")
-val requirePushConfig = System.getenv("OREX_REQUIRE_ANDROID_PUSH")
+val allowReleaseWithoutPush = System.getenv("OREX_ALLOW_ANDROID_RELEASE_WITHOUT_PUSH")
     ?.trim()
     ?.equals("true", ignoreCase = true) == true
 
@@ -43,9 +43,9 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// google-services.json не хранится в репозитории. Локальные/CI сборки без
-// Firebase продолжают компилироваться, а release pipeline может сделать
-// конфигурацию обязательной через OREX_REQUIRE_ANDROID_PUSH=true.
+// google-services.json не хранится в репозитории. Debug/локальные compile-only
+// сборки могут жить без Firebase, но production release fail-closed: Orex не
+// должен молча выпускаться без FCM и потом просто не регистрировать pusher.
 if (googleServicesJson.exists()) {
     apply(plugin = "com.google.gms.google-services")
 }
@@ -120,11 +120,13 @@ gradle.taskGraph.whenReady {
             taskName.equals("bundleRelease", ignoreCase = true) ||
             taskName.equals("packageRelease", ignoreCase = true)
     }
-    if (releaseArtifactRequested && requirePushConfig && !googleServicesJson.exists()) {
+    if (releaseArtifactRequested && !googleServicesJson.exists() && !allowReleaseWithoutPush) {
         throw GradleException(
-            "Android push is required but android/app/google-services.json is missing. " +
-                "Download the Firebase config for applicationId ru.orex.messenger, or unset " +
-                "OREX_REQUIRE_ANDROID_PUSH for compile-only builds."
+            "Android release cannot be built without push configuration: " +
+                "android/app/google-services.json is missing. Download the Firebase Android " +
+                "config for applicationId ru.orex.messenger. For an explicit compile-only CI " +
+                "check (not a distributable Orex build), set " +
+                "OREX_ALLOW_ANDROID_RELEASE_WITHOUT_PUSH=true."
         )
     }
     if (releaseArtifactRequested && !hasReleaseSigning && !allowUnsignedRelease) {

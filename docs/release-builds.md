@@ -1,6 +1,6 @@
 # Orex Release Builds
 
-Эта инструкция нужна для сборки артефактов `0.4.0+8` тестировщикам.
+Эта инструкция нужна для сборки артефактов `0.4.0+9` тестировщикам.
 README описывает продукт, а здесь лежит практическая часть: ключи Android,
 Windows production build и SQLCipher-проверки.
 
@@ -9,7 +9,7 @@ Windows production build и SQLCipher-проверки.
 Проверьте версию в `pubspec.yaml`:
 
 ```yaml
-version: 0.4.0+8
+version: 0.4.0+9
 ```
 
 Затем выполните базовый gate:
@@ -77,8 +77,13 @@ android/app/google-services.json
 ```
 
 Файл уже исключён через `.gitignore`; не коммитьте его и не пересылайте как
-часть исходников. Без файла Android всё ещё компилируется, но нативный push
-bridge возвращает `notSupported` и Matrix pusher не регистрируется.
+часть исходников. Android release теперь **не собирается** без этого файла:
+предыдущая мягкая проверка позволяла получить внешне рабочий APK без FCM token,
+поэтому Matrix pusher вообще не регистрировался и Sygnal оставался без запросов.
+
+`google-services.json` должен быть скачан из того же Firebase-проекта, чей
+`project_id` и service account использует Sygnal. Firebase Android app должен
+иметь package id ровно `ru.orex.messenger`.
 
 Production Orex Push Gateway уже задан в клиенте и не требует `--dart-define`:
 
@@ -112,15 +117,15 @@ body      = ...   # optional
 (`orex_kind`, `room_id`, `event_id`, `call_id`, `message_id`), не `title/body`.
 После открытия Orex получает содержимое через обычный Matrix sync.
 
-В release pipeline рекомендуется сделать Firebase-конфигурацию обязательной:
+Release-задача завершится ошибкой, если `android/app/google-services.json`
+отсутствует. Только для явной compile-only CI-проверки, артефакт которой нельзя
+распространять, существует escape hatch:
 
 ```powershell
-$env:OREX_REQUIRE_ANDROID_PUSH = "true"
+$env:OREX_ALLOW_ANDROID_RELEASE_WITHOUT_PUSH = "true"
 ```
 
-При таком флаге release-задача завершится ошибкой, если
-`android/app/google-services.json` отсутствует. Для compile-only CI этот флаг
-не задавайте.
+Для обычной Orex release-сборки эту переменную не задавайте.
 
 ### 2.4. Собрать APK
 
@@ -219,16 +224,37 @@ winget install --id JRSoftware.InnoSetup -e `
   --accept-source-agreements
 ```
 
-После успешной Windows release-сборки:
+После успешной Windows release-сборки задай версию из `pubspec.yaml` и передай её в Inno Setup:
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" windows\installer\orex.iss
+$VersionLine = (Select-String -Path pubspec.yaml -Pattern '^version:\s*(\d+)\.(\d+)\.(\d+)\+(\d+)\s*$').Matches[0]
+$Version = '{0}.{1}.{2}+{3}' -f `
+  $VersionLine.Groups[1].Value, `
+  $VersionLine.Groups[2].Value, `
+  $VersionLine.Groups[3].Value, `
+  $VersionLine.Groups[4].Value
+$VersionInfo = '{0}.{1}.{2}.{3}' -f `
+  $VersionLine.Groups[1].Value, `
+  $VersionLine.Groups[2].Value, `
+  $VersionLine.Groups[3].Value, `
+  $VersionLine.Groups[4].Value
+
+$Iscc = @(
+  "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+  "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+  "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+& $Iscc `
+  "/DMyAppVersion=$Version" `
+  "/DMyAppVersionInfo=$VersionInfo" `
+  windows\installer\orex.iss
 ```
 
 Артефакт:
 
 ```text
-build\windows\x64\installer\Orex-Setup-0.4.0+8.exe
+build\windows\x64\installer\Orex-Setup-0.4.0+9.exe
 ```
 
 Именно этот `.exe` удобно отдавать тестировщикам вместо zip. Он ставит Orex в
@@ -241,7 +267,7 @@ Windows-БД создаётся как новый файл:
 orex-sqlcipher.sqlite
 ```
 
-Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.4.0+8`
+Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.4.0+9`
 это ожидаемо.
 
 При старте Orex проверяет `PRAGMA cipher_version`. Если вместо SQLCipher
@@ -266,7 +292,7 @@ build\web
 Web не использует `OREX_ALLOW_INSECURE_DESKTOP_CACHE`: это правило относится к
 IO desktop-кэшу, а не к browser storage.
 
-## 5. Что отправлять тестировщикам для `0.4.0+8`
+## 5. Что отправлять тестировщикам для `0.4.0+9`
 
 Минимально:
 

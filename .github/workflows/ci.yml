@@ -49,6 +49,7 @@ jobs:
       - name: Android release build
         env:
           OREX_ALLOW_UNSIGNED_ANDROID_RELEASE: "true"
+          OREX_ALLOW_ANDROID_RELEASE_WITHOUT_PUSH: "true"
         run: >
           flutter build apk --release --split-per-abi --no-pub
           --dart-define=OREX_ENV=production

@@ -1,6 +1,6 @@
 # Orex Push Infrastructure
 
-Этот документ фиксирует production-контракт клиентской ветки `0.4.0+8`.
+Этот документ фиксирует production-контракт клиентской ветки `0.4.0+9`.
 Секреты Firebase сюда не добавляются.
 
 ## 1. Production identity
@@ -93,3 +93,37 @@ apps:
 
 `firebase-service-account.json` остаётся только на сервере. Android использует
 отдельный `android/app/google-services.json`, который также не коммитится.
+
+
+## 5. Почему Sygnal может быть пустым
+
+Sygnal получает запросы только после того, как Android-клиент получил FCM token
+и зарегистрировал Matrix HTTP-pusher. Поэтому пустой access log почти всегда
+означает, что цепочка оборвалась **до** gateway.
+
+Проверяйте по порядку:
+
+1. В Firebase существует Android app с package id `ru.orex.messenger`.
+2. Его `google-services.json` лежит в `android/app/` **до** сборки APK.
+3. Установлена новая сборка, пользователь вошёл в аккаунт хотя бы один раз, а
+   Android не запретил Orex уведомления.
+4. У пользователя появился pusher с `app_id = ru.vasys.orex_messenger` и URL
+   `http://sygnal:5000/_matrix/push/v1/notify`.
+5. Synapse разрешён exact `/32` адрес Sygnal через `ip_range_whitelist`.
+6. Тестовое сообщение отправляет **другой пользователь** на аккаунт с
+   зарегистрированным Android-устройством; собственные исходящие события не
+   являются нормальным тестом push-доставки.
+
+Для локального пользователя администратор Synapse может проверить pusher через
+Admin API `GET /_synapse/admin/v1/users/<user_id>/pushers`. Не публикуйте в
+тикетах или логах полный `pushkey`: это FCM registration token конкретной
+установки приложения.
+
+После установки Android-сборки `0.4.0+9` полезны безопасные logcat-сообщения:
+
+```powershell
+adb logcat -s OrexPush
+```
+
+Они сообщают только состояние Firebase/token и имена ключей входящего payload,
+но не печатают сам FCM token и значения Matrix routing-полей.
