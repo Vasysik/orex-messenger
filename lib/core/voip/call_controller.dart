@@ -1,7 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:matrix/matrix.dart';
+// Matrix 7.4.0 exports its own VoIP CallSession. Orex intentionally owns a
+// separate media-session type below, so keep the SDK symbol out of this file.
+import 'package:matrix/matrix.dart' hide CallSession;
 
 import 'call_session.dart';
 import 'system_call_integration.dart';

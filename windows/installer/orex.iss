@@ -1,8 +1,8 @@
 #define MyAppName "Orex Messenger"
 #define MyAppPublisher "Orex"
 #define MyAppExeName "orex_messenger.exe"
-#define MyAppVersion "0.4.0-dev.2+5"
-#define MyAppVersionInfo "0.4.0.5"
+#define MyAppVersion "0.4.0-dev.3+6"
+#define MyAppVersionInfo "0.4.0.6"
 #define ReleaseDir "..\..\build\windows\x64\runner\Release"
 
 [Setup]

@@ -1,6 +1,6 @@
 # Orex Release Builds
 
-Эта инструкция нужна для сборки артефактов `0.4.0-dev.2+5` тестировщикам.
+Эта инструкция нужна для сборки артефактов `0.4.0-dev.3+6` тестировщикам.
 README описывает продукт, а здесь лежит практическая часть: ключи Android,
 Windows production build и SQLCipher-проверки.
 
@@ -9,7 +9,7 @@ Windows production build и SQLCipher-проверки.
 Проверьте версию в `pubspec.yaml`:
 
 ```yaml
-version: 0.4.0-dev.2+5
+version: 0.4.0-dev.3+6
 ```
 
 Затем выполните базовый gate:
@@ -67,11 +67,60 @@ OREX_ANDROID_KEY_ALIAS
 OREX_ANDROID_KEY_PASSWORD
 ```
 
-### 2.3. Собрать APK
+### 2.3. Настроить Android push
+
+Для реальной background-доставки нужен Firebase Android app с package id
+`ru.orex.messenger`. Скачайте его `google-services.json` и положите сюда:
+
+```text
+android/app/google-services.json
+```
+
+Файл уже исключён через `.gitignore`; не коммитьте его и не пересылайте как
+часть исходников. Без файла Android всё ещё компилируется, но нативный push
+bridge возвращает `notSupported` и Matrix pusher не регистрируется.
+
+Также нужен production Orex Push Gateway. Клиент принимает только абсолютный
+HTTPS endpoint со стандартным Matrix-путём:
+
+```text
+https://push.example.org/_matrix/push/v1/notify
+```
+
+Homeserver отправляет туда Matrix push notification, а gateway должен доставлять
+на FCM token (`pushkey`) именно **data-message**. Для текущего Android-клиента
+поддерживаются поля:
+
+```text
+orex_kind = matrix_event | incoming_call
+room_id   = !room:server
+event_id  = $event
+call_id   = ...
+title     = ...   # optional
+body      = ...   # optional
+```
+
+Для Matrix pusher клиент использует `event_id_only`: gateway не должен зависеть
+от текста сообщения. В cold-start storage сохраняются только routing-поля
+(`orex_kind`, `room_id`, `event_id`, `call_id`, `message_id`), не `title/body`.
+После открытия Orex получает содержимое через обычный Matrix sync.
+
+В release pipeline рекомендуется сделать Firebase-конфигурацию обязательной:
+
+```powershell
+$env:OREX_REQUIRE_ANDROID_PUSH = "true"
+```
+
+При таком флаге release-задача завершится ошибкой, если
+`android/app/google-services.json` отсутствует. Для compile-only CI этот флаг
+не задавайте.
+
+### 2.4. Собрать APK
 
 ```powershell
 flutter build apk --release --split-per-abi --no-pub `
   --dart-define=OREX_ENV=production `
+  --dart-define=OREX_PUSH_GATEWAY=https://push.example.org/_matrix/push/v1/notify `
   --dart-define=OREX_DEBUG_LOGS=false
 ```
 
@@ -173,7 +222,7 @@ winget install --id JRSoftware.InnoSetup -e `
 Артефакт:
 
 ```text
-build\windows\x64\installer\Orex-Setup-0.4.0-dev.2+5.exe
+build\windows\x64\installer\Orex-Setup-0.4.0-dev.3+6.exe
 ```
 
 Именно этот `.exe` удобно отдавать тестировщикам вместо zip. Он ставит Orex в
@@ -186,7 +235,7 @@ Windows-БД создаётся как новый файл:
 orex-sqlcipher.sqlite
 ```
 
-Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.4.0-dev.2+5`
+Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.4.0-dev.3+6`
 это ожидаемо.
 
 При старте Orex проверяет `PRAGMA cipher_version`. Если вместо SQLCipher
@@ -211,7 +260,7 @@ build\web
 Web не использует `OREX_ALLOW_INSECURE_DESKTOP_CACHE`: это правило относится к
 IO desktop-кэшу, а не к browser storage.
 
-## 5. Что отправлять тестировщикам для `0.4.0-dev.2+5`
+## 5. Что отправлять тестировщикам для `0.4.0-dev.3+6`
 
 Минимально:
 
@@ -239,5 +288,11 @@ Android 8+: входящий -> системная карточка -> прин�
 Android 8+: активный звонок -> завершить из системного UI / гарнитуры
 Android 8+: system mute / hold -> микрофон и входящий звук восстанавливаются
 Android 8+: speaker / earpiece / wired / Bluetooth route без конфликта AudioManager
+Android 13+: permission на уведомления появляется после основного UI, не на splash
+FCM token -> Matrix pusher зарегистрирован на homeserver
+ротация FCM token -> старый pushkey удалён, новый зарегистрирован
+logout -> pusher текущего устройства удалён до завершения Matrix logout
+закрыть процесс -> FCM data-message -> системное уведомление без Flutter UI
+тап по cold-start уведомлению -> после sync открывается нужная room_id
 голосовой канал: grant / revoke
 ```

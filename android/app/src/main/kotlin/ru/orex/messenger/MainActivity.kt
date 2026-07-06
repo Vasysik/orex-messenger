@@ -1,6 +1,7 @@
 package ru.orex.messenger
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
@@ -14,6 +15,29 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installScoBroadcastCrashGuard()
         super.onCreate(savedInstanceState)
+        OrexPushBridge.captureLaunchIntent(this, intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        OrexPushBridge.captureLaunchIntent(this, intent)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        if (OrexPushBridge.onRequestPermissionsResult(requestCode, permissions, grantResults)) {
+            return
+        }
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    }
+
+    override fun onDestroy() {
+        OrexPushBridge.detach(this)
+        super.onDestroy()
     }
 
     private val channelName = "orex/audio_devices"
@@ -22,6 +46,7 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         OrexAndroidTelecomManager.attach(this, flutterEngine.dartExecutor.binaryMessenger)
+        OrexPushBridge.attach(this, flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {

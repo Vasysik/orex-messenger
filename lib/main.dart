@@ -11,6 +11,7 @@ import 'core/config/orex_config.dart';
 import 'core/config/app_version.dart';
 import 'core/storage/database.dart';
 import 'core/matrix/matrix_service.dart';
+import 'core/push/push_platform_bridge.dart';
 import 'core/logging/orex_logger.dart';
 import 'features/auth/login_screen.dart';
 import 'features/calls/call_screen.dart';
@@ -214,11 +215,16 @@ class _OrexAppState extends State<OrexApp> {
   StreamSubscription? _verificationSub;
   StreamSubscription? _incomingCallSub;
   StreamSubscription<String>? _systemAcceptedCallSub;
+  StreamSubscription<OrexPushOpen>? _pushOpenSub;
+  String? _pushRoomId;
+  int _pushOpenGeneration = 0;
+  late bool _wasLoggedIn;
   final Set<String> _incomingCallDialogs = <String>{};
 
   @override
   void initState() {
     super.initState();
+    _wasLoggedIn = widget.matrix.isLoggedIn;
     widget.matrix.addListener(_onChanged);
     widget.theme.addListener(_onChanged);
     _verificationSub = widget.matrix.incomingVerifications.listen((kv) {
@@ -233,11 +239,26 @@ class _OrexAppState extends State<OrexApp> {
     _systemAcceptedCallSub = widget.matrix.call.onSystemIncomingAccepted.listen(
       _openSystemAcceptedCall,
     );
+    _pushOpenSub = widget.matrix.push.onNotificationOpened.listen(
+      _openPushNotification,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (widget.matrix.isLoggedIn) {
+        unawaited(widget.matrix.push.ensurePermissionRequested());
+      }
       for (final room in
           widget.matrix.voip?.visibleIncomingRooms() ?? const <Room>[]) {
         _showIncomingCall(room);
       }
+    });
+  }
+
+  void _openPushNotification(OrexPushOpen open) {
+    final roomId = open.roomId;
+    if (!mounted || roomId == null) return;
+    setState(() {
+      _pushRoomId = roomId;
+      _pushOpenGeneration++;
     });
   }
 
@@ -309,13 +330,25 @@ class _OrexAppState extends State<OrexApp> {
     });
   }
 
-  void _onChanged() => setState(() {});
+  void _onChanged() {
+    if (!mounted) return;
+    final isLoggedIn = widget.matrix.isLoggedIn;
+    if (isLoggedIn && !_wasLoggedIn) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !widget.matrix.isLoggedIn) return;
+        unawaited(widget.matrix.push.ensurePermissionRequested());
+      });
+    }
+    _wasLoggedIn = isLoggedIn;
+    setState(() {});
+  }
 
   @override
   void dispose() {
     _verificationSub?.cancel();
     _incomingCallSub?.cancel();
     _systemAcceptedCallSub?.cancel();
+    _pushOpenSub?.cancel();
     widget.matrix.removeListener(_onChanged);
     widget.theme.removeListener(_onChanged);
     super.dispose();
@@ -336,6 +369,8 @@ class _OrexAppState extends State<OrexApp> {
               matrix: widget.matrix,
               theme: widget.theme,
               version: widget.version,
+              pushRoomId: _pushRoomId,
+              pushOpenGeneration: _pushOpenGeneration,
             )
           : LoginScreen(
               matrix: widget.matrix,

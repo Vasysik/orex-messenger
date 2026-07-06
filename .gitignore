@@ -26,6 +26,7 @@ android/.gradle/
 android/.cxx/
 android/local.properties
 android/key.properties
+android/app/google-services.json
 android/**/GeneratedPluginRegistrant.java
 **/*.keystore
 **/*.jks

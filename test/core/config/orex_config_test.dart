@@ -80,6 +80,75 @@ void main() {
       expect(config.jwtServiceUri.host, 'jwt.dev.example.org');
     });
 
+    test('accepts a standard Matrix push gateway endpoint', () {
+      final config = OrexRuntimeConfig.fromDefines(
+        pushGateway: 'https://push.example.org/_matrix/push/v1/notify',
+      );
+
+      expect(
+        config.pushGatewayUri,
+        Uri.parse('https://push.example.org/_matrix/push/v1/notify'),
+      );
+    });
+
+    test('keeps push disabled when gateway is not configured', () {
+      final config = OrexRuntimeConfig.fromDefines();
+
+      expect(config.pushGatewayUri, isNull);
+    });
+
+    test('rejects non-standard push gateway paths', () {
+      expect(
+        () => OrexRuntimeConfig.fromDefines(
+          pushGateway: 'https://push.example.org/custom/notify',
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('/_matrix/push/v1/notify'),
+          ),
+        ),
+      );
+    });
+
+    test('rejects insecure push gateway endpoints', () {
+      expect(
+        () => OrexRuntimeConfig.fromDefines(
+          pushGateway: 'http://push.example.org/_matrix/push/v1/notify',
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('absolute https:// URL'),
+          ),
+        ),
+      );
+    });
+
+    test('rejects credentials embedded in push gateway URLs', () {
+      expect(
+        () => OrexRuntimeConfig.fromDefines(
+          pushGateway:
+              'https://user:secret@push.example.org/_matrix/push/v1/notify',
+        ),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('rejects push gateway query strings and fragments', () {
+      for (final endpoint in <String>[
+        'https://push.example.org/_matrix/push/v1/notify?tenant=orex',
+        'https://push.example.org/_matrix/push/v1/notify#fragment',
+      ]) {
+        expect(
+          () => OrexRuntimeConfig.fromDefines(pushGateway: endpoint),
+          throwsA(isA<StateError>()),
+        );
+      }
+    });
+
     test('accepts explicit insecure desktop cache escape hatch', () {
       final config = OrexRuntimeConfig.fromDefines(
         allowInsecureDesktopCache: true,

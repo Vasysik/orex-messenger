@@ -28,6 +28,7 @@ class OrexRuntimeConfig {
     required this.homeserver,
     required this.jwtService,
     required this.elementCallBase,
+    required this.pushGateway,
     required this.requireVodozemac,
     required this.debugLogs,
     required this.allowInsecureDesktopCache,
@@ -41,6 +42,7 @@ class OrexRuntimeConfig {
   final String homeserver;
   final String jwtService;
   final String elementCallBase;
+  final String pushGateway;
   final bool requireVodozemac;
   final bool debugLogs;
   final bool allowInsecureDesktopCache;
@@ -50,6 +52,7 @@ class OrexRuntimeConfig {
     String homeserver = '',
     String jwtService = '',
     String elementCallBase = '',
+    String pushGateway = '',
     bool requireVodozemac = true,
     bool debugLogs = true,
     bool allowInsecureDesktopCache = false,
@@ -72,6 +75,7 @@ class OrexRuntimeConfig {
         elementCallBase,
         defaultElementCallBase,
       ),
+      pushGateway: pushGateway.trim(),
       requireVodozemac: requireVodozemac,
       debugLogs: debugLogs,
       allowInsecureDesktopCache: allowInsecureDesktopCache,
@@ -85,6 +89,22 @@ class OrexRuntimeConfig {
   Uri get elementCallBaseUri =>
       _httpsUri(elementCallBase, 'OREX_ELEMENT_CALL_BASE');
 
+  Uri? get pushGatewayUri {
+    final value = pushGateway.trim();
+    if (value.isEmpty) return null;
+    final uri = _httpsUri(value, 'OREX_PUSH_GATEWAY');
+    if (uri.userInfo.isNotEmpty ||
+        uri.path != '/_matrix/push/v1/notify' ||
+        uri.hasQuery ||
+        uri.hasFragment) {
+      throw StateError(
+        'OREX_PUSH_GATEWAY must be credential-free and use exactly '
+        '/_matrix/push/v1/notify',
+      );
+    }
+    return uri;
+  }
+
   String get homeserverHost => homeserverUri.host;
 
   void validateSecurity() {
@@ -95,6 +115,7 @@ class OrexRuntimeConfig {
     homeserverUri;
     jwtServiceUri;
     elementCallBaseUri;
+    pushGatewayUri;
   }
 
   static String _definedOrDefault(String value, String fallback) {
@@ -130,6 +151,7 @@ class OrexConfig {
   static const _elementCallBase = String.fromEnvironment(
     'OREX_ELEMENT_CALL_BASE',
   );
+  static const _pushGateway = String.fromEnvironment('OREX_PUSH_GATEWAY');
   static const _requireVodozemac = bool.fromEnvironment(
     'OREX_REQUIRE_VODOZEMAC',
     defaultValue: true,
@@ -148,6 +170,7 @@ class OrexConfig {
     homeserver: _homeserver,
     jwtService: _jwtService,
     elementCallBase: _elementCallBase,
+    pushGateway: _pushGateway,
     requireVodozemac: _requireVodozemac,
     debugLogs: _debugLogs,
     allowInsecureDesktopCache: _allowInsecureDesktopCache,
@@ -188,6 +211,7 @@ class OrexConfig {
 
   static Uri get homeserverUri => current.homeserverUri;
   static Uri get jwtServiceUri => current.jwtServiceUri;
+  static Uri? get pushGatewayUri => current.pushGatewayUri;
 
   /// Хост homeserver без схемы (нужен Element Call для авторизации).
   static String get homeserverHost => current.homeserverHost;

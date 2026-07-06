@@ -4,7 +4,7 @@
 сквозным шифрованием сообщений через **vodozemac** и нативными звонками Orex на
 стеке **MatrixRTC / LiveKit**. Единая кодовая база: **Web · Android · Windows**.
 
-Текущая версия: `0.4.0-dev.2+5`.
+Текущая версия: `0.4.0-dev.3+6`.
 
 Orex сейчас находится в стадии **desktop-first alpha / dogfood**: это уже
 собираемый продукт с нормальным quality gate, но не публичный security-oriented
@@ -161,10 +161,63 @@ Telecom через Jetpack Core-Telecom:
 - на Android ниже API 26 и для несистемных голосовых каналов сохраняется прежний
   безопасный in-app fallback.
 
-Граница этого этапа намеренная: системный UI работает для вызовов, которые уже
-обнаружил запущенный Matrix sync. Пробуждение полностью закрытого процесса,
-push gateway и background delivery остаются отдельным пунктом `0.4.0` и здесь
-не имитируются локальными обходами.
+Граница Core-Telecom этапа намеренная: системный UI работает для вызовов,
+которые уже обнаружил Matrix sync. В `0.4.0-dev.3` начата отдельная production-
+цепочка push-доставки для полностью закрытого Android-процесса; она не подменяет
+Matrix push локальными таймерами или фоновым polling.
+
+### 7.1. Push и закрытый Android-процесс (`0.4.0-dev.3`)
+
+Клиентская основа пункта 2 дорожной карты уже реализована:
+
+- нативный `FirebaseMessagingService` принимает FCM data-message без запущенного
+  Flutter UI и показывает privacy-safe системное уведомление;
+- FCM token регистрируется на homeserver как Matrix HTTP-pusher, а его ротация
+  сериализована: старый pushkey удаляется до регистрации нового; сетевые сбои
+  повторяются по throttled retry-сигналу успешного Matrix sync;
+- pusher использует `event_id_only`, поэтому gateway не должен получать текст
+  Matrix-сообщения от homeserver;
+- logout сначала ставит token rotation на паузу и удаляет pusher текущего
+  устройства, чтобы гонка `onNewToken` не зарегистрировала его заново;
+- cold-start notification open не теряется до создания Flutter UI: routing-
+  payload (`room_id/event_id/call_id`) буферизуется нативно и в Dart без
+  `title/body`, затем открывает нужную комнату после sync;
+- Android 13+ permission запрашивается после появления основного UI, а не во
+  время splash/bootstrap;
+- `google-services.json` не хранится в репозитории, а release pipeline может
+  сделать Firebase-конфигурацию обязательной через
+  `OREX_REQUIRE_ANDROID_PUSH=true`.
+
+Пункт 2 ещё не помечен завершённым. Для реальной доставки на устройстве нужен
+развёрнутый Orex Push Gateway, который принимает стандартный Matrix endpoint
+`/_matrix/push/v1/notify` и отправляет FCM data-message на `pushkey`. Отдельным
+следующим срезом остаётся headless/background bootstrap входящего MatrixRTC-
+вызова и передача уже подтверждённого вызова в Core-Telecom с действиями
+«ответить/отклонить» при закрытом процессе.
+
+Минимальный контракт Orex gateway → Android для текущего клиента:
+
+```text
+orex_kind = matrix_event | incoming_call
+room_id   = !room:server
+event_id  = $event                # для Matrix event, если известен
+call_id   = ...                   # для incoming_call, если известен
+```
+
+`title` и `body` необязательны. При их отсутствии клиент показывает нейтральный
+текст и получает содержимое комнаты через Matrix sync после открытия.
+
+Конфигурация клиента:
+
+```powershell
+flutter build apk --release --split-per-abi --no-pub `
+  --dart-define=OREX_ENV=production `
+  --dart-define=OREX_PUSH_GATEWAY=https://push.example.org/_matrix/push/v1/notify `
+  --dart-define=OREX_DEBUG_LOGS=false
+```
+
+Практическая настройка Firebase и release gate описана в
+`docs/release-builds.md`.
 
 LiveKit JWT берётся через `lk-jwt-service` по legacy-compatible контракту
 `POST /sfu/get`. В этот endpoint нельзя отправлять `requested_livekit_grants`:
@@ -188,7 +241,7 @@ LiveKit transport защищает соединение на транспорт�
 
 Поэтому Orex честно говорит: **сообщения — E2EE; звонки — пока не заявляются как
 media E2EE**. Это не финальная цель, а безопасная формулировка для текущей
-ветки `0.4.0-dev.2`.
+ветки `0.4.0-dev.3`.
 
 ## 9. Локальное хранение
 
@@ -215,6 +268,7 @@ lib/
     config/       runtime config, app version
     storage/      platform database selection and cache security policy
     matrix/       MatrixService facade and Matrix APIs
+    push/         Matrix pusher lifecycle and native notification bridge
     voip/         CallController, CallSession, LiveKit credentials, media controllers
     audio/        audio cues and device preferences
   domain/
@@ -264,7 +318,7 @@ desktop database открывается через SQLCipher-backed FFI.
 
 Дорожная карта ниже фиксирует ближайшие продуктовые этапы Orex. Пункты внутри
 версий — это цели релиза, а не обещание, что каждая из них уже реализована в
-текущей `0.4.0-dev.2+5`.
+текущей `0.4.0-dev.3+6`.
 
 ### 12.1. Версия 0.4.0 — полноценное мобильное приложение
 
@@ -276,8 +330,11 @@ desktop database открывается через SQLCipher-backed FFI.
    системный call UI, CallStyle-уведомление, действия гарнитуры/системных
    поверхностей, Telecom audio endpoints и синхронизация mute/hold с LiveKit.
    Закрытый процесс и доставка вызова через push сознательно остаются пунктом 2.
-2. **Уведомления и вызовы при закрытом приложении.** Matrix push gateway,
-   FCM/APNs и background delivery для сообщений и входящих звонков.
+2. **🟡 Уведомления и вызовы при закрытом приложении — в работе с
+   `0.4.0-dev.3`.** Уже есть нативный Android FCM receiver, Matrix HTTP-pusher,
+   безопасная ротация токена, unregister при logout, `event_id_only` и cold-start
+   переход в комнату. До завершения пункта нужны production Orex Push Gateway,
+   полноценная closed-process доставка входящего вызова в Core-Telecom и APNs.
 3. **Переключение камеры в видеозвонке.** Быстрое переключение front/back camera
    без пересоздания звонка.
 4. **Звонки в фоне и при заблокированном экране.** Android foreground call

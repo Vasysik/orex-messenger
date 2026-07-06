@@ -7,6 +7,8 @@ import 'package:matrix/encryption/utils/bootstrap.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../audio/audio_cue_service.dart';
+import '../config/orex_config.dart';
+import '../push/orex_push_service.dart';
 import '../voip/call_controller.dart';
 import '../logging/orex_logger.dart';
 import '../../domain/rooms/room_metadata.dart';
@@ -75,6 +77,12 @@ class MatrixService extends ChangeNotifier {
   /// Активный звонок (живёт поверх экранов — можно свернуть).
   late final CallController call = CallController(this);
 
+  /// Нативная push-доставка Android + регистрация Matrix HTTP-pusher.
+  late final OrexPushService push = OrexPushService(
+    client: client,
+    gateway: OrexConfig.pushGatewayUri,
+  );
+
   /// Короткие звуки приложения: уведомления, входящий вызов, вход в голос.
   late final AudioCueService audio = AudioCueService();
 
@@ -141,6 +149,7 @@ class MatrixService extends ChangeNotifier {
     );
     _syncSub = client.onSync.stream.listen((_) {
       _playNotificationCueIfNeeded();
+      push.handleMatrixSync();
       // Проверяем версию бэкапа только один раз после логина,
       // и только если пользователь не выключал его вручную в этой сессии.
       if (!_checkedServerBackup &&
@@ -159,6 +168,7 @@ class MatrixService extends ChangeNotifier {
       _notificationCounts.clear();
       _notificationSnapshotReady = false;
       await _loadBackupPrefs();
+      push.handleLoginStateChanged();
       notifyListeners();
     });
     // Обновление профиля меняет сам MXC URI. Не чистим весь media-cache на
@@ -175,6 +185,14 @@ class MatrixService extends ChangeNotifier {
     }
 
     await _loadBackupPrefs();
+
+    // Push не должен ломать запуск Matrix-клиента: отсутствие Firebase config
+    // или gateway оставляет приложение в обычном foreground-sync режиме.
+    try {
+      await push.start();
+    } catch (e) {
+      _log('Push', 'init failed, background delivery disabled', e);
+    }
 
     // Восстанавливаем ключи из бэкапа с задержкой — только если бэкап не выключен.
     for (final s in const [3, 8]) {
@@ -223,6 +241,16 @@ class MatrixService extends ChangeNotifier {
   void _log(String area, String message, [Object? error]) =>
       OrexLog.d(area, message, error);
 
+  Future<void> _disposeNetworkResources() async {
+    try {
+      // Push lifecycle may still have an in-flight pusher mutation that uses
+      // the Matrix client. Keep the client alive until that queue is drained.
+      await push.dispose();
+    } finally {
+      await client.dispose();
+    }
+  }
+
   @override
   void dispose() {
     _autoBackupTimer?.cancel();
@@ -236,7 +264,7 @@ class MatrixService extends ChangeNotifier {
     call.dispose();
     voip?.dispose();
     audio.dispose();
-    client.dispose();
+    unawaited(_disposeNetworkResources());
     super.dispose();
   }
 }

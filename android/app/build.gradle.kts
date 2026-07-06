@@ -27,6 +27,11 @@ val hasReleaseSigning = listOf(
     releaseStorePassword,
 ).all { !it.isNullOrEmpty() }
 
+val googleServicesJson = file("google-services.json")
+val requirePushConfig = System.getenv("OREX_REQUIRE_ANDROID_PUSH")
+    ?.trim()
+    ?.equals("true", ignoreCase = true) == true
+
 val allowUnsignedRelease = System.getenv("OREX_ALLOW_UNSIGNED_ANDROID_RELEASE")
     ?.trim()
     ?.equals("true", ignoreCase = true) == true
@@ -36,6 +41,13 @@ plugins {
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// google-services.json не хранится в репозитории. Локальные/CI сборки без
+// Firebase продолжают компилироваться, а release pipeline может сделать
+// конфигурацию обязательной через OREX_REQUIRE_ANDROID_PUSH=true.
+if (googleServicesJson.exists()) {
+    apply(plugin = "com.google.gms.google-services")
 }
 
 android {
@@ -94,6 +106,11 @@ dependencies {
     // Telecom callbacks; make the Android Main dispatcher an explicit app
     // dependency instead of relying on a transitive implementation detail.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+
+    // Native FCM delivery must work before FlutterEngine exists. Firebase BoM
+    // keeps the Android SDK modules on a compatible version set.
+    implementation(platform("com.google.firebase:firebase-bom:34.15.0"))
+    implementation("com.google.firebase:firebase-messaging")
 }
 
 gradle.taskGraph.whenReady {
@@ -102,6 +119,13 @@ gradle.taskGraph.whenReady {
         taskName.equals("assembleRelease", ignoreCase = true) ||
             taskName.equals("bundleRelease", ignoreCase = true) ||
             taskName.equals("packageRelease", ignoreCase = true)
+    }
+    if (releaseArtifactRequested && requirePushConfig && !googleServicesJson.exists()) {
+        throw GradleException(
+            "Android push is required but android/app/google-services.json is missing. " +
+                "Download the Firebase config for applicationId ru.orex.messenger, or unset " +
+                "OREX_REQUIRE_ANDROID_PUSH for compile-only builds."
+        )
     }
     if (releaseArtifactRequested && !hasReleaseSigning && !allowUnsignedRelease) {
         throw GradleException(
