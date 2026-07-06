@@ -288,7 +288,6 @@ class _MatrixPushRegistrar implements OrexPushRegistrar {
         pushkey: token,
         appDisplayName: config.appDisplayName,
         data: PusherData(
-          format: 'event_id_only',
           url: config.gateway,
           additionalProperties: <String, Object?>{
             'platform': config.platform,

@@ -48,6 +48,7 @@ object OrexPushBridge {
 
     private val OPEN_PAYLOAD_KEYS = setOf(
         "orex_kind",
+        "orex_action",
         "room_id",
         "event_id",
         "call_id",
@@ -58,6 +59,15 @@ object OrexPushBridge {
         "type",
         "notification_type",
         "content_notification_type",
+        "content_msgtype",
+        "content_body",
+        "sender",
+        "sender_display_name",
+        "room_name",
+        "room_alias",
+        "unread",
+        "missed_calls",
+        "prio",
         "title",
         "body",
     )
@@ -268,16 +278,8 @@ object OrexPushBridge {
         val channelId = if (incomingCall) CALL_CHANNEL_ID else MESSAGE_CHANNEL_ID
         ensureNotificationChannels(manager)
 
-        val title = boundedText(
-            payload["title"],
-            if (incomingCall) "Входящий звонок Orex" else "Новое событие в Orex",
-            120,
-        )
-        val body = boundedText(
-            payload["body"],
-            if (incomingCall) "Откройте Orex, чтобы ответить" else "Откройте приложение, чтобы посмотреть",
-            240,
-        )
+        val title = notificationTitle(payload, incomingCall)
+        val body = notificationBody(payload, incomingCall)
         val stablePayloadId = payload["event_id"]
             ?: payload["call_id"]
             ?: payload["room_id"]
@@ -287,19 +289,32 @@ object OrexPushBridge {
         val stableId = "$stableKind|$stablePayloadId"
         val notificationId = stableId.hashCode() and 0x7fffffff
 
-        val openIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra(EXTRA_OPEN, true)
-            for ((key, value) in openPayload(payload)) {
-                putExtra("$EXTRA_PREFIX$key", value)
-            }
-        }
-        val openApp = PendingIntent.getActivity(
-            context,
-            notificationId,
-            openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        val openApp = pendingOpenIntent(
+            context = context,
+            payload = payload,
+            notificationId = notificationId,
+            action = null,
         )
+        val answerCall = if (incomingCall) {
+            pendingOpenIntent(
+                context = context,
+                payload = payload,
+                notificationId = notificationId xor 0x7101,
+                action = "answer",
+            )
+        } else {
+            null
+        }
+        val declineCall = if (incomingCall) {
+            pendingOpenIntent(
+                context = context,
+                payload = payload,
+                notificationId = notificationId xor 0x7102,
+                action = "reject",
+            )
+        } else {
+            null
+        }
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(context, channelId)
@@ -308,14 +323,38 @@ object OrexPushBridge {
             Notification.Builder(context)
         }
         builder
-            .setSmallIcon(R.drawable.ic_stat_orex)
+            .setSmallIcon(if (incomingCall) android.R.drawable.sym_action_call else R.drawable.ic_stat_orex)
             .setContentTitle(title)
             .setContentText(body)
-            .setStyle(Notification.BigTextStyle().bigText(body))
             .setContentIntent(openApp)
-            .setAutoCancel(true)
+            .setAutoCancel(!incomingCall)
             .setCategory(if (incomingCall) Notification.CATEGORY_CALL else Notification.CATEGORY_MESSAGE)
-            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setVisibility(if (incomingCall) Notification.VISIBILITY_PUBLIC else Notification.VISIBILITY_PRIVATE)
+
+        if (incomingCall) {
+            builder.setOngoing(true)
+            builder.setOnlyAlertOnce(false)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && answerCall != null && declineCall != null) {
+                val person = android.app.Person.Builder()
+                    .setName(callerDisplayName(payload))
+                    .setImportant(true)
+                    .build()
+                builder.setStyle(Notification.CallStyle.forIncomingCall(person, declineCall, answerCall))
+            } else {
+                if (declineCall != null) {
+                    builder.addAction(
+                        android.R.drawable.ic_menu_close_clear_cancel,
+                        "Отклонить",
+                        declineCall,
+                    )
+                }
+                if (answerCall != null) {
+                    builder.addAction(android.R.drawable.sym_action_call, "Ответить", answerCall)
+                }
+            }
+        } else {
+            builder.setStyle(Notification.BigTextStyle().bigText(body))
+        }
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             @Suppress("DEPRECATION")
@@ -329,6 +368,71 @@ object OrexPushBridge {
             TAG,
             "System notification posted kind=${if (incomingCall) "call" else "message"}",
         )
+    }
+
+
+    private fun pendingOpenIntent(
+        context: Context,
+        payload: Map<String, String>,
+        notificationId: Int,
+        action: String?,
+    ): PendingIntent {
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_OPEN, true)
+            for ((key, value) in openPayload(payload, action)) {
+                putExtra("$EXTRA_PREFIX$key", value)
+            }
+        }
+        return PendingIntent.getActivity(
+            context,
+            notificationId,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    private fun notificationTitle(payload: Map<String, String>, incomingCall: Boolean): String {
+        if (incomingCall) return boundedText("Входящий звонок", "Входящий звонок", 120)
+        val explicit = payload["title"]?.trim()
+        if (!explicit.isNullOrEmpty()) return boundedText(explicit, "Новое сообщение", 120)
+
+        val sender = callerDisplayName(payload).takeIf { it.isNotBlank() && it != "Orex" }
+        val room = (payload["room_name"] ?: payload["room_alias"])?.trim()?.takeIf { it.isNotEmpty() }
+        val title = when {
+            sender != null && room != null -> "$sender · $room"
+            sender != null -> sender
+            room != null -> room
+            else -> "Новое сообщение"
+        }
+        return boundedText(title, "Новое сообщение", 120)
+    }
+
+    private fun notificationBody(payload: Map<String, String>, incomingCall: Boolean): String {
+        if (incomingCall) {
+            val caller = callerDisplayName(payload)
+            return boundedText("$caller звонит в Orex", "Входящий звонок Orex", 240)
+        }
+        val body = payload["body"]
+            ?: payload["content_body"]
+            ?: payload["content.body"]
+            ?: payload["content"]?.let(::extractBodyFromJson)
+        return boundedText(body, "Новое сообщение", 240)
+    }
+
+    private fun callerDisplayName(payload: Map<String, String>): String {
+        return payload["sender_display_name"]?.trim()?.takeIf { it.isNotEmpty() }
+            ?: payload["sender"]?.trim()?.takeIf { it.isNotEmpty() }
+            ?: payload["room_name"]?.trim()?.takeIf { it.isNotEmpty() }
+            ?: "Orex"
+    }
+
+    private fun extractBodyFromJson(raw: String): String? {
+        return try {
+            JSONObject(raw).optString("body").trim().takeIf { it.isNotEmpty() }
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private fun ensureNotificationChannels(manager: NotificationManager) {
@@ -425,8 +529,14 @@ object OrexPushBridge {
         return normalizePayload(result)
     }
 
-    private fun openPayload(source: Map<String, String>): Map<String, String> =
-        source.filterKeys(OPEN_PAYLOAD_KEYS::contains)
+    private fun openPayload(source: Map<String, String>, action: String? = null): Map<String, String> {
+        val filtered = linkedMapOf<String, String>()
+        for (key in OPEN_PAYLOAD_KEYS) {
+            source[key]?.let { filtered[key] = it }
+        }
+        if (!action.isNullOrBlank()) filtered["orex_action"] = action
+        return filtered
+    }
 
     private fun normalizePayload(source: Map<String, String>): Map<String, String> {
         val result = linkedMapOf<String, String>()

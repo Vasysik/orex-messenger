@@ -1,6 +1,6 @@
 # Orex Push Infrastructure
 
-Этот документ фиксирует production-контракт клиентской ветки `0.4.0+11`.
+Этот документ фиксирует production-контракт клиентской ветки `0.4.0+12`.
 Секреты Firebase сюда не добавляются.
 
 ## 1. Production identity
@@ -10,7 +10,7 @@ Orex Android регистрирует Matrix HTTP-pusher со следующим
 ```text
 url    = http://sygnal:5000/_matrix/push/v1/notify
 app_id = ru.vasys.orex_messenger
-format = event_id_only
+format = full Matrix/Sygnal data payload
 ```
 
 Эти значения встроены в production-конфигурацию клиента. Обычная release-сборка
@@ -146,7 +146,7 @@ docker exec postgres-matrix \
   -c "SELECT user_name, app_id, kind, data FROM pushers WHERE app_id='ru.vasys.orex_messenger';"
 ```
 
-Ожидаются `kind = http`, правильный внутренний URL и `format = event_id_only`.
+Ожидаются `kind = http`, правильный внутренний URL и `format = full Matrix/Sygnal data payload`.
 Не выводите полный `pushkey` в общие логи: это FCM registration token установки.
 
 ### 6.3. Проверить, что Synapse реально создал push action
@@ -225,7 +225,7 @@ docker compose logs --since=15m synapse | \
 
 ### 6.6. Проверить Android
 
-После установки Android-сборки `0.4.0+10`:
+После установки Android-сборки `0.4.0+12`:
 
 ```powershell
 adb logcat -c
@@ -251,14 +251,16 @@ Token и значения Matrix routing-полей не печатаются. �
 она есть, но нет `System notification posted`, проверяйте permission/channel и
 следующую строку native-лога.
 
-## 7. Что изменилось в `0.4.0+10`
+## 7. Что изменилось в `0.4.0+12`
 
 - живой процесс в background/recents теперь создаёт системное Android-уведомление
   при росте Matrix notification count вместо одного только звука;
 - инициатор нового личного звонка отправляет targeted MSC4075 RTC `ring` event;
-- Android умеет распознавать стандартный RTC `ring` payload, если Sygnal реально
-  передал `type` и `content_notification_type`;
+- Android умеет распознавать стандартный RTC `ring` payload из полного Sygnal
+  FCM API v1 data-message;
 - Orex больше не описывает `orex_kind` как обязательный контракт стандартного
   Sygnal;
-- закрытый процесс всё ещё требует отдельного headless fetch/decrypt шага, если
-  `event_id_only` payload не содержит тип RTC event.
+- Android pusher в dogfood-ветке регистрируется без `event_id_only`, чтобы
+  уведомления показывали автора, комнату, текст и CallStyle-входящий звонок.
+  `event_id_only` остаётся будущим privacy-hardening режимом после появления
+  headless resolver/fetch/decrypt.

@@ -256,6 +256,20 @@ class _OrexAppState extends State<OrexApp> {
   void _openPushNotification(OrexPushOpen open) {
     final roomId = open.roomId;
     if (!mounted || roomId == null) return;
+    final room = widget.matrix.client.getRoomById(roomId);
+    if (open.kind == 'incoming_call' && room != null) {
+      switch (open.action) {
+        case 'answer':
+          unawaited(widget.matrix.call.acceptIncoming(room, video: false));
+          return;
+        case 'reject':
+          unawaited(widget.matrix.call.rejectIncoming(room));
+          return;
+        default:
+          _showIncomingCall(room);
+          return;
+      }
+    }
     setState(() {
       _pushRoomId = roomId;
       _pushOpenGeneration++;

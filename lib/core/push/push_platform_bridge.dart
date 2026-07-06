@@ -20,6 +20,7 @@ class OrexPushOpen {
   String? get eventId => _nonEmpty(data['event_id']);
   String get kind => _nonEmpty(data['orex_kind']) ?? 'matrix_event';
   String? get deliveryId => _nonEmpty(data['orex_delivery_id']);
+  String? get action => _nonEmpty(data['orex_action']);
 
   static String? _nonEmpty(String? value) {
     final normalized = value?.trim();
