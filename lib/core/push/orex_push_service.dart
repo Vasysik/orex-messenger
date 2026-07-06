@@ -154,6 +154,21 @@ class OrexPushService {
     }
   }
 
+  Future<void> showSyncedMatrixNotification({
+    required String roomId,
+    String? eventId,
+  }) async {
+    if (_disposed || !_client.isLogged()) return;
+    try {
+      await _platform.showLocalMatrixNotification(
+        roomId: roomId,
+        eventId: eventId,
+      );
+    } catch (error) {
+      OrexLog.d('Push', 'local Matrix notification failed', error);
+    }
+  }
+
   Future<void> unregisterBeforeLogout() async {
     if (_disposed || !_client.isLogged()) return;
     // Не проверяем Firebase support: сохранённый pushkey всё равно должен быть
@@ -266,8 +281,8 @@ class _MatrixPushRegistrar implements OrexPushRegistrar {
   Future<void> register({
     required String token,
     required OrexPushRegistrationConfig config,
-  }) {
-    return client.postPusher(
+  }) async {
+    await client.postPusher(
       Pusher(
         appId: config.appId,
         pushkey: token,
@@ -285,11 +300,16 @@ class _MatrixPushRegistrar implements OrexPushRegistrar {
       ),
       append: false,
     );
+    OrexLog.d(
+      'Push',
+      'Matrix pusher registered app=${config.appId} host=${config.gateway.host}',
+    );
   }
 
   @override
-  Future<void> unregister({required String token, required String appId}) {
-    return client.deletePusher(PusherId(appId: appId, pushkey: token));
+  Future<void> unregister({required String token, required String appId}) async {
+    await client.deletePusher(PusherId(appId: appId, pushkey: token));
+    OrexLog.d('Push', 'Matrix pusher removed app=$appId');
   }
 }
 

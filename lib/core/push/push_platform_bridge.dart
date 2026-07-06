@@ -64,6 +64,13 @@ abstract interface class OrexPushPlatform {
 
   Future<void> acknowledgeNotification(OrexPushOpen open);
 
+  /// Показывает privacy-safe системное уведомление для события, которое уже
+  /// обнаружил живой Matrix sync, пока Flutter UI находится в фоне.
+  Future<void> showLocalMatrixNotification({
+    required String roomId,
+    String? eventId,
+  });
+
   Future<OrexPushPermissionStatus> requestPermission();
 
   void dispose();
@@ -180,6 +187,31 @@ class OrexNativePushPlatform implements OrexPushPlatform {
       await _channel.invokeMethod<void>(
         'ackNotificationOpen',
         <String, Object?>{'deliveryId': open.deliveryId},
+      );
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  @override
+  Future<void> showLocalMatrixNotification({
+    required String roomId,
+    String? eventId,
+  }) async {
+    if (!_isAndroid) return;
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) return;
+    await initialize();
+    try {
+      await _channel.invokeMethod<void>(
+        'showLocalMatrixNotification',
+        <String, Object?>{
+          'roomId': normalizedRoomId,
+          if (eventId != null && eventId.trim().isNotEmpty)
+            'eventId': eventId.trim(),
+        },
       );
     } on MissingPluginException {
       return;

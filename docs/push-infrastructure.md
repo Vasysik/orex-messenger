@@ -1,6 +1,6 @@
 # Orex Push Infrastructure
 
-Этот документ фиксирует production-контракт клиентской ветки `0.4.0+9`.
+Этот документ фиксирует production-контракт клиентской ветки `0.4.0+10`.
 Секреты Firebase сюда не добавляются.
 
 ## 1. Production identity
@@ -119,11 +119,146 @@ Admin API `GET /_synapse/admin/v1/users/<user_id>/pushers`. Не публику�
 тикетах или логах полный `pushkey`: это FCM registration token конкретной
 установки приложения.
 
-После установки Android-сборки `0.4.0+9` полезны безопасные logcat-сообщения:
+## 6. Диагностика end-to-end доставки
+
+Наличие строки в таблице `pushers` означает только, что Android получил FCM token
+и клиент успешно вызвал Matrix `pushers/set`. Это ещё не доказывает, что:
+
+- событие создало push action для получателя;
+- Synapse разрешил исходящий HTTP к private IP Sygnal;
+- Sygnal принял запрос и успешно отправил его в FCM;
+- Android получил data-message.
+
+Проверяйте цепочку по порядку.
+
+### 6.1. Тест должен идти от другого Matrix-аккаунта
+
+Пользователь с зарегистрированным Android pusher должен **получить** новое
+событие от другого пользователя. Отправка сообщения из Windows-клиента под тем
+же Matrix ID не является тестом push на собственный Android: исходящее событие
+не должно уведомлять его автора как новое входящее сообщение.
+
+### 6.2. Проверить pusher без вывода pushkey
+
+```bash
+docker exec postgres-matrix \
+  psql -U synapse -d synapse \
+  -c "SELECT user_name, app_id, kind, data FROM pushers WHERE app_id='ru.vasys.orex_messenger';"
+```
+
+Ожидаются `kind = http`, правильный внутренний URL и `format = event_id_only`.
+Не выводите полный `pushkey` в общие логи: это FCM registration token установки.
+
+### 6.3. Проверить, что Synapse реально создал push action
+
+Для конкретного получателя:
+
+```bash
+docker exec postgres-matrix \
+  psql -U synapse -d synapse \
+  -c "SELECT room_id, event_id, user_id, notif, highlight, stream_ordering
+      FROM event_push_actions
+      WHERE user_id='@vasys:vasys.ru'
+      ORDER BY stream_ordering DESC
+      LIMIT 20;"
+```
+
+Если после сообщения от **другого** аккаунта новых строк/`notif` нет, проблема
+на уровне Matrix push rules, а не Sygnal.
+
+### 6.4. Проверить private-IP exception Synapse
+
+Текущий внутренний DNS должен разрешаться из контейнера Synapse:
+
+```bash
+docker exec matrix-synapse getent hosts sygnal
+```
+
+Проверьте применённый `homeserver.yaml`:
+
+```bash
+docker exec matrix-synapse sh -lc \
+  "grep -nA3 -B2 'ip_range_whitelist' /data/homeserver.yaml"
+
+# Если start_pushers отсутствует, Synapse использует default=true.
+# Если явно стоит false, должен реально работать pusher worker.
+docker exec matrix-synapse sh -lc \
+  "grep -nE '^(start_pushers|pusher_instances):' /data/homeserver.yaml || true"
+```
+
+Для текущего динамического адреса `172.20.0.6` временный точный exception:
+
+```yaml
+ip_range_whitelist:
+  - '172.20.0.6/32'
+```
+
+После изменения нужен restart Synapse. `start_pushers` по умолчанию включён; если
+в конфиге он явно `false`, должен реально работать экземпляр из
+`pusher_instances`, иначе строки `pushers` будут существовать, но отправлять их
+будет некому.
+
+Production-вариант выше в этом документе использует отдельную сеть и статический
+`/32`, чтобы restart Docker не сломал разрешение и whitelist не расширял
+SSRF-поверхность.
+
+### 6.5. Смотреть Synapse и Sygnal одновременно
+
+```bash
+docker compose logs -f synapse sygnal
+```
+
+Для уже прошедших событий:
+
+```bash
+docker compose logs --since=15m synapse | \
+  grep -Ei 'push|pusher|sygnal|blacklist|172\.20\.0\.6'
+```
+
+Интерпретация:
+
+- push action есть, но Sygnal не видит POST — проблема между Synapse и gateway
+  (часто private-IP policy или конфигурация pusher worker);
+- Sygnal видит POST, но пишет FCM error — проверяйте service account, `project_id`,
+  `app_id` и соответствие Firebase-проектов;
+- Sygnal успешно отправил, но Android молчит — переходите к logcat.
+
+### 6.6. Проверить Android
+
+После установки Android-сборки `0.4.0+10`:
 
 ```powershell
+adb logcat -c
 adb logcat -s OrexPush
 ```
 
-Они сообщают только состояние Firebase/token и имена ключей входящего payload,
-но не печатают сам FCM token и значения Matrix routing-полей.
+Безопасные сообщения:
+
+```text
+FCM registration token is available
+FCM data message received keys=[...]
+System notification posted kind=message|call
+```
+
+При запрещённом Android permission будет явный безопасный лог:
+
+```text
+Notification dropped: POST_NOTIFICATIONS is not granted
+```
+
+Token и значения Matrix routing-полей не печатаются. Если строки
+`FCM data message received` нет, FCM data-message до приложения не дошёл. Если
+она есть, но нет `System notification posted`, проверяйте permission/channel и
+следующую строку native-лога.
+
+## 7. Что изменилось в `0.4.0+10`
+
+- живой процесс в background/recents теперь создаёт системное Android-уведомление
+  при росте Matrix notification count вместо одного только звука;
+- инициатор нового личного звонка отправляет targeted MSC4075 RTC `ring` event;
+- Android умеет распознавать стандартный RTC `ring` payload, если Sygnal реально
+  передал `type` и `content_notification_type`;
+- Orex больше не описывает `orex_kind` как обязательный контракт стандартного
+  Sygnal;
+- закрытый процесс всё ещё требует отдельного headless fetch/decrypt шага, если
+  `event_id_only` payload не содержит тип RTC event.

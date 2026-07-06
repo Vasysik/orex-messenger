@@ -50,6 +50,33 @@ void main() {
     await client.dispose(closeDatabase: false);
   });
 
+  test('does not surface local sync notifications while logged out', () async {
+    final platform = _FakePushPlatform();
+    final client = Client(
+      'OrexPushLocalNotificationTest',
+      database: MatrixSdkDatabase.buildWithoutOpen(
+        'OrexPushLocalNotificationTest',
+      ),
+    );
+    final service = OrexPushService(
+      client: client,
+      gateway: null,
+      platform: platform,
+      tokenStore: _MemoryTokenStore(),
+    );
+
+    await service.showSyncedMatrixNotification(
+      roomId: '!room:example.org',
+      eventId: r'$event',
+    );
+
+    // Logged-out clients must not surface stale local sync notifications.
+    expect(platform.localNotifications, isEmpty);
+
+    await service.dispose();
+    await client.dispose(closeDatabase: false);
+  });
+
   test('same native delivery id is not published twice', () async {
     final platform = _FakePushPlatform();
     final client = Client(
@@ -99,6 +126,8 @@ class _FakePushPlatform implements OrexPushPlatform {
   final StreamController<OrexPushOpen> _opens =
       StreamController<OrexPushOpen>.broadcast();
   final List<String> acknowledged = <String>[];
+  final List<({String roomId, String? eventId})> localNotifications =
+      <({String roomId, String? eventId})>[];
   final Completer<void> firstAcknowledgement = Completer<void>();
 
   void emitOpen(OrexPushOpen open) => _opens.add(open);
@@ -128,6 +157,14 @@ class _FakePushPlatform implements OrexPushPlatform {
 
   @override
   Stream<OrexPushOpen> get notificationOpens => _opens.stream;
+
+  @override
+  Future<void> showLocalMatrixNotification({
+    required String roomId,
+    String? eventId,
+  }) async {
+    localNotifications.add((roomId: roomId, eventId: eventId));
+  }
 
   @override
   Future<OrexPushPermissionStatus> requestPermission() async =>

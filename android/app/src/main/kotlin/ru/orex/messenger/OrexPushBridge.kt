@@ -55,18 +55,23 @@ object OrexPushBridge {
     )
     private val PAYLOAD_PRIORITY_KEYS = listOf(
         *OPEN_PAYLOAD_KEYS.toTypedArray(),
+        "type",
+        "notification_type",
+        "content_notification_type",
         "title",
         "body",
     )
     private val PAYLOAD_KEY_PATTERN = Regex("[A-Za-z0-9_.-]+")
 
     private var activity: Activity? = null
+    private var applicationContext: Context? = null
     private var channel: MethodChannel? = null
     private var pendingPermissionResult: MethodChannel.Result? = null
     private var firebaseConfigurationWarningLogged = false
 
     fun attach(activity: Activity, messenger: BinaryMessenger) {
         this.activity = activity
+        applicationContext = activity.applicationContext
         channel?.setMethodCallHandler(null)
         channel = MethodChannel(messenger, CHANNEL_NAME).also { methodChannel ->
             methodChannel.setMethodCallHandler(::handleMethodCall)
@@ -90,6 +95,7 @@ object OrexPushBridge {
     }
 
     fun onTokenRefresh(context: Context, rawToken: String) {
+        applicationContext = context.applicationContext
         val token = rawToken.trim()
         if (token.isEmpty()) return
         prefs(context).edit().putString(PREF_TOKEN, token).apply()
@@ -98,6 +104,7 @@ object OrexPushBridge {
     }
 
     fun onMessageReceived(context: Context, message: RemoteMessage) {
+        applicationContext = context.applicationContext
         val payload = linkedMapOf<String, String>()
         payload.putAll(message.data)
         message.messageId?.let { payload.putIfAbsent("message_id", it) }
@@ -133,6 +140,24 @@ object OrexPushBridge {
             "ackNotificationOpen" -> {
                 val deliveryId = call.argument<String>("deliveryId")?.trim().orEmpty()
                 result.success(acknowledgePendingOpen(deliveryId))
+            }
+            "showLocalMatrixNotification" -> {
+                val context = applicationContext
+                val roomId = call.argument<String>("roomId")?.trim().orEmpty()
+                if (context == null || roomId.isEmpty()) {
+                    result.success(false)
+                    return
+                }
+                val payload = linkedMapOf(
+                    "orex_kind" to "matrix_event",
+                    "room_id" to roomId,
+                )
+                call.argument<String>("eventId")
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { payload["event_id"] = it }
+                showNotification(context, payload)
+                result.success(true)
             }
             "requestPermission" -> requestPermission(result)
             else -> result.notImplemented()
@@ -216,16 +241,30 @@ object OrexPushBridge {
         )
     }
 
+    private fun isIncomingCallPayload(payload: Map<String, String>): Boolean {
+        if (payload["orex_kind"] == "incoming_call") return true
+        val eventType = payload["type"]?.trim()
+        val notificationType = (
+            payload["content_notification_type"]
+                ?: payload["notification_type"]
+            )?.trim()
+        return (
+            eventType == "org.matrix.msc4075.rtc.notification" ||
+                eventType == "m.rtc.notification"
+            ) && notificationType == "ring"
+    }
+
     private fun showNotification(context: Context, payload: Map<String, String>) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
+            Log.w(TAG, "Notification dropped: POST_NOTIFICATIONS is not granted")
             return
         }
 
-        val incomingCall = payload["orex_kind"] == "incoming_call"
+        val incomingCall = isIncomingCallPayload(payload)
         val channelId = if (incomingCall) CALL_CHANNEL_ID else MESSAGE_CHANNEL_ID
         ensureNotificationChannels(manager)
 
@@ -244,7 +283,8 @@ object OrexPushBridge {
             ?: payload["room_id"]
             ?: payload["message_id"]
             ?: "orex-push"
-        val stableId = "${payload["orex_kind"] ?: "matrix_event"}|$stablePayloadId"
+        val stableKind = if (incomingCall) "incoming_call" else "matrix_event"
+        val stableId = "$stableKind|$stablePayloadId"
         val notificationId = stableId.hashCode() and 0x7fffffff
 
         val openIntent = Intent(context, MainActivity::class.java).apply {
@@ -285,6 +325,10 @@ object OrexPushBridge {
         }
 
         manager.notify(notificationId, builder.build())
+        Log.i(
+            TAG,
+            "System notification posted kind=${if (incomingCall) "call" else "message"}",
+        )
     }
 
     private fun ensureNotificationChannels(manager: NotificationManager) {

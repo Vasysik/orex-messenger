@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:matrix/matrix.dart';
 import 'package:matrix/encryption/utils/key_verification.dart';
 import 'package:matrix/encryption/utils/bootstrap.dart';
@@ -206,19 +207,40 @@ class MatrixService extends ChangeNotifier {
 
   void _playNotificationCueIfNeeded() {
     if (!client.isLogged()) return;
-    var increased = false;
+    final increasedRooms = <Room>[];
     for (final room in client.rooms) {
       final count = room.notificationCount;
       final previous = _notificationCounts[room.id] ?? 0;
       if (_notificationSnapshotReady &&
           count > previous &&
           room.id != _foregroundRoomId) {
-        increased = true;
+        final rtcNotification =
+            room.lastEvent?.tryParseRtcNotificationContent();
+        if (rtcNotification?.notificationType != RtcNotificationType.ring) {
+          increasedRooms.add(room);
+        }
       }
       _notificationCounts[room.id] = count;
     }
     _notificationSnapshotReady = true;
-    if (increased) audio.playNotification();
+    if (increasedRooms.isEmpty) return;
+
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    final appIsBackgrounded =
+        lifecycle != null && lifecycle != AppLifecycleState.resumed;
+    if (appIsBackgrounded) {
+      for (final room in increasedRooms) {
+        unawaited(
+          push.showSyncedMatrixNotification(
+            roomId: room.id,
+            eventId: room.lastEvent?.eventId,
+          ),
+        );
+      }
+      return;
+    }
+
+    audio.playNotification();
   }
 
   void setForegroundRoomId(String? roomId) {

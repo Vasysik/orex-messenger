@@ -10,6 +10,7 @@ import 'package:webrtc_interface/webrtc_interface.dart';
 
 import '../config/orex_config.dart';
 import '../logging/orex_logger.dart';
+import 'call_ring_targets.dart';
 
 /// MatrixRTC-сигналинг звонков (стек Element Call).
 ///
@@ -427,7 +428,12 @@ class VoipService extends ChangeNotifier {
 
   /// Войти в звонок комнаты: публикуем своё членство (сигналинг) и возвращаем
   /// сессию. Медиа подключается отдельно (CallSession через livekit_client).
-  Future<GroupCallSession> enterCall(String roomId) async {
+  ///
+  /// Для нового личного звонка [ring] дополнительно отправляет targeted
+  /// MSC4075 RTC notification после успешной публикации membership. Это
+  /// отдельный Matrix event, который push rules могут доставить устройствам
+  /// собеседника даже когда его обычный `/sync` не запущен.
+  Future<GroupCallSession> enterCall(String roomId, {bool ring = false}) async {
     final room = client.getRoomById(roomId);
     if (room == null) {
       throw StateError('Комната $roomId не найдена');
@@ -483,7 +489,43 @@ class VoipService extends ChangeNotifier {
     }
     active = gc;
     notifyListeners();
+    if (ring) {
+      await _sendPersonalCallRing(room);
+    }
     return gc;
+  }
+
+  Future<void> _sendPersonalCallRing(Room room) async {
+    if (!isPersonalCallRoom(room)) return;
+
+    final targets = orexResolveCallRingTargets(
+      localUserId: client.userID,
+      joinedUserIds: room
+          .getParticipants([Membership.join])
+          .map((user) => user.id),
+      directChatMatrixId: room.directChatMatrixID,
+    );
+    if (targets.isEmpty) {
+      OrexLog.d('Voip', 'ring skipped: no remote target room=${room.id}');
+      return;
+    }
+
+    try {
+      await room.sendRtcNotification(
+        type: RtcNotificationType.ring,
+        userIds: targets.toList(growable: false),
+        lifetime: const Duration(seconds: 45),
+      );
+      OrexLog.d(
+        'Voip',
+        'RTC ring sent room=${room.id} targets=${targets.length}',
+      );
+    } catch (error) {
+      // Ring delivery is an attention signal. The MatrixRTC membership above
+      // remains the source of truth, so a transient push/ring failure must not
+      // tear down a call that is otherwise already valid.
+      OrexLog.d('Voip', 'RTC ring send failed room=${room.id}', error);
+    }
   }
 
   /// Выйти из текущего звонка: убираем своё членство из state комнаты.
