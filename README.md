@@ -4,7 +4,7 @@
 сквозным шифрованием сообщений через **vodozemac** и нативными звонками Orex на
 стеке **MatrixRTC / LiveKit**. Единая кодовая база: **Web · Android · Windows**.
 
-Текущая версия: `0.4.0+10`.
+Текущая версия: `0.4.0+11`.
 
 Orex сейчас находится в стадии **desktop-first alpha / dogfood**: это уже
 собираемый продукт с нормальным quality gate, но не публичный security-oriented
@@ -207,6 +207,12 @@ Production gateway развёрнут рядом с Synapse как внутре�
 подключается. Production build использует этот endpoint и
 `app_id = ru.vasys.orex_messenger` по умолчанию.
 
+В `0.4.0+11` исправлена release-blocking коллизия типов `Visibility`: Flutter
+и Matrix SDK экспортируют одноимённые типы, а `matrix_service.dart` является
+общей library для нескольких `part`-файлов. Flutter `Visibility` теперь явно
+скрыт на уровне общей library, поэтому Matrix `Visibility.public/private` снова
+однозначен во всех room/admin/supergroup API.
+
 Важно: стандартный Sygnal не знает поля `orex_kind`. Для FCM API v1 он передаёт
 Matrix data payload, а при `event_id_only` часть полей события намеренно
 отсутствует. Android bridge умеет распознавать стандартный MSC4075 `ring`, если
@@ -323,7 +329,7 @@ desktop database открывается через SQLCipher-backed FFI.
 
 Дорожная карта ниже фиксирует ближайшие продуктовые этапы Orex. Пункты внутри
 версий — это цели релиза, а не обещание, что каждая из них уже реализована в
-текущей `0.4.0+10`.
+текущей `0.4.0+11`.
 
 ### 12.1. Версия 0.4.0 — полноценное мобильное приложение
 
