@@ -21,6 +21,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        OrexAndroidTelecomManager.attach(this, flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -31,7 +32,31 @@ class MainActivity : FlutterActivity() {
                     "selectAudioOutput" -> {
                         val id = call.argument<String>("id")?.trim()?.takeIf { it.isNotEmpty() }
                         val inCall = call.argument<Boolean>("inCall") == true
-                        result.success(selectAudioOutput(id, inCall))
+                        if (OrexAndroidTelecomManager.ownsCallRouting()) {
+                            if (!inCall) {
+                                // Telecom завершит communication routing вместе с системной
+                                // сессией. Не сбрасываем AudioManager, пока call ещё зарегистрирован.
+                                result.success(true)
+                            } else {
+                                volumeControlStream = AudioManager.STREAM_VOICE_CALL
+                                val route = parseRouteId(id)
+                                val preferredEndpointName = route?.let { wanted ->
+                                    availableOutputCandidates(
+                                        audioManager(),
+                                        includeCallRoutes = true,
+                                    ).firstOrNull { it.matches(wanted) }
+                                        ?.device
+                                        ?.cleanProductName()
+                                        ?.takeIf { it.isNotBlank() }
+                                }
+                                OrexAndroidTelecomManager.requestAudioRoute(
+                                    route?.type,
+                                    preferredEndpointName,
+                                ) { applied -> result.success(applied) }
+                            }
+                        } else {
+                            result.success(selectAudioOutput(id, inCall))
+                        }
                     }
                     else -> result.notImplemented()
                 }

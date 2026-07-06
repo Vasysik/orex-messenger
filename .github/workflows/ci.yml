@@ -50,7 +50,7 @@ jobs:
         env:
           OREX_ALLOW_UNSIGNED_ANDROID_RELEASE: "true"
         run: >
-          flutter build apk --release --no-pub
+          flutter build apk --release --split-per-abi --no-pub
           --dart-define=OREX_ENV=production
           --dart-define=OREX_DEBUG_LOGS=false
 

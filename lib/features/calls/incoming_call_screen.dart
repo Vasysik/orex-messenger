@@ -54,8 +54,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     // Закрыть входящий на других своих устройствах + сообщить инициатору, что
     // мы отклонили (он напишет «Отклонённый вызов»).
     widget.matrix.audio.stopIncomingRingtone();
-    await widget.matrix.voip?.markCallHandled(room.id, _callId);
-    await widget.matrix.voip?.notifyRejected(room.id);
+    await widget.matrix.call.rejectIncoming(room);
     if (mounted) Navigator.of(context).maybePop();
   }
 
@@ -63,8 +62,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     final isWide = MediaQuery.sizeOf(context).width >= 900;
     final navigator = Navigator.of(context, rootNavigator: true);
     widget.matrix.audio.stopIncomingRingtone();
-    await widget.matrix.voip?.markCallHandled(room.id, _callId);
-    await widget.matrix.call.start(room.id, video: video);
+    await widget.matrix.call.acceptIncoming(room, video: video);
     if (!mounted) return;
     if (!widget.matrix.call.isActive) {
       ScaffoldMessenger.of(context).showSnackBar(

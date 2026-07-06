@@ -34,6 +34,17 @@ class VoipService extends ChangeNotifier {
     _toDeviceSub = client.onToDeviceEvent.stream.listen((ev) {
       // «Обработано на другом моём устройстве» (принят/отклонён) → закрыть входящий.
       if (ev.type == _handledEventType && ev.sender == client.userID) {
+        final originDeviceId = ev.content['origin_device_id']
+            ?.toString()
+            .trim();
+        final currentDeviceId = client.deviceID?.trim();
+        if (originDeviceId != null &&
+            originDeviceId.isNotEmpty &&
+            currentDeviceId != null &&
+            currentDeviceId.isNotEmpty &&
+            originDeviceId == currentDeviceId) {
+          return;
+        }
         final roomId = ev.content['room_id'] as String?;
         if (roomId != null) {
           _suppress.add(roomId);
@@ -279,6 +290,11 @@ class VoipService extends ChangeNotifier {
     return kind == 'channel' || kind == 'supergroup';
   }
 
+  /// Личный ли это звонок с точки зрения продуктовой логики Orex.
+  /// Используется и входящим рингтоном, и Android Telecom, чтобы групповые
+  /// голосовые каналы никогда не превращались в системный телефонный вызов.
+  bool isPersonalCallRoom(Room room) => _shouldRingForRoom(room);
+
   bool _shouldRingForRoom(Room room) {
     if (room.isDirectChat) return true;
     if (_explicitlyNonPersonalRoom(room)) return false;
@@ -370,17 +386,33 @@ class VoipService extends ChangeNotifier {
     if (_shown.remove(roomId)) _dismiss.add(roomId);
   }
 
+  /// Закрыть локальный экран входящего при действии из Android system UI.
+  /// Обычный accept/decline из Flutter не использует этот метод, потому что его
+  /// экран сам управляет навигацией после завершения асинхронного действия.
+  void dismissIncomingFromSystem(String roomId) {
+    _suppress.add(roomId);
+    if (_shown.remove(roomId)) _dismiss.add(roomId);
+  }
+
   /// Пометить обработанным (принят/отклонён) и сообщить другим своим устройствам.
   Future<void> markCallHandled(String roomId, String callId) async {
     _suppress.add(roomId);
     _shown.remove(roomId);
+    final handledContent = <String, dynamic>{
+      'room_id': roomId,
+      'call_id': callId,
+    };
+    final currentDeviceId = client.deviceID?.trim();
+    if (currentDeviceId != null && currentDeviceId.isNotEmpty) {
+      handledContent['origin_device_id'] = currentDeviceId;
+    }
     try {
       await client.sendToDevice(
         _handledEventType,
         client.generateUniqueTransactionId(),
         {
           client.userID!: {
-            '*': {'room_id': roomId, 'call_id': callId},
+            '*': handledContent,
           },
         },
       );

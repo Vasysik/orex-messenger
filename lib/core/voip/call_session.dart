@@ -42,6 +42,7 @@ class CallSession extends ChangeNotifier {
     OrexLiveKitCredentialsClient? credentialsClient,
   }) : _credentialsClient =
            credentialsClient ?? const OrexLiveKitCredentialsClient() {
+    _micRequestedOn = initialMicOn;
     _voiceStates = OrexVoiceStateRepository(
       localUserIdProvider: () => client.userID,
       readContent: (userId) => client
@@ -99,6 +100,9 @@ class CallSession extends ChangeNotifier {
   Timer? _mediaRecoveryTimer;
   String? _lastAppliedInputDeviceId;
   bool speakerMuted = false;
+  late bool _micRequestedOn;
+  bool _systemMuted = false;
+  bool _systemInactive = false;
   int _lastRemoteParticipantCount = 0;
 
   VoiceParticipantState voiceStateForUser(String userId) {
@@ -131,15 +135,9 @@ class CallSession extends ChangeNotifier {
       await room.prepareConnection(creds.url, creds.jwt);
       await room.connect(creds.url, creds.jwt);
       _room = room;
+      _applySpeakerMute();
       await applyAudioOutput();
-      if (initialMicOn) {
-        await room.localParticipant?.setMicrophoneEnabled(
-          true,
-          audioCaptureOptions: _audioCaptureOptions(),
-        );
-      } else {
-        await room.localParticipant?.setMicrophoneEnabled(false);
-      }
+      await _applyMicrophonePolicy(forceCaptureOptions: true);
       await _voiceGate.sync();
       if (video) {
         // Камера может быть недоступна (занята другим окном/приложением —
@@ -258,6 +256,10 @@ class CallSession extends ChangeNotifier {
       }
     }
 
+    if (nextCanUseMic) {
+      await _applyMicrophonePolicy(forceCaptureOptions: true);
+    }
+
     if (nextCanUseMic &&
         error == 'В режиме просмотра трансляция экрана недоступна') {
       error = null;
@@ -266,18 +268,59 @@ class CallSession extends ChangeNotifier {
   }
 
   Future<void> toggleMic() async {
-    final lp = _room?.localParticipant;
-    if (lp == null) return;
-    if (!canPublishMedia) return;
-    final next = !lp.isMicrophoneEnabled();
-    await lp.setMicrophoneEnabled(
-      next,
-      audioCaptureOptions: next ? _audioCaptureOptions() : null,
-    );
+    if (_room?.localParticipant == null || !canPublishMedia) return;
+    final next = !_micRequestedOn;
+    _micRequestedOn = next;
+    await _applyMicrophonePolicy(forceCaptureOptions: next);
     final sink = callMicPreferenceSink;
     if (sink != null) await sink(next);
-    await _voiceGate.sync();
     if (!_disposed) notifyListeners();
+  }
+
+  /// Системный mute (гарнитура, Android call UI) не меняет пользовательское
+  /// предпочтение микрофона. После unmute восстанавливаем ровно то состояние,
+  /// которое пользователь выбрал в Orex.
+  Future<void> setSystemMuted(bool muted) async {
+    if (_systemMuted == muted) return;
+    _systemMuted = muted;
+    await _applyMicrophonePolicy(forceCaptureOptions: !muted);
+    if (!_disposed) notifyListeners();
+  }
+
+  /// Telecom может временно перевести VoIP-звонок в inactive/hold, например
+  /// когда пользователь отвечает на SIM-вызов. На hold мы останавливаем и
+  /// исходящий микрофон, и входящее аудио, но не разрываем LiveKit-сессию.
+  Future<void> setSystemActive(bool active) async {
+    final inactive = !active;
+    if (_systemInactive == inactive) return;
+    _systemInactive = inactive;
+    await _applyMicrophonePolicy(forceCaptureOptions: active);
+    _applySpeakerMute();
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> _applyMicrophonePolicy({bool forceCaptureOptions = false}) async {
+    final lp = _room?.localParticipant;
+    if (lp == null) return;
+    final shouldPublish =
+        canPublishMedia && _micRequestedOn && !_systemMuted && !_systemInactive;
+    final currentlyEnabled = lp.isMicrophoneEnabled();
+    if (currentlyEnabled == shouldPublish && !forceCaptureOptions) {
+      await _voiceGate.sync();
+      return;
+    }
+
+    if (!shouldPublish) {
+      await lp.setMicrophoneEnabled(false);
+      await _voiceGate.stop(resetTrack: true);
+      return;
+    }
+
+    await lp.setMicrophoneEnabled(
+      true,
+      audioCaptureOptions: _audioCaptureOptions(),
+    );
+    await _voiceGate.sync();
   }
 
   lk.AudioCaptureOptions _audioCaptureOptions() {
@@ -381,7 +424,7 @@ class CallSession extends ChangeNotifier {
   void _applySpeakerMute() {
     final room = _room;
     if (room == null) return;
-    final enabled = !speakerMuted;
+    final enabled = !speakerMuted && !_systemInactive;
     for (final participant in room.remoteParticipants.values) {
       OrexLiveKitTrackAccess.setParticipantAudioEnabled(participant, enabled);
     }

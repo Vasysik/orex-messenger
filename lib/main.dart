@@ -13,13 +13,14 @@ import 'core/storage/database.dart';
 import 'core/matrix/matrix_service.dart';
 import 'core/logging/orex_logger.dart';
 import 'features/auth/login_screen.dart';
+import 'features/calls/call_screen.dart';
 import 'features/calls/incoming_call_screen.dart';
 import 'features/home/home_shell.dart';
 import 'features/settings/verification_screen.dart';
 import 'shared/theme/glass.dart';
 import 'shared/theme/orex_theme.dart';
 import 'shared/theme/theme_controller.dart';
-import 'shared/widgets/squirrel_mascot.dart';
+import 'shared/widgets/orex_app_brand.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -55,10 +56,12 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
   late final Future<_Services> _future = _init();
 
   Future<_Services> _init() async {
+    final minimumSplash =
+        Future<void>.delayed(const Duration(milliseconds: 720));
     final version = await _versionFuture;
     OrexLog.d(
       'Bootstrap',
-      'starting Orex Messenger ${version.version}, Сборка ${version.buildNumber}',
+      'starting $orexAppName ${version.version}, Сборка ${version.buildNumber}',
     );
     OrexConfig.validateSecurity();
     try {
@@ -80,6 +83,7 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
       database: database,
     );
     await matrix.init();
+    await minimumSplash;
     return _Services(matrix, theme, version);
   }
 
@@ -129,48 +133,29 @@ class SplashScreen extends StatelessWidget {
       child: Scaffold(
         backgroundColor: Colors.transparent,
         body: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SquirrelMascot(size: 132, caption: 'Orex Messenger'),
-              const SizedBox(height: 10),
-              FutureBuilder<OrexAppVersion>(
-                future: versionFuture,
-                initialData: OrexAppVersion.fallback,
-                builder: (context, snap) {
-                  final version = snap.data ?? OrexAppVersion.fallback;
-                  return Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        version.versionLine,
-                        style: const TextStyle(
-                          color: OrexColors.cream,
-                          fontSize: 13,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        version.buildLine,
-                        style: const TextStyle(
-                          color: OrexColors.cream,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ],
-                  );
-                },
-              ),
-              const SizedBox(height: 28),
-              const SizedBox(
-                width: 26,
-                height: 26,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2.5,
-                  color: OrexColors.copper,
+          child: Padding(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FutureBuilder<OrexAppVersion>(
+                  future: versionFuture,
+                  initialData: OrexAppVersion.fallback,
+                  builder: (context, snap) => OrexBrandHeader(
+                    version: snap.data ?? OrexAppVersion.fallback,
+                    iconSize: 136,
+                  ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 28),
+                const SizedBox.square(
+                  dimension: 28,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.6,
+                    color: OrexColors.copper,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -228,6 +213,7 @@ class _OrexAppState extends State<OrexApp> {
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
   StreamSubscription? _verificationSub;
   StreamSubscription? _incomingCallSub;
+  StreamSubscription<String>? _systemAcceptedCallSub;
   final Set<String> _incomingCallDialogs = <String>{};
 
   @override
@@ -244,6 +230,9 @@ class _OrexAppState extends State<OrexApp> {
     });
     _incomingCallSub =
         widget.matrix.voip?.onIncomingCall.listen(_showIncomingCall);
+    _systemAcceptedCallSub = widget.matrix.call.onSystemIncomingAccepted.listen(
+      _openSystemAcceptedCall,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       for (final room in
           widget.matrix.voip?.visibleIncomingRooms() ?? const <Room>[]) {
@@ -256,6 +245,7 @@ class _OrexAppState extends State<OrexApp> {
     if (!mounted) return;
     final call = widget.matrix.call;
     if (call.isActive && call.roomId == room.id) return;
+    if (!call.isActive) unawaited(call.prepareIncoming(room));
     if (!_incomingCallDialogs.add(room.id)) return;
 
     void retryLater() {
@@ -298,12 +288,34 @@ class _OrexAppState extends State<OrexApp> {
     });
   }
 
+  void _openSystemAcceptedCall(String roomId) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          !widget.matrix.call.isActive ||
+          widget.matrix.call.roomId != roomId) {
+        return;
+      }
+      final nav = _navKey.currentState;
+      final ctx = nav?.overlay?.context ?? _navKey.currentContext;
+      if (nav == null || ctx == null || !ctx.mounted) return;
+      if (MediaQuery.sizeOf(ctx).width >= 900) {
+        widget.matrix.call.minimize();
+        return;
+      }
+      widget.matrix.call.expand();
+      nav.push(
+        MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
+      );
+    });
+  }
+
   void _onChanged() => setState(() {});
 
   @override
   void dispose() {
     _verificationSub?.cancel();
     _incomingCallSub?.cancel();
+    _systemAcceptedCallSub?.cancel();
     widget.matrix.removeListener(_onChanged);
     widget.theme.removeListener(_onChanged);
     super.dispose();
@@ -312,7 +324,7 @@ class _OrexAppState extends State<OrexApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Orex Messenger',
+      title: orexAppName,
       navigatorKey: _navKey,
       scrollBehavior: OrexScrollBehavior(),
       debugShowCheckedModeBanner: false,

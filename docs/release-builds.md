@@ -1,6 +1,6 @@
 # Orex Release Builds
 
-Эта инструкция нужна для сборки артефактов `0.3.3+3` тестировщикам.
+Эта инструкция нужна для сборки артефактов `0.4.0-dev.2+5` тестировщикам.
 README описывает продукт, а здесь лежит практическая часть: ключи Android,
 Windows production build и SQLCipher-проверки.
 
@@ -9,7 +9,7 @@ Windows production build и SQLCipher-проверки.
 Проверьте версию в `pubspec.yaml`:
 
 ```yaml
-version: 0.3.3+3
+version: 0.4.0-dev.2+5
 ```
 
 Затем выполните базовый gate:
@@ -70,16 +70,22 @@ OREX_ANDROID_KEY_PASSWORD
 ### 2.3. Собрать APK
 
 ```powershell
-flutter build apk --release --no-pub `
+flutter build apk --release --split-per-abi --no-pub `
   --dart-define=OREX_ENV=production `
   --dart-define=OREX_DEBUG_LOGS=false
 ```
 
-Артефакт:
+Артефакты:
 
 ```text
-build\app\outputs\flutter-apk\app-release.apk
+build\app\outputs\flutter-apk\app-armeabi-v7a-release.apk
+build\app\outputs\flutter-apk\app-arm64-v8a-release.apk
+build\app\outputs\flutter-apk\app-x86_64-release.apk
 ```
+
+Для большинства современных Android-устройств нужен `app-arm64-v8a-release.apk`.
+Не собирайте распространяемый fat APK без `--split-per-abi`: он включает native
+библиотеки сразу для всех ABI и заметно увеличивает размер установщика.
 
 Если Gradle пишет `Android release signing is not configured`, значит
 `android/key.properties` не найден, путь к keystore неправильный или не заданы
@@ -167,7 +173,7 @@ winget install --id JRSoftware.InnoSetup -e `
 Артефакт:
 
 ```text
-build\windows\x64\installer\Orex-Setup-0.3.3+3.exe
+build\windows\x64\installer\Orex-Setup-0.4.0-dev.2+5.exe
 ```
 
 Именно этот `.exe` удобно отдавать тестировщикам вместо zip. Он ставит Orex в
@@ -180,7 +186,7 @@ Windows-БД создаётся как новый файл:
 orex-sqlcipher.sqlite
 ```
 
-Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.3.3+3`
+Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.4.0-dev.2+5`
 это ожидаемо.
 
 При старте Orex проверяет `PRAGMA cipher_version`. Если вместо SQLCipher
@@ -205,22 +211,33 @@ build\web
 Web не использует `OREX_ALLOW_INSECURE_DESKTOP_CACHE`: это правило относится к
 IO desktop-кэшу, а не к browser storage.
 
-## 5. Что отправлять тестировщикам для `0.3.3+3`
+## 5. Что отправлять тестировщикам для `0.4.0-dev.2+5`
 
 Минимально:
 
-- `app-release.apk` для Android;
+- нужный ABI-specific APK для Android (`arm64-v8a` для большинства современных
+  устройств; остальные ABI — только соответствующим тестировщикам);
 - папку `build\windows\x64\runner\Release\` для Windows;
 - короткий changelog и список smoke-сценариев.
+
+Не переименовывайте три split-артефакта в один `app-release.apk`: имя ABI должно
+оставаться видимым, иначе легко отправить тестировщику несовместимый пакет.
 
 Smoke:
 
 ```text
+cold start: native splash -> Flutter splash без белой вспышки
+login / registration: иконка, слоган и версия совпадают со splash
 login / restore session
+установка правильного split APK на arm64-v8a тестовом устройстве
 старый канал с одним постом открывается без ручной прокрутки вверх
 поиск человека -> preview -> вход в DM
 сообщение + reply + attachment
 обычный исходящий и входящий звонок
 отклонение / завершение звонка
+Android 8+: входящий -> системная карточка -> принять / отклонить
+Android 8+: активный звонок -> завершить из системного UI / гарнитуры
+Android 8+: system mute / hold -> микрофон и входящий звук восстанавливаются
+Android 8+: speaker / earpiece / wired / Bluetooth route без конфликта AudioManager
 голосовой канал: grant / revoke
 ```

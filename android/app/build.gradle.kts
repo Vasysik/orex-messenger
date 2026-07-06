@@ -83,6 +83,19 @@ android {
     }
 }
 
+
+dependencies {
+    // Keep Android system-call integration isolated in OrexAndroidTelecomManager
+    // so future Core-Telecom upgrades remain native-only. 1.0.1 is the stable
+    // bug-fix release for audio routing and endpoint handling.
+    implementation("androidx.core:core-telecom:1.0.1")
+
+    // OrexAndroidTelecomManager uses Dispatchers.Main for MethodChannel and
+    // Telecom callbacks; make the Android Main dispatcher an explicit app
+    // dependency instead of relying on a transitive implementation detail.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+}
+
 gradle.taskGraph.whenReady {
     val releaseArtifactRequested = allTasks.any { task ->
         val taskName = task.name
