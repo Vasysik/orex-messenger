@@ -32,6 +32,99 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+if(WIN32)
+  set(OREX_OPENSSL_ROOT "$ENV{OPENSSL_ROOT_DIR}")
+  if(NOT OREX_OPENSSL_ROOT AND EXISTS "C:/Program Files/OpenSSL-Win64")
+    set(OREX_OPENSSL_ROOT "C:/Program Files/OpenSSL-Win64")
+  endif()
+
+  if(OREX_OPENSSL_ROOT)
+    file(TO_CMAKE_PATH "${OREX_OPENSSL_ROOT}" OREX_OPENSSL_ROOT)
+    set(OPENSSL_ROOT_DIR "${OREX_OPENSSL_ROOT}" CACHE PATH "OpenSSL root" FORCE)
+
+    if(EXISTS "${OREX_OPENSSL_ROOT}/include/openssl/opensslv.h")
+      set(OPENSSL_INCLUDE_DIR "${OREX_OPENSSL_ROOT}/include"
+        CACHE PATH "OpenSSL include directory" FORCE)
+    endif()
+
+    if(EXISTS "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libcrypto_static.lib")
+      set(OPENSSL_CRYPTO_LIBRARY
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libcrypto_static.lib"
+        CACHE FILEPATH "OpenSSL crypto library" FORCE)
+      set(LIB_EAY_RELEASE
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libcrypto_static.lib"
+        CACHE FILEPATH "OpenSSL crypto release library" FORCE)
+      set(OPENSSL_CRYPTO_LIBRARY_RELEASE
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libcrypto_static.lib"
+        CACHE FILEPATH "OpenSSL crypto release library" FORCE)
+    elseif(EXISTS "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libcrypto.lib")
+      set(OPENSSL_CRYPTO_LIBRARY
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libcrypto.lib"
+        CACHE FILEPATH "OpenSSL crypto library" FORCE)
+      set(LIB_EAY_RELEASE
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libcrypto.lib"
+        CACHE FILEPATH "OpenSSL crypto release library" FORCE)
+      set(OPENSSL_CRYPTO_LIBRARY_RELEASE
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libcrypto.lib"
+        CACHE FILEPATH "OpenSSL crypto release library" FORCE)
+    endif()
+
+    if(EXISTS "${OREX_OPENSSL_ROOT}/lib/VC/x64/MDd/libcrypto_static.lib")
+      set(LIB_EAY_DEBUG
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MDd/libcrypto_static.lib"
+        CACHE FILEPATH "OpenSSL crypto debug library" FORCE)
+      set(OPENSSL_CRYPTO_LIBRARY_DEBUG
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MDd/libcrypto_static.lib"
+        CACHE FILEPATH "OpenSSL crypto debug library" FORCE)
+    elseif(EXISTS "${OREX_OPENSSL_ROOT}/lib/VC/x64/MDd/libcrypto.lib")
+      set(LIB_EAY_DEBUG
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MDd/libcrypto.lib"
+        CACHE FILEPATH "OpenSSL crypto debug library" FORCE)
+      set(OPENSSL_CRYPTO_LIBRARY_DEBUG
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MDd/libcrypto.lib"
+        CACHE FILEPATH "OpenSSL crypto debug library" FORCE)
+    endif()
+
+    if(EXISTS "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libssl_static.lib")
+      set(OPENSSL_SSL_LIBRARY
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libssl_static.lib"
+        CACHE FILEPATH "OpenSSL SSL library" FORCE)
+      set(SSL_EAY_RELEASE
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libssl_static.lib"
+        CACHE FILEPATH "OpenSSL SSL release library" FORCE)
+      set(OPENSSL_SSL_LIBRARY_RELEASE
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libssl_static.lib"
+        CACHE FILEPATH "OpenSSL SSL release library" FORCE)
+    elseif(EXISTS "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libssl.lib")
+      set(OPENSSL_SSL_LIBRARY
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libssl.lib"
+        CACHE FILEPATH "OpenSSL SSL library" FORCE)
+      set(SSL_EAY_RELEASE
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libssl.lib"
+        CACHE FILEPATH "OpenSSL SSL release library" FORCE)
+      set(OPENSSL_SSL_LIBRARY_RELEASE
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MD/libssl.lib"
+        CACHE FILEPATH "OpenSSL SSL release library" FORCE)
+    endif()
+
+    if(EXISTS "${OREX_OPENSSL_ROOT}/lib/VC/x64/MDd/libssl_static.lib")
+      set(SSL_EAY_DEBUG
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MDd/libssl_static.lib"
+        CACHE FILEPATH "OpenSSL SSL debug library" FORCE)
+      set(OPENSSL_SSL_LIBRARY_DEBUG
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MDd/libssl_static.lib"
+        CACHE FILEPATH "OpenSSL SSL debug library" FORCE)
+    elseif(EXISTS "${OREX_OPENSSL_ROOT}/lib/VC/x64/MDd/libssl.lib")
+      set(SSL_EAY_DEBUG
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MDd/libssl.lib"
+        CACHE FILEPATH "OpenSSL SSL debug library" FORCE)
+      set(OPENSSL_SSL_LIBRARY_DEBUG
+        "${OREX_OPENSSL_ROOT}/lib/VC/x64/MDd/libssl.lib"
+        CACHE FILEPATH "OpenSSL SSL debug library" FORCE)
+    endif()
+  endif()
+endif()
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by

@@ -2,7 +2,7 @@
 
 Эта инструкция нужна для сборки артефактов `0.3.3+3` тестировщикам.
 README описывает продукт, а здесь лежит практическая часть: ключи Android,
-Windows dogfood build и ограничения desktop SQL.
+Windows production build и SQLCipher-проверки.
 
 ## 1. Перед сборкой
 
@@ -88,19 +88,48 @@ env-переменные.
 `OREX_ALLOW_UNSIGNED_ANDROID_RELEASE=true` используйте только для CI
 compile-check. Такой APK нельзя отдавать как релизный артефакт.
 
-## 3. Windows build для тестировщиков
+## 3. Windows production build для тестировщиков
 
-На Windows/Linux desktop cache пока не SQLCipher. Поэтому production desktop
-режим с `OREX_ENV=production` должен падать при попытке использовать
-незашифрованную Matrix-БД.
+Windows использует SQLCipher через `sqlcipher_flutter_libs` и
+`sqflite_common_ffi`. Перед сборкой на машине разработчика должны быть доступны
+инструменты CMake/MSVC из обычного Flutter Windows toolchain. Для сборки
+SQLCipher-плагина также нужен OpenSSL с headers/libs. Runtime/Light-пакет не
+подходит.
 
-Для тестировщиков сейчас используйте dogfood-сборку:
+```powershell
+choco install openssl
+```
+
+Если Chocolatey не установлен:
+
+```powershell
+winget install --id ShiningLight.OpenSSL.Dev -e `
+  --accept-package-agreements `
+  --accept-source-agreements
+```
+
+Проверка, что установлен именно dev-вариант:
+
+```powershell
+Test-Path "C:\Program Files\OpenSSL-Win64\include\openssl\opensslv.h"
+Test-Path "C:\Program Files\OpenSSL-Win64\lib\VC\x64\MD\libcrypto_static.lib"
+```
+
+Обе команды должны вернуть `True`. Если CMake всё ещё пишет:
+
+```text
+Could NOT find OpenSSL
+```
+
+удалите `OpenSSL Light` и поставьте `ShiningLight.OpenSSL.Dev`. Проект сам
+подсказывает CMake стандартный путь `C:\Program Files\OpenSSL-Win64`; для
+нестандартной установки задайте `OPENSSL_ROOT_DIR`.
+
+Сборка:
 
 ```powershell
 flutter build windows --release --no-pub `
-  --dart-define=OREX_ENV=dev `
-  --dart-define=OREX_HOMESERVER=https://vasys.ru `
-  --dart-define=OREX_JWT_SERVICE=https://jwt.vasys.ru `
+  --dart-define=OREX_ENV=production `
   --dart-define=OREX_DEBUG_LOGS=false
 ```
 
@@ -116,38 +145,50 @@ build\windows\x64\runner\Release\orex_messenger.exe
 build\windows\x64\runner\Release\
 ```
 
-а не один `.exe`, потому что рядом лежат DLL и runtime-файлы Flutter.
+а не один `.exe`, потому что рядом лежат DLL, включая SQLCipher-backed
+`sqlite3.dll`, и runtime-файлы Flutter.
 
-Эта сборка не требует `OREX_ALLOW_INSECURE_DESKTOP_CACHE`, потому что она
-собрана как `dev`. Но это именно dogfood/testing build, а не публичный
-production desktop release.
+### 3.1. Windows installer вместо zip
 
-## 4. Windows production release
-
-Команда будущей production-сборки:
+Для нормального `.exe` установщика используйте Inno Setup:
 
 ```powershell
-flutter build windows --release --no-pub `
-  --dart-define=OREX_ENV=production `
-  --dart-define=OREX_DEBUG_LOGS=false
+winget install --id JRSoftware.InnoSetup -e `
+  --accept-package-agreements `
+  --accept-source-agreements
 ```
 
-Но на текущем коде такую сборку нельзя честно отдавать как публичный secure
-desktop release: Windows/Linux используют обычный SQLite через
-`sqflite_common_ffi`, а не SQLCipher.
+После успешной Windows release-сборки:
 
-Чтобы production Windows стал настоящим релизом, нужно:
+```powershell
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" windows\installer\orex.iss
+```
 
-- подключить SQLCipher-backed desktop database;
-- открыть Matrix SDK database через зашифрованный backend;
-- хранить ключ БД через Windows Credential Manager / DPAPI или другой
-  защищённый механизм;
-- оставить fail-closed policy для production, если encrypted storage недоступен.
+Артефакт:
 
-`OREX_ALLOW_INSECURE_DESKTOP_CACHE=true` не используйте для публичного релиза.
-Это аварийный dogfood escape hatch.
+```text
+build\windows\x64\installer\Orex-Setup-0.3.3+3.exe
+```
 
-## 5. Web release
+Именно этот `.exe` удобно отдавать тестировщикам вместо zip. Он ставит Orex в
+user-level папку `%LOCALAPPDATA%\Programs\Orex Messenger`, не требует админских
+прав и забирает все DLL из `build\windows\x64\runner\Release\`.
+
+Windows-БД создаётся как новый файл:
+
+```text
+orex-sqlcipher.sqlite
+```
+
+Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.3.3+3`
+это ожидаемо.
+
+При старте Orex проверяет `PRAGMA cipher_version`. Если вместо SQLCipher
+подхватится обычный SQLite, приложение не откроет Matrix cache как plaintext.
+
+`OREX_ALLOW_INSECURE_DESKTOP_CACHE=true` для Windows release больше не нужен.
+
+## 4. Web release
 
 ```powershell
 flutter build web --release --no-pub `
@@ -164,7 +205,7 @@ build\web
 Web не использует `OREX_ALLOW_INSECURE_DESKTOP_CACHE`: это правило относится к
 IO desktop-кэшу, а не к browser storage.
 
-## 6. Что отправлять тестировщикам для `0.3.3+3`
+## 5. Что отправлять тестировщикам для `0.3.3+3`
 
 Минимально:
 

@@ -37,7 +37,8 @@ Orex строится как личный мессенджер с тёплым �
 - приватные Matrix-комнаты могут использовать E2EE;
 - локальная база на Android/iOS/macOS открывается через SQLCipher-совместимый
   путь текущего DB-стека;
-- Windows/Linux desktop cache пока не считается зашифрованным production storage.
+- Windows/Linux desktop cache открывается через SQLCipher-backed FFI database и
+  проверяет `PRAGMA cipher_version` перед использованием.
 
 Важно: E2EE сообщений не означает автоматическое E2EE для звонков или
 зашифрованный desktop-кэш на каждой платформе. Эти границы в Orex описаны
@@ -158,14 +159,20 @@ media E2EE**. Это не финальная цель, а безопасная �
 
 ## 9. Локальное хранение
 
-На Android/iOS/macOS локальная база открывается через SQLCipher-совместимый
-путь. На Windows/Linux сейчас используется обычный SQLite через FFI, поэтому
-production desktop-режим fail-closed, если приложение должно работать с
-незашифрованным Matrix cache.
+Локальная Matrix-БД шифруется на поддерживаемых платформах:
 
-Для внутреннего Windows dogfood можно собирать приложение как `OREX_ENV=dev` с
-реальными endpoint-ами. Это не требует `OREX_ALLOW_INSECURE_DESKTOP_CACHE`, но
-и не является публичной production-сборкой с защищённым desktop storage.
+- Android/iOS/macOS: `sqflite_sqlcipher`;
+- Windows/Linux: `sqlcipher_flutter_libs` + `sqlite3`/`sqflite_common_ffi`;
+- пароль БД генерируется как 256-битный секрет и хранится через
+  `flutter_secure_storage`.
+
+Desktop backend открывает новый файл `orex-sqlcipher.sqlite`. Старый
+`orex.sqlite` из dogfood-сборок не мигрируется и не читается: для Windows перед
+`0.3.3+3` миграции не нужны.
+
+Если на Windows/Linux вместо SQLCipher случайно загрузится обычный `sqlite3`,
+Orex сразу падает на проверке `PRAGMA cipher_version`, чтобы не создать
+plaintext Matrix cache.
 
 ## 10. Архитектура
 
@@ -215,9 +222,8 @@ flutter build apk --release --no-pub
 flutter build windows --release --no-pub
 ```
 
-Android release требует signing. Windows production release с
-`OREX_ENV=production` требует зашифрованный desktop cache, которого пока нет для
-Windows/Linux.
+Android release требует signing. Windows release теперь можно собирать с
+`OREX_ENV=production`: desktop database открывается через SQLCipher-backed FFI.
 
 ## 12. Дорожная карта
 
@@ -225,7 +231,6 @@ Windows/Linux.
 
 - Media E2EE для звонков через LiveKit `E2EEOptions` и Matrix-backed call keys.
 - Server-side Orex authorization gateway для LiveKit token grants.
-- Windows/Linux encrypted desktop cache вместо обычного SQLite FFI.
 - Crash reporting и privacy-safe diagnostics для login, sync, calls и media.
 
 ### 12.2. Mobile release
