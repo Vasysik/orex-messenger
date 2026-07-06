@@ -26,6 +26,10 @@ void main() {
       expect(config.jwtService, OrexRuntimeConfig.productionJwtService);
       expect(config.homeserverUri, Uri.parse('https://vasys.ru'));
       expect(config.jwtServiceUri, Uri.parse('https://jwt.vasys.ru'));
+      expect(
+        config.pushGatewayUri,
+        Uri.parse('http://sygnal:5000/_matrix/push/v1/notify'),
+      );
       expect(config.homeserverHost, 'vasys.ru');
       expect(config.allowInsecureDesktopCache, isFalse);
     });
@@ -91,8 +95,12 @@ void main() {
       );
     });
 
-    test('keeps push disabled when gateway is not configured', () {
-      final config = OrexRuntimeConfig.fromDefines();
+    test('keeps push disabled outside production when gateway is omitted', () {
+      final config = OrexRuntimeConfig.fromDefines(
+        environmentName: 'dev',
+        homeserver: 'https://matrix.dev.example.org',
+        jwtService: 'https://jwt.dev.example.org',
+      );
 
       expect(config.pushGatewayUri, isNull);
     });
@@ -109,6 +117,24 @@ void main() {
             contains('/_matrix/push/v1/notify'),
           ),
         ),
+      );
+    });
+
+    test('allows only the built-in internal HTTP gateway in production', () {
+      final production = OrexRuntimeConfig.fromDefines();
+      expect(
+        production.pushGatewayUri,
+        Uri.parse(OrexRuntimeConfig.productionPushGateway),
+      );
+
+      expect(
+        () => OrexRuntimeConfig.fromDefines(
+          environmentName: 'dev',
+          homeserver: 'https://matrix.dev.example.org',
+          jwtService: 'https://jwt.dev.example.org',
+          pushGateway: OrexRuntimeConfig.productionPushGateway,
+        ),
+        throwsA(isA<StateError>()),
       );
     });
 

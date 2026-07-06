@@ -4,7 +4,7 @@
 сквозным шифрованием сообщений через **vodozemac** и нативными звонками Orex на
 стеке **MatrixRTC / LiveKit**. Единая кодовая база: **Web · Android · Windows**.
 
-Текущая версия: `0.4.0+7`.
+Текущая версия: `0.4.0+8`.
 
 Orex сейчас находится в стадии **desktop-first alpha / dogfood**: это уже
 собираемый продукт с нормальным quality gate, но не публичный security-oriented
@@ -188,12 +188,18 @@ Matrix push локальными таймерами или фоновым pollin
   сделать Firebase-конфигурацию обязательной через
   `OREX_REQUIRE_ANDROID_PUSH=true`.
 
-Пункт 2 ещё не помечен завершённым. Для реальной доставки на устройстве нужен
-развёрнутый Orex Push Gateway, который принимает стандартный Matrix endpoint
-`/_matrix/push/v1/notify` и отправляет FCM data-message на `pushkey`. Отдельным
-следующим срезом остаётся headless/background bootstrap входящего MatrixRTC-
-вызова и передача уже подтверждённого вызова в Core-Telecom с действиями
-«ответить/отклонить» при закрытом процессе.
+Production gateway теперь развёрнут рядом с Synapse как внутренний Sygnal:
+`http://sygnal:5000/_matrix/push/v1/notify`. Адрес не публикуется через Traefik
+и доступен только сервисам в закрытой Docker-сети `matrix-backend`; Android
+клиент сам к нему не подключается — он регистрирует URL pusher на homeserver,
+а запросы выполняет Synapse. Production build использует этот endpoint и
+`app_id = ru.vasys.orex_messenger` по умолчанию, поэтому передавать push URL
+через `--dart-define` больше не нужно.
+
+Пункт 2 ещё не помечен завершённым: следующим срезом остаётся полноценный
+end-to-end smoke реальной FCM-доставки, затем headless/background bootstrap
+входящего MatrixRTC-вызова и передача подтверждённого вызова в Core-Telecom с
+действиями «ответить/отклонить» при закрытом процессе.
 
 Минимальный контракт Orex gateway → Android для текущего клиента:
 
@@ -212,12 +218,12 @@ call_id   = ...                   # для incoming_call, если извест�
 ```powershell
 flutter build apk --release --split-per-abi --no-pub `
   --dart-define=OREX_ENV=production `
-  --dart-define=OREX_PUSH_GATEWAY=https://push.example.org/_matrix/push/v1/notify `
   --dart-define=OREX_DEBUG_LOGS=false
 ```
 
 Практическая настройка Firebase и release gate описана в
-`docs/release-builds.md`.
+`docs/release-builds.md`, а серверный контракт Synapse → Sygnal — в
+`docs/push-infrastructure.md`.
 
 LiveKit JWT берётся через `lk-jwt-service` по legacy-compatible контракту
 `POST /sfu/get`. В этот endpoint нельзя отправлять `requested_livekit_grants`:
@@ -318,7 +324,7 @@ desktop database открывается через SQLCipher-backed FFI.
 
 Дорожная карта ниже фиксирует ближайшие продуктовые этапы Orex. Пункты внутри
 версий — это цели релиза, а не обещание, что каждая из них уже реализована в
-текущей `0.4.0+7`.
+текущей `0.4.0+8`.
 
 ### 12.1. Версия 0.4.0 — полноценное мобильное приложение
 
@@ -332,9 +338,10 @@ desktop database открывается через SQLCipher-backed FFI.
    Закрытый процесс и доставка вызова через push сознательно остаются пунктом 2.
 2. **🟡 Уведомления и вызовы при закрытом приложении — в работе с
    `0.4.0+6`.** Уже есть нативный Android FCM receiver, Matrix HTTP-pusher,
-   безопасная ротация токена, unregister при logout, `event_id_only` и cold-start
-   переход в комнату. До завершения пункта нужны production Orex Push Gateway,
-   полноценная closed-process доставка входящего вызова в Core-Telecom и APNs.
+   безопасная ротация токена, unregister при logout, `event_id_only`, cold-start
+   переход в комнату и встроенный production-контракт внутреннего Sygnal. До
+   завершения пункта нужны end-to-end FCM smoke, полноценная closed-process
+   доставка входящего вызова в Core-Telecom и APNs.
 3. **Переключение камеры в видеозвонке.** Быстрое переключение front/back camera
    без пересоздания звонка.
 4. **Звонки в фоне и при заблокированном экране.** Android foreground call

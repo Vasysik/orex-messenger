@@ -76,8 +76,9 @@ class OrexNativePushPlatform implements OrexPushPlatform {
       : _channel = channel ?? const MethodChannel(_channelName);
 
   static const _channelName = 'orex/push';
+  static const androidAppId = 'ru.vasys.orex_messenger';
   static const _androidIdentity = OrexPushPlatformIdentity(
-    appId: 'ru.orex.messenger.android',
+    appId: androidAppId,
     platform: 'android',
     deviceLabel: 'Android',
   );

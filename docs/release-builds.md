@@ -1,6 +1,6 @@
 # Orex Release Builds
 
-Эта инструкция нужна для сборки артефактов `0.4.0+7` тестировщикам.
+Эта инструкция нужна для сборки артефактов `0.4.0+8` тестировщикам.
 README описывает продукт, а здесь лежит практическая часть: ключи Android,
 Windows production build и SQLCipher-проверки.
 
@@ -9,7 +9,7 @@ Windows production build и SQLCipher-проверки.
 Проверьте версию в `pubspec.yaml`:
 
 ```yaml
-version: 0.4.0+7
+version: 0.4.0+8
 ```
 
 Затем выполните базовый gate:
@@ -80,15 +80,22 @@ android/app/google-services.json
 часть исходников. Без файла Android всё ещё компилируется, но нативный push
 bridge возвращает `notSupported` и Matrix pusher не регистрируется.
 
-Также нужен production Orex Push Gateway. Клиент принимает только абсолютный
-HTTPS endpoint со стандартным Matrix-путём:
+Production Orex Push Gateway уже задан в клиенте и не требует `--dart-define`:
 
 ```text
-https://push.example.org/_matrix/push/v1/notify
+http://sygnal:5000/_matrix/push/v1/notify
+app_id = ru.vasys.orex_messenger
 ```
 
-Homeserver отправляет туда Matrix push notification, а gateway должен доставлять
-на FCM token (`pushkey`) именно **data-message**. Для текущего Android-клиента
+Это намеренно внутренний Docker URL: Android-клиент передаёт его Synapse как
+адрес HTTP-pusher, но сам к нему не подключается. `sygnal` должен находиться с
+Synapse в закрытой сети `matrix-backend`, без `ports:` и без Traefik router. Для
+внешних/custom gateway override по-прежнему разрешён только абсолютный HTTPS
+URL со стандартным Matrix-путём. Серверная network-policy и точный
+`ip_range_whitelist` описаны в `docs/push-infrastructure.md`.
+
+Homeserver отправляет туда Matrix push notification, а gateway доставляет на
+FCM token (`pushkey`) **data-message**. Для текущего Android-клиента
 поддерживаются поля:
 
 ```text
@@ -120,7 +127,6 @@ $env:OREX_REQUIRE_ANDROID_PUSH = "true"
 ```powershell
 flutter build apk --release --split-per-abi --no-pub `
   --dart-define=OREX_ENV=production `
-  --dart-define=OREX_PUSH_GATEWAY=https://push.example.org/_matrix/push/v1/notify `
   --dart-define=OREX_DEBUG_LOGS=false
 ```
 
@@ -222,7 +228,7 @@ winget install --id JRSoftware.InnoSetup -e `
 Артефакт:
 
 ```text
-build\windows\x64\installer\Orex-Setup-0.4.0+7.exe
+build\windows\x64\installer\Orex-Setup-0.4.0+8.exe
 ```
 
 Именно этот `.exe` удобно отдавать тестировщикам вместо zip. Он ставит Orex в
@@ -235,7 +241,7 @@ Windows-БД создаётся как новый файл:
 orex-sqlcipher.sqlite
 ```
 
-Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.4.0+7`
+Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.4.0+8`
 это ожидаемо.
 
 При старте Orex проверяет `PRAGMA cipher_version`. Если вместо SQLCipher
@@ -260,7 +266,7 @@ build\web
 Web не использует `OREX_ALLOW_INSECURE_DESKTOP_CACHE`: это правило относится к
 IO desktop-кэшу, а не к browser storage.
 
-## 5. Что отправлять тестировщикам для `0.4.0+7`
+## 5. Что отправлять тестировщикам для `0.4.0+8`
 
 Минимально:
 

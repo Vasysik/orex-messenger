@@ -6,7 +6,7 @@ import 'package:orex_messenger/core/push/push_registration_service.dart';
 void main() {
   final config = OrexPushRegistrationConfig(
     gateway: Uri.parse('https://push.example.org/_matrix/push/v1/notify'),
-    appId: 'ru.orex.messenger.android',
+    appId: 'ru.vasys.orex_messenger',
     appDisplayName: 'Orex Messenger',
     deviceDisplayName: 'Orex Android · DEVICE',
     language: 'ru-RU',

@@ -267,7 +267,9 @@ object OrexPushBridge {
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             @Suppress("DEPRECATION")
-            builder.priority = if (incomingCall) Notification.PRIORITY_HIGH else Notification.PRIORITY_DEFAULT
+            builder.setPriority(
+                if (incomingCall) Notification.PRIORITY_HIGH else Notification.PRIORITY_DEFAULT,
+            )
         }
 
         manager.notify(notificationId, builder.build())

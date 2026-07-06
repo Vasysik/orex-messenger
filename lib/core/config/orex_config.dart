@@ -36,6 +36,8 @@ class OrexRuntimeConfig {
 
   static const productionHomeserver = 'https://vasys.ru';
   static const productionJwtService = 'https://jwt.vasys.ru';
+  static const productionPushGateway =
+      'http://sygnal:5000/_matrix/push/v1/notify';
   static const defaultElementCallBase = 'https://call.element.io';
 
   final OrexEnvironment environment;
@@ -66,6 +68,10 @@ class OrexRuntimeConfig {
       jwtService,
       environment.isProduction ? productionJwtService : '',
     );
+    final resolvedPushGateway = _definedOrDefault(
+      pushGateway,
+      environment.isProduction ? productionPushGateway : '',
+    );
 
     return OrexRuntimeConfig(
       environment: environment,
@@ -75,7 +81,7 @@ class OrexRuntimeConfig {
         elementCallBase,
         defaultElementCallBase,
       ),
-      pushGateway: pushGateway.trim(),
+      pushGateway: resolvedPushGateway,
       requireVodozemac: requireVodozemac,
       debugLogs: debugLogs,
       allowInsecureDesktopCache: allowInsecureDesktopCache,
@@ -92,7 +98,20 @@ class OrexRuntimeConfig {
   Uri? get pushGatewayUri {
     final value = pushGateway.trim();
     if (value.isEmpty) return null;
-    final uri = _httpsUri(value, 'OREX_PUSH_GATEWAY');
+    final uri = Uri.parse(value);
+    final isProductionInternalGateway =
+        environment.isProduction && value == productionPushGateway;
+    if (!isProductionInternalGateway &&
+        (uri.scheme != 'https' || uri.host.isEmpty)) {
+      throw StateError(
+        'OREX_PUSH_GATEWAY must be an absolute https:// URL, except for the '
+        'built-in production Docker endpoint',
+      );
+    }
+    if (isProductionInternalGateway &&
+        (uri.scheme != 'http' || uri.host != 'sygnal' || uri.port != 5000)) {
+      throw StateError('Invalid built-in Orex production push gateway');
+    }
     if (uri.userInfo.isNotEmpty ||
         uri.path != '/_matrix/push/v1/notify' ||
         uri.hasQuery ||

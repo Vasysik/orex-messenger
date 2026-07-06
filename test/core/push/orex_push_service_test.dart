@@ -7,6 +7,13 @@ import 'package:orex_messenger/core/push/push_platform_bridge.dart';
 import 'package:orex_messenger/core/push/push_registration_service.dart';
 
 void main() {
+  test('Android app id matches the production Sygnal contract', () {
+    expect(
+      OrexNativePushPlatform.androidAppId,
+      'ru.vasys.orex_messenger',
+    );
+  });
+
   test('cold-start open is held until a UI listener receives it', () async {
     const open = OrexPushOpen(<String, String>{
       'room_id': '!room:example.org',
@@ -84,7 +91,7 @@ class _FakePushPlatform implements OrexPushPlatform {
 
   @override
   OrexPushPlatformIdentity get identity => const OrexPushPlatformIdentity(
-        appId: 'ru.orex.messenger.android',
+        appId: 'ru.vasys.orex_messenger',
         platform: 'android',
         deviceLabel: 'Android',
       );
