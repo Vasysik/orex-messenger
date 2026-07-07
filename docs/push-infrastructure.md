@@ -1,6 +1,6 @@
 # Orex Push Infrastructure
 
-Этот документ фиксирует production-контракт клиентской ветки `0.4.0+13`.
+Этот документ фиксирует production-контракт клиентской ветки `0.4.0+14`.
 Секреты Firebase сюда не добавляются.
 
 ## 1. Production identity
@@ -225,11 +225,11 @@ docker compose logs --since=15m synapse | \
 
 ### 6.6. Проверить Android
 
-После установки Android-сборки `0.4.0+13`:
+После установки Android-сборки `0.4.0+14`:
 
 ```powershell
 adb logcat -c
-adb logcat -s OrexPush
+adb logcat -s OrexPush OrexNotifications OrexSystemCall
 ```
 
 Безопасные сообщения:
@@ -237,7 +237,8 @@ adb logcat -s OrexPush
 ```text
 FCM registration token is available
 FCM data message received keys=[...]
-System notification posted kind=message|call
+Message notification posted
+Incoming call notification posted
 ```
 
 При запрещённом Android permission будет явный безопасный лог:
@@ -248,26 +249,50 @@ Notification dropped: POST_NOTIFICATIONS is not granted
 
 Token и значения Matrix routing-полей не печатаются. Если строки
 `FCM data message received` нет, FCM data-message до приложения не дошёл. Если
-она есть, но нет `System notification posted`, проверяйте permission/channel и
+она есть, но нет `Message notification posted` / `Incoming call notification posted`, проверяйте permission/channel и
 следующую строку native-лога.
 
-## 7. Что изменилось в `0.4.0+13`
+## 7. Что изменилось в `0.4.0+14`
 
-- Android pusher использует `event_id_only`: plaintext больше не нужен Sygnal
-  или FCM для отображения красивого уведомления;
-- живой Flutter engine разрешает push через текущий Matrix client, а закрытый
-  процесс — через сериализованный headless Flutter engine;
-- headless resolver открывает существующую SQLCipher Matrix-базу, восстанавливает
-  сессию, загружает exact event и локально расшифровывает E2EE;
-- FCM service ждёт завершения resolution в ограниченном временном бюджете, чтобы
-  Android не уничтожил процесс до публикации notification;
-- message notification получает реального автора, комнату и тело события;
-- MatrixRTC signaling-only membership не создаёт ложные «Новые сообщения»;
-- targeted RTC `ring` превращается в Core-Telecom incoming call, отдельный
-  audible high-importance channel и full-screen CallStyle UI;
-- «Принять»/«Отклонить» работают через cold start и продолжают существующий
-  MatrixRTC/LiveKit flow;
-- push-вызов автоматически истекает по TTL, если звонящий уже недоступен или
-  пользователь не ответил;
-- `adb logcat -s OrexPush OrexPushResolver OrexSystemCall` показывает границу,
-  на которой оборвалась доставка, без вывода токенов или plaintext.
+- удалены `OrexPushBackgroundResolver` и Dart headless Matrix resolver;
+- FCM callback больше не ждёт 42 секунды и не запускает сеть/SQLCipher/Flutter;
+- Matrix pusher снова передаёт полный стандартный payload (без
+  `event_id_only`). Sygnal FCM v1 гарантированно передаёт event type/routing,
+  но произвольные вложенные `content`-поля может flatten/обрезать; поэтому
+  MatrixRTC wake-up не зависит от наличия `notification_type` в FCM;
+- единый `OrexNotificationCenter` владеет message/call channels и call
+  notification ID;
+- сообщения используют `MessagingStyle`, системную группировку и стабильный
+  notification ID на комнату;
+- MatrixRTC `ring` проверяется по stable/unstable event type. Когда Sygnal
+  сохранил content-поля, дополнительно учитываются `notification_type` /
+  legacy `notify_type`, `sender_ts` и `lifetime`; иначе event type + FCM sent
+  time дают killed-process fallback с 45-секундным окном;
+- входящий звонок использует ringtone, вибрацию, CallStyle и conditional
+  full-screen intent; Android 14+ capability проверяется перед публикацией;
+- push-звонок не регистрируется в Core-Telecom до готовности Matrix/Flutter.
+  После обычного `prepareIncoming` Core-Telecom заменяет ту же карточку на месте;
+- `adb logcat -s OrexPush OrexNotifications OrexSystemCall` показывает доставку,
+  публикацию UI и переход к системной call-сессии без токенов и plaintext.
+
+## 8. E2EE и wake-envelope звонка
+
+Обычный `Room.sendRtcNotification()` в зашифрованной комнате проходит через
+`Room.sendEvent()` и становится `m.room.encrypted`. Для полностью закрытого
+Android-процесса это неразрешимо без запуска Flutter/Matrix crypto и открытия
+локальной БД — именно этот путь удалён.
+
+Поэтому Orex отправляет персональный ring как короткоживущий открытый MatrixRTC
+event через `Client.sendMessage()`. Payload содержит только:
+
+- `notification_type = ring`;
+- `sender_ts` и `lifetime` (45 секунд);
+- `m.mentions.user_ids` адресатов;
+- опциональный call intent, когда он доступен.
+
+Текст сообщений, вложения, ключи шифрования и медиапоток туда не попадают и
+остаются в своих E2EE/transport-контурах. Цена этого решения: сам факт и адресаты
+попытки звонка видимы homeserver/push-инфраструктуре. Это намеренный production
+trade-off ради входящего звонка при убитом процессе; скрывать этот metadata и
+одновременно требовать нативный killed-process call UI без доверенного server-side
+call hint невозможно.

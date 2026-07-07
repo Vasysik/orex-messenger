@@ -11,7 +11,6 @@ import 'core/config/orex_config.dart';
 import 'core/config/app_version.dart';
 import 'core/storage/database.dart';
 import 'core/matrix/matrix_service.dart';
-import 'core/push/push_background_resolver.dart';
 import 'core/push/push_platform_bridge.dart';
 import 'core/logging/orex_logger.dart';
 import 'features/auth/login_screen.dart';
@@ -23,9 +22,6 @@ import 'shared/theme/glass.dart';
 import 'shared/theme/orex_theme.dart';
 import 'shared/theme/theme_controller.dart';
 import 'shared/widgets/orex_app_brand.dart';
-
-@pragma('vm:entry-point')
-Future<void> orexPushBackgroundMain() => runOrexPushBackgroundEntrypoint();
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();

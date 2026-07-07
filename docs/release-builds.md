@@ -1,6 +1,6 @@
 # Orex Release Builds
 
-Эта инструкция нужна для сборки артефактов `0.4.0+13` тестировщикам.
+Эта инструкция нужна для сборки артефактов `0.4.0+14` тестировщикам.
 README описывает продукт, а здесь лежит практическая часть: ключи Android,
 Windows production build и SQLCipher-проверки.
 
@@ -9,7 +9,7 @@ Windows production build и SQLCipher-проверки.
 Проверьте версию в `pubspec.yaml`:
 
 ```yaml
-version: 0.4.0+13
+version: 0.4.0+14
 ```
 
 Затем выполните базовый gate:
@@ -100,17 +100,22 @@ URL со стандартным Matrix-путём. Серверная network-po
 `ip_range_whitelist` описаны в `docs/push-infrastructure.md`.
 
 Homeserver отправляет туда стандартный Matrix push notification, а Sygnal
-доставляет FCM **data-message**. В `0.4.0+13` Android pusher снова использует
-`event_id_only`: gateway получает только routing ids, а автор и plaintext не
-передаются через Sygnal/FCM.
+доставляет FCM **data-message**. В `0.4.0+14` Android pusher не использует
+`event_id_only`: нативному Android-коду нужен полный стандартный payload, чтобы
+немедленно классифицировать сообщение или MatrixRTC `ring` без сети, SQLCipher
+и запуска второго FlutterEngine внутри FCM callback.
 
-По `room_id/event_id` Orex сначала разрешает exact event через текущий Matrix-
-клиент, а при закрытом процессе поднимает headless Flutter engine с той же
-зашифрованной Matrix-базой. Matrix SDK загружает событие, синхронизирует
-недостающие ключи и локально расшифровывает E2EE. Уже разрешённый payload
-передаётся нативному Android-коду: обычное событие становится message
-notification с реальным автором/текстом, свежий MatrixRTC `ring` — системным
-Core-Telecom/CallStyle входящим вызовом.
+Сообщение сразу становится системным `MessagingStyle` notification. Для E2EE,
+если server-side push payload не содержит plaintext, Android показывает
+privacy-safe fallback. Свежий MatrixRTC `ring` сразу становится CallStyle
+входящим вызовом; после запуска Matrix/Flutter существующий Core-Telecom flow
+продолжает сигналинг и медиа.
+
+Для личного E2EE-звонка wake-envelope намеренно не шифруется Matrix room
+шифрованием: иначе убитый Android-процесс увидит только `m.room.encrypted` и не
+сможет показать входящий звонок без headless crypto engine. Envelope живёт 45
+секунд и не содержит текста, ключей или медиа; видимым push-инфраструктуре
+остаётся только metadata факта звонка и адресатов.
 
 Release-задача завершится ошибкой, если `android/app/google-services.json`
 отсутствует. Только для явной compile-only CI-проверки, артефакт которой нельзя
@@ -249,7 +254,7 @@ $Iscc = @(
 Артефакт:
 
 ```text
-build\windows\x64\installer\Orex-Setup-0.4.0+13.exe
+build\windows\x64\installer\Orex-Setup-0.4.0+14.exe
 ```
 
 Именно этот `.exe` удобно отдавать тестировщикам вместо zip. Он ставит Orex в
@@ -262,7 +267,7 @@ Windows-БД создаётся как новый файл:
 orex-sqlcipher.sqlite
 ```
 
-Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.4.0+13`
+Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.4.0+14`
 это ожидаемо.
 
 При старте Orex проверяет `PRAGMA cipher_version`. Если вместо SQLCipher
@@ -287,7 +292,7 @@ build\web
 Web не использует `OREX_ALLOW_INSECURE_DESKTOP_CACHE`: это правило относится к
 IO desktop-кэшу, а не к browser storage.
 
-## 5. Что отправлять тестировщикам для `0.4.0+13`
+## 5. Что отправлять тестировщикам для `0.4.0+14`
 
 Минимально:
 

@@ -511,14 +511,31 @@ class VoipService extends ChangeNotifier {
     }
 
     try {
-      await room.sendRtcNotification(
+      // Критичный Android wake-up сигнал отправляем как открытый MatrixRTC
+      // envelope. Обычный Room.sendRtcNotification() проходит через sendEvent()
+      // и в E2EE-комнате превращается в m.room.encrypted; тогда убитое Android-
+      // приложение не может понять из FCM payload, что это именно звонок, без
+      // запуска второго FlutterEngine и расшифровки БД. Здесь нет текста,
+      // ключей или медиаданных — только короткоживущий ring-сигнал MSC4075.
+      final notification = RtcNotificationContent.create(
         type: RtcNotificationType.ring,
-        userIds: targets.toList(growable: false),
         lifetime: const Duration(seconds: 45),
+      );
+      final content = <String, Object?>{
+        ...notification.toJson(),
+        'm.mentions': {
+          'user_ids': targets.toList(growable: false),
+        },
+      };
+      await client.sendMessage(
+        room.id,
+        RtcNotificationContent.eventType,
+        client.generateUniqueTransactionId(),
+        content,
       );
       OrexLog.d(
         'Voip',
-        'RTC ring sent room=${room.id} targets=${targets.length}',
+        'Wakeable RTC ring sent room=${room.id} targets=${targets.length}',
       );
     } catch (error) {
       // Ring delivery is an attention signal. The MatrixRTC membership above
