@@ -229,6 +229,10 @@ class MatrixService extends ChangeNotifier {
     final appIsBackgrounded =
         lifecycle != null && lifecycle != AppLifecycleState.resumed;
     if (appIsBackgrounded) {
+      // При настроенном Matrix pusher системным уведомлением владеет FCM:
+      // оно резолвит конкретный event_id и умеет расшифровать E2EE. Локальный
+      // sync-fallback иначе создаёт второй generic notification поверх него.
+      if (push.isConfigured) return;
       for (final room in increasedRooms) {
         unawaited(
           push.showSyncedMatrixNotification(

@@ -21,6 +21,8 @@ class OrexPushOpen {
   String get kind => _nonEmpty(data['orex_kind']) ?? 'matrix_event';
   String? get deliveryId => _nonEmpty(data['orex_delivery_id']);
   String? get action => _nonEmpty(data['orex_action']);
+  bool get fromSystem => data['orex_from_system'] == 'true';
+  bool get video => data['orex_video'] == 'true';
 
   static String? _nonEmpty(String? value) {
     final normalized = value?.trim();
@@ -80,8 +82,12 @@ abstract interface class OrexPushPlatform {
 /// Android bridge. На остальных платформах методы безопасно возвращают
 /// `notSupported`, поэтому MatrixService может владеть одним push-сервисом.
 class OrexNativePushPlatform implements OrexPushPlatform {
-  OrexNativePushPlatform({MethodChannel? channel})
-      : _channel = channel ?? const MethodChannel(_channelName);
+  OrexNativePushPlatform({
+    MethodChannel? channel,
+    Future<Map<String, String>?> Function(Map<String, String> payload)?
+        resolvePush,
+  })  : _channel = channel ?? const MethodChannel(_channelName),
+        _resolvePush = resolvePush;
 
   static const _channelName = 'orex/push';
   static const androidAppId = 'ru.vasys.orex_messenger';
@@ -92,6 +98,8 @@ class OrexNativePushPlatform implements OrexPushPlatform {
   );
 
   final MethodChannel _channel;
+  final Future<Map<String, String>?> Function(Map<String, String> payload)?
+      _resolvePush;
   final StreamController<String> _tokenChanges =
       StreamController<String>.broadcast();
   final StreamController<OrexPushOpen> _notificationOpens =
@@ -132,6 +140,11 @@ class OrexNativePushPlatform implements OrexPushPlatform {
         final data = _stringMap(call.arguments);
         if (data.isNotEmpty) _notificationOpens.add(OrexPushOpen(data));
         return true;
+      case 'resolvePush':
+        final resolver = _resolvePush;
+        final data = _stringMap(call.arguments);
+        if (resolver == null || data.isEmpty) return null;
+        return resolver(data);
       default:
         return null;
     }

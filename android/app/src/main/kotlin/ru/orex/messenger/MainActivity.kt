@@ -24,6 +24,16 @@ class MainActivity : FlutterActivity() {
         OrexPushBridge.captureLaunchIntent(this, intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        OrexPushBridge.onActivityResumed(this)
+    }
+
+    override fun onPause() {
+        OrexPushBridge.onActivityPaused(this)
+        super.onPause()
+    }
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,

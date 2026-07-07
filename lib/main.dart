@@ -11,6 +11,7 @@ import 'core/config/orex_config.dart';
 import 'core/config/app_version.dart';
 import 'core/storage/database.dart';
 import 'core/matrix/matrix_service.dart';
+import 'core/push/push_background_resolver.dart';
 import 'core/push/push_platform_bridge.dart';
 import 'core/logging/orex_logger.dart';
 import 'features/auth/login_screen.dart';
@@ -22,6 +23,9 @@ import 'shared/theme/glass.dart';
 import 'shared/theme/orex_theme.dart';
 import 'shared/theme/theme_controller.dart';
 import 'shared/widgets/orex_app_brand.dart';
+
+@pragma('vm:entry-point')
+Future<void> orexPushBackgroundMain() => runOrexPushBackgroundEntrypoint();
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -254,22 +258,49 @@ class _OrexAppState extends State<OrexApp> {
   }
 
   void _openPushNotification(OrexPushOpen open) {
+    unawaited(_handlePushNotificationOpen(open));
+  }
+
+  Future<void> _handlePushNotificationOpen(OrexPushOpen open) async {
     final roomId = open.roomId;
     if (!mounted || roomId == null) return;
-    final room = widget.matrix.client.getRoomById(roomId);
-    if (open.kind == 'incoming_call' && room != null) {
+
+    var room = widget.matrix.client.getRoomById(roomId);
+    if (open.kind == 'incoming_call' && room == null) {
+      try {
+        await widget.matrix.client.oneShotSync(timeout: Duration.zero);
+      } catch (e) {
+        OrexLog.d('Push', 'cold call room sync failed room=$roomId', e);
+      }
+      room = widget.matrix.client.getRoomById(roomId);
+    }
+
+    if (!mounted) return;
+    if (open.kind == 'incoming_call') {
+      if (room == null) {
+        OrexLog.d('Push', 'incoming call room unavailable room=$roomId');
+        return;
+      }
       switch (open.action) {
         case 'answer':
-          unawaited(widget.matrix.call.acceptIncoming(room, video: false));
+          await widget.matrix.call.acceptIncoming(
+            room,
+            video: open.video,
+            fromSystem: open.fromSystem,
+          );
           return;
         case 'reject':
-          unawaited(widget.matrix.call.rejectIncoming(room));
+          await widget.matrix.call.rejectIncoming(
+            room,
+            fromSystem: open.fromSystem,
+          );
           return;
         default:
           _showIncomingCall(room);
           return;
       }
     }
+
     setState(() {
       _pushRoomId = roomId;
       _pushOpenGeneration++;

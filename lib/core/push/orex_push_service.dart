@@ -5,6 +5,7 @@ import 'package:matrix/matrix.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logging/orex_logger.dart';
+import 'push_background_resolver.dart';
 import 'push_platform_bridge.dart';
 import 'push_registration_service.dart';
 
@@ -15,7 +16,10 @@ class OrexPushService {
     OrexPushPlatform? platform,
     OrexPushTokenStore? tokenStore,
   })  : _client = client,
-        _platform = platform ?? OrexNativePushPlatform(),
+        _platform = platform ??
+            OrexNativePushPlatform(
+              resolvePush: (payload) => resolveOrexMatrixPush(client, payload),
+            ),
         _tokenStore = tokenStore ?? const _SharedPreferencesPushTokenStore() {
     _openController = StreamController<OrexPushOpen>.broadcast(
       onListen: _flushPendingOpen,
@@ -291,6 +295,9 @@ class _MatrixPushRegistrar implements OrexPushRegistrar {
           url: config.gateway,
           additionalProperties: <String, Object?>{
             'platform': config.platform,
+            // Push gateway получает только routing ids. Автор и plaintext,
+            // включая E2EE, разрешаются локально на Android через Matrix SDK.
+            'format': 'event_id_only',
           },
         ),
         deviceDisplayName: config.deviceDisplayName,

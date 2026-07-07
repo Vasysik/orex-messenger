@@ -14,6 +14,22 @@ void main() {
     );
   });
 
+  test('incoming call open preserves action source and video flag', () {
+    const open = OrexPushOpen(<String, String>{
+      'orex_kind': 'incoming_call',
+      'room_id': '!call:example.org',
+      'orex_action': 'answer',
+      'orex_from_system': 'true',
+      'orex_video': 'true',
+    });
+
+    expect(open.kind, 'incoming_call');
+    expect(open.roomId, '!call:example.org');
+    expect(open.action, 'answer');
+    expect(open.fromSystem, isTrue);
+    expect(open.video, isTrue);
+  });
+
   test('cold-start open is held until a UI listener receives it', () async {
     const open = OrexPushOpen(<String, String>{
       'room_id': '!room:example.org',

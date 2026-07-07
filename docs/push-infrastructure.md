@@ -1,6 +1,6 @@
 # Orex Push Infrastructure
 
-Этот документ фиксирует production-контракт клиентской ветки `0.4.0+12`.
+Этот документ фиксирует production-контракт клиентской ветки `0.4.0+13`.
 Секреты Firebase сюда не добавляются.
 
 ## 1. Production identity
@@ -225,7 +225,7 @@ docker compose logs --since=15m synapse | \
 
 ### 6.6. Проверить Android
 
-После установки Android-сборки `0.4.0+12`:
+После установки Android-сборки `0.4.0+13`:
 
 ```powershell
 adb logcat -c
@@ -251,16 +251,23 @@ Token и значения Matrix routing-полей не печатаются. �
 она есть, но нет `System notification posted`, проверяйте permission/channel и
 следующую строку native-лога.
 
-## 7. Что изменилось в `0.4.0+12`
+## 7. Что изменилось в `0.4.0+13`
 
-- живой процесс в background/recents теперь создаёт системное Android-уведомление
-  при росте Matrix notification count вместо одного только звука;
-- инициатор нового личного звонка отправляет targeted MSC4075 RTC `ring` event;
-- Android умеет распознавать стандартный RTC `ring` payload из полного Sygnal
-  FCM API v1 data-message;
-- Orex больше не описывает `orex_kind` как обязательный контракт стандартного
-  Sygnal;
-- Android pusher в dogfood-ветке регистрируется без `event_id_only`, чтобы
-  уведомления показывали автора, комнату, текст и CallStyle-входящий звонок.
-  `event_id_only` остаётся будущим privacy-hardening режимом после появления
-  headless resolver/fetch/decrypt.
+- Android pusher использует `event_id_only`: plaintext больше не нужен Sygnal
+  или FCM для отображения красивого уведомления;
+- живой Flutter engine разрешает push через текущий Matrix client, а закрытый
+  процесс — через сериализованный headless Flutter engine;
+- headless resolver открывает существующую SQLCipher Matrix-базу, восстанавливает
+  сессию, загружает exact event и локально расшифровывает E2EE;
+- FCM service ждёт завершения resolution в ограниченном временном бюджете, чтобы
+  Android не уничтожил процесс до публикации notification;
+- message notification получает реального автора, комнату и тело события;
+- MatrixRTC signaling-only membership не создаёт ложные «Новые сообщения»;
+- targeted RTC `ring` превращается в Core-Telecom incoming call, отдельный
+  audible high-importance channel и full-screen CallStyle UI;
+- «Принять»/«Отклонить» работают через cold start и продолжают существующий
+  MatrixRTC/LiveKit flow;
+- push-вызов автоматически истекает по TTL, если звонящий уже недоступен или
+  пользователь не ответил;
+- `adb logcat -s OrexPush OrexPushResolver OrexSystemCall` показывает границу,
+  на которой оборвалась доставка, без вывода токенов или plaintext.

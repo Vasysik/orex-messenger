@@ -38,9 +38,10 @@ object OrexPushBridge {
     private const val EXTRA_PREFIX = "orex_push_payload_"
     private const val DELIVERY_ID_KEY = "orex_delivery_id"
     private const val PERMISSION_REQUEST_CODE = 46041
+    private const val UI_RESOLVE_TIMEOUT_MS = 18_000L
 
     private const val MESSAGE_CHANNEL_ID = "orex_messages"
-    private const val CALL_CHANNEL_ID = "orex_push_calls"
+    private const val CALL_CHANNEL_ID = "orex_push_calls_v2"
 
     private const val MAX_PAYLOAD_ENTRIES = 32
     private const val MAX_PAYLOAD_KEY_LENGTH = 80
@@ -53,6 +54,8 @@ object OrexPushBridge {
         "event_id",
         "call_id",
         "message_id",
+        "orex_from_system",
+        "orex_video",
     )
     private val PAYLOAD_PRIORITY_KEYS = listOf(
         *OPEN_PAYLOAD_KEYS.toTypedArray(),
@@ -78,6 +81,8 @@ object OrexPushBridge {
     private var channel: MethodChannel? = null
     private var pendingPermissionResult: MethodChannel.Result? = null
     private var firebaseConfigurationWarningLogged = false
+    @Volatile
+    private var activityResumed = false
 
     fun attach(activity: Activity, messenger: BinaryMessenger) {
         this.activity = activity
@@ -94,6 +99,14 @@ object OrexPushBridge {
         pendingPermissionResult = null
         channel?.setMethodCallHandler(null)
         channel = null
+    }
+
+    fun onActivityResumed(activity: Activity) {
+        if (this.activity === activity) activityResumed = true
+    }
+
+    fun onActivityPaused(activity: Activity) {
+        if (this.activity === activity) activityResumed = false
     }
 
     fun captureLaunchIntent(context: Context, intent: Intent?) {
@@ -113,7 +126,11 @@ object OrexPushBridge {
         invokeOnMainThread("onTokenRefresh", token)
     }
 
-    fun onMessageReceived(context: Context, message: RemoteMessage) {
+    fun onMessageReceived(
+        context: Context,
+        message: RemoteMessage,
+        onComplete: () -> Unit = {},
+    ) {
         applicationContext = context.applicationContext
         val payload = linkedMapOf<String, String>()
         payload.putAll(message.data)
@@ -122,10 +139,192 @@ object OrexPushBridge {
         message.notification?.body?.let { payload.putIfAbsent("body", it) }
 
         val normalized = normalizePayload(payload)
-        if (normalized.isEmpty()) return
+        if (normalized.isEmpty()) {
+            onComplete()
+            return
+        }
         Log.i(TAG, "FCM data message received keys=${normalized.keys.sorted()}")
-        showNotification(context.applicationContext, normalized)
+        val appContext = context.applicationContext
+        resolvePayload(appContext, normalized) { resolved ->
+            val effective = normalizePayload(resolved ?: normalized)
+            if (effective["orex_drop"] == "true") {
+                Log.i(TAG, "Resolved push suppressed because event is already read")
+                onComplete()
+                return@resolvePayload
+            }
+            if (resolved != null) {
+                Log.i(
+                    TAG,
+                    "Matrix push resolved kind=${effective["orex_kind"] ?: "matrix_event"}",
+                )
+            } else {
+                Log.e(TAG, "Matrix push resolver unavailable; using safe fallback")
+            }
+            handleResolvedPush(appContext, effective, onComplete)
+        }
     }
+
+    private fun resolvePayload(
+        context: Context,
+        payload: Map<String, String>,
+        callback: (Map<String, String>?) -> Unit,
+    ) {
+        val uiChannel = channel
+        if (uiChannel == null) {
+            resolveWithHeadlessEngine(context, payload, callback)
+            return
+        }
+
+        val handler = Handler(Looper.getMainLooper())
+        handler.post {
+            if (channel !== uiChannel) {
+                resolveWithHeadlessEngine(context, payload, callback)
+                return@post
+            }
+
+            var finished = false
+            val fallback = Runnable {
+                if (finished) return@Runnable
+                finished = true
+                Log.w(TAG, "Live Flutter push resolution timed out; switching to headless resolver")
+                resolveWithHeadlessEngine(context, payload, callback)
+            }
+            handler.postDelayed(fallback, UI_RESOLVE_TIMEOUT_MS)
+
+            uiChannel.invokeMethod(
+                "resolvePush",
+                payload,
+                object : MethodChannel.Result {
+                    override fun success(result: Any?) {
+                        if (finished) return
+                        finished = true
+                        handler.removeCallbacks(fallback)
+                        val resolved = stringMap(result)
+                        if (resolved.isEmpty()) {
+                            Log.w(TAG, "Live Flutter resolver returned no payload; switching to headless")
+                            resolveWithHeadlessEngine(context, payload, callback)
+                        } else {
+                            callback(resolved)
+                        }
+                    }
+
+                    override fun error(
+                        errorCode: String,
+                        errorMessage: String?,
+                        errorDetails: Any?,
+                    ) {
+                        if (finished) return
+                        finished = true
+                        handler.removeCallbacks(fallback)
+                        Log.w(TAG, "Live Flutter resolver failed: $errorCode $errorMessage")
+                        resolveWithHeadlessEngine(context, payload, callback)
+                    }
+
+                    override fun notImplemented() {
+                        if (finished) return
+                        finished = true
+                        handler.removeCallbacks(fallback)
+                        resolveWithHeadlessEngine(context, payload, callback)
+                    }
+                },
+            )
+        }
+    }
+
+    private fun resolveWithHeadlessEngine(
+        context: Context,
+        payload: Map<String, String>,
+        callback: (Map<String, String>?) -> Unit,
+    ) {
+        OrexPushBackgroundResolver.resolve(context, payload, callback)
+    }
+
+    private fun handleResolvedPush(
+        context: Context,
+        payload: Map<String, String>,
+        onComplete: () -> Unit,
+    ) {
+        if (!isIncomingCallPayload(payload)) {
+            if (activityResumed) {
+                Log.i(TAG, "Resolved message push suppressed while Orex is foreground")
+            } else {
+                showNotification(context, payload)
+            }
+            onComplete()
+            return
+        }
+
+        OrexAndroidTelecomManager.reportIncomingCallFromPush(context, payload) { reported ->
+            if (!reported) {
+                Log.w(TAG, "Core-Telecom incoming call unavailable; using CallStyle fallback")
+                showNotification(context, payload)
+            }
+            onComplete()
+        }
+    }
+
+    fun incomingCallPendingIntent(
+        context: Context,
+        callId: String,
+        displayName: String,
+        video: Boolean,
+        action: String?,
+        requestCode: Int,
+        fromSystem: Boolean = false,
+    ): PendingIntent {
+        val payload = incomingCallPayload(
+            callId = callId,
+            displayName = displayName,
+            video = video,
+            fromSystem = fromSystem,
+        )
+        return PendingIntent.getActivity(
+            context,
+            requestCode xor callId.hashCode(),
+            buildOpenIntent(context, payload, action),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    fun launchIncomingCallAction(
+        context: Context,
+        callId: String,
+        displayName: String,
+        video: Boolean,
+        action: String,
+        fromSystem: Boolean,
+    ): Boolean {
+        return try {
+            val payload = incomingCallPayload(
+                callId = callId,
+                displayName = displayName,
+                video = video,
+                fromSystem = fromSystem,
+            )
+            val intent = buildOpenIntent(context, payload, action).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        } catch (error: Throwable) {
+            Log.e(TAG, "Failed to launch Orex for incoming call action=$action", error)
+            false
+        }
+    }
+
+    private fun incomingCallPayload(
+        callId: String,
+        displayName: String,
+        video: Boolean,
+        fromSystem: Boolean,
+    ): Map<String, String> = linkedMapOf(
+        "orex_kind" to "incoming_call",
+        "room_id" to callId,
+        "call_id" to callId,
+        "sender_display_name" to displayName,
+        "orex_video" to video.toString(),
+        "orex_from_system" to fromSystem.toString(),
+    )
 
     fun onRequestPermissionsResult(
         requestCode: Int,
@@ -334,6 +533,7 @@ object OrexPushBridge {
         if (incomingCall) {
             builder.setOngoing(true)
             builder.setOnlyAlertOnce(false)
+            builder.setFullScreenIntent(openApp, true)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && answerCall != null && declineCall != null) {
                 val person = android.app.Person.Builder()
                     .setName(callerDisplayName(payload))
@@ -371,19 +571,26 @@ object OrexPushBridge {
     }
 
 
+
+    private fun buildOpenIntent(
+        context: Context,
+        payload: Map<String, String>,
+        action: String?,
+    ): Intent = Intent(context, MainActivity::class.java).apply {
+        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        putExtra(EXTRA_OPEN, true)
+        for ((key, value) in openPayload(payload, action)) {
+            putExtra("$EXTRA_PREFIX$key", value)
+        }
+    }
+
     private fun pendingOpenIntent(
         context: Context,
         payload: Map<String, String>,
         notificationId: Int,
         action: String?,
     ): PendingIntent {
-        val openIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra(EXTRA_OPEN, true)
-            for ((key, value) in openPayload(payload, action)) {
-                putExtra("$EXTRA_PREFIX$key", value)
-            }
-        }
+        val openIntent = buildOpenIntent(context, payload, action)
         return PendingIntent.getActivity(
             context,
             notificationId,
@@ -453,7 +660,8 @@ object OrexPushBridge {
                     NotificationManager.IMPORTANCE_HIGH,
                 ).apply {
                     description = "Push-сигнал о входящем звонке при закрытом приложении"
-                    lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+                    enableVibration(true)
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
                 },
             ),
         )
@@ -536,6 +744,17 @@ object OrexPushBridge {
         }
         if (!action.isNullOrBlank()) filtered["orex_action"] = action
         return filtered
+    }
+
+    private fun stringMap(raw: Any?): Map<String, String> {
+        if (raw !is Map<*, *>) return emptyMap()
+        val result = linkedMapOf<String, String>()
+        for ((rawKey, rawValue) in raw) {
+            val key = rawKey?.toString()?.trim().orEmpty()
+            if (key.isEmpty()) continue
+            result[key] = rawValue?.toString().orEmpty()
+        }
+        return normalizePayload(result)
     }
 
     private fun normalizePayload(source: Map<String, String>): Map<String, String> {

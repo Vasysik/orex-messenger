@@ -26,6 +26,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -49,7 +50,9 @@ object OrexAndroidTelecomManager {
 
     private const val CHANNEL_NAME = "orex/system_calls"
     private const val INCOMING_NOTIFICATION_CHANNEL_ID = "orex_calls_incoming"
+    private const val PUSH_INCOMING_NOTIFICATION_CHANNEL_ID = "orex_calls_incoming_push_v1"
     private const val ONGOING_NOTIFICATION_CHANNEL_ID = "orex_calls_ongoing"
+    private const val PUSH_RING_MAX_AGE_MS = 75_000L
     private const val NOTIFICATION_ID = 4040
     private const val TAG = "OrexSystemCall"
 
@@ -67,9 +70,12 @@ object OrexAndroidTelecomManager {
         val displayName: String,
         val incoming: Boolean,
         var video: Boolean,
+        var fromPush: Boolean = false,
+        var ringTimestampMs: Long? = null,
         val ready: CompletableDeferred<Boolean> = CompletableDeferred(),
         var control: CallControlScope? = null,
         var job: Job? = null,
+        var expiryJob: Job? = null,
         var endpoints: List<CallEndpointCompat> = emptyList(),
         var answered: Boolean = false,
         var lastMuted: Boolean? = null,
@@ -84,6 +90,45 @@ object OrexAndroidTelecomManager {
             methodChannel.setMethodCallHandler(::handleMethodCall)
         }
         ensureRegistered()
+    }
+
+    fun initialize(context: Context) {
+        appContext = context.applicationContext
+        ensureRegistered()
+    }
+
+    fun reportIncomingCallFromPush(
+        context: Context,
+        payload: Map<String, String>,
+        callback: (Boolean) -> Unit,
+    ) {
+        initialize(context)
+        val callId = (payload["call_id"] ?: payload["room_id"])?.trim().orEmpty()
+        val displayName = payload["sender_display_name"]?.trim()?.takeIf { it.isNotEmpty() }
+            ?: payload["sender"]?.trim()?.takeIf { it.isNotEmpty() }
+            ?: "Orex"
+        val video = payload["orex_video"]?.equals("true", ignoreCase = true) == true
+        val ringTimestampMs = payload["orex_ring_ts_ms"]?.toLongOrNull()
+        if (callId.isEmpty()) {
+            callback(false)
+            return
+        }
+        appScope.launch {
+            val reported = try {
+                reportCall(
+                    callId,
+                    displayName,
+                    incoming = true,
+                    video = video,
+                    fromPush = true,
+                    ringTimestampMs = ringTimestampMs,
+                )
+            } catch (error: Throwable) {
+                Log.e(TAG, "Failed to report push incoming call id=$callId", error)
+                false
+            }
+            callback(reported)
+        }
     }
 
     fun ownsCallRouting(): Boolean = current != null
@@ -182,6 +227,8 @@ object OrexAndroidTelecomManager {
                 val success = control.setActive() is CallControlResult.Success
                 if (success) {
                     managed.answered = true
+                    managed.expiryJob?.cancel()
+                    managed.expiryJob = null
                     showNotification(managed)
                 }
                 success
@@ -263,10 +310,19 @@ object OrexAndroidTelecomManager {
         displayName: String,
         incoming: Boolean,
         video: Boolean,
+        fromPush: Boolean = false,
+        ringTimestampMs: Long? = null,
     ): Boolean {
         callMutationMutex.lock()
         return try {
-            reportCallLocked(callId, displayName, incoming, video)
+            reportCallLocked(
+                callId,
+                displayName,
+                incoming,
+                video,
+                fromPush,
+                ringTimestampMs,
+            )
         } finally {
             callMutationMutex.unlock()
         }
@@ -277,12 +333,18 @@ object OrexAndroidTelecomManager {
         displayName: String,
         incoming: Boolean,
         video: Boolean,
+        fromPush: Boolean,
+        ringTimestampMs: Long?,
     ): Boolean {
         if (!ensureRegistered()) return false
         val existing = current
         if (existing != null) {
             if (existing.callId == callId && !existing.terminating) {
                 existing.video = video
+                existing.fromPush = existing.fromPush || fromPush
+                if (ringTimestampMs != null) existing.ringTimestampMs = ringTimestampMs
+                schedulePushExpiry(existing)
+                showNotification(existing)
                 return withTimeoutOrNull(4500) { existing.ready.await() } == true
             }
             if (!existing.terminating &&
@@ -301,8 +363,16 @@ object OrexAndroidTelecomManager {
         }
 
         val manager = callsManager ?: return false
-        val managed = ManagedCall(callId, displayName, incoming, video)
+        val managed = ManagedCall(
+            callId = callId,
+            displayName = displayName,
+            incoming = incoming,
+            video = video,
+            fromPush = fromPush,
+            ringTimestampMs = ringTimestampMs,
+        )
         current = managed
+        schedulePushExpiry(managed)
         showNotification(managed)
 
         val address = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.O_MR1) {
@@ -345,6 +415,8 @@ object OrexAndroidTelecomManager {
                         }
                         managed.answered = true
                         managed.video = requestedVideo
+                        managed.expiryJob?.cancel()
+                        managed.expiryJob = null
                         showNotification(managed)
                     },
                     onDisconnect = { cause ->
@@ -374,6 +446,8 @@ object OrexAndroidTelecomManager {
                             )
                         }
                         managed.answered = true
+                        managed.expiryJob?.cancel()
+                        managed.expiryJob = null
                         showNotification(managed)
                     },
                     onSetInactive = {
@@ -432,6 +506,8 @@ object OrexAndroidTelecomManager {
         if (success) {
             managed.answered = true
             managed.video = video
+            managed.expiryJob?.cancel()
+            managed.expiryJob = null
             showNotification(managed)
         }
         return success
@@ -461,7 +537,25 @@ object OrexAndroidTelecomManager {
         return if (ready) managed.control else null
     }
 
+    private fun schedulePushExpiry(managed: ManagedCall) {
+        managed.expiryJob?.cancel()
+        managed.expiryJob = null
+        if (!managed.incoming || !managed.fromPush || managed.answered) return
+
+        val ringTs = managed.ringTimestampMs ?: System.currentTimeMillis()
+        val age = (System.currentTimeMillis() - ringTs).coerceAtLeast(0L)
+        val remaining = (PUSH_RING_MAX_AGE_MS - age).coerceAtLeast(1_000L)
+        managed.expiryJob = appScope.launch {
+            delay(remaining)
+            if (current !== managed || managed.answered || managed.terminating) return@launch
+            Log.i(TAG, "Expiring stale push call id=${managed.callId}")
+            disconnectInternal(managed, DisconnectCause.MISSED)
+        }
+    }
+
     private fun cleanup(managed: ManagedCall) {
+        managed.expiryJob?.cancel()
+        managed.expiryJob = null
         if (current !== managed) return
         current = null
         val context = appContext ?: return
@@ -492,7 +586,24 @@ object OrexAndroidTelecomManager {
         action: String,
         extras: Map<String, Any?> = emptyMap(),
     ): Boolean {
-        val methodChannel = channel ?: return false
+        val methodChannel = channel
+        if (methodChannel == null) {
+            val context = appContext ?: return false
+            val coldAction = when (action) {
+                "answer" -> "answer"
+                "reject" -> "reject"
+                "disconnect" -> "reject"
+                else -> null
+            } ?: return false
+            return OrexPushBridge.launchIncomingCallAction(
+                context = context,
+                callId = managed.callId,
+                displayName = managed.displayName,
+                video = extras["video"] as? Boolean ?: managed.video,
+                action = coldAction,
+                fromSystem = true,
+            )
+        }
         val payload = mutableMapOf<String, Any?>(
             "action" to action,
             "callId" to managed.callId,
@@ -565,10 +676,10 @@ object OrexAndroidTelecomManager {
         val context = appContext ?: return
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val isIncoming = managed.incoming && !managed.answered
-        val notificationChannelId = if (isIncoming) {
-            INCOMING_NOTIFICATION_CHANNEL_ID
-        } else {
-            ONGOING_NOTIFICATION_CHANNEL_ID
+        val notificationChannelId = when {
+            isIncoming && managed.fromPush -> PUSH_INCOMING_NOTIFICATION_CHANNEL_ID
+            isIncoming -> INCOMING_NOTIFICATION_CHANNEL_ID
+            else -> ONGOING_NOTIFICATION_CHANNEL_ID
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager.createNotificationChannels(
@@ -578,11 +689,18 @@ object OrexAndroidTelecomManager {
                         "Входящие звонки",
                         NotificationManager.IMPORTANCE_HIGH,
                     ).apply {
-                        description = "Входящие звонки Orex"
-                        // Рингтон уже принадлежит AudioCueService: не допускаем
-                        // двойной звук из Flutter и notification channel.
+                        description = "Входящие звонки Orex при запущенном приложении"
                         setSound(null, null)
                         enableVibration(false)
+                        lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                    },
+                    NotificationChannel(
+                        PUSH_INCOMING_NOTIFICATION_CHANNEL_ID,
+                        "Входящие звонки Orex",
+                        NotificationManager.IMPORTANCE_HIGH,
+                    ).apply {
+                        description = "Входящие звонки Orex при закрытом приложении"
+                        enableVibration(true)
                         lockscreenVisibility = Notification.VISIBILITY_PUBLIC
                     },
                     NotificationChannel(
@@ -599,16 +717,30 @@ object OrexAndroidTelecomManager {
             )
         }
 
-        val openApp = PendingIntent.getActivity(
-            context,
-            7000,
-            Intent(context, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        val openApp = OrexPushBridge.incomingCallPendingIntent(
+            context = context,
+            callId = managed.callId,
+            displayName = managed.displayName,
+            video = managed.video,
+            action = null,
+            requestCode = 7000,
         )
-        val answer = actionIntent(context, managed.callId, ACTION_ANSWER, 7001)
-        val decline = actionIntent(context, managed.callId, ACTION_DECLINE, 7002)
+        val answer = OrexPushBridge.incomingCallPendingIntent(
+            context = context,
+            callId = managed.callId,
+            displayName = managed.displayName,
+            video = managed.video,
+            action = "answer",
+            requestCode = 7001,
+        )
+        val decline = OrexPushBridge.incomingCallPendingIntent(
+            context = context,
+            callId = managed.callId,
+            displayName = managed.displayName,
+            video = managed.video,
+            action = "reject",
+            requestCode = 7002,
+        )
         val hangUp = actionIntent(context, managed.callId, ACTION_HANG_UP, 7003)
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -627,7 +759,11 @@ object OrexAndroidTelecomManager {
             .setCategory(Notification.CATEGORY_CALL)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOngoing(true)
-            .setOnlyAlertOnce(true)
+            .setOnlyAlertOnce(!isIncoming)
+
+        if (isIncoming) {
+            builder.setFullScreenIntent(openApp, true)
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val person = Person.Builder()

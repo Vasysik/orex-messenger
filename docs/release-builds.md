@@ -1,6 +1,6 @@
 # Orex Release Builds
 
-Эта инструкция нужна для сборки артефактов `0.4.0+12` тестировщикам.
+Эта инструкция нужна для сборки артефактов `0.4.0+13` тестировщикам.
 README описывает продукт, а здесь лежит практическая часть: ключи Android,
 Windows production build и SQLCipher-проверки.
 
@@ -9,7 +9,7 @@ Windows production build и SQLCipher-проверки.
 Проверьте версию в `pubspec.yaml`:
 
 ```yaml
-version: 0.4.0+12
+version: 0.4.0+13
 ```
 
 Затем выполните базовый gate:
@@ -100,21 +100,17 @@ URL со стандартным Matrix-путём. Серверная network-po
 `ip_range_whitelist` описаны в `docs/push-infrastructure.md`.
 
 Homeserver отправляет туда стандартный Matrix push notification, а Sygnal
-доставляет FCM **data-message**. В `0.4.0+12` Android pusher намеренно
-регистрируется без `event_id_only`, потому что Orex сейчас dogfood-клиент для
-собственного `vasys.ru` stack и должен показывать нормальный Android UX:
-автора, комнату, текст и MatrixRTC `ring`.
+доставляет FCM **data-message**. В `0.4.0+13` Android pusher снова использует
+`event_id_only`: gateway получает только routing ids, а автор и plaintext не
+передаются через Sygnal/FCM.
 
-Ожидаемый FCM API v1 payload от Sygnal содержит поля вроде `room_id`,
-`event_id`, `type`, `sender`, `sender_display_name`, `room_name`,
-`content_msgtype`, `content_body`, `unread` и `missed_calls`. Native bridge
-строит из них message notification или CallStyle-входящий звонок с действиями
-«Ответить»/«Отклонить». Для E2EE сообщений plaintext может отсутствовать —
-тогда используется безопасный fallback.
-
-`event_id_only` оставлен как будущий privacy-hardening режим для публичной
-ветки, где понадобится headless resolver/fetch/decrypt/classification перед
-показом красивого уведомления.
+По `room_id/event_id` Orex сначала разрешает exact event через текущий Matrix-
+клиент, а при закрытом процессе поднимает headless Flutter engine с той же
+зашифрованной Matrix-базой. Matrix SDK загружает событие, синхронизирует
+недостающие ключи и локально расшифровывает E2EE. Уже разрешённый payload
+передаётся нативному Android-коду: обычное событие становится message
+notification с реальным автором/текстом, свежий MatrixRTC `ring` — системным
+Core-Telecom/CallStyle входящим вызовом.
 
 Release-задача завершится ошибкой, если `android/app/google-services.json`
 отсутствует. Только для явной compile-only CI-проверки, артефакт которой нельзя
@@ -253,7 +249,7 @@ $Iscc = @(
 Артефакт:
 
 ```text
-build\windows\x64\installer\Orex-Setup-0.4.0+12.exe
+build\windows\x64\installer\Orex-Setup-0.4.0+13.exe
 ```
 
 Именно этот `.exe` удобно отдавать тестировщикам вместо zip. Он ставит Orex в
@@ -266,7 +262,7 @@ Windows-БД создаётся как новый файл:
 orex-sqlcipher.sqlite
 ```
 
-Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.4.0+12`
+Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.4.0+13`
 это ожидаемо.
 
 При старте Orex проверяет `PRAGMA cipher_version`. Если вместо SQLCipher
@@ -291,7 +287,7 @@ build\web
 Web не использует `OREX_ALLOW_INSECURE_DESKTOP_CACHE`: это правило относится к
 IO desktop-кэшу, а не к browser storage.
 
-## 5. Что отправлять тестировщикам для `0.4.0+12`
+## 5. Что отправлять тестировщикам для `0.4.0+13`
 
 Минимально:
 
