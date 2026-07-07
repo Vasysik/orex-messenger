@@ -169,40 +169,41 @@ Telecom через Jetpack Core-Telecom:
 цепочка push-доставки для полностью закрытого Android-процесса; она не подменяет
 Matrix push локальными таймерами или фоновым polling.
 
-### 7.1. Push, уведомления и закрытый Android-процесс (`0.4.0+14`)
+### 7.1. Push, E2EE-уведомления и входящий звонок вне приложения (`0.4.0+15`)
 
-В `0.4.0+14` Android push-слой переписан вокруг короткого и детерминированного
-критического пути:
+В `0.4.0+15` Android push-слой разделён на два независимых по задержке пути:
 
-- `FirebaseMessagingService` не открывает Matrix DB, не делает сеть и не запускает
-  второй FlutterEngine. Он нормализует уже доставленный FCM data-message и сразу
-  передаёт его единому `OrexNotificationCenter`;
-- Matrix HTTP-pusher не использует `event_id_only`: собственный Synapse/Sygnal
-  stack передаёт полный стандартный push payload, чтобы Android мог определить
-  автора, комнату и MatrixRTC `ring` без фонового запроса к homeserver;
-- обычные сообщения публикуются через `MessagingStyle`, заменяются по `room_id`
-  и группируются системой. Для E2EE, когда plaintext закономерно отсутствует в
-  серверном payload, используется privacy-safe текст «Новое зашифрованное
-  сообщение»;
-- входящий `m.rtc.notification` / `org.matrix.msc4075.rtc.notification` типа
-  `ring` сразу становится high-importance `CallStyle` уведомлением с ringtone,
-  вибрацией, lock-screen UI и действиями «Ответить»/«Отклонить»;
-- для личного E2EE-звонка этот короткоживущий MatrixRTC wake-envelope
-  отправляется как открытый `m.rtc.notification`, а не через шифрующий
-  `Room.sendEvent()`. В нём нет текста, ключей или медиаданных: только тип
-  ring-сигнала, срок жизни и адресаты. Это осознанная граница приватности,
-  необходимая для входящего звонка при полностью убитом Android-процессе;
-- MatrixRTC `sender_ts` + `lifetime` проверяются до показа звонка, поэтому
-  просроченный ring не поднимает ложный входящий вызов;
-- один фиксированный call notification ID используется и push-слоем, и
-  Core-Telecom. Когда Flutter/Matrix уже поднялись и зарегистрировали системную
-  call-сессию, текущая карточка обновляется на месте, а не дублируется;
-- cold-start routing (`room_id`, `event_id`, действие звонка) по-прежнему
-  буферизуется нативно до готовности Flutter UI. Ответ/отклонение продолжают
-  обычный MatrixRTC/LiveKit flow;
-- Android 13+ notification permission запрашивается после появления основного
-  UI. Android 14+ full-screen intent используется только когда система его
-  разрешает; иначе остаётся high-priority heads-up/lock-screen CallStyle;
+- `FirebaseMessagingService` остаётся коротким: он только нормализует FCM и
+  либо сразу публикует звонок/готовый plaintext, либо ставит E2EE-resolution в
+  expedited `WorkManager`;
+- `m.room.encrypted` никогда не превращается в заглушку. Worker получает
+  `room_id/event_id`, использует Matrix SDK и локальную зашифрованную сессию,
+  при необходимости делает bounded one-shot sync для недостающих Megolm-ключей
+  и публикует `MessagingStyle` только после получения реального plaintext;
+- если основной Flutter/Matrix engine жив, resolution выполняется через него.
+  Если процесса UI нет, WorkManager поднимает сериализованный headless Matrix
+  resolver. Этот FlutterEngine запускается уже после возврата FCM callback и не
+  блокирует доставку;
+- уведомления по комнате хранят короткую локальную историю последних сообщений,
+  поэтому `MessagingStyle` показывает контекст беседы, а не одну безымянную
+  строку;
+- персональный MatrixRTC `ring` остаётся короткоживущим открытым wake-envelope:
+  он нужен, чтобы полностью убитый Android-процесс мгновенно отличил звонок от
+  обычного E2EE-события. Текст, ключи и медиаданные в этот envelope не попадают;
+- входящий звонок использует high-importance `CallStyle`, ringtone, вибрацию и
+  отдельную `OrexIncomingCallActivity`. Full-screen intent больше не ведёт в
+  `MainActivity`: нативное окно может появиться поверх lock screen до запуска
+  Flutter и содержит имя, статус, крупный аватар/fallback и две основные кнопки
+  «Отклонить»/«Ответить»;
+- на Android 14+ Orex проверяет `canUseFullScreenIntent()` и при первом запросе
+  notification permission открывает системную страницу доступа, если право на
+  полноэкранный звонок не выдано;
+- один фиксированный call notification ID используется push-слоем и
+  Core-Telecom, поэтому переход от cold push к системной call-сессии обновляет
+  одну карточку вместо создания дублей;
+- внутри открытого приложения используется полноэкранный Flutter call UI той же
+  двухкнопочной композиции; native full-screen intent подавляется, пока Activity
+  реально находится в foreground;
 - `google-services.json` не хранится в репозитории, а Android release
   fail-closed и не собирается без Firebase-конфигурации.
 

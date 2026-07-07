@@ -409,7 +409,7 @@ class CallController extends ChangeNotifier {
       return;
     }
     try {
-      await voip.enterCall(roomId, ring: _initiator);
+      await voip.enterCall(roomId, ring: _initiator, video: video);
     } catch (e) {
       OrexLog.d('Call', 'signaling failed room=$roomId', e);
       await _failStart(s, 'Не удалось запустить сигналинг звонка');

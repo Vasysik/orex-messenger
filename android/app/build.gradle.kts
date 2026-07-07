@@ -107,6 +107,10 @@ dependencies {
     // dependency instead of relying on a transitive implementation detail.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
+    // E2EE push decryption may need Matrix I/O and crypto work. Keep that work
+    // out of FirebaseMessagingService and run it as expedited background work.
+    implementation("androidx.work:work-runtime-ktx:2.11.2")
+
     // Native FCM delivery must work before FlutterEngine exists. Firebase BoM
     // keeps the Android SDK modules on a compatible version set.
     implementation(platform("com.google.firebase:firebase-bom:34.15.0"))

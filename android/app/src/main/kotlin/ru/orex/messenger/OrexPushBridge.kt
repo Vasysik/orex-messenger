@@ -2,13 +2,16 @@ package ru.orex.messenger
 
 import android.Manifest
 import android.app.Activity
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
@@ -22,9 +25,9 @@ import java.util.UUID
 /**
  * Нативная граница push lifecycle.
  *
- * Здесь нет Matrix API, сети, БД и headless FlutterEngine. FCM должен быстро
- * показать системный UI, а Matrix/Flutter подключаются только после запуска
- * приложения или действия пользователя.
+ * Звонки публикуются сразу из FCM. Сообщения, которым нужна Matrix/E2EE
+ * расшифровка, передаются в expedited WorkManager и никогда не блокируют
+ * FirebaseMessagingService.
  */
 object OrexPushBridge {
     private const val TAG = "OrexPush"
@@ -37,6 +40,7 @@ object OrexPushBridge {
     private const val DELIVERY_ID_KEY = "orex_delivery_id"
     private const val PERMISSION_REQUEST_CODE = 46041
     private const val ACTION_CALL_NOTIFICATION = "ru.orex.messenger.action.PUSH_CALL"
+    private const val UI_RESOLVE_TIMEOUT_MS = 40_000L
 
     private const val MAX_PAYLOAD_ENTRIES = 48
     private const val MAX_PAYLOAD_KEY_LENGTH = 96
@@ -122,6 +126,7 @@ object OrexPushBridge {
         val payload = extractPayload(intent)
         consumeLaunchIntent(intent)
         if (payload.isEmpty()) return
+        OrexNotificationCenter.onNotificationOpened(context.applicationContext, payload)
         deliverNotificationOpen(context.applicationContext, payload)
     }
 
@@ -135,7 +140,8 @@ object OrexPushBridge {
     }
 
     fun onMessageReceived(context: Context, message: RemoteMessage) {
-        applicationContext = context.applicationContext
+        val appContext = context.applicationContext
+        applicationContext = appContext
         val payload = linkedMapOf<String, String>()
         payload.putAll(message.data)
         message.messageId?.let { payload.putIfAbsent("message_id", it) }
@@ -147,12 +153,115 @@ object OrexPushBridge {
         val normalized = normalizePayload(payload)
         if (normalized.isEmpty()) return
         Log.i(TAG, "FCM data message received keys=${normalized.keys.sorted()}")
+
+        // Incoming calls are latency-sensitive and already carry a dedicated
+        // short-lived wake envelope. They must reach CallStyle/full-screen UI
+        // immediately, without waiting for Matrix crypto startup.
+        if (OrexNotificationCenter.isIncomingCallPayload(normalized) ||
+            OrexNotificationCenter.isRtcNotificationPayload(normalized)
+        ) {
+            OrexNotificationCenter.showPush(appContext, normalized, activityResumed)
+            return
+        }
+
+        if (OrexNotificationCenter.canRenderMessageDirectly(normalized)) {
+            OrexNotificationCenter.showPush(appContext, normalized, activityResumed)
+            return
+        }
+
+        if (OrexNotificationCenter.needsBackgroundResolution(normalized)) {
+            OrexPushResolveWorker.enqueue(appContext, normalized)
+            return
+        }
+
+        OrexNotificationCenter.showPush(appContext, normalized, activityResumed)
+    }
+
+    fun resolvePushPayload(
+        context: Context,
+        payload: Map<String, String>,
+        callback: (Map<String, String>?) -> Unit,
+    ) {
+        val normalized = normalizePayload(payload)
+        if (normalized.isEmpty()) {
+            callback(null)
+            return
+        }
+        val uiChannel = channel
+        if (uiChannel == null) {
+            OrexPushBackgroundResolver.resolve(context, normalized, callback)
+            return
+        }
+
+        val handler = Handler(Looper.getMainLooper())
+        handler.post {
+            if (channel !== uiChannel) {
+                OrexPushBackgroundResolver.resolve(context, normalized, callback)
+                return@post
+            }
+
+            var finished = false
+            val fallback = Runnable {
+                if (finished) return@Runnable
+                finished = true
+                Log.w(TAG, "Live Flutter resolver timed out; worker will retry without racing the Matrix DB")
+                callback(null)
+            }
+            handler.postDelayed(fallback, UI_RESOLVE_TIMEOUT_MS)
+
+            uiChannel.invokeMethod(
+                "resolvePush",
+                normalized,
+                object : MethodChannel.Result {
+                    override fun success(result: Any?) {
+                        if (finished) return
+                        finished = true
+                        handler.removeCallbacks(fallback)
+                        val resolved = stringMap(result)
+                        if (resolved.isEmpty()) {
+                            OrexPushBackgroundResolver.resolve(context, normalized, callback)
+                        } else {
+                            callback(resolved)
+                        }
+                    }
+
+                    override fun error(
+                        errorCode: String,
+                        errorMessage: String?,
+                        errorDetails: Any?,
+                    ) {
+                        if (finished) return
+                        finished = true
+                        handler.removeCallbacks(fallback)
+                        Log.w(TAG, "Live Flutter resolver failed: $errorCode $errorMessage")
+                        OrexPushBackgroundResolver.resolve(context, normalized, callback)
+                    }
+
+                    override fun notImplemented() {
+                        if (finished) return
+                        finished = true
+                        handler.removeCallbacks(fallback)
+                        OrexPushBackgroundResolver.resolve(context, normalized, callback)
+                    }
+                },
+            )
+        }
+    }
+
+    fun handleResolvedPush(context: Context, resolved: Map<String, String>) {
+        val payload = normalizePayload(resolved)
+        if (payload.isEmpty() || payload["orex_drop"].equals("true", ignoreCase = true)) {
+            Log.i(TAG, "Resolved Matrix push suppressed: ${payload["orex_drop_reason"] ?: "empty"}")
+            return
+        }
         OrexNotificationCenter.showPush(
             context = context.applicationContext,
-            payload = normalized,
+            payload = payload,
             appResumed = activityResumed,
         )
     }
+
+    fun isAppResumed(): Boolean = activityResumed
 
     fun notificationOpenPendingIntent(
         context: Context,
@@ -186,6 +295,29 @@ object OrexPushBridge {
             context,
             requestCode xor callId.hashCode(),
             buildOpenIntent(context, payload, action),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    fun incomingCallScreenPendingIntent(
+        context: Context,
+        callId: String,
+        displayName: String,
+        video: Boolean,
+        timeoutAfterMs: Long,
+        requestCode: Int,
+    ): PendingIntent {
+        val intent = OrexIncomingCallActivity.createIntent(
+            context = context,
+            callId = callId,
+            displayName = displayName,
+            video = video,
+            timeoutAfterMs = timeoutAfterMs,
+        )
+        return PendingIntent.getActivity(
+            context,
+            requestCode xor callId.hashCode(),
+            intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
     }
@@ -296,6 +428,7 @@ object OrexPushBridge {
         val notificationIndex = permissions.indexOf(Manifest.permission.POST_NOTIFICATIONS)
         val granted = notificationIndex >= 0 &&
             grantResults.getOrNull(notificationIndex) == PackageManager.PERMISSION_GRANTED
+        if (granted) activity?.let(::maybeOpenFullScreenIntentSettings)
         result.success(if (granted) "authorized" else "denied")
         return true
     }
@@ -378,12 +511,14 @@ object OrexPushBridge {
             return
         }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            maybeOpenFullScreenIntentSettings(currentActivity)
             result.success("authorized")
             return
         }
         if (currentActivity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
         ) {
+            maybeOpenFullScreenIntentSettings(currentActivity)
             result.success("authorized")
             return
         }
@@ -400,6 +535,27 @@ object OrexPushBridge {
             arrayOf(Manifest.permission.POST_NOTIFICATIONS),
             PERMISSION_REQUEST_CODE,
         )
+    }
+
+    private fun maybeOpenFullScreenIntentSettings(activity: Activity) {
+        if (Build.VERSION.SDK_INT < 34 || activity.isFinishing) return
+        val manager = activity.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val allowed = try {
+            manager.canUseFullScreenIntent()
+        } catch (error: Throwable) {
+            Log.w(TAG, "Unable to query full-screen intent access", error)
+            true
+        }
+        if (allowed) return
+        try {
+            activity.startActivity(
+                Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+                    data = Uri.parse("package:${activity.packageName}")
+                },
+            )
+        } catch (error: Throwable) {
+            Log.w(TAG, "Unable to open full-screen intent settings", error)
+        }
     }
 
     private fun buildOpenIntent(
@@ -503,6 +659,17 @@ object OrexPushBridge {
             result[key] = rawValue.take(MAX_PAYLOAD_VALUE_LENGTH)
         }
         return result
+    }
+
+    private fun stringMap(raw: Any?): Map<String, String> {
+        if (raw !is Map<*, *>) return emptyMap()
+        val result = linkedMapOf<String, String>()
+        for ((keyRaw, valueRaw) in raw) {
+            val key = keyRaw?.toString()?.trim().orEmpty()
+            if (key.isEmpty()) continue
+            result[key] = valueRaw?.toString().orEmpty()
+        }
+        return normalizePayload(result)
     }
 
     private fun decodePayload(encoded: String): Map<String, String> {

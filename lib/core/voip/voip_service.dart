@@ -433,7 +433,11 @@ class VoipService extends ChangeNotifier {
   /// MSC4075 RTC notification после успешной публикации membership. Это
   /// отдельный Matrix event, который push rules могут доставить устройствам
   /// собеседника даже когда его обычный `/sync` не запущен.
-  Future<GroupCallSession> enterCall(String roomId, {bool ring = false}) async {
+  Future<GroupCallSession> enterCall(
+    String roomId, {
+    bool ring = false,
+    bool video = false,
+  }) async {
     final room = client.getRoomById(roomId);
     if (room == null) {
       throw StateError('Комната $roomId не найдена');
@@ -490,12 +494,12 @@ class VoipService extends ChangeNotifier {
     active = gc;
     notifyListeners();
     if (ring) {
-      await _sendPersonalCallRing(room);
+      await _sendPersonalCallRing(room, video: video);
     }
     return gc;
   }
 
-  Future<void> _sendPersonalCallRing(Room room) async {
+  Future<void> _sendPersonalCallRing(Room room, {required bool video}) async {
     if (!isPersonalCallRoom(room)) return;
 
     final targets = orexResolveCallRingTargets(
@@ -526,6 +530,7 @@ class VoipService extends ChangeNotifier {
         'm.mentions': {
           'user_ids': targets.toList(growable: false),
         },
+        'm.call.intent': video ? 'video' : 'audio',
       };
       await client.sendMessage(
         room.id,

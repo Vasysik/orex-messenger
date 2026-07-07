@@ -38,6 +38,15 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <activity
+            android:name=".OrexIncomingCallActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="${applicationId}.incoming_call"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/OrexIncomingCallTheme" />
         <service
             android:name=".OrexFirebaseMessagingService"
             android:exported="false">

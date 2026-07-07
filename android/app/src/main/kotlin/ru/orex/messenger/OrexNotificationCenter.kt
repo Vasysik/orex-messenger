@@ -12,14 +12,15 @@ import android.media.AudioAttributes
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
+import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.absoluteValue
 
 /**
  * Единственная точка создания Android-уведомлений Orex.
  *
- * Push callback не открывает БД, не запускает FlutterEngine и не делает сеть:
- * он только нормализует уже доставленный Sygnal payload и сразу публикует UI.
+ * Звонки публикуются сразу. Сообщения попадают сюда только когда payload уже
+ * содержит реальный plaintext или после Matrix/E2EE resolution worker.
  */
 object OrexNotificationCenter {
     const val CALL_NOTIFICATION_ID = 4040
@@ -29,6 +30,8 @@ object OrexNotificationCenter {
 
     private const val TAG = "OrexNotifications"
     private const val MESSAGE_GROUP_KEY = "orex_messages"
+    private const val MESSAGE_HISTORY_PREFS = "orex_message_history_v1"
+    private const val MAX_HISTORY_MESSAGES = 6
     private const val DEFAULT_CALL_LIFETIME_MS = 45_000L
     private const val MAX_CALL_LIFETIME_MS = 90_000L
     private const val CLOCK_SKEW_TOLERANCE_MS = 15_000L
@@ -39,7 +42,7 @@ object OrexNotificationCenter {
                 Log.i(TAG, "Stale MatrixRTC ring ignored")
                 return
             }
-            showIncomingCall(context, payload)
+            showIncomingCall(context, payload, allowFullScreen = !appResumed)
             return
         }
         if (isRtcNotificationPayload(payload)) {
@@ -63,7 +66,16 @@ object OrexNotificationCenter {
             "room_id" to roomId,
         )
         if (!eventId.isNullOrBlank()) payload["event_id"] = eventId
-        showMessage(context, payload)
+        if (eventId.isNullOrBlank()) {
+            Log.w(TAG, "Local Matrix notification skipped without event id")
+            return
+        }
+        OrexPushResolveWorker.enqueue(context.applicationContext, payload)
+    }
+
+    fun onNotificationOpened(context: Context, payload: Map<String, String>) {
+        val roomId = firstValue(payload, "room_id") ?: return
+        messageHistoryPrefs(context).edit().remove(roomId).apply()
     }
 
     fun isIncomingCallPayload(payload: Map<String, String>): Boolean {
@@ -87,13 +99,13 @@ object OrexNotificationCenter {
     }
 
 
-    private fun isRtcNotificationPayload(payload: Map<String, String>): Boolean {
+    fun isRtcNotificationPayload(payload: Map<String, String>): Boolean {
         val eventType = firstValue(payload, "type", "event_type")?.lowercase()
         return eventType == "m.rtc.notification" ||
             eventType == "org.matrix.msc4075.rtc.notification"
     }
 
-    private fun isMessagePayload(payload: Map<String, String>): Boolean {
+    fun isMessagePayload(payload: Map<String, String>): Boolean {
         if (payload["orex_kind"].equals("matrix_event", ignoreCase = true)) return true
         return when (firstValue(payload, "type", "event_type")?.lowercase()) {
             "m.room.message",
@@ -117,6 +129,19 @@ object OrexNotificationCenter {
         }
     }
 
+    fun canRenderMessageDirectly(payload: Map<String, String>): Boolean {
+        if (!isMessagePayload(payload)) return false
+        val eventType = firstValue(payload, "type", "event_type")?.lowercase()
+        if (eventType == "m.room.encrypted") return false
+        val body = rawMessageBody(payload) ?: return false
+        return !isGenericMessageBody(body)
+    }
+
+    fun needsBackgroundResolution(payload: Map<String, String>): Boolean {
+        if (!isMessagePayload(payload) || canRenderMessageDirectly(payload)) return false
+        return firstValue(payload, "room_id") != null && firstValue(payload, "event_id") != null
+    }
+
     fun showTelecomCall(
         context: Context,
         callId: String,
@@ -130,19 +155,32 @@ object OrexNotificationCenter {
     ) {
         if (!canPostNotifications(context)) return
         ensureChannels(context)
-        val openApp = OrexPushBridge.incomingCallPendingIntent(
-            context = context,
-            callId = callId,
-            displayName = displayName,
-            video = video,
-            action = null,
-            requestCode = 7000,
-        )
+        val isRinging = incoming && !answered
+        val openApp = if (isRinging) {
+            OrexPushBridge.incomingCallScreenPendingIntent(
+                context = context,
+                callId = callId,
+                displayName = displayName,
+                video = video,
+                timeoutAfterMs = DEFAULT_CALL_LIFETIME_MS,
+                requestCode = 7000,
+            )
+        } else {
+            OrexPushBridge.incomingCallPendingIntent(
+                context = context,
+                callId = callId,
+                displayName = displayName,
+                video = video,
+                action = null,
+                requestCode = 7000,
+            )
+        }
         postCall(
             context = context,
             displayName = displayName,
-            incoming = incoming && !answered,
+            incoming = isRinging,
             openApp = openApp,
+            fullScreen = openApp.takeIf { isRinging && !OrexPushBridge.isAppResumed() },
             answer = answer,
             decline = decline,
             hangUp = hangUp,
@@ -152,20 +190,26 @@ object OrexNotificationCenter {
 
     fun cancelCall(context: Context) {
         notificationManager(context).cancel(CALL_NOTIFICATION_ID)
+        OrexIncomingCallActivity.finishActive()
     }
 
-    private fun showIncomingCall(context: Context, payload: Map<String, String>) {
+    private fun showIncomingCall(
+        context: Context,
+        payload: Map<String, String>,
+        allowFullScreen: Boolean,
+    ) {
         if (!canPostNotifications(context)) return
         ensureChannels(context)
         val callId = firstValue(payload, "room_id", "call_id", "event_id") ?: return
         val displayName = callerDisplayName(payload)
         val video = isVideoCall(payload)
-        val openApp = OrexPushBridge.incomingCallPendingIntent(
+        val timeoutAfterMs = remainingCallLifetimeMs(payload)
+        val openApp = OrexPushBridge.incomingCallScreenPendingIntent(
             context = context,
             callId = callId,
             displayName = displayName,
             video = video,
-            action = null,
+            timeoutAfterMs = timeoutAfterMs,
             requestCode = 6100,
         )
         val answer = OrexPushBridge.callActionPendingIntent(
@@ -189,10 +233,11 @@ object OrexNotificationCenter {
             displayName = displayName,
             incoming = true,
             openApp = openApp,
+            fullScreen = openApp.takeIf { allowFullScreen },
             answer = answer,
             decline = decline,
             hangUp = null,
-            timeoutAfterMs = remainingCallLifetimeMs(payload),
+            timeoutAfterMs = timeoutAfterMs,
         )
         Log.i(TAG, "Incoming call notification posted")
     }
@@ -202,6 +247,7 @@ object OrexNotificationCenter {
         displayName: String,
         incoming: Boolean,
         openApp: PendingIntent,
+        fullScreen: PendingIntent?,
         answer: PendingIntent,
         decline: PendingIntent,
         hangUp: PendingIntent?,
@@ -223,8 +269,8 @@ object OrexNotificationCenter {
             builder.setTimeoutAfter(timeoutAfterMs.coerceAtLeast(1_000L))
         }
 
-        if (incoming && canUseFullScreenIntent(context)) {
-            builder.setFullScreenIntent(openApp, true)
+        if (incoming && fullScreen != null && canUseFullScreenIntent(context)) {
+            builder.setFullScreenIntent(fullScreen, true)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -262,11 +308,20 @@ object OrexNotificationCenter {
         notificationManager(context).notify(CALL_NOTIFICATION_ID, notification)
     }
 
+    private data class MessageHistoryItem(
+        val sender: String,
+        val body: String,
+        val timestamp: Long,
+    )
+
     private fun showMessage(context: Context, payload: Map<String, String>) {
         if (!canPostNotifications(context)) return
         ensureChannels(context)
         val title = messageTitle(payload)
-        val body = messageBody(payload)
+        val body = messageBody(payload) ?: run {
+            Log.w(TAG, "Message notification skipped until E2EE plaintext is available")
+            return
+        }
         val stableId = firstValue(payload, "room_id", "event_id", "message_id") ?: body
         val notificationId = ("message|$stableId".hashCode().absoluteValue).coerceAtLeast(1)
         val openApp = OrexPushBridge.notificationOpenPendingIntent(
@@ -289,21 +344,36 @@ object OrexNotificationCenter {
             .setShowWhen(true)
 
         val senderName = callerDisplayName(payload)
+        val historyKey = firstValue(payload, "room_id") ?: stableId
+        val history = appendMessageHistory(
+            context = context,
+            key = historyKey,
+            item = MessageHistoryItem(senderName, body, timestamp),
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val user = Person.Builder().setName("Orex").build()
-            val sender = Person.Builder().setName(senderName).build()
-            builder.setStyle(
-                Notification.MessagingStyle(user)
-                    .setConversationTitle(title.takeIf { it != senderName })
-                    .addMessage(Notification.MessagingStyle.Message(body, timestamp, sender)),
-            )
+            val style = Notification.MessagingStyle(user)
+                .setConversationTitle(title.takeIf { it != senderName })
+            for (item in history) {
+                val sender = Person.Builder().setName(item.sender).build()
+                style.addMessage(
+                    Notification.MessagingStyle.Message(
+                        item.body,
+                        item.timestamp,
+                        sender,
+                    ),
+                )
+            }
+            builder.setStyle(style)
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             @Suppress("DEPRECATION")
-            builder.setStyle(
-                Notification.MessagingStyle("Orex")
-                    .setConversationTitle(title.takeIf { it != senderName })
-                    .addMessage(body, timestamp, senderName),
-            )
+            val style = Notification.MessagingStyle("Orex")
+                .setConversationTitle(title.takeIf { it != senderName })
+            for (item in history) {
+                @Suppress("DEPRECATION")
+                style.addMessage(item.body, item.timestamp, item.sender)
+            }
+            builder.setStyle(style)
         } else {
             builder.setStyle(Notification.BigTextStyle().bigText(body))
         }
@@ -311,6 +381,54 @@ object OrexNotificationCenter {
         notificationManager(context).notify(notificationId, builder.build())
         Log.i(TAG, "Message notification posted")
     }
+
+    private fun appendMessageHistory(
+        context: Context,
+        key: String,
+        item: MessageHistoryItem,
+    ): List<MessageHistoryItem> {
+        val prefs = messageHistoryPrefs(context)
+        val current = decodeMessageHistory(prefs.getString(key, null)).toMutableList()
+        current.removeAll { it.timestamp == item.timestamp && it.body == item.body && it.sender == item.sender }
+        current.add(item)
+        val trimmed = current.takeLast(MAX_HISTORY_MESSAGES)
+        val encoded = JSONArray().apply {
+            for (entry in trimmed) {
+                put(
+                    JSONObject()
+                        .put("sender", entry.sender)
+                        .put("body", entry.body)
+                        .put("timestamp", entry.timestamp),
+                )
+            }
+        }
+        prefs.edit().putString(key, encoded.toString()).apply()
+        return trimmed
+    }
+
+    private fun decodeMessageHistory(encoded: String?): List<MessageHistoryItem> {
+        if (encoded.isNullOrBlank()) return emptyList()
+        return try {
+            val array = JSONArray(encoded)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    val sender = item.optString("sender", "Orex").trim().ifEmpty { "Orex" }
+                    val body = item.optString("body", "").trim()
+                    val timestamp = item.optLong("timestamp", 0L)
+                    if (body.isNotEmpty() && timestamp > 0L) {
+                        add(MessageHistoryItem(sender, body, timestamp))
+                    }
+                }
+            }
+        } catch (error: Throwable) {
+            Log.w(TAG, "Failed to decode notification message history", error)
+            emptyList()
+        }
+    }
+
+    private fun messageHistoryPrefs(context: Context) =
+        context.getSharedPreferences(MESSAGE_HISTORY_PREFS, Context.MODE_PRIVATE)
 
     private fun ensureChannels(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -412,17 +530,24 @@ object OrexNotificationCenter {
         )
     }
 
-    private fun messageBody(payload: Map<String, String>): String {
-        val body = firstValue(payload, "body", "content_body", "content.body")
+    private fun messageBody(payload: Map<String, String>): String? {
+        val body = rawMessageBody(payload) ?: return null
+        if (isGenericMessageBody(body)) return null
+        return boundedText(body, "", 500).takeIf { it.isNotEmpty() }
+    }
+
+    private fun rawMessageBody(payload: Map<String, String>): String? =
+        firstValue(payload, "body", "content_body", "content.body")
             ?: contentString(payload, "body")
-        if (body != null) return boundedText(body, "Новое сообщение", 500)
-        val eventType = firstValue(payload, "type", "event_type")
-        val fallback = if (eventType == "m.room.encrypted") {
-            "Новое зашифрованное сообщение"
-        } else {
-            "Новое сообщение"
+
+    private fun isGenericMessageBody(value: String): Boolean {
+        return when (value.trim().lowercase()) {
+            "новое сообщение",
+            "новое событие",
+            "новое событие в orex",
+            "новое зашифрованное сообщение" -> true
+            else -> false
         }
-        return fallback
     }
 
     private fun callerDisplayName(payload: Map<String, String>): String {

@@ -100,16 +100,17 @@ URL со стандартным Matrix-путём. Серверная network-po
 `ip_range_whitelist` описаны в `docs/push-infrastructure.md`.
 
 Homeserver отправляет туда стандартный Matrix push notification, а Sygnal
-доставляет FCM **data-message**. В `0.4.0+14` Android pusher не использует
+доставляет FCM **data-message**. В `0.4.0+15` Android pusher не использует
 `event_id_only`: нативному Android-коду нужен полный стандартный payload, чтобы
-немедленно классифицировать сообщение или MatrixRTC `ring` без сети, SQLCipher
-и запуска второго FlutterEngine внутри FCM callback.
+немедленно классифицировать MatrixRTC `ring` и готовый plaintext. Если приходит
+`m.room.encrypted`, FCM callback ставит expedited WorkManager job и сразу
+возвращается. Worker разрешает точный `room_id/event_id` через Matrix SDK и
+публикует `MessagingStyle` только после реальной E2EE-расшифровки; никаких
+privacy-placeholder строк больше нет.
 
-Сообщение сразу становится системным `MessagingStyle` notification. Для E2EE,
-если server-side push payload не содержит plaintext, Android показывает
-privacy-safe fallback. Свежий MatrixRTC `ring` сразу становится CallStyle
-входящим вызовом; после запуска Matrix/Flutter существующий Core-Telecom flow
-продолжает сигналинг и медиа.
+Свежий MatrixRTC `ring` сразу становится `CallStyle` входящим вызовом и получает
+отдельную full-screen call Activity поверх lock screen. После запуска
+Matrix/Flutter существующий Core-Telecom flow продолжает сигналинг и медиа.
 
 Для личного E2EE-звонка wake-envelope намеренно не шифруется Matrix room
 шифрованием: иначе убитый Android-процесс увидит только `m.room.encrypted` и не
@@ -324,7 +325,9 @@ Android 13+: permission на уведомления появляется пос�
 FCM token -> Matrix pusher зарегистрирован на homeserver
 ротация FCM token -> старый pushkey удалён, новый зарегистрирован
 logout -> pusher текущего устройства удалён до завершения Matrix logout
-закрыть процесс -> FCM data-message -> системное уведомление без Flutter UI
+закрыть процесс -> encrypted FCM -> WorkManager decrypt -> plaintext уведомление
+заблокировать экран -> входящий ring -> отдельное full-screen окно звонка
+ответить / отклонить из native окна -> cold-start Matrix action
 тап по cold-start уведомлению -> после sync открывается нужная room_id
 голосовой канал: grant / revoke
 ```

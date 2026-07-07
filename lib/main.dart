@@ -11,6 +11,7 @@ import 'core/config/orex_config.dart';
 import 'core/config/app_version.dart';
 import 'core/storage/database.dart';
 import 'core/matrix/matrix_service.dart';
+import 'core/push/push_background_resolver.dart';
 import 'core/push/push_platform_bridge.dart';
 import 'core/logging/orex_logger.dart';
 import 'features/auth/login_screen.dart';
@@ -22,6 +23,9 @@ import 'shared/theme/glass.dart';
 import 'shared/theme/orex_theme.dart';
 import 'shared/theme/theme_controller.dart';
 import 'shared/widgets/orex_app_brand.dart';
+
+@pragma('vm:entry-point')
+Future<void> orexPushBackgroundMain() => runOrexPushBackgroundEntrypoint();
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -337,16 +341,28 @@ class _OrexAppState extends State<OrexApp> {
         retryLater();
         return;
       }
-      showDialog<void>(
-        context: ctx,
-        barrierDismissible: false,
-        useRootNavigator: true,
-        builder: (_) => IncomingCallScreen(
-          matrix: widget.matrix,
-          room: room,
-          asDialog: true,
-        ),
-      ).whenComplete(() => _incomingCallDialogs.remove(room.id));
+      final isWide = MediaQuery.sizeOf(ctx).width >= 900;
+      final future = isWide
+          ? showDialog<void>(
+              context: ctx,
+              barrierDismissible: false,
+              useRootNavigator: true,
+              builder: (_) => IncomingCallScreen(
+                matrix: widget.matrix,
+                room: room,
+                asDialog: true,
+              ),
+            )
+          : nav!.push<void>(
+              MaterialPageRoute(
+                fullscreenDialog: true,
+                builder: (_) => IncomingCallScreen(
+                  matrix: widget.matrix,
+                  room: room,
+                ),
+              ),
+            );
+      future.whenComplete(() => _incomingCallDialogs.remove(room.id));
     });
   }
 
