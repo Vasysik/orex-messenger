@@ -214,20 +214,27 @@ class OrexApp extends StatefulWidget {
   State<OrexApp> createState() => _OrexAppState();
 }
 
-class _OrexAppState extends State<OrexApp> {
+class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
   StreamSubscription? _verificationSub;
   StreamSubscription? _incomingCallSub;
   StreamSubscription<String>? _systemAcceptedCallSub;
   StreamSubscription<OrexPushOpen>? _pushOpenSub;
   String? _pushRoomId;
+  String? _expandedCallRoomId;
   int _pushOpenGeneration = 0;
   late bool _wasLoggedIn;
   final Set<String> _incomingCallDialogs = <String>{};
+  final Set<String> _pendingCallActionRooms = <String>{};
+  AppLifecycleState _lifecycleState =
+      WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
+
+  bool get _isForeground => _lifecycleState == AppLifecycleState.resumed;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _wasLoggedIn = widget.matrix.isLoggedIn;
     widget.matrix.addListener(_onChanged);
     widget.theme.addListener(_onChanged);
@@ -257,8 +264,47 @@ class _OrexAppState extends State<OrexApp> {
     });
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _lifecycleState = state;
+    if (state == AppLifecycleState.resumed) {
+      // Notification action / Core-Telecom answer can arrive in the same frame
+      // as lifecycle resume. Give that explicit user action priority before
+      // replaying an incoming-call route, otherwise Answer can briefly show the
+      // incoming panel again.
+      Future<void>.delayed(const Duration(milliseconds: 350), () {
+        if (!mounted || !_isForeground) return;
+        final rooms =
+            widget.matrix.voip?.visibleIncomingRooms() ?? const <Room>[];
+        for (final room in rooms) {
+          _showIncomingCall(room);
+        }
+      });
+      return;
+    }
+
+    // Пока Orex не виден, Flutter не открывает маршруты входящего звонка.
+    // Если Matrix /sync обнаружил вызов без FCM, Core-Telecom становится
+    // резервным системным presentation; native dedup не даст повторно звенеть.
+    final rooms = widget.matrix.voip?.visibleIncomingRooms() ?? const <Room>[];
+    for (final room in rooms) {
+      if (widget.matrix.call.isActive ||
+          widget.matrix.call.isAcceptingIncoming(room.id)) {
+        continue;
+      }
+      unawaited(widget.matrix.call.prepareIncoming(room));
+    }
+  }
+
   void _openPushNotification(OrexPushOpen open) {
-    unawaited(_handlePushNotificationOpen(open));
+    final actionRoomId =
+        open.kind == 'incoming_call' && open.action != null ? open.roomId : null;
+    if (actionRoomId != null) _pendingCallActionRooms.add(actionRoomId);
+    unawaited(
+      _handlePushNotificationOpen(open).whenComplete(() {
+        if (actionRoomId != null) _pendingCallActionRooms.remove(actionRoomId);
+      }),
+    );
   }
 
   Future<void> _handlePushNotificationOpen(OrexPushOpen open) async {
@@ -281,15 +327,32 @@ class _OrexAppState extends State<OrexApp> {
         OrexLog.d('Push', 'incoming call room unavailable room=$roomId');
         return;
       }
+      final call = widget.matrix.call;
+      if (open.action == null && call.isActive && call.roomId == room.id) {
+        _openAcceptedCall(room.id);
+        return;
+      }
       switch (open.action) {
         case 'answer':
+          widget.matrix.voip?.dismissIncomingFromSystem(room.id);
           await widget.matrix.call.acceptIncoming(
             room,
             video: open.video,
             fromSystem: open.fromSystem,
           );
+          if (!mounted) return;
+          final call = widget.matrix.call;
+          if (call.isActive && call.roomId == room.id) {
+            _openAcceptedCall(room.id);
+          } else {
+            OrexLog.d(
+              'Push',
+              'incoming call answer completed without active call room=${room.id}',
+            );
+          }
           return;
         case 'reject':
+          widget.matrix.voip?.dismissIncomingFromSystem(room.id);
           await widget.matrix.call.rejectIncoming(
             room,
             fromSystem: open.fromSystem,
@@ -307,21 +370,38 @@ class _OrexAppState extends State<OrexApp> {
     });
   }
 
-  void _showIncomingCall(Room room) {
+  void _showIncomingCall(Room room, {int attempt = 0}) {
     if (!mounted) return;
     final call = widget.matrix.call;
     if (call.isActive && call.roomId == room.id) return;
-    if (!call.isActive) unawaited(call.prepareIncoming(room));
+    if (call.isAcceptingIncoming(room.id)) return;
+    if (_pendingCallActionRooms.contains(room.id)) return;
+    if (!_isForeground) {
+      if (!call.isActive) unawaited(call.prepareIncoming(room));
+      return;
+    }
     if (!_incomingCallDialogs.add(room.id)) return;
 
     void retryLater() {
+      if (attempt >= 8) {
+        _incomingCallDialogs.remove(room.id);
+        OrexLog.d(
+          'Call',
+          'incoming call UI unavailable after retries room=${room.id}',
+        );
+        final call = widget.matrix.call;
+        if (!call.isActive && !call.isAcceptingIncoming(room.id)) {
+          unawaited(call.prepareIncoming(room));
+        }
+        return;
+      }
       Future<void>.delayed(const Duration(milliseconds: 200), () {
         if (!mounted) {
           _incomingCallDialogs.remove(room.id);
           return;
         }
         _incomingCallDialogs.remove(room.id);
-        _showIncomingCall(room);
+        _showIncomingCall(room, attempt: attempt + 1);
       });
     }
 
@@ -331,19 +411,24 @@ class _OrexAppState extends State<OrexApp> {
         return;
       }
       final call = widget.matrix.call;
-      if (call.isActive && call.roomId == room.id) {
+      if (!_isForeground ||
+          _pendingCallActionRooms.contains(room.id) ||
+          call.isAcceptingIncoming(room.id) ||
+          (call.isActive && call.roomId == room.id)) {
         _incomingCallDialogs.remove(room.id);
         return;
       }
       final nav = _navKey.currentState;
       final ctx = nav?.overlay?.context ?? _navKey.currentContext;
-      if (ctx == null || !ctx.mounted) {
+      if (nav == null || ctx == null || !ctx.mounted) {
         retryLater();
         return;
       }
       final isWide = MediaQuery.sizeOf(ctx).width >= 900;
-      final future = isWide
-          ? showDialog<void>(
+      final Future<void> future;
+      try {
+        future = isWide
+            ? showDialog<void>(
               context: ctx,
               barrierDismissible: false,
               useRootNavigator: true,
@@ -353,7 +438,7 @@ class _OrexAppState extends State<OrexApp> {
                 asDialog: true,
               ),
             )
-          : nav!.push<void>(
+            : nav.push<void>(
               MaterialPageRoute(
                 fullscreenDialog: true,
                 builder: (_) => IncomingCallScreen(
@@ -362,28 +447,84 @@ class _OrexAppState extends State<OrexApp> {
                 ),
               ),
             );
-      future.whenComplete(() => _incomingCallDialogs.remove(room.id));
+      } catch (error) {
+        OrexLog.d(
+          'Call',
+          'failed to present incoming call room=${room.id}',
+          error,
+        );
+        retryLater();
+        return;
+      }
+      unawaited(
+        future
+            .catchError((Object error, StackTrace _) {
+              OrexLog.d(
+                'Call',
+                'incoming call route failed room=${room.id}',
+                error,
+              );
+            })
+            .whenComplete(() => _incomingCallDialogs.remove(room.id)),
+      );
     });
   }
 
   void _openSystemAcceptedCall(String roomId) {
+    _openAcceptedCall(roomId);
+  }
+
+  void _openAcceptedCall(String roomId, {int attempt = 0}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted ||
           !widget.matrix.call.isActive ||
           widget.matrix.call.roomId != roomId) {
         return;
       }
+
       final nav = _navKey.currentState;
       final ctx = nav?.overlay?.context ?? _navKey.currentContext;
-      if (nav == null || ctx == null || !ctx.mounted) return;
-      if (MediaQuery.sizeOf(ctx).width >= 900) {
-        widget.matrix.call.minimize();
+      if (nav == null || ctx == null || !ctx.mounted) {
+        if (attempt < 20) {
+          Future<void>.delayed(const Duration(milliseconds: 150), () {
+            if (mounted) _openAcceptedCall(roomId, attempt: attempt + 1);
+          });
+        }
         return;
       }
+
+      if (MediaQuery.sizeOf(ctx).width >= 900) {
+        widget.matrix.call.minimize();
+        unawaited(widget.matrix.push.notifyCallUiReady(roomId));
+        return;
+      }
+
+      if (_expandedCallRoomId == roomId) {
+        unawaited(widget.matrix.push.notifyCallUiReady(roomId));
+        return;
+      }
+
       widget.matrix.call.expand();
-      nav.push(
-        MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
+      _expandedCallRoomId = roomId;
+      final route = MaterialPageRoute<void>(
+        builder: (_) => CallScreen(matrix: widget.matrix),
       );
+      final routeClosed = nav.push<void>(route);
+
+      // Закрываем нативную lock-screen оболочку только после того, как Flutter
+      // действительно отрисовал расширенный режим звонка.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            !widget.matrix.call.isActive ||
+            widget.matrix.call.roomId != roomId) {
+          return;
+        }
+        unawaited(widget.matrix.push.notifyCallUiReady(roomId));
+      });
+
+      routeClosed.whenComplete(() {
+        if (_expandedCallRoomId == roomId) _expandedCallRoomId = null;
+      });
     });
   }
 
@@ -402,6 +543,7 @@ class _OrexAppState extends State<OrexApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _verificationSub?.cancel();
     _incomingCallSub?.cancel();
     _systemAcceptedCallSub?.cancel();

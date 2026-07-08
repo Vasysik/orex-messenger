@@ -157,7 +157,7 @@ class OrexMatrixPushResolver {
       'type': event.type,
       'sender': event.senderId,
       'sender_display_name': sender,
-      if (roomName != null) 'room_name': roomName,
+      'room_name': ?roomName,
       'title': title,
       'body': body,
       'content_body': body,
@@ -175,15 +175,17 @@ class OrexMatrixPushResolver {
     required String roomId,
     required String eventId,
   }) {
-    return <String, String>{
+    final result = <String, String>{
       'room_id': roomId,
       'event_id': eventId,
-      if (_nonEmpty(raw['message_id']) case final messageId?)
-        'message_id': messageId,
-      if (_nonEmpty(raw['unread']) case final unread?) 'unread': unread,
-      if (_nonEmpty(raw['missed_calls']) case final missedCalls?)
-        'missed_calls': missedCalls,
     };
+    final messageId = _nonEmpty(raw['message_id']);
+    final unread = _nonEmpty(raw['unread']);
+    final missedCalls = _nonEmpty(raw['missed_calls']);
+    if (messageId != null) result['message_id'] = messageId;
+    if (unread != null) result['unread'] = unread;
+    if (missedCalls != null) result['missed_calls'] = missedCalls;
+    return result;
   }
 
   static Map<String, String> _dropPayload(
@@ -192,17 +194,20 @@ class OrexMatrixPushResolver {
     String? eventId,
     required String reason,
   }) {
-    return <String, String>{
-      if (roomId != null && eventId != null)
-        ..._routingFields(raw, roomId: roomId, eventId: eventId)
-      else ...<String, String>{
-        if (_nonEmpty(raw['room_id']) case final value?) 'room_id': value,
-        if (_nonEmpty(raw['event_id']) case final value?) 'event_id': value,
-        if (_nonEmpty(raw['message_id']) case final value?) 'message_id': value,
-      },
-      'orex_drop': 'true',
-      'orex_drop_reason': reason,
-    };
+    final result = <String, String>{};
+    if (roomId != null && eventId != null) {
+      result.addAll(_routingFields(raw, roomId: roomId, eventId: eventId));
+    } else {
+      final rawRoomId = _nonEmpty(raw['room_id']);
+      final rawEventId = _nonEmpty(raw['event_id']);
+      final rawMessageId = _nonEmpty(raw['message_id']);
+      if (rawRoomId != null) result['room_id'] = rawRoomId;
+      if (rawEventId != null) result['event_id'] = rawEventId;
+      if (rawMessageId != null) result['message_id'] = rawMessageId;
+    }
+    result['orex_drop'] = 'true';
+    result['orex_drop_reason'] = reason;
+    return result;
   }
 
   /// Используется только если push не содержит room_id/event_id. Никаких

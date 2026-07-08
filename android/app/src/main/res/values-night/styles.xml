@@ -15,4 +15,8 @@
         <item name="android:windowBackground">#1C140E</item>
         <item name="android:colorAccent">#C8763C</item>
     </style>
+    <style name="OrexCallActionTheme" parent="@android:style/Theme.NoDisplay">
+        <item name="android:windowNoTitle">true</item>
+    </style>
+
 </resources>

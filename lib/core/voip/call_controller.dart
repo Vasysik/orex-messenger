@@ -57,7 +57,12 @@ class CallController extends ChangeNotifier {
   bool _systemMutedByTelecom = false;
   bool _systemActiveByTelecom = true;
   String? _systemActionInProgressCallId;
+  String? _incomingAcceptRoomId;
+  Future<void>? _incomingAcceptFuture;
   int _lifecycleGeneration = 0;
+
+  bool isAcceptingIncoming(String roomId) =>
+      _incomingAcceptRoomId == roomId && _incomingAcceptFuture != null;
 
   void focusParticipant(String? identity) {
     if (focusedParticipantIdentity == identity) return;
@@ -154,8 +159,34 @@ class CallController extends ChangeNotifier {
     Room room, {
     required bool video,
     bool fromSystem = false,
+  }) {
+    if (isActive && roomId == room.id) return Future<void>.value();
+    final pending = _incomingAcceptFuture;
+    if (_incomingAcceptRoomId == room.id && pending != null) return pending;
+
+    late final Future<void> operation;
+    operation = _acceptIncomingImpl(
+      room,
+      video: video,
+      fromSystem: fromSystem,
+    ).whenComplete(() {
+      if (identical(_incomingAcceptFuture, operation)) {
+        _incomingAcceptRoomId = null;
+        _incomingAcceptFuture = null;
+      }
+    });
+    _incomingAcceptRoomId = room.id;
+    _incomingAcceptFuture = operation;
+    return operation;
+  }
+
+  Future<void> _acceptIncomingImpl(
+    Room room, {
+    required bool video,
+    required bool fromSystem,
   }) async {
     matrix.audio.stopIncomingRingtone();
+    unawaited(matrix.push.notifyCallAnswering(room.id));
     if (isActive && roomId != room.id) await hangUp();
     final otherSystemCallId = _systemCallId;
     if (otherSystemCallId != null && otherSystemCallId != room.id) {
@@ -193,6 +224,7 @@ class CallController extends ChangeNotifier {
 
   Future<void> rejectIncoming(Room room, {bool fromSystem = false}) async {
     matrix.audio.stopIncomingRingtone();
+    unawaited(matrix.push.notifyCallEnded(room.id));
     if (fromSystem) matrix.voip?.dismissIncomingFromSystem(room.id);
     final dispositionSync = Future.wait<void>([
       _markIncomingHandled(room.id),
@@ -354,7 +386,10 @@ class CallController extends ChangeNotifier {
     bool systemIncoming = false,
     bool? systemCallPrepared,
   }) async {
-    if (_session != null) await hangUp();
+    if (_session != null) {
+      if (this.roomId == roomId) return;
+      await hangUp();
+    }
     final generation = ++_lifecycleGeneration;
     lastError = null;
     this.roomId = roomId;
@@ -490,6 +525,7 @@ class CallController extends ChangeNotifier {
     bool leaveSignaling = false,
   }) async {
     lastError = message;
+    unawaited(matrix.push.notifyCallEnded(session.matrixRoomId));
     session.removeListener(notifyListeners);
     await session.hangUp();
     session.dispose();
@@ -547,6 +583,7 @@ class CallController extends ChangeNotifier {
     _start = null;
     focusedParticipantIdentity = null;
     _clearSystemCallState();
+    if (rid != null) unawaited(matrix.push.notifyCallEnded(rid));
     notifyListeners();
     if (s != null) {
       s.removeListener(notifyListeners);

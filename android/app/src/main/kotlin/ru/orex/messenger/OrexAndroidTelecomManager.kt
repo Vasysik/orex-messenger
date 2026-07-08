@@ -464,7 +464,7 @@ object OrexAndroidTelecomManager {
         if (current !== managed) return
         current = null
         val context = appContext ?: return
-        OrexNotificationCenter.cancelCall(context)
+        OrexNotificationCenter.cancelCall(context, managed.callId)
     }
 
     private fun emitAction(

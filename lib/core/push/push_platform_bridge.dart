@@ -67,6 +67,19 @@ abstract interface class OrexPushPlatform {
 
   Future<void> acknowledgeNotification(OrexPushOpen open);
 
+  /// Немедленно переводит native presentation в состояние Answering. Повторные
+  /// ring push после нажатия «Ответить» больше не могут заново поднять звонок.
+  Future<void> notifyCallAnswering(String callId);
+
+  /// Подтверждает, что расширенный CallScreen уже открыт и звонок активен.
+  Future<void> notifyCallUiReady(String callId);
+
+  /// Сбрасывает native dedup-state после завершения, отклонения или ошибки.
+  Future<void> notifyCallEnded(String callId);
+
+  /// Совместимость со старыми call UI lifecycle-вызовами.
+  Future<void> notifyCallUiHidden();
+
   /// Показывает privacy-safe системное уведомление для события, которое уже
   /// обнаружил живой Matrix sync, пока Flutter UI находится в фоне.
   Future<void> showLocalMatrixNotification({
@@ -87,7 +100,7 @@ class OrexNativePushPlatform implements OrexPushPlatform {
     Future<Map<String, String>?> Function(Map<String, String> payload)?
         resolvePush,
   })  : _channel = channel ?? const MethodChannel(_channelName),
-        _resolvePush = resolvePush;
+        _pushResolver = resolvePush;
 
   static const _channelName = 'orex/push';
   static const androidAppId = 'ru.vasys.orex_messenger';
@@ -99,7 +112,7 @@ class OrexNativePushPlatform implements OrexPushPlatform {
 
   final MethodChannel _channel;
   final Future<Map<String, String>?> Function(Map<String, String> payload)?
-      _resolvePush;
+      _pushResolver;
   final StreamController<String> _tokenChanges =
       StreamController<String>.broadcast();
   final StreamController<OrexPushOpen> _notificationOpens =
@@ -141,7 +154,7 @@ class OrexNativePushPlatform implements OrexPushPlatform {
         if (data.isNotEmpty) _notificationOpens.add(OrexPushOpen(data));
         return true;
       case 'resolvePush':
-        final resolver = _resolvePush;
+        final resolver = _pushResolver;
         final data = _stringMap(call.arguments);
         if (resolver == null || data.isEmpty) return null;
         return resolver(data);
@@ -202,6 +215,73 @@ class OrexNativePushPlatform implements OrexPushPlatform {
         'ackNotificationOpen',
         <String, Object?>{'deliveryId': open.deliveryId},
       );
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  @override
+  Future<void> notifyCallAnswering(String callId) async {
+    if (!_isAndroid) return;
+    final normalizedCallId = callId.trim();
+    if (normalizedCallId.isEmpty) return;
+    await initialize();
+    try {
+      await _channel.invokeMethod<void>(
+        'callUiAnswering',
+        <String, Object?>{'callId': normalizedCallId},
+      );
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  @override
+  Future<void> notifyCallUiReady(String callId) async {
+    if (!_isAndroid) return;
+    final normalizedCallId = callId.trim();
+    if (normalizedCallId.isEmpty) return;
+    await initialize();
+    try {
+      await _channel.invokeMethod<void>(
+        'callUiReady',
+        <String, Object?>{'callId': normalizedCallId},
+      );
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  @override
+  Future<void> notifyCallEnded(String callId) async {
+    if (!_isAndroid) return;
+    final normalizedCallId = callId.trim();
+    if (normalizedCallId.isEmpty) return;
+    await initialize();
+    try {
+      await _channel.invokeMethod<void>(
+        'callUiEnded',
+        <String, Object?>{'callId': normalizedCallId},
+      );
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  @override
+  Future<void> notifyCallUiHidden() async {
+    if (!_isAndroid) return;
+    await initialize();
+    try {
+      await _channel.invokeMethod<void>('callUiHidden');
     } on MissingPluginException {
       return;
     } on PlatformException {

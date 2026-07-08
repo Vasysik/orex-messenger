@@ -306,6 +306,8 @@ object OrexPushBridge {
         video: Boolean,
         timeoutAfterMs: Long,
         requestCode: Int,
+        action: String? = null,
+        systemManaged: Boolean = false,
     ): PendingIntent {
         val intent = OrexIncomingCallActivity.createIntent(
             context = context,
@@ -313,11 +315,37 @@ object OrexPushBridge {
             displayName = displayName,
             video = video,
             timeoutAfterMs = timeoutAfterMs,
+            action = action,
+            systemManaged = systemManaged,
         )
         return PendingIntent.getActivity(
             context,
             requestCode xor callId.hashCode(),
             intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    fun incomingCallActionPendingIntent(
+        context: Context,
+        callId: String,
+        displayName: String,
+        video: Boolean,
+        action: String,
+        requestCode: Int,
+        systemManaged: Boolean = false,
+    ): PendingIntent {
+        return PendingIntent.getActivity(
+            context,
+            requestCode xor callId.hashCode(),
+            OrexCallActionActivity.createIntent(
+                context = context,
+                callId = callId,
+                displayName = displayName,
+                video = video,
+                action = action,
+                systemManaged = systemManaged,
+            ),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
     }
@@ -362,7 +390,7 @@ object OrexPushBridge {
         if (intent.action != ACTION_CALL_NOTIFICATION) return
         val payload = extractPayload(intent)
         if (payload.isEmpty()) return
-        OrexNotificationCenter.cancelCall(context)
+        OrexNotificationCenter.cancelCallNotification(context)
         val action = payload["orex_action"] ?: return
         val launched = launchIncomingCallAction(
             context = context,
@@ -377,6 +405,26 @@ object OrexPushBridge {
         }
     }
 
+    fun queueIncomingCallAction(
+        context: Context,
+        callId: String,
+        displayName: String,
+        video: Boolean,
+        action: String,
+        fromSystem: Boolean,
+    ) {
+        val payload = incomingCallPayload(
+            callId = callId,
+            displayName = displayName,
+            video = video,
+            fromSystem = fromSystem,
+        )
+        deliverNotificationOpen(
+            context.applicationContext,
+            openPayload(payload, action),
+        )
+    }
+
     fun launchIncomingCallAction(
         context: Context,
         callId: String,
@@ -384,21 +432,36 @@ object OrexPushBridge {
         video: Boolean,
         action: String,
         fromSystem: Boolean,
+        bringUiToFront: Boolean = action == "answer",
     ): Boolean {
+        val payload = incomingCallPayload(
+            callId = callId,
+            displayName = displayName,
+            video = video,
+            fromSystem = fromSystem,
+        )
+        // Сначала сохраняем команду. Cold start заберёт её через
+        // takeInitialNotification(), живой Flutter получит MethodChannel event.
+        // Так Answer не зависит от того, успела ли MainActivity создать engine.
+        deliverNotificationOpen(context.applicationContext, openPayload(payload, action))
+
+        if (!bringUiToFront && channel != null) return true
+        return bringAppToFront(context)
+    }
+
+    fun bringAppToFront(context: Context): Boolean {
         return try {
-            val payload = incomingCallPayload(
-                callId = callId,
-                displayName = displayName,
-                video = video,
-                fromSystem = fromSystem,
+            context.startActivity(
+                Intent(context, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION
+                },
             )
-            val intent = buildOpenIntent(context, payload, action).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(intent)
             true
         } catch (error: Throwable) {
-            Log.e(TAG, "Failed to launch Orex for incoming call action=$action", error)
+            Log.e(TAG, "Failed to bring Orex UI to foreground", error)
             false
         }
     }
@@ -456,6 +519,35 @@ object OrexPushBridge {
                 )
                 result.success(true)
             }
+            "callUiAnswering" -> {
+                val callId = call.argument<String>("callId")?.trim().orEmpty()
+                val context = applicationContext
+                if (callId.isNotEmpty() && context != null) {
+                    OrexCallPresentationState.markAnswering(context, callId)
+                    OrexNotificationCenter.cancelCallNotification(context)
+                }
+                result.success(callId.isNotEmpty())
+            }
+            "callUiReady" -> {
+                val callId = call.argument<String>("callId")?.trim().orEmpty()
+                val context = applicationContext
+                if (callId.isNotEmpty() && context != null) {
+                    OrexCallPresentationState.markActive(context, callId)
+                    OrexIncomingCallActivity.finishForCall(callId)
+                }
+                result.success(callId.isNotEmpty())
+            }
+            "callUiEnded" -> {
+                val callId = call.argument<String>("callId")?.trim().orEmpty()
+                val context = applicationContext
+                if (callId.isNotEmpty() && context != null) {
+                    OrexCallPresentationState.markEnded(context, callId)
+                    OrexNotificationCenter.cancelCallNotification(context)
+                    OrexIncomingCallActivity.finishForCall(callId)
+                }
+                result.success(callId.isNotEmpty())
+            }
+            "callUiHidden" -> result.success(true)
             "requestPermission" -> requestPermission(result)
             else -> result.notImplemented()
         }

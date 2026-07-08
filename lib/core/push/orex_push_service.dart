@@ -158,6 +158,42 @@ class OrexPushService {
     }
   }
 
+  Future<void> notifyCallAnswering(String callId) async {
+    if (_disposed) return;
+    try {
+      await _platform.notifyCallAnswering(callId);
+    } catch (error) {
+      OrexLog.d('Push', 'native call answering acknowledgement failed', error);
+    }
+  }
+
+  Future<void> notifyCallUiReady(String callId) async {
+    if (_disposed) return;
+    try {
+      await _platform.notifyCallUiReady(callId);
+    } catch (error) {
+      OrexLog.d('Push', 'native call handoff acknowledgement failed', error);
+    }
+  }
+
+  Future<void> notifyCallEnded(String callId) async {
+    if (_disposed) return;
+    try {
+      await _platform.notifyCallEnded(callId);
+    } catch (error) {
+      OrexLog.d('Push', 'native call end acknowledgement failed', error);
+    }
+  }
+
+  Future<void> notifyCallUiHidden() async {
+    if (_disposed) return;
+    try {
+      await _platform.notifyCallUiHidden();
+    } catch (error) {
+      OrexLog.d('Push', 'native call UI hide acknowledgement failed', error);
+    }
+  }
+
   Future<void> showSyncedMatrixNotification({
     required String roomId,
     String? eventId,
@@ -184,7 +220,7 @@ class OrexPushService {
     if (_disposed || !isConfigured || !_client.isLogged()) return;
     if (!await _platform.isSupported()) return;
     final prefs = await SharedPreferences.getInstance();
-    const key = 'orex_push_permission_prompted_v1';
+    const key = 'orex_push_permission_prompted_v2';
     if (prefs.getBool(key) == true) return;
     final status = await _platform.requestPermission();
     if (status != OrexPushPermissionStatus.notSupported) {

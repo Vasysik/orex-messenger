@@ -1,15 +1,12 @@
 package ru.orex.messenger
 
-import android.animation.Animator
-import android.animation.ObjectAnimator
-import android.animation.ValueAnimator
 import android.app.Activity
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.RadialGradient
@@ -27,21 +24,30 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import java.lang.ref.WeakReference
 
 /**
- * Native Orex incoming-call surface used by the notification full-screen intent.
- * It appears over the lock screen before Flutter or the Matrix client is running,
- * but deliberately mirrors Orex's dark chocolate / walnut / copper visual system.
+ * Отдельная task для входящего звонка до запуска Flutter.
+ *
+ * Структура намеренно повторяет уже существующий Flutter IncomingCallScreen:
+ * ambient Orex background -> avatar/name/status по центру -> три действия снизу.
+ * После Answer оболочка закрывается сразу: пользователь уже сделал выбор.
+ * MainActivity не показывается поверх keyguard, поэтому содержимое мессенджера
+ * остаётся за системной разблокировкой.
  */
 class OrexIncomingCallActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
-    private val runningAnimators = mutableListOf<Animator>()
-    private var timeout: Runnable? = null
+    private var ringTimeout: Runnable? = null
     private var callId: String = ""
     private var displayName: String = "Orex"
-    private var video: Boolean = false
+    private var incomingVideo: Boolean = false
+    private var systemManaged: Boolean = false
+    private var handoffStarted = false
+    private var statusText: TextView? = null
+    private var actionsRow: View? = null
+    private var progress: ProgressBar? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,16 +63,15 @@ class OrexIncomingCallActivity : Activity() {
     }
 
     override fun onDestroy() {
-        stopAnimations()
-        timeout?.let(handler::removeCallbacks)
-        timeout = null
+        ringTimeout?.let(handler::removeCallbacks)
+        ringTimeout = null
         if (current?.get() === this) current = null
         super.onDestroy()
     }
 
     @Deprecated("Back does not dismiss a ringing call")
     override fun onBackPressed() {
-        // A ringing call is explicitly answered or declined.
+        // Входящий вызов закрывается только явным действием.
     }
 
     private fun configureWindow() {
@@ -89,333 +94,304 @@ class OrexIncomingCallActivity : Activity() {
     }
 
     private fun render(source: Intent) {
-        callId = source.getStringExtra(EXTRA_CALL_ID)?.trim().orEmpty()
-        displayName = source.getStringExtra(EXTRA_DISPLAY_NAME)?.trim().orEmpty()
-            .ifEmpty { "Orex" }
-        video = source.getBooleanExtra(EXTRA_VIDEO, false)
+        val nextCallId = source.getStringExtra(EXTRA_CALL_ID)?.trim().orEmpty()
+        if (nextCallId != callId) handoffStarted = false
+        callId = nextCallId
+        displayName = source.getStringExtra(EXTRA_DISPLAY_NAME)?.trim().orEmpty().ifEmpty { "Orex" }
+        incomingVideo = source.getBooleanExtra(EXTRA_VIDEO, false)
+        systemManaged = source.getBooleanExtra(EXTRA_SYSTEM_MANAGED, false)
         val timeoutMs = source.getLongExtra(EXTRA_TIMEOUT_MS, DEFAULT_TIMEOUT_MS)
             .coerceIn(1_000L, MAX_TIMEOUT_MS)
+        val requestedAction = source.getStringExtra(EXTRA_ACTION)?.trim()
+        when (requestedAction) {
+            ACTION_ANSWER -> {
+                handler.post { beginAnswer(incomingVideo) }
+                return
+            }
+            ACTION_ANSWER_VIDEO -> {
+                handler.post { beginAnswer(true) }
+                return
+            }
+            ACTION_REJECT -> {
+                handler.post { declineCall() }
+                return
+            }
+        }
 
-        stopAnimations()
         setContentView(buildContent())
-        timeout?.let(handler::removeCallbacks)
-        timeout = Runnable {
-            OrexNotificationCenter.cancelCall(applicationContext)
+        ringTimeout?.let(handler::removeCallbacks)
+        ringTimeout = Runnable {
+            OrexNotificationCenter.cancelCall(applicationContext, callId)
             finishAndRemoveTask()
         }.also { handler.postDelayed(it, timeoutMs) }
     }
 
     private fun buildContent(): View {
         val root = FrameLayout(this).apply {
-            background = OrexCallBackgroundDrawable()
+            background = OrexAmbientBackgroundDrawable()
             isFocusable = true
         }
 
-        root.addView(
-            createBrandPill(),
-            FrameLayout.LayoutParams(wrap, wrap, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
-                topMargin = dp(44)
-            },
-        )
-
-        val callerBlock = LinearLayout(this).apply {
+        val center = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
         }
-        callerBlock.addView(
-            text(displayName, 30f, Typeface.BOLD, OREX_DARK_TEXT).apply {
+        center.addView(createAvatar(), LinearLayout.LayoutParams(dp(120), dp(120)))
+        center.addView(
+            text(displayName, 23f, Typeface.BOLD, OREX_DARK_TEXT).apply {
                 gravity = Gravity.CENTER
                 maxLines = 2
+                setPadding(dp(24), 0, dp(24), 0)
             },
-            LinearLayout.LayoutParams(match, wrap).apply {
-                marginStart = dp(28)
-                marginEnd = dp(28)
-            },
+            LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(16) },
         )
-        callerBlock.addView(
-            text(
-                if (video) "Входящий видеозвонок" else "Входящий звонок",
-                15.5f,
-                Typeface.NORMAL,
-                OREX_DARK_TEXT_SOFT,
-            ).apply { gravity = Gravity.CENTER },
-            LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) },
-        )
-        root.addView(
-            callerBlock,
-            FrameLayout.LayoutParams(match, wrap, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
-                topMargin = dp(104)
-            },
-        )
-
-        val avatarHolder = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        statusText = text("Входящий звонок…", 14.5f, Typeface.NORMAL, OREX_DARK_TEXT_SOFT).apply {
             gravity = Gravity.CENTER
         }
-        avatarHolder.addView(createAvatar(), LinearLayout.LayoutParams(dp(174), dp(174)))
-        avatarHolder.addView(
-            createCallTypePill(),
-            LinearLayout.LayoutParams(wrap, wrap).apply { topMargin = dp(24) },
+        center.addView(
+            statusText,
+            LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(4) },
+        )
+        progress = ProgressBar(this).apply {
+            indeterminateTintList = ColorStateList.valueOf(OREX_COPPER)
+            visibility = View.GONE
+        }
+        center.addView(
+            progress,
+            LinearLayout.LayoutParams(dp(32), dp(32)).apply { topMargin = dp(16) },
         )
         root.addView(
-            avatarHolder,
-            FrameLayout.LayoutParams(match, wrap, Gravity.CENTER).apply {
-                bottomMargin = dp(12)
-            },
+            center,
+            FrameLayout.LayoutParams(match, wrap, Gravity.CENTER).apply { bottomMargin = dp(48) },
         )
 
+        actionsRow = createActionsRow()
         root.addView(
-            createActionPanel(),
+            actionsRow,
             FrameLayout.LayoutParams(match, wrap, Gravity.BOTTOM).apply {
-                leftMargin = dp(20)
-                rightMargin = dp(20)
-                bottomMargin = dp(28)
+                leftMargin = dp(24)
+                rightMargin = dp(24)
+                bottomMargin = dp(40)
             },
         )
-
         return root
     }
 
-    private fun createBrandPill(): View {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(dp(14), dp(8), dp(14), dp(8))
-            background = roundedRect(
-                color = Color.argb(224, 42, 29, 20),
-                radiusDp = 999,
-                strokeColor = Color.argb(92, 200, 118, 60),
-                strokeWidthDp = 1,
-            )
+    private fun createAvatar(): View {
+        val avatar = FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                colors = intArrayOf(OREX_COPPER_BRIGHT, OREX_WALNUT_DEEP)
+                orientation = GradientDrawable.Orientation.TL_BR
+            }
             elevation = dp(8).toFloat()
         }
-        row.addView(
-            View(this).apply {
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    colors = intArrayOf(OREX_COPPER_BRIGHT, OREX_WALNUT_DEEP)
-                    orientation = GradientDrawable.Orientation.TL_BR
-                }
-            },
-            LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(8) },
-        )
-        row.addView(
-            text("OREX", 12f, Typeface.BOLD, OREX_OCHRE_LIGHT).apply {
-                letterSpacing = 0.18f
-            },
-            LinearLayout.LayoutParams(wrap, wrap),
-        )
-        return row
-    }
-
-    private fun createAvatar(): View {
-        val outer = FrameLayout(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                colors = intArrayOf(OREX_COPPER_BRIGHT, OREX_WALNUT_DEEP)
-                orientation = GradientDrawable.Orientation.TL_BR
-            }
-            elevation = dp(14).toFloat()
-        }
-        val inner = FrameLayout(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                colors = intArrayOf(OREX_COPPER_BRIGHT, OREX_WALNUT_DEEP)
-                orientation = GradientDrawable.Orientation.TL_BR
-                setStroke(dp(1), Color.argb(118, 231, 193, 139))
-            }
-        }
-        inner.addView(
-            text(initials(displayName), 48f, Typeface.BOLD, OREX_CREAM).apply {
+        avatar.addView(
+            text(initials(displayName), 38f, Typeface.BOLD, OREX_CREAM).apply {
                 gravity = Gravity.CENTER
             },
             FrameLayout.LayoutParams(match, match),
         )
-        outer.addView(
-            inner,
-            FrameLayout.LayoutParams(dp(162), dp(162), Gravity.CENTER),
-        )
-        return outer
+        return avatar
     }
 
-    private fun createCallTypePill(): View {
-        return text(
-            if (video) "OREX • ВИДЕОЗВОНОК" else "OREX • ГОЛОСОВОЙ ЗВОНОК",
-            11f,
-            Typeface.BOLD,
-            OREX_OCHRE_LIGHT,
-        ).apply {
-            gravity = Gravity.CENTER
-            letterSpacing = 0.06f
-            setPadding(dp(13), dp(7), dp(13), dp(7))
-            background = roundedRect(
-                color = Color.argb(112, 94, 58, 26),
-                radiusDp = 999,
-                strokeColor = Color.argb(72, 200, 118, 60),
-                strokeWidthDp = 1,
-            )
-        }
-    }
-
-    private fun createActionPanel(): View {
-        val actions = LinearLayout(this).apply {
+    private fun createActionsRow(): View {
+        return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            weightSum = 2f
-            setPadding(dp(12), dp(15), dp(12), dp(12))
-            background = roundedRect(
-                color = Color.argb(232, 42, 29, 20),
-                radiusDp = 30,
-                strokeColor = Color.argb(58, 200, 118, 60),
-                strokeWidthDp = 1,
+            weightSum = 3f
+            addView(
+                createAction(
+                    icon = R.drawable.ic_call_white,
+                    label = "Отклонить",
+                    color = OREX_DECLINE,
+                    rotation = 135f,
+                ) { declineCall() },
+                LinearLayout.LayoutParams(0, wrap, 1f),
             )
-            elevation = dp(12).toFloat()
+            addView(
+                createAction(
+                    icon = android.R.drawable.ic_menu_camera,
+                    label = "Видео",
+                    color = OREX_COPPER,
+                ) { beginAnswer(true) },
+                LinearLayout.LayoutParams(0, wrap, 1f),
+            )
+            addView(
+                createAction(
+                    icon = R.drawable.ic_call_white,
+                    label = "Ответить",
+                    color = OREX_ONLINE,
+                ) { beginAnswer(false) },
+                LinearLayout.LayoutParams(0, wrap, 1f),
+            )
         }
-        actions.addView(
-            createAction(
-                label = "Отклонить",
-                color = OREX_DECLINE,
-                haloColor = Color.argb(70, 198, 93, 88),
-                rotation = 135f,
-            ) { declineCall() },
-            LinearLayout.LayoutParams(0, wrap, 1f),
-        )
-        actions.addView(
-            createAction(
-                label = "Ответить",
-                color = OREX_ONLINE,
-                haloColor = Color.argb(92, 143, 179, 106),
-                rotation = 0f,
-                pulse = true,
-            ) { answerCall() },
-            LinearLayout.LayoutParams(0, wrap, 1f),
-        )
-        return actions
     }
 
     private fun createAction(
+        icon: Int,
         label: String,
         color: Int,
-        haloColor: Int,
-        rotation: Float,
-        pulse: Boolean = false,
+        rotation: Float = 0f,
         onClick: () -> Unit,
     ): View {
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
         }
-        val holder = FrameLayout(this)
-        if (pulse) {
-            val halo = View(this).apply { background = circle(haloColor) }
-            holder.addView(halo, FrameLayout.LayoutParams(dp(70), dp(70), Gravity.CENTER))
-            startPulse(halo)
-        }
         val button = FrameLayout(this).apply {
             background = circle(color)
             isClickable = true
             isFocusable = true
-            elevation = dp(8).toFloat()
+            elevation = dp(6).toFloat()
             setOnClickListener { onClick() }
         }
-        val icon = ImageView(this).apply {
-            setImageResource(R.drawable.ic_call_white)
-            imageTintList = ColorStateList.valueOf(OREX_CREAM)
-            this.rotation = rotation
-            scaleType = ImageView.ScaleType.CENTER_INSIDE
-            setPadding(dp(19), dp(19), dp(19), dp(19))
-        }
-        button.addView(icon, FrameLayout.LayoutParams(match, match))
-        holder.addView(button, FrameLayout.LayoutParams(dp(70), dp(70), Gravity.CENTER))
-        column.addView(holder, LinearLayout.LayoutParams(dp(96), dp(96)))
+        button.addView(
+            ImageView(this).apply {
+                setImageResource(icon)
+                imageTintList = ColorStateList.valueOf(OREX_CREAM)
+                this.rotation = rotation
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                setPadding(dp(17), dp(17), dp(17), dp(17))
+            },
+            FrameLayout.LayoutParams(match, match),
+        )
+        column.addView(button, LinearLayout.LayoutParams(dp(60), dp(60)))
         column.addView(
-            text(label, 13.5f, Typeface.BOLD, OREX_DARK_TEXT).apply {
+            text(label, 12.5f, Typeface.NORMAL, OREX_DARK_TEXT_SOFT).apply {
                 gravity = Gravity.CENTER
             },
-            LinearLayout.LayoutParams(match, wrap),
+            LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) },
         )
         return column
     }
 
-    private fun startPulse(view: View) {
-        runningAnimators += ObjectAnimator.ofFloat(view, View.SCALE_X, 1f, 1.52f).apply {
-            duration = 1450L
-            repeatCount = ValueAnimator.INFINITE
-            start()
+    private fun beginAnswer(useVideo: Boolean) {
+        if (callId.isEmpty() || handoffStarted) return
+        handoffStarted = true
+        ringTimeout?.let(handler::removeCallbacks)
+        ringTimeout = null
+
+        OrexCallPresentationState.markAnswering(applicationContext, callId)
+        OrexNotificationCenter.cancelCallNotification(applicationContext)
+        statusText?.text = "Открываем звонок…"
+        progress?.visibility = View.VISIBLE
+        setEnabledRecursively(actionsRow, false)
+
+        val launched = if (systemManaged) {
+            OrexPushBridge.queueIncomingCallAction(
+                context = this,
+                callId = callId,
+                displayName = displayName,
+                video = useVideo,
+                action = ACTION_ANSWER,
+                fromSystem = true,
+            )
+            OrexAndroidTelecomManager.handleNotificationAction(
+                Intent().apply {
+                    action = OrexAndroidTelecomManager.ACTION_ANSWER
+                    putExtra(OrexAndroidTelecomManager.EXTRA_CALL_ID, callId)
+                },
+            )
+            OrexPushBridge.bringAppToFront(this)
+        } else {
+            OrexPushBridge.launchIncomingCallAction(
+                context = this,
+                callId = callId,
+                displayName = displayName,
+                video = useVideo,
+                action = "answer",
+                fromSystem = false,
+                bringUiToFront = true,
+            )
         }
-        runningAnimators += ObjectAnimator.ofFloat(view, View.SCALE_Y, 1f, 1.52f).apply {
-            duration = 1450L
-            repeatCount = ValueAnimator.INFINITE
-            start()
+        if (!launched) {
+            restoreAfterFailedHandoff("Не удалось открыть звонок")
+            return
         }
-        runningAnimators += ObjectAnimator.ofFloat(view, View.ALPHA, 0.64f, 0f).apply {
-            duration = 1450L
-            repeatCount = ValueAnimator.INFINITE
-            start()
-        }
+
+        // MainActivity никогда не показывается поверх keyguard. После принятия
+        // закрываем call-shell только через системную разблокировку: звонок уже
+        // может готовиться, но сообщения и навигация Orex остаются защищены.
+        requestUnlockAfterAnswer()
     }
 
-    private fun stopAnimations() {
-        runningAnimators.forEach(Animator::cancel)
-        runningAnimators.clear()
-    }
+    private fun requestUnlockAfterAnswer() {
+        val keyguard = getSystemService(KeyguardManager::class.java)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !keyguard.isKeyguardLocked) {
+            finishAndRemoveTask()
+            return
+        }
 
-    private fun answerCall() {
-        if (callId.isEmpty()) return
-        OrexNotificationCenter.cancelCall(applicationContext)
-        OrexPushBridge.launchIncomingCallAction(
-            context = applicationContext,
-            callId = callId,
-            displayName = displayName,
-            video = video,
-            action = "answer",
-            fromSystem = false,
+        statusText?.text = "Звонок принят · разблокируйте телефон"
+        progress?.visibility = View.GONE
+        actionsRow?.visibility = View.INVISIBLE
+        keyguard.requestDismissKeyguard(
+            this,
+            object : KeyguardManager.KeyguardDismissCallback() {
+                override fun onDismissSucceeded() = finishAndRemoveTask()
+                override fun onDismissCancelled() = finishAndRemoveTask()
+                override fun onDismissError() = finishAndRemoveTask()
+            },
         )
-        finishAndRemoveTask()
     }
 
     private fun declineCall() {
         if (callId.isEmpty()) return
-        OrexNotificationCenter.cancelCall(applicationContext)
-        OrexPushBridge.launchIncomingCallAction(
-            context = applicationContext,
-            callId = callId,
-            displayName = displayName,
-            video = video,
-            action = "reject",
-            fromSystem = false,
-        )
+        OrexNotificationCenter.cancelCallNotification(applicationContext)
+        OrexCallPresentationState.markEnded(applicationContext, callId)
+        if (systemManaged) {
+            OrexAndroidTelecomManager.handleNotificationAction(
+                Intent().apply {
+                    action = OrexAndroidTelecomManager.ACTION_DECLINE
+                    putExtra(OrexAndroidTelecomManager.EXTRA_CALL_ID, callId)
+                },
+            )
+        } else {
+            OrexPushBridge.launchIncomingCallAction(
+                context = this,
+                callId = callId,
+                displayName = displayName,
+                video = incomingVideo,
+                action = "reject",
+                fromSystem = false,
+                bringUiToFront = false,
+            )
+        }
         finishAndRemoveTask()
     }
 
-    private fun text(
-        value: String,
-        sizeSp: Float,
-        style: Int,
-        color: Int,
-    ): TextView = TextView(this).apply {
-        text = value
-        textSize = sizeSp
-        setTextColor(color)
-        typeface = Typeface.create("sans-serif", style)
-        includeFontPadding = false
+    private fun restoreAfterFailedHandoff(message: String) {
+        OrexCallPresentationState.markEnded(applicationContext, callId)
+        handoffStarted = false
+        statusText?.text = message
+        progress?.visibility = View.GONE
+        setEnabledRecursively(actionsRow, true)
     }
+
+    private fun setEnabledRecursively(view: View?, enabled: Boolean) {
+        if (view == null) return
+        view.isEnabled = enabled
+        view.isClickable = enabled
+        if (view is android.view.ViewGroup) {
+            for (index in 0 until view.childCount) {
+                setEnabledRecursively(view.getChildAt(index), enabled)
+            }
+        }
+    }
+
+    private fun text(value: String, sizeSp: Float, style: Int, color: Int): TextView =
+        TextView(this).apply {
+            text = value
+            textSize = sizeSp
+            setTextColor(color)
+            typeface = Typeface.create("sans-serif", style)
+            includeFontPadding = false
+        }
 
     private fun circle(color: Int) = GradientDrawable().apply {
         shape = GradientDrawable.OVAL
         setColor(color)
-    }
-
-    private fun roundedRect(
-        color: Int,
-        radiusDp: Int,
-        strokeColor: Int,
-        strokeWidthDp: Int,
-    ) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        cornerRadius = dp(radiusDp).toFloat()
-        setColor(color)
-        if (strokeWidthDp > 0) setStroke(dp(strokeWidthDp), strokeColor)
     }
 
     private fun initials(value: String): String {
@@ -431,6 +407,11 @@ class OrexIncomingCallActivity : Activity() {
         private const val EXTRA_DISPLAY_NAME = "orex_display_name"
         private const val EXTRA_VIDEO = "orex_video"
         private const val EXTRA_TIMEOUT_MS = "orex_timeout_ms"
+        private const val EXTRA_ACTION = "orex_action"
+        private const val EXTRA_SYSTEM_MANAGED = "orex_system_managed"
+        private const val ACTION_ANSWER = "answer"
+        private const val ACTION_ANSWER_VIDEO = "answer_video"
+        private const val ACTION_REJECT = "reject"
         private const val DEFAULT_TIMEOUT_MS = 45_000L
         private const val MAX_TIMEOUT_MS = 90_000L
         private const val match = -1
@@ -440,11 +421,11 @@ class OrexIncomingCallActivity : Activity() {
         private val OREX_DARK_TEXT = Color.rgb(243, 230, 213)
         private val OREX_DARK_TEXT_SOFT = Color.rgb(179, 154, 130)
         private val OREX_CREAM = Color.rgb(251, 245, 236)
+        private val OREX_COPPER = Color.rgb(200, 118, 60)
         private val OREX_COPPER_BRIGHT = Color.rgb(217, 140, 74)
         private val OREX_WALNUT_DEEP = Color.rgb(94, 58, 26)
-        private val OREX_OCHRE_LIGHT = Color.rgb(231, 193, 139)
         private val OREX_ONLINE = Color.rgb(143, 179, 106)
-        private val OREX_DECLINE = Color.rgb(198, 93, 88)
+        private val OREX_DECLINE = Color.rgb(207, 102, 121)
 
         @Volatile
         private var current: WeakReference<OrexIncomingCallActivity>? = null
@@ -455,6 +436,8 @@ class OrexIncomingCallActivity : Activity() {
             displayName: String,
             video: Boolean,
             timeoutAfterMs: Long,
+            action: String? = null,
+            systemManaged: Boolean = false,
         ): Intent = Intent(context, OrexIncomingCallActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP or
@@ -463,6 +446,8 @@ class OrexIncomingCallActivity : Activity() {
             putExtra(EXTRA_DISPLAY_NAME, displayName)
             putExtra(EXTRA_VIDEO, video)
             putExtra(EXTRA_TIMEOUT_MS, timeoutAfterMs)
+            if (!action.isNullOrBlank()) putExtra(EXTRA_ACTION, action)
+            putExtra(EXTRA_SYSTEM_MANAGED, systemManaged)
         }
 
         fun finishActive() {
@@ -471,66 +456,55 @@ class OrexIncomingCallActivity : Activity() {
                 if (!activity.isFinishing) activity.finishAndRemoveTask()
             }
         }
+
+        fun finishForCall(callId: String) {
+            val activity = current?.get() ?: return
+            if (activity.callId != callId) return
+            activity.runOnUiThread {
+                if (!activity.isFinishing) activity.finishAndRemoveTask()
+            }
+        }
     }
 }
 
-private class OrexCallBackgroundDrawable : Drawable() {
+/** Native approximation of Flutter AmbientBackground from glass.dart. */
+private class OrexAmbientBackgroundDrawable : Drawable() {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     override fun draw(canvas: Canvas) {
         val w = bounds.width().toFloat()
         val h = bounds.height().toFloat()
-
-        paint.shader = LinearGradient(
-            0f,
-            0f,
-            w,
-            h,
-            intArrayOf(
-                Color.rgb(58, 36, 21),
-                Color.rgb(36, 25, 18),
-                Color.rgb(28, 20, 14),
-            ),
-            floatArrayOf(0f, 0.48f, 1f),
-            Shader.TileMode.CLAMP,
-        )
-        canvas.drawRect(
-            bounds.left.toFloat(),
-            bounds.top.toFloat(),
-            bounds.right.toFloat(),
-            bounds.bottom.toFloat(),
-            paint,
-        )
+        canvas.drawColor(Color.rgb(28, 20, 14))
 
         paint.shader = RadialGradient(
-            w * 0.82f,
-            h * 0.18f,
-            w * 0.72f,
-            intArrayOf(Color.argb(92, 200, 118, 60), Color.TRANSPARENT),
+            w * 0.20f,
+            h * 0.16f,
+            maxOf(w, h) * 0.95f,
+            intArrayOf(Color.rgb(58, 36, 21), Color.rgb(28, 20, 14)),
             null,
             Shader.TileMode.CLAMP,
         )
-        canvas.drawCircle(w * 0.82f, h * 0.18f, w * 0.72f, paint)
+        canvas.drawRect(0f, 0f, w, h, paint)
 
         paint.shader = RadialGradient(
-            w * 0.10f,
-            h * 0.82f,
-            w * 0.62f,
-            intArrayOf(Color.argb(64, 217, 160, 91), Color.TRANSPARENT),
+            w * 0.92f,
+            h * 0.10f,
+            w * 0.48f,
+            intArrayOf(Color.argb(56, 200, 118, 60), Color.TRANSPARENT),
             null,
             Shader.TileMode.CLAMP,
         )
-        canvas.drawCircle(w * 0.10f, h * 0.82f, w * 0.62f, paint)
+        canvas.drawCircle(w * 0.92f, h * 0.10f, w * 0.48f, paint)
 
         paint.shader = RadialGradient(
-            w * 0.50f,
-            h * 0.52f,
-            w * 0.42f,
-            intArrayOf(Color.argb(36, 139, 90, 43), Color.TRANSPARENT),
+            w * 0.08f,
+            h * 0.92f,
+            w * 0.56f,
+            intArrayOf(Color.argb(41, 217, 160, 91), Color.TRANSPARENT),
             null,
             Shader.TileMode.CLAMP,
         )
-        canvas.drawCircle(w * 0.50f, h * 0.52f, w * 0.42f, paint)
+        canvas.drawCircle(w * 0.08f, h * 0.92f, w * 0.56f, paint)
         paint.shader = null
     }
 

@@ -175,6 +175,18 @@ class _FakePushPlatform implements OrexPushPlatform {
   Stream<OrexPushOpen> get notificationOpens => _opens.stream;
 
   @override
+  Future<void> notifyCallAnswering(String callId) async {}
+
+  @override
+  Future<void> notifyCallUiReady(String callId) async {}
+
+  @override
+  Future<void> notifyCallEnded(String callId) async {}
+
+  @override
+  Future<void> notifyCallUiHidden() async {}
+
+  @override
   Future<void> showLocalMatrixNotification({
     required String roomId,
     String? eventId,

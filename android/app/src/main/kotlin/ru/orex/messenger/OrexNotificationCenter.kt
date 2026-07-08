@@ -24,8 +24,8 @@ import kotlin.math.absoluteValue
  */
 object OrexNotificationCenter {
     const val CALL_NOTIFICATION_ID = 4040
-    const val MESSAGE_CHANNEL_ID = "orex_messages_v2"
-    const val INCOMING_CALL_CHANNEL_ID = "orex_calls_incoming_v3"
+    const val MESSAGE_CHANNEL_ID = "orex_messages_v3"
+    const val INCOMING_CALL_CHANNEL_ID = "orex_calls_incoming_v4"
     const val ONGOING_CALL_CHANNEL_ID = "orex_calls_ongoing_v2"
 
     private const val TAG = "OrexNotifications"
@@ -42,7 +42,11 @@ object OrexNotificationCenter {
                 Log.i(TAG, "Stale MatrixRTC ring ignored")
                 return
             }
-            showIncomingCall(context, payload, allowFullScreen = !appResumed)
+            if (appResumed) {
+                Log.i(TAG, "Native call presentation suppressed while Orex is foreground")
+                return
+            }
+            showIncomingCall(context, payload, allowFullScreen = true)
             return
         }
         if (isRtcNotificationPayload(payload)) {
@@ -156,6 +160,15 @@ object OrexNotificationCenter {
         if (!canPostNotifications(context)) return
         ensureChannels(context)
         val isRinging = incoming && !answered
+        val decision = if (isRinging) {
+            OrexCallPresentationState.claimTelecomRing(context, callId)
+        } else {
+            OrexCallPresentationState.markActive(context, callId)
+            OrexCallPresentationState.IncomingDecision.SILENT_REFRESH
+        }
+        if (decision == OrexCallPresentationState.IncomingDecision.SUPPRESS) return
+        val alert = decision == OrexCallPresentationState.IncomingDecision.FIRST_ALERT
+
         val openApp = if (isRinging) {
             OrexPushBridge.incomingCallScreenPendingIntent(
                 context = context,
@@ -175,22 +188,59 @@ object OrexNotificationCenter {
                 requestCode = 7000,
             )
         }
+        val uiAnswer = if (isRinging) {
+            OrexPushBridge.incomingCallActionPendingIntent(
+                context = context,
+                callId = callId,
+                displayName = displayName,
+                video = video,
+                action = "answer",
+                requestCode = 7001,
+                systemManaged = true,
+            )
+        } else {
+            answer
+        }
+        val uiDecline = if (isRinging) {
+            OrexPushBridge.incomingCallActionPendingIntent(
+                context = context,
+                callId = callId,
+                displayName = displayName,
+                video = video,
+                action = "reject",
+                requestCode = 7002,
+                systemManaged = true,
+            )
+        } else {
+            decline
+        }
         postCall(
             context = context,
             displayName = displayName,
             incoming = isRinging,
             openApp = openApp,
-            fullScreen = openApp.takeIf { isRinging && !OrexPushBridge.isAppResumed() },
-            answer = answer,
-            decline = decline,
+            fullScreen = openApp.takeIf {
+                isRinging && alert && !OrexPushBridge.isAppResumed()
+            },
+            answer = uiAnswer,
+            decline = uiDecline,
             hangUp = hangUp,
             timeoutAfterMs = null,
+            alert = alert,
         )
     }
 
-    fun cancelCall(context: Context) {
+    fun cancelCallNotification(context: Context) {
         notificationManager(context).cancel(CALL_NOTIFICATION_ID)
-        OrexIncomingCallActivity.finishActive()
+    }
+
+    fun cancelCall(context: Context, callId: String? = null) {
+        val canCancel = callId == null ||
+            OrexCallPresentationState.canCancelPresentation(context, callId)
+        if (canCancel) cancelCallNotification(context)
+        OrexCallPresentationState.markEnded(context, callId)
+        if (callId == null) OrexIncomingCallActivity.finishActive()
+        else OrexIncomingCallActivity.finishForCall(callId)
     }
 
     private fun showIncomingCall(
@@ -204,6 +254,25 @@ object OrexNotificationCenter {
         val displayName = callerDisplayName(payload)
         val video = isVideoCall(payload)
         val timeoutAfterMs = remainingCallLifetimeMs(payload)
+        val ringToken = firstValue(
+            payload,
+            "event_id",
+            "content_sender_ts",
+            "content.sender_ts",
+            "sender_ts",
+        )
+        val decision = OrexCallPresentationState.claimPushRing(
+            context = context,
+            callId = callId,
+            ringToken = ringToken,
+            timeoutAfterMs = timeoutAfterMs,
+        )
+        if (decision == OrexCallPresentationState.IncomingDecision.SUPPRESS) {
+            Log.i(TAG, "Duplicate/handled incoming call push suppressed call=$callId")
+            return
+        }
+        val alert = decision == OrexCallPresentationState.IncomingDecision.FIRST_ALERT
+
         val openApp = OrexPushBridge.incomingCallScreenPendingIntent(
             context = context,
             callId = callId,
@@ -212,7 +281,7 @@ object OrexNotificationCenter {
             timeoutAfterMs = timeoutAfterMs,
             requestCode = 6100,
         )
-        val answer = OrexPushBridge.callActionPendingIntent(
+        val answer = OrexPushBridge.incomingCallActionPendingIntent(
             context = context,
             callId = callId,
             displayName = displayName,
@@ -220,7 +289,7 @@ object OrexNotificationCenter {
             action = "answer",
             requestCode = 6101,
         )
-        val decline = OrexPushBridge.callActionPendingIntent(
+        val decline = OrexPushBridge.incomingCallActionPendingIntent(
             context = context,
             callId = callId,
             displayName = displayName,
@@ -233,13 +302,14 @@ object OrexNotificationCenter {
             displayName = displayName,
             incoming = true,
             openApp = openApp,
-            fullScreen = openApp.takeIf { allowFullScreen },
+            fullScreen = openApp.takeIf { allowFullScreen && alert },
             answer = answer,
             decline = decline,
             hangUp = null,
             timeoutAfterMs = timeoutAfterMs,
+            alert = alert,
         )
-        Log.i(TAG, "Incoming call notification posted")
+        Log.i(TAG, "Incoming call notification posted call=$callId alert=$alert")
     }
 
     private fun postCall(
@@ -252,6 +322,7 @@ object OrexNotificationCenter {
         decline: PendingIntent,
         hangUp: PendingIntent?,
         timeoutAfterMs: Long?,
+        alert: Boolean,
     ) {
         val channelId = if (incoming) INCOMING_CALL_CHANNEL_ID else ONGOING_CALL_CHANNEL_ID
         val builder = builder(context, channelId)
@@ -264,6 +335,10 @@ object OrexNotificationCenter {
             .setOngoing(true)
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
+
+        if (!alert && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder.setSilent(true)
+        }
 
         if (timeoutAfterMs != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             builder.setTimeoutAfter(timeoutAfterMs.coerceAtLeast(1_000L))
@@ -303,7 +378,7 @@ object OrexNotificationCenter {
         }
 
         val notification = builder.build().apply {
-            if (incoming) flags = flags or Notification.FLAG_INSISTENT
+            if (incoming && alert) flags = flags or Notification.FLAG_INSISTENT
         }
         notificationManager(context).notify(CALL_NOTIFICATION_ID, notification)
     }
@@ -377,6 +452,10 @@ object OrexNotificationCenter {
         } else {
             builder.setStyle(Notification.BigTextStyle().bigText(body))
         }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            @Suppress("DEPRECATION")
+            builder.setPriority(Notification.PRIORITY_HIGH)
+        }
 
         notificationManager(context).notify(notificationId, builder.build())
         Log.i(TAG, "Message notification posted")
@@ -443,11 +522,13 @@ object OrexNotificationCenter {
                 NotificationChannel(
                     MESSAGE_CHANNEL_ID,
                     "Сообщения Orex",
-                    NotificationManager.IMPORTANCE_DEFAULT,
+                    NotificationManager.IMPORTANCE_HIGH,
                 ).apply {
                     description = "Личные сообщения, комнаты и события Matrix"
                     lockscreenVisibility = Notification.VISIBILITY_PRIVATE
                     enableVibration(true)
+                    enableLights(true)
+                    setSound(Settings.System.DEFAULT_NOTIFICATION_URI, null)
                 },
                 NotificationChannel(
                     INCOMING_CALL_CHANNEL_ID,
