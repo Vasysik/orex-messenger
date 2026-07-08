@@ -343,11 +343,17 @@ class CallSession extends ChangeNotifier {
         : normalized;
   }
 
-  Future<void> syncAudioSettingsFromSettings() async {
+  Future<void> syncAudioSettingsFromSettings({
+    bool refreshVoiceGateCapture = true,
+  }) async {
     await applyAudioOutput();
     await _restartMicIfInputChanged();
     await _restartCameraIfInputChanged();
-    await _voiceGate.sync();
+    if (refreshVoiceGateCapture) {
+      await _voiceGate.restart(resetTrack: false);
+    } else {
+      await _voiceGate.sync();
+    }
   }
 
   Future<void> _restartMicIfInputChanged({bool force = false}) async {

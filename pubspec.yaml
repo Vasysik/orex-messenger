@@ -1,7 +1,7 @@
 name: orex_messenger
 description: "Orex Messenger — тёплый ореховый мессенджер на MatrixRTC + LiveKit."
 publish_to: "none"
-version: 0.4.0+20
+version: 0.4.0+22
 
 environment:
   sdk: ">=3.12.0 <4.0.0"
@@ -71,4 +71,4 @@ flutter:
   assets:
     - assets/icon/app_icon.png
     - assets/sounds/
-    # - assets/mascot/squirrel.png   # добавите, когда будет ассет маскота
+    - assets/mascot/squirrel.png

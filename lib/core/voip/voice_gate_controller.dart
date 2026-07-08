@@ -62,6 +62,11 @@ final class OrexVoiceGateController {
     await _start();
   }
 
+  Future<void> restart({bool resetTrack = false}) async {
+    await stop(resetTrack: resetTrack);
+    await sync();
+  }
+
   Future<void> _start() async {
     if (_recorder != null || _starting) return;
     _starting = true;

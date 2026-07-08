@@ -45,38 +45,14 @@ class CallController extends ChangeNotifier {
       _systemIncomingAccepted.stream;
 
   void _onAudioSettingsChanged() {
-    unawaited(_session?.syncAudioSettingsFromSettings());
+    unawaited(
+      _session?.syncAudioSettingsFromSettings(refreshVoiceGateCapture: true),
+    );
     notifyListeners();
   }
 
   void _onSessionChanged() {
-    final session = _session;
-    final rid = roomId;
-    final room = rid == null ? null : matrix.client.getRoomById(rid);
-    final personal = room != null && _isSystemCallEligible(room);
-    if (session != null &&
-        personal &&
-        session.sawRemote &&
-        session.remoteParticipantCount == 0) {
-      _remoteGoneTimer ??= Timer(const Duration(seconds: 12), () {
-        _remoteGoneTimer = null;
-        if (_session != session ||
-            roomId != rid ||
-            session.remoteParticipantCount > 0) {
-          return;
-        }
-        OrexLog.d('Call', 'remote participant did not reconnect room=$rid');
-        unawaited(hangUp(fromRemote: true));
-      });
-    } else {
-      _cancelRemoteGoneTimeout();
-    }
     notifyListeners();
-  }
-
-  void _cancelRemoteGoneTimeout() {
-    _remoteGoneTimer?.cancel();
-    _remoteGoneTimer = null;
   }
 
   CallSession? _session;
@@ -99,7 +75,6 @@ class CallController extends ChangeNotifier {
   String? _incomingAcceptRoomId;
   Future<void>? _incomingAcceptFuture;
   Timer? _unansweredCallTimer;
-  Timer? _remoteGoneTimer;
   int _lifecycleGeneration = 0;
 
   bool isAcceptingIncoming(String roomId) =>
@@ -500,6 +475,17 @@ class CallController extends ChangeNotifier {
     _unansweredCallTimer = null;
   }
 
+  bool _shouldSendEndedSignal(Room room) {
+    if (!(matrix.voip?.isPersonalCallRoom(room) ?? room.isDirectChat)) {
+      return false;
+    }
+    final remoteMembers = matrix
+        .callMemberIds(room)
+        .where((id) => id != matrix.client.userID)
+        .toList(growable: false);
+    return remoteMembers.isEmpty;
+  }
+
   /// Начать/присоединиться к звонку в комнате.
   Future<void> start(
     String roomId, {
@@ -513,7 +499,6 @@ class CallController extends ChangeNotifier {
       await hangUp();
     }
     _cancelUnansweredTimeout();
-    _cancelRemoteGoneTimeout();
     final generation = ++_lifecycleGeneration;
     lastError = null;
     this.roomId = roomId;
@@ -661,7 +646,6 @@ class CallController extends ChangeNotifier {
     bool leaveSignaling = false,
   }) async {
     _cancelUnansweredTimeout();
-    _cancelRemoteGoneTimeout();
     lastError = message;
     unawaited(matrix.push.notifyCallEnded(session.matrixRoomId));
     final failedRoom = matrix.client.getRoomById(session.matrixRoomId);
@@ -715,23 +699,20 @@ class CallController extends ChangeNotifier {
   }) async {
     _lifecycleGeneration++;
     _cancelUnansweredTimeout();
-    _cancelRemoteGoneTimeout();
     final s = _session;
     final rid = roomId;
+    final room = rid == null ? null : matrix.client.getRoomById(rid);
     final systemCallId = _systemCallId;
     final initiator = _initiator;
     final start = _start;
     final sawRemote = s?.sawRemote ?? false;
+    final shouldSendEndedSignal = !fromRemote && room != null && _shouldSendEndedSignal(room);
+    final shouldPostSummary = initiator && rid != null && (fromRemote || shouldSendEndedSignal);
     Future<void>? remoteEndSync;
-    if (!fromRemote && rid != null) {
-      final room = matrix.client.getRoomById(rid);
-      final isPersonal = room != null &&
-          (matrix.voip?.isPersonalCallRoom(room) ?? room.isDirectChat);
-      if (isPersonal) {
-        remoteEndSync = matrix.voip
-            ?.notifyEnded(rid)
-            .timeout(const Duration(seconds: 4), onTimeout: () {});
-      }
+    if (shouldSendEndedSignal && rid != null) {
+      remoteEndSync = matrix.voip
+          ?.notifyEnded(rid)
+          .timeout(const Duration(seconds: 4), onTimeout: () {});
     }
     _session = null;
     minimized = false;
@@ -755,7 +736,9 @@ class CallController extends ChangeNotifier {
       await _systemCalls.endCall(systemCallId);
     }
     // Итоговое сообщение о звонке постит ТОЛЬКО инициатор — без дублей.
-    if (initiator && rid != null) {
+    // Если пользователь лишь временно вышел из уже подключённого личного
+    // звонка, summary не публикуем: в комнате всё ещё может ждать собеседник.
+    if (shouldPostSummary && rid != null) {
       await _postCallSummary(rid, sawRemote, start);
     }
   }
@@ -813,7 +796,6 @@ class CallController extends ChangeNotifier {
   @override
   void dispose() {
     _cancelUnansweredTimeout();
-    _cancelRemoteGoneTimeout();
     matrix.audio.removeListener(_onAudioSettingsChanged);
     final systemCallId = _systemCallId;
     if (systemCallId != null) {
