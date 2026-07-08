@@ -1,13 +1,12 @@
 # =============================================================
 # Orex Messenger — .gitignore
 #
-# Храним исходники (lib/, pubspec, assets) и НАТИВНУЮ конфигурацию android/
-# (пермишены звонков, minSdk, иконки и т.п. — иначе они теряются при каждом
-# `flutter create`). Остальные платформенные папки регенерируются:
-#   flutter create --platforms=web,windows .
-#   flutter pub get
-#   dart run flutter_launcher_icons
-#   ./tool/setup_web_vodozemac.sh   # wasm для E2EE на web (см. README)
+# Храним исходники Flutter и платформенную конфигурацию:
+#   android/
+#   windows/
+#   web/
+#
+# iOS, Linux и macOS пока регенерируются при необходимости.
 # =============================================================
 
 # --- Сборка и кэш Flutter/Dart ---
@@ -21,7 +20,7 @@
 flutter_*.png
 **/generated_plugin_registrant.dart
 
-# --- android/: храним, но без генерируемых/машинно-зависимых частей ---
+# --- Android: храним платформенные исходники и конфигурацию ---
 android/.gradle/
 android/.cxx/
 android/local.properties
@@ -31,7 +30,7 @@ android/**/GeneratedPluginRegistrant.java
 **/*.keystore
 **/*.jks
 
-# --- Windows: храним runner/native исходники, игнорируем только генерируемое ---
+# --- Windows: храним runner/native исходники ---
 windows/flutter/ephemeral/
 windows/**/CMakeFiles/
 windows/**/CMakeCache.txt
@@ -43,11 +42,21 @@ windows/**/x64/
 windows/**/x86/
 windows/**/arm64/
 
-# --- Остальные платформы регенерируются flutter create ---
+# --- Web: храним платформенную конфигурацию ---
+# web/index.html
+# web/manifest.json
+# web/icons/
+# web/favicon.png
+# и другие web-исходники должны попадать в Git.
+#
+# Игнорируем только генерируемые локальные артефакты, если появятся.
+/web/.dart_tool/
+/web/build/
+
+# --- Пока не храним эти платформы ---
 /ios/
 /linux/
 /macos/
-/web/
 
 # --- IDE ---
 .idea/
