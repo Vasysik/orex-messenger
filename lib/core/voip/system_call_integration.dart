@@ -103,20 +103,24 @@ class OrexSystemCallIntegration {
     required String callId,
     required String displayName,
     required bool video,
+    String? avatarCacheKey,
   }) => _invokeBool('reportIncomingCall', {
     'callId': callId,
     'displayName': displayName,
     'video': video,
+    'avatarCacheKey': ?avatarCacheKey,
   });
 
   Future<bool> reportOutgoingCall({
     required String callId,
     required String displayName,
     required bool video,
+    String? avatarCacheKey,
   }) => _invokeBool('reportOutgoingCall', {
     'callId': callId,
     'displayName': displayName,
     'video': video,
+    'avatarCacheKey': ?avatarCacheKey,
   });
 
   Future<bool> answerCall(String callId, {required bool video}) =>

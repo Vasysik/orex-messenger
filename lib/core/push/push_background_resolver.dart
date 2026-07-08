@@ -7,6 +7,7 @@ import 'package:matrix/encryption/utils/key_verification.dart';
 import 'package:matrix/matrix.dart';
 
 import '../logging/orex_logger.dart';
+import '../media/orex_avatar_cache.dart';
 import '../storage/database.dart';
 
 const _backgroundPushChannelName = 'orex/push_background';
@@ -99,13 +100,16 @@ class OrexMatrixPushResolver {
 
       await event.fetchSenderUser();
       final caller = _senderName(event, rawPayload);
+      final avatarKey = await _cacheSenderAvatar(event);
       return OrexResolvedPush(<String, String>{
         ..._routingFields(rawPayload, roomId: roomId, eventId: eventId),
         'orex_kind': 'incoming_call',
+        'orex_call_refresh': 'true',
         'call_id': roomId,
         'type': event.type,
         'sender': event.senderId,
         'sender_display_name': caller,
+        'sender_avatar_key': ?avatarKey,
         'title': caller,
         'body': 'Входящий звонок',
         'orex_video': 'false',
@@ -146,6 +150,7 @@ class OrexMatrixPushResolver {
 
     await event.fetchSenderUser();
     final sender = _senderName(event, rawPayload);
+    final avatarKey = await _cacheSenderAvatar(event);
     final roomName = _roomName(event, rawPayload);
     final title = event.room.isDirectChat == true || roomName == null
         ? sender
@@ -157,12 +162,60 @@ class OrexMatrixPushResolver {
       'type': event.type,
       'sender': event.senderId,
       'sender_display_name': sender,
+      'sender_avatar_key': ?avatarKey,
       'room_name': ?roomName,
       'title': title,
       'body': body,
       'content_body': body,
       'content_msgtype': event.messageType,
     });
+  }
+
+  Future<String?> _cacheSenderAvatar(Event event) async {
+    final mxc = event.senderFromMemoryOrFallback.avatarUrl;
+    if (mxc == null || mxc.scheme != 'mxc') {
+      await _clearSenderAvatarBindings(event);
+      return null;
+    }
+    final key = OrexAvatarCache.keyFor(mxc);
+    if (await OrexAvatarCache.contains(mxc)) {
+      await _bindSenderAvatar(event, mxc);
+      return key;
+    }
+    try {
+      final mediaId = mxc.pathSegments.isEmpty ? '' : mxc.pathSegments.last;
+      if (mediaId.isEmpty) return null;
+      final response = await client.getContent(mxc.host, mediaId);
+      final key = await OrexAvatarCache.write(mxc, response.data);
+      if (key == null) return null;
+      await _bindSenderAvatar(event, mxc);
+      return key;
+    } catch (error) {
+      OrexLog.d('PushBackground', 'sender avatar cache failed mxc=$mxc', error);
+      return null;
+    }
+  }
+
+  Future<void> _bindSenderAvatar(Event event, Uri mxc) => Future.wait<void>([
+        OrexAvatarCache.bindIdentity('user:${event.senderId}', mxc),
+        if (_isPersonalRoom(event.room))
+          OrexAvatarCache.bindIdentity('room:${event.room.id}', mxc),
+      ]);
+
+  Future<void> _clearSenderAvatarBindings(Event event) => Future.wait<void>([
+        OrexAvatarCache.clearIdentity('user:${event.senderId}'),
+        if (_isPersonalRoom(event.room))
+          OrexAvatarCache.clearIdentity('room:${event.room.id}'),
+      ]);
+
+  bool _isPersonalRoom(Room room) {
+    if (room.isDirectChat) return true;
+    final joined = room
+        .getParticipants([Membership.join])
+        .map((user) => user.id)
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    return joined.length == 2 && joined.contains(client.userID);
   }
 
   static bool _isFresh(DateTime eventTs, Duration maxAge) {

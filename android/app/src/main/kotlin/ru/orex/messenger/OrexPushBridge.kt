@@ -62,6 +62,12 @@ object OrexPushBridge {
         "event_type",
         "notification_type",
         "notify_type",
+        "orex_call_action",
+        "orex_call_refresh",
+        "orex_ring_event_id",
+        "orex_ring_ts_ms",
+        "content_orex_call_action",
+        "content_orex_ring_event_id",
         "content_notification_type",
         "content_notify_type",
         "content_sender_ts",
@@ -73,6 +79,7 @@ object OrexPushBridge {
         "content",
         "sender",
         "sender_display_name",
+        "sender_avatar_key",
         "room_name",
         "room_alias",
         "origin_server_ts",
@@ -157,10 +164,15 @@ object OrexPushBridge {
         // Incoming calls are latency-sensitive and already carry a dedicated
         // short-lived wake envelope. They must reach CallStyle/full-screen UI
         // immediately, without waiting for Matrix crypto startup.
-        if (OrexNotificationCenter.isIncomingCallPayload(normalized) ||
-            OrexNotificationCenter.isRtcNotificationPayload(normalized)
-        ) {
+        val incomingCall = OrexNotificationCenter.isIncomingCallPayload(normalized)
+        if (incomingCall || OrexNotificationCenter.isRtcNotificationPayload(normalized)) {
             OrexNotificationCenter.showPush(appContext, normalized, activityResumed)
+            if (incomingCall &&
+                !activityResumed &&
+                OrexNotificationCenter.needsCallAvatarResolution(appContext, normalized)
+            ) {
+                OrexPushResolveWorker.enqueue(appContext, normalized)
+            }
             return
         }
 
@@ -284,12 +296,14 @@ object OrexPushBridge {
         action: String?,
         requestCode: Int,
         fromSystem: Boolean = false,
+        avatarCacheKey: String? = null,
     ): PendingIntent {
         val payload = incomingCallPayload(
             callId = callId,
             displayName = displayName,
             video = video,
             fromSystem = fromSystem,
+            avatarCacheKey = avatarCacheKey,
         )
         return PendingIntent.getActivity(
             context,
@@ -308,6 +322,7 @@ object OrexPushBridge {
         requestCode: Int,
         action: String? = null,
         systemManaged: Boolean = false,
+        avatarCacheKey: String? = null,
     ): PendingIntent {
         val intent = OrexIncomingCallActivity.createIntent(
             context = context,
@@ -317,6 +332,7 @@ object OrexPushBridge {
             timeoutAfterMs = timeoutAfterMs,
             action = action,
             systemManaged = systemManaged,
+            avatarCacheKey = avatarCacheKey,
         )
         return PendingIntent.getActivity(
             context,
@@ -471,14 +487,16 @@ object OrexPushBridge {
         displayName: String,
         video: Boolean,
         fromSystem: Boolean,
-    ): Map<String, String> = linkedMapOf(
-        "orex_kind" to "incoming_call",
-        "room_id" to callId,
-        "call_id" to callId,
-        "sender_display_name" to displayName,
-        "orex_video" to video.toString(),
-        "orex_from_system" to fromSystem.toString(),
-    )
+        avatarCacheKey: String? = null,
+    ): Map<String, String> = linkedMapOf<String, String>().apply {
+        put("orex_kind", "incoming_call")
+        put("room_id", callId)
+        put("call_id", callId)
+        put("sender_display_name", displayName)
+        put("orex_video", video.toString())
+        put("orex_from_system", fromSystem.toString())
+        if (!avatarCacheKey.isNullOrBlank()) put("sender_avatar_key", avatarCacheKey)
+    }
 
     fun onRequestPermissionsResult(
         requestCode: Int,

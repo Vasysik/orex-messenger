@@ -59,7 +59,7 @@ class _ChatTile extends StatelessWidget {
                 MxcAvatar(
                   matrix: matrix,
                   name: name,
-                  mxc: room.avatar,
+                  mxc: matrix.conversationAvatar(room),
                   size: 48,
                 ),
                 const SizedBox(width: 12),

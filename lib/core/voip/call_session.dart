@@ -113,6 +113,7 @@ class CallSession extends ChangeNotifier {
 
   /// Подключался ли хоть кто-то ещё (для итогового сообщения «ответили/пропущен»).
   bool sawRemote = false;
+  int get remoteParticipantCount => _room?.remoteParticipants.length ?? 0;
 
   bool get micOn => _room?.localParticipant?.isMicrophoneEnabled() ?? false;
   bool get camOn => _room?.localParticipant?.isCameraEnabled() ?? false;

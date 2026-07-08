@@ -31,6 +31,7 @@ class IncomingCallScreen extends StatefulWidget {
 
 class _IncomingCallScreenState extends State<IncomingCallScreen> {
   StreamSubscription<String>? _dismissSub;
+  Timer? _ringTimeout;
   bool _busy = false;
   String? _status;
 
@@ -46,10 +47,17 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
       }
     });
     widget.matrix.audio.startIncomingRingtone();
+    _ringTimeout = Timer(const Duration(seconds: 45), () {
+      if (!mounted || _busy) return;
+      widget.matrix.audio.stopIncomingRingtone();
+      widget.matrix.voip?.dismissIncomingFromSystem(_callId);
+      Navigator.of(context).maybePop();
+    });
   }
 
   @override
   void dispose() {
+    _ringTimeout?.cancel();
     widget.matrix.audio.stopIncomingRingtone();
     _dismissSub?.cancel();
     super.dispose();
@@ -166,7 +174,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
         MxcAvatar(
           matrix: widget.matrix,
           name: name,
-          mxc: room.avatar,
+          mxc: widget.matrix.conversationAvatar(room),
           size: size,
         ),
         const SizedBox(height: 16),

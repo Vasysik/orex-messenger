@@ -42,10 +42,12 @@ class OrexIncomingCallActivity : Activity() {
     private var ringTimeout: Runnable? = null
     private var callId: String = ""
     private var displayName: String = "Orex"
+    private var avatarCacheKey: String? = null
     private var incomingVideo: Boolean = false
     private var systemManaged: Boolean = false
     private var handoffStarted = false
     private var statusText: TextView? = null
+    private var avatarSlot: FrameLayout? = null
     private var actionsRow: View? = null
     private var progress: ProgressBar? = null
 
@@ -98,6 +100,7 @@ class OrexIncomingCallActivity : Activity() {
         if (nextCallId != callId) handoffStarted = false
         callId = nextCallId
         displayName = source.getStringExtra(EXTRA_DISPLAY_NAME)?.trim().orEmpty().ifEmpty { "Orex" }
+        avatarCacheKey = source.getStringExtra(EXTRA_AVATAR_CACHE_KEY)?.trim()?.ifEmpty { null }
         incomingVideo = source.getBooleanExtra(EXTRA_VIDEO, false)
         systemManaged = source.getBooleanExtra(EXTRA_SYSTEM_MANAGED, false)
         val timeoutMs = source.getLongExtra(EXTRA_TIMEOUT_MS, DEFAULT_TIMEOUT_MS)
@@ -136,7 +139,11 @@ class OrexIncomingCallActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
         }
-        center.addView(createAvatar(), LinearLayout.LayoutParams(dp(120), dp(120)))
+        val avatar = FrameLayout(this).apply {
+            addView(createAvatar(), FrameLayout.LayoutParams(match, match))
+        }
+        avatarSlot = avatar
+        center.addView(avatar, LinearLayout.LayoutParams(dp(120), dp(120)))
         center.addView(
             text(displayName, 23f, Typeface.BOLD, OREX_DARK_TEXT).apply {
                 gravity = Gravity.CENTER
@@ -178,6 +185,18 @@ class OrexIncomingCallActivity : Activity() {
     }
 
     private fun createAvatar(): View {
+        val cached = OrexAvatarCache.load(this, avatarCacheKey)
+        if (cached != null) {
+            return ImageView(this).apply {
+                background = circle(OREX_WALNUT_DEEP)
+                clipToOutline = true
+                elevation = dp(8).toFloat()
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                setImageBitmap(cached)
+                contentDescription = "Аватар $displayName"
+            }
+        }
+
         val avatar = FrameLayout(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
@@ -193,6 +212,25 @@ class OrexIncomingCallActivity : Activity() {
             FrameLayout.LayoutParams(match, match),
         )
         return avatar
+    }
+
+    private fun refreshAvatar(nextKey: String) {
+        if (nextKey.isBlank()) return
+        avatarCacheKey = nextKey
+        val slot = avatarSlot ?: return
+        val cached = OrexAvatarCache.load(this, nextKey) ?: return
+        slot.removeAllViews()
+        slot.addView(
+            ImageView(this).apply {
+                background = circle(OREX_WALNUT_DEEP)
+                clipToOutline = true
+                elevation = dp(8).toFloat()
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                setImageBitmap(cached)
+                contentDescription = "Аватар $displayName"
+            },
+            FrameLayout.LayoutParams(match, match),
+        )
     }
 
     private fun createActionsRow(): View {
@@ -405,6 +443,7 @@ class OrexIncomingCallActivity : Activity() {
     companion object {
         private const val EXTRA_CALL_ID = "orex_call_id"
         private const val EXTRA_DISPLAY_NAME = "orex_display_name"
+        private const val EXTRA_AVATAR_CACHE_KEY = "orex_avatar_cache_key"
         private const val EXTRA_VIDEO = "orex_video"
         private const val EXTRA_TIMEOUT_MS = "orex_timeout_ms"
         private const val EXTRA_ACTION = "orex_action"
@@ -438,12 +477,14 @@ class OrexIncomingCallActivity : Activity() {
             timeoutAfterMs: Long,
             action: String? = null,
             systemManaged: Boolean = false,
+            avatarCacheKey: String? = null,
         ): Intent = Intent(context, OrexIncomingCallActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_CALL_ID, callId)
             putExtra(EXTRA_DISPLAY_NAME, displayName)
+            if (!avatarCacheKey.isNullOrBlank()) putExtra(EXTRA_AVATAR_CACHE_KEY, avatarCacheKey)
             putExtra(EXTRA_VIDEO, video)
             putExtra(EXTRA_TIMEOUT_MS, timeoutAfterMs)
             if (!action.isNullOrBlank()) putExtra(EXTRA_ACTION, action)
@@ -454,6 +495,14 @@ class OrexIncomingCallActivity : Activity() {
             val activity = current?.get() ?: return
             activity.runOnUiThread {
                 if (!activity.isFinishing) activity.finishAndRemoveTask()
+            }
+        }
+
+        fun updateAvatarForCall(callId: String, avatarCacheKey: String) {
+            val activity = current?.get() ?: return
+            if (activity.callId != callId) return
+            activity.runOnUiThread {
+                if (!activity.isFinishing) activity.refreshAvatar(avatarCacheKey)
             }
         }
 

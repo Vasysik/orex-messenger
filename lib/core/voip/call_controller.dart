@@ -7,6 +7,7 @@ import 'package:matrix/matrix.dart' hide CallSession;
 
 import 'call_session.dart';
 import 'system_call_integration.dart';
+import 'voip_service.dart';
 import '../matrix/matrix_service.dart';
 import '../logging/orex_logger.dart';
 
@@ -23,12 +24,20 @@ class CallController extends ChangeNotifier {
     _incomingDismissSub = matrix.voip?.onDismissIncoming.listen(
       _onIncomingDismissed,
     );
+    _remoteAcceptedSub = matrix.voip?.onRemoteCallAccepted.listen(
+      _onRemoteCallAccepted,
+    );
+    _remoteTerminationSub = matrix.voip?.onRemoteCallTermination.listen(
+      _onRemoteCallTermination,
+    );
   }
 
   final MatrixService matrix;
   final OrexSystemCallIntegration _systemCalls =
       OrexSystemCallIntegration.instance;
   StreamSubscription<String>? _incomingDismissSub;
+  StreamSubscription<String>? _remoteAcceptedSub;
+  StreamSubscription<OrexRemoteCallTermination>? _remoteTerminationSub;
   final StreamController<String> _systemIncomingAccepted =
       StreamController<String>.broadcast();
 
@@ -38,6 +47,36 @@ class CallController extends ChangeNotifier {
   void _onAudioSettingsChanged() {
     unawaited(_session?.syncAudioSettingsFromSettings());
     notifyListeners();
+  }
+
+  void _onSessionChanged() {
+    final session = _session;
+    final rid = roomId;
+    final room = rid == null ? null : matrix.client.getRoomById(rid);
+    final personal = room != null && _isSystemCallEligible(room);
+    if (session != null &&
+        personal &&
+        session.sawRemote &&
+        session.remoteParticipantCount == 0) {
+      _remoteGoneTimer ??= Timer(const Duration(seconds: 12), () {
+        _remoteGoneTimer = null;
+        if (_session != session ||
+            roomId != rid ||
+            session.remoteParticipantCount > 0) {
+          return;
+        }
+        OrexLog.d('Call', 'remote participant did not reconnect room=$rid');
+        unawaited(hangUp(fromRemote: true));
+      });
+    } else {
+      _cancelRemoteGoneTimeout();
+    }
+    notifyListeners();
+  }
+
+  void _cancelRemoteGoneTimeout() {
+    _remoteGoneTimer?.cancel();
+    _remoteGoneTimer = null;
   }
 
   CallSession? _session;
@@ -59,6 +98,8 @@ class CallController extends ChangeNotifier {
   String? _systemActionInProgressCallId;
   String? _incomingAcceptRoomId;
   Future<void>? _incomingAcceptFuture;
+  Timer? _unansweredCallTimer;
+  Timer? _remoteGoneTimer;
   int _lifecycleGeneration = 0;
 
   bool isAcceptingIncoming(String roomId) =>
@@ -90,6 +131,40 @@ class CallController extends ChangeNotifier {
   bool _isSystemCallEligible(Room? room) =>
       room != null &&
       (matrix.voip?.isPersonalCallRoom(room) ?? room.isDirectChat);
+
+  String? _conversationAvatarCacheKey(Room room) {
+    final avatar = matrix.conversationAvatar(room);
+    return avatar == null ? null : matrix.avatarCacheKey(avatar);
+  }
+
+  void _refreshSystemCallAvatar(
+    Room room, {
+    required bool video,
+    required bool incoming,
+  }) {
+    final avatar = matrix.conversationAvatar(room);
+    if (avatar == null) return;
+    unawaited(
+      matrix.ensureConversationAvatarCached(room).then((cacheKey) async {
+        if (cacheKey == null || _systemCallId != room.id) return;
+        if (incoming) {
+          await _systemCalls.reportIncomingCall(
+            callId: room.id,
+            displayName: room.getLocalizedDisplayname(),
+            video: video,
+            avatarCacheKey: cacheKey,
+          );
+        } else {
+          await _systemCalls.reportOutgoingCall(
+            callId: room.id,
+            displayName: room.getLocalizedDisplayname(),
+            video: video,
+            avatarCacheKey: cacheKey,
+          );
+        }
+      }),
+    );
+  }
 
   /// Регистрирует входящий личный вызов в Android Telecom до показа Flutter UI.
   ///
@@ -131,6 +206,7 @@ class CallController extends ChangeNotifier {
       callId: room.id,
       displayName: room.getLocalizedDisplayname(),
       video: video,
+      avatarCacheKey: _conversationAvatarCacheKey(room),
     );
     if (!registered) {
       if (_systemCallId == room.id) _clearSystemCallState();
@@ -143,6 +219,7 @@ class CallController extends ChangeNotifier {
       await _systemCalls.endCall(room.id, reason: 'remote');
       return false;
     }
+    _refreshSystemCallAvatar(room, video: video, incoming: true);
     return true;
   }
 
@@ -198,7 +275,10 @@ class CallController extends ChangeNotifier {
     // best-effort Matrix sync до выхода из flow. Это особенно важно при
     // системном answer: native callback уже подтверждён, а дальнейшая работа
     // идёт асинхронно вне Telecom 5-секундного окна.
-    final handledSync = _markIncomingHandled(room.id);
+    final acceptedSync = Future.wait<void>([
+      _markIncomingHandled(room.id),
+      _notifyIncomingAccepted(room.id),
+    ]);
 
     var registered = await prepareIncoming(room, video: video);
     if (registered && !fromSystem) {
@@ -219,7 +299,7 @@ class CallController extends ChangeNotifier {
     if (fromSystem && isActive && roomId == room.id) {
       _systemIncomingAccepted.add(room.id);
     }
-    await handledSync;
+    await acceptedSync;
   }
 
   Future<void> rejectIncoming(Room room, {bool fromSystem = false}) async {
@@ -360,6 +440,14 @@ class CallController extends ChangeNotifier {
     }
   }
 
+  Future<void> _notifyIncomingAccepted(String callId) async {
+    try {
+      await matrix.voip?.notifyAccepted(callId);
+    } catch (e) {
+      OrexLog.d('Call', 'failed to sync accepted state call=$callId', e);
+    }
+  }
+
   Future<void> _notifyIncomingRejected(String callId) async {
     try {
       await matrix.voip?.notifyRejected(callId);
@@ -378,6 +466,40 @@ class CallController extends ChangeNotifier {
     unawaited(_systemCalls.endCall(callId, reason: 'remote'));
   }
 
+  void _onRemoteCallAccepted(String callId) {
+    if (_initiator && isActive && roomId == callId) {
+      _cancelUnansweredTimeout();
+    }
+  }
+
+  void _onRemoteCallTermination(OrexRemoteCallTermination termination) {
+    if (isActive && roomId == termination.roomId) {
+      unawaited(hangUp(fromRemote: true));
+      return;
+    }
+    if (_systemCallId == termination.roomId) {
+      _clearSystemCallState();
+      unawaited(_systemCalls.endCall(termination.roomId, reason: 'remote'));
+    }
+  }
+
+  static const Duration _outgoingAnswerTimeout = Duration(seconds: 45);
+
+  void _scheduleUnansweredTimeout(CallSession session, String callId) {
+    _unansweredCallTimer?.cancel();
+    _unansweredCallTimer = Timer(_outgoingAnswerTimeout, () {
+      _unansweredCallTimer = null;
+      if (_session != session || roomId != callId || session.sawRemote) return;
+      OrexLog.d('Call', 'outgoing call timed out without answer room=$callId');
+      unawaited(hangUp());
+    });
+  }
+
+  void _cancelUnansweredTimeout() {
+    _unansweredCallTimer?.cancel();
+    _unansweredCallTimer = null;
+  }
+
   /// Начать/присоединиться к звонку в комнате.
   Future<void> start(
     String roomId, {
@@ -390,6 +512,8 @@ class CallController extends ChangeNotifier {
       if (this.roomId == roomId) return;
       await hangUp();
     }
+    _cancelUnansweredTimeout();
+    _cancelRemoteGoneTimeout();
     final generation = ++_lifecycleGeneration;
     lastError = null;
     this.roomId = roomId;
@@ -429,7 +553,7 @@ class CallController extends ChangeNotifier {
     );
     focusedParticipantIdentity = null;
     _session = s;
-    s.addListener(notifyListeners);
+    s.addListener(_onSessionChanged);
     notifyListeners();
     // Сигналинг (membership) — чтобы у собеседника зазвонило. Если он
     // не прошёл, медиа не подключаем: иначе можно получить локальный фантомный
@@ -454,6 +578,9 @@ class CallController extends ChangeNotifier {
       await voip.leaveCurrent();
       return;
     }
+    if (_initiator && room != null && _isSystemCallEligible(room)) {
+      _scheduleUnansweredTimeout(s, roomId);
+    }
 
     var systemRegistered = systemCallPrepared == true;
     if (_isSystemCallEligible(room) && systemCallPrepared != false) {
@@ -468,17 +595,26 @@ class CallController extends ChangeNotifier {
                 callId: roomId,
                 displayName: room!.getLocalizedDisplayname(),
                 video: video,
+                avatarCacheKey: _conversationAvatarCacheKey(room),
               )
             : await _systemCalls.reportOutgoingCall(
                 callId: roomId,
                 displayName: room!.getLocalizedDisplayname(),
                 video: video,
+                avatarCacheKey: _conversationAvatarCacheKey(room),
               );
         if (!systemRegistered && _systemCallId == roomId) {
           _clearSystemCallState();
         }
       }
-      if (systemRegistered) _systemCallId = roomId;
+      if (systemRegistered) {
+        _systemCallId = roomId;
+        _refreshSystemCallAvatar(
+          room!,
+          video: video,
+          incoming: systemIncoming,
+        );
+      }
     }
 
     // Регистрация в Android Telecom может занять несколько секунд. За это
@@ -524,9 +660,16 @@ class CallController extends ChangeNotifier {
     String message, {
     bool leaveSignaling = false,
   }) async {
+    _cancelUnansweredTimeout();
+    _cancelRemoteGoneTimeout();
     lastError = message;
     unawaited(matrix.push.notifyCallEnded(session.matrixRoomId));
-    session.removeListener(notifyListeners);
+    final failedRoom = matrix.client.getRoomById(session.matrixRoomId);
+    if (failedRoom != null &&
+        (matrix.voip?.isPersonalCallRoom(failedRoom) ?? failedRoom.isDirectChat)) {
+      unawaited(matrix.voip?.notifyEnded(session.matrixRoomId));
+    }
+    session.removeListener(_onSessionChanged);
     await session.hangUp();
     session.dispose();
     if (leaveSignaling) {
@@ -566,14 +709,30 @@ class CallController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> hangUp({bool fromSystem = false}) async {
+  Future<void> hangUp({
+    bool fromSystem = false,
+    bool fromRemote = false,
+  }) async {
     _lifecycleGeneration++;
+    _cancelUnansweredTimeout();
+    _cancelRemoteGoneTimeout();
     final s = _session;
     final rid = roomId;
     final systemCallId = _systemCallId;
     final initiator = _initiator;
     final start = _start;
     final sawRemote = s?.sawRemote ?? false;
+    Future<void>? remoteEndSync;
+    if (!fromRemote && rid != null) {
+      final room = matrix.client.getRoomById(rid);
+      final isPersonal = room != null &&
+          (matrix.voip?.isPersonalCallRoom(room) ?? room.isDirectChat);
+      if (isPersonal) {
+        remoteEndSync = matrix.voip
+            ?.notifyEnded(rid)
+            .timeout(const Duration(seconds: 4), onTimeout: () {});
+      }
+    }
     _session = null;
     minimized = false;
     roomId = null;
@@ -586,11 +745,12 @@ class CallController extends ChangeNotifier {
     if (rid != null) unawaited(matrix.push.notifyCallEnded(rid));
     notifyListeners();
     if (s != null) {
-      s.removeListener(notifyListeners);
+      s.removeListener(_onSessionChanged);
       await s.hangUp();
       s.dispose();
     }
     await matrix.voip?.leaveCurrent();
+    if (remoteEndSync != null) await remoteEndSync;
     if (!fromSystem && systemCallId != null) {
       await _systemCalls.endCall(systemCallId);
     }
@@ -621,6 +781,9 @@ class CallController extends ChangeNotifier {
           ? DateTime.now().difference(start).inSeconds
           : 0;
       text = secs > 0 ? '📞 Звонок · ${_fmtDur(secs)}' : '📞 Звонок';
+    } else if (matrix.voip?.wasBusy(roomId) ?? false) {
+      outcome = 'busy';
+      text = '📞 Абонент занят';
     } else if (matrix.voip?.wasRejected(roomId) ?? false) {
       outcome = 'rejected';
       text = '📞 Отклонённый вызов';
@@ -628,6 +791,7 @@ class CallController extends ChangeNotifier {
       outcome = 'missed';
       text = '📞 Пропущенный вызов';
     }
+    matrix.voip?.clearBusy(roomId);
     matrix.voip?.clearRejected(roomId);
     try {
       await room.sendEvent({
@@ -648,6 +812,8 @@ class CallController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _cancelUnansweredTimeout();
+    _cancelRemoteGoneTimeout();
     matrix.audio.removeListener(_onAudioSettingsChanged);
     final systemCallId = _systemCallId;
     if (systemCallId != null) {
@@ -656,8 +822,10 @@ class CallController extends ChangeNotifier {
     _clearSystemCallState();
     _systemCalls.clearActionHandler(this);
     _incomingDismissSub?.cancel();
+    _remoteAcceptedSub?.cancel();
+    _remoteTerminationSub?.cancel();
     _systemIncomingAccepted.close();
-    _session?.removeListener(notifyListeners);
+    _session?.removeListener(_onSessionChanged);
     _session?.dispose();
     super.dispose();
   }

@@ -12,6 +12,7 @@ import '../config/orex_config.dart';
 import '../push/orex_push_service.dart';
 import '../voip/call_controller.dart';
 import '../logging/orex_logger.dart';
+import '../media/orex_avatar_cache.dart';
 import '../../domain/rooms/room_metadata.dart';
 import '../voip/voip_service.dart';
 import '../voip/voice_participant_state.dart';
@@ -31,6 +32,7 @@ part 'matrix_voice_permissions_service.dart';
 part 'matrix_security_api.dart';
 part 'matrix_account_api.dart';
 part 'matrix_media_api.dart';
+part 'matrix_conversation_identity_api.dart';
 
 const _orexRoomKindEvent = 'ru.orex.room.kind';
 const _orexRoomIconEvent = 'ru.orex.room.icon';
@@ -119,6 +121,9 @@ class MatrixService extends ChangeNotifier {
   StreamSubscription? _syncSub;
   StreamSubscription? _loginStateSub;
   StreamSubscription? _userProfileSub;
+  Future<void>? _avatarWarmupFuture;
+  bool _avatarWarmupRequestedAfterCurrent = false;
+  DateTime? _lastAvatarWarmup;
 
   /// Когда в последний раз ключи выгружались в бэкап (для показа в настройках).
   DateTime? lastBackup;
@@ -151,6 +156,7 @@ class MatrixService extends ChangeNotifier {
     _syncSub = client.onSync.stream.listen((_) {
       _playNotificationCueIfNeeded();
       push.handleMatrixSync();
+      _scheduleAvatarCacheWarmup();
       // Проверяем версию бэкапа только один раз после логина,
       // и только если пользователь не выключал его вручную в этой сессии.
       if (!_checkedServerBackup &&
@@ -168,14 +174,17 @@ class MatrixService extends ChangeNotifier {
       _backupDisabledByUser = false;
       _notificationCounts.clear();
       _notificationSnapshotReady = false;
+      _lastAvatarWarmup = null;
       await _loadBackupPrefs();
       push.handleLoginStateChanged();
+      if (client.isLogged()) _scheduleAvatarCacheWarmup(force: true);
       notifyListeners();
     });
     // Обновление профиля меняет сам MXC URI. Не чистим весь media-cache на
     // каждый sync/profile-event: иначе аватарки моргают и постоянно refetch-ятся.
     // Если URI реально поменялся, MxcAvatar сам подхватит новые байты.
     _userProfileSub = client.onUserProfileUpdate.stream.listen((_) {
+      _scheduleAvatarCacheWarmup(force: true);
       notifyListeners();
     });
     // VoIP-сигналинг (звонки). Изолируем сбой, чтобы он не ронял запуск.
@@ -184,6 +193,7 @@ class MatrixService extends ChangeNotifier {
     } catch (e) {
       _log('Voip', 'init failed, calls disabled', e);
     }
+    _scheduleAvatarCacheWarmup(force: true);
 
     await _loadBackupPrefs();
 
@@ -200,6 +210,52 @@ class MatrixService extends ChangeNotifier {
       _deferredKeyBackupRestoreTimers.add(
         Timer(Duration(seconds: s), () {
           if (!_backupDisabledByUser) restoreKeyBackup();
+        }),
+      );
+    }
+  }
+
+  void _scheduleAvatarCacheWarmup({bool force = false}) {
+    if (!client.isLogged()) return;
+    final last = _lastAvatarWarmup;
+    if (!force &&
+        last != null &&
+        DateTime.now().difference(last) < const Duration(minutes: 10)) {
+      return;
+    }
+    if (_avatarWarmupFuture != null) {
+      if (force) _avatarWarmupRequestedAfterCurrent = true;
+      return;
+    }
+    _lastAvatarWarmup = DateTime.now();
+    late final Future<void> operation;
+    operation = _warmConversationAvatarCache().whenComplete(() {
+      if (!identical(_avatarWarmupFuture, operation)) return;
+      _avatarWarmupFuture = null;
+      if (_avatarWarmupRequestedAfterCurrent) {
+        _avatarWarmupRequestedAfterCurrent = false;
+        _scheduleAvatarCacheWarmup(force: true);
+      }
+    });
+    _avatarWarmupFuture = operation;
+  }
+
+  Future<void> _warmConversationAvatarCache() async {
+    final rooms = client.rooms.toList(growable: false)
+      ..sort((a, b) {
+        final aTs = a.lastEvent?.originServerTs.millisecondsSinceEpoch ?? 0;
+        final bTs = b.lastEvent?.originServerTs.millisecondsSinceEpoch ?? 0;
+        return bTs.compareTo(aTs);
+      });
+    final candidates = rooms.take(24).toList(growable: false);
+    const batchSize = 4;
+    for (var offset = 0; offset < candidates.length; offset += batchSize) {
+      final end = offset + batchSize < candidates.length
+          ? offset + batchSize
+          : candidates.length;
+      await Future.wait<void>(
+        candidates.sublist(offset, end).map((room) async {
+          await ensureConversationAvatarCached(room);
         }),
       );
     }

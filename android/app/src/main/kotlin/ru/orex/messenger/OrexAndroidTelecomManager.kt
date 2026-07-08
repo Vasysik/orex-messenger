@@ -60,6 +60,7 @@ object OrexAndroidTelecomManager {
         val displayName: String,
         val incoming: Boolean,
         var video: Boolean,
+        var avatarCacheKey: String?,
         val ready: CompletableDeferred<Boolean> = CompletableDeferred(),
         var control: CallControlScope? = null,
         var job: Job? = null,
@@ -202,6 +203,7 @@ object OrexAndroidTelecomManager {
     ) {
         val callId = call.argument<String>("callId")?.trim().orEmpty()
         val displayName = call.argument<String>("displayName")?.trim().orEmpty()
+        val avatarCacheKey = call.argument<String>("avatarCacheKey")?.trim()?.ifEmpty { null }
         val video = call.argument<Boolean>("video") == true
         if (callId.isEmpty() || displayName.isEmpty()) {
             result.error("invalid_arguments", "callId and displayName are required", null)
@@ -209,7 +211,9 @@ object OrexAndroidTelecomManager {
         }
         appScope.launch {
             try {
-                result.success(reportCall(callId, displayName, incoming, video))
+                result.success(
+                    reportCall(callId, displayName, incoming, video, avatarCacheKey),
+                )
             } catch (error: Throwable) {
                 Log.e(TAG, "Failed to report call id=$callId", error)
                 result.success(false)
@@ -256,10 +260,11 @@ object OrexAndroidTelecomManager {
         displayName: String,
         incoming: Boolean,
         video: Boolean,
+        avatarCacheKey: String?,
     ): Boolean {
         callMutationMutex.lock()
         return try {
-            reportCallLocked(callId, displayName, incoming, video)
+            reportCallLocked(callId, displayName, incoming, video, avatarCacheKey)
         } finally {
             callMutationMutex.unlock()
         }
@@ -270,12 +275,14 @@ object OrexAndroidTelecomManager {
         displayName: String,
         incoming: Boolean,
         video: Boolean,
+        avatarCacheKey: String?,
     ): Boolean {
         if (!ensureRegistered()) return false
         val existing = current
         if (existing != null) {
             if (existing.callId == callId && !existing.terminating) {
                 existing.video = video
+                if (!avatarCacheKey.isNullOrBlank()) existing.avatarCacheKey = avatarCacheKey
                 showNotification(existing)
                 return withTimeoutOrNull(4500) { existing.ready.await() } == true
             }
@@ -300,6 +307,7 @@ object OrexAndroidTelecomManager {
             displayName = displayName,
             incoming = incoming,
             video = video,
+            avatarCacheKey = avatarCacheKey,
         )
         current = managed
         showNotification(managed)
@@ -588,6 +596,7 @@ object OrexAndroidTelecomManager {
             answer = actionIntent(context, managed.callId, ACTION_ANSWER, 7001),
             decline = actionIntent(context, managed.callId, ACTION_DECLINE, 7002),
             hangUp = actionIntent(context, managed.callId, ACTION_HANG_UP, 7003),
+            avatarCacheKey = managed.avatarCacheKey,
         )
     }
 

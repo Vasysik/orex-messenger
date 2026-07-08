@@ -1,7 +1,7 @@
 name: orex_messenger
 description: "Orex Messenger — тёплый ореховый мессенджер на MatrixRTC + LiveKit."
 publish_to: "none"
-version: 0.4.0+18
+version: 0.4.0+20
 
 environment:
   sdk: ">=3.12.0 <4.0.0"
