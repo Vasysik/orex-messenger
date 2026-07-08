@@ -58,7 +58,5 @@ jobs:
       - name: Windows release build
         run: >
           flutter build windows --release --no-pub
-          --dart-define=OREX_ENV=dev
-          --dart-define=OREX_HOMESERVER=https://vasys.ru
-          --dart-define=OREX_JWT_SERVICE=https://jwt.vasys.ru
+          --dart-define=OREX_ENV=production
           --dart-define=OREX_DEBUG_LOGS=false

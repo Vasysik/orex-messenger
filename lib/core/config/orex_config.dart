@@ -203,7 +203,8 @@ class OrexConfig {
 
   /// В продовом режиме приложение не должно стартовать без vodozemac:
   /// иначе приватные Matrix-комнаты могут внезапно стать фактически без E2EE.
-  /// Для локальной отладки можно временно поставить false, но не коммитить так.
+  /// Для локальной отладки допускается временное значение false; в репозитории
+  /// остаётся true.
   static bool get requireVodozemac => current.requireVodozemac;
 
   /// Подробные dev-логи продуктовых Matrix-flow: создание комнат, metadata,
@@ -223,9 +224,9 @@ class OrexConfig {
 
   /// Базовый адрес Element Call.
   ///
-  /// По умолчанию — публичный call.element.io. Если вы поднимаете свой
-  /// Element Call (рекомендуется, он будет ходить в ваш LiveKit+lk-jwt-service),
-  /// укажите его адрес, например 'https://call.vasys.ru'.
+  /// По умолчанию используется публичный call.element.io. Для собственного
+  /// Element Call поверх LiveKit + lk-jwt-service адрес задаётся отдельно,
+  /// например 'https://call.vasys.ru'.
   static String get elementCallBase => current.elementCallBase;
 
   static Uri get homeserverUri => current.homeserverUri;

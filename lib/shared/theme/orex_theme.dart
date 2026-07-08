@@ -11,11 +11,12 @@ class OrexColors {
   // --- Базовые «ореховые» тона ---
   static const Color walnut = Color(0xFF8B5A2B); // грецкий орех
   static const Color walnutDeep = Color(0xFF5E3A1A); // глубокий орех
-  static const Color copper = Color(0xFFC8763C); // медь (углы иконки)
-  static const Color copperBright = Color(0xFFD98C4A); // светлая медь
+  static const Color copper = Color(0xFFD47939); // основной акцент иконки
+  static const Color copperBright = Color(0xFFEE8D3F); // светлый край градиента
+  static const Color copperDeep = Color(0xFF854132); // тёмный край градиента
   static const Color ochre = Color(0xFFD9A05B); // золотистая охра
   static const Color ochreLight = Color(0xFFE7C18B); // светлая охра
-  static const Color cream = Color(0xFFFBF5EC); // кремовый (тело иконки)
+  static const Color cream = Color(0xFFFCFAFA); // светлая форма иконки
 
   // --- Светлая тема ---
   static const Color lightBg = Color(0xFFF6ECDD);
@@ -34,14 +35,14 @@ class OrexColors {
   static const Color darkText = Color(0xFFF3E6D5);
   static const Color darkTextSoft = Color(0xFFB39A82);
 
-  static const Color unread = Color(0xFFC8763C);
+  static const Color unread = copper;
   static const Color online = Color(0xFF8FB36A); // тёплый зелёный, не кислотный
 
   /// Медный градиент для splash / аватаров / акцентов.
   static const LinearGradient copperGradient = LinearGradient(
     begin: Alignment.topLeft,
     end: Alignment.bottomRight,
-    colors: [copperBright, walnutDeep],
+    colors: [copperBright, copperDeep],
   );
 
   /// Фоновый «амбиентный» градиент под стеклом (тёмная тема).
@@ -84,7 +85,6 @@ class OrexTheme {
       brightness: brightness,
       colorScheme: scheme,
       scaffoldBackgroundColor: isDark ? OrexColors.darkBg : OrexColors.lightBg,
-      fontFamily: 'Inter', // подключите в pubspec; иначе уберите строку
       splashFactory: InkSparkle.splashFactory,
       textTheme: _textTheme(isDark),
       dividerColor: (isDark ? OrexColors.ochre : OrexColors.walnut)

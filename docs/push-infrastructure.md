@@ -1,6 +1,6 @@
 # Orex Push Infrastructure
 
-Этот документ фиксирует production-контракт клиентской ветки `0.4.0+14`.
+Этот документ фиксирует production-контракт клиентской ветки `0.4.0+25`.
 Секреты Firebase сюда не добавляются.
 
 ## 1. Production identity
@@ -29,7 +29,8 @@ Sygnal должен оставаться закрытым:
 - в отдельной internal Docker-сети вместе с Synapse;
 - Firebase service-account JSON монтируется только в Sygnal read-only.
 
-Не публикуйте `/_matrix/push/v1/notify` в интернет без отдельной необходимости.
+Публикация `/_matrix/push/v1/notify` в интернет без отдельной необходимости не
+допускается.
 
 ## 3. Synapse private-address policy
 
@@ -71,12 +72,12 @@ networks:
         - subnet: 172.31.250.0/29
 ```
 
-Не добавляйте в whitelist весь `172.16.0.0/12`, весь Docker subnet или другие
+В whitelist не добавляются весь `172.16.0.0/12`, весь Docker subnet или другие
 широкие private ranges: исключение должно быть минимальным и относиться только к
 контейнеру Sygnal.
 
-После изменения `homeserver.yaml` перезапустите Synapse и проверьте его логи при
-первой регистрации pusher/первом push-событии.
+После изменения `homeserver.yaml` требуется restart Synapse и проверка логов при
+первой регистрации pusher или первом push-событии.
 
 ## 4. Sygnal app contract
 
@@ -101,7 +102,7 @@ Sygnal получает запросы только после того, как 
 и зарегистрировал Matrix HTTP-pusher. Поэтому пустой access log почти всегда
 означает, что цепочка оборвалась **до** gateway.
 
-Проверяйте по порядку:
+Проверка идёт по порядку:
 
 1. В Firebase существует Android app с package id `ru.orex.messenger`.
 2. Его `google-services.json` лежит в `android/app/` **до** сборки APK.
@@ -115,8 +116,8 @@ Sygnal получает запросы только после того, как 
    являются нормальным тестом push-доставки.
 
 Для локального пользователя администратор Synapse может проверить pusher через
-Admin API `GET /_synapse/admin/v1/users/<user_id>/pushers`. Не публикуйте в
-тикетах или логах полный `pushkey`: это FCM registration token конкретной
+Admin API `GET /_synapse/admin/v1/users/<user_id>/pushers`. В тикетах и общих
+логах полный `pushkey` не публикуется: это FCM registration token конкретной
 установки приложения.
 
 ## 6. Диагностика end-to-end доставки
@@ -129,7 +130,7 @@ Admin API `GET /_synapse/admin/v1/users/<user_id>/pushers`. Не публику�
 - Sygnal принял запрос и успешно отправил его в FCM;
 - Android получил data-message.
 
-Проверяйте цепочку по порядку.
+Диагностика идёт по цепочке.
 
 ### 6.1. Тест должен идти от другого Matrix-аккаунта
 
@@ -147,7 +148,7 @@ docker exec postgres-matrix \
 ```
 
 Ожидаются `kind = http`, правильный внутренний URL и `format = full Matrix/Sygnal data payload`.
-Не выводите полный `pushkey` в общие логи: это FCM registration token установки.
+Полный `pushkey` не выводится в общие логи: это FCM registration token установки.
 
 ### 6.3. Проверить, что Synapse реально создал push action
 
@@ -174,7 +175,7 @@ docker exec postgres-matrix \
 docker exec matrix-synapse getent hosts sygnal
 ```
 
-Проверьте применённый `homeserver.yaml`:
+Применённый `homeserver.yaml` проверяется так:
 
 ```bash
 docker exec matrix-synapse sh -lc \
@@ -219,13 +220,13 @@ docker compose logs --since=15m synapse | \
 
 - push action есть, но Sygnal не видит POST — проблема между Synapse и gateway
   (часто private-IP policy или конфигурация pusher worker);
-- Sygnal видит POST, но пишет FCM error — проверяйте service account, `project_id`,
+- Sygnal видит POST, но пишет FCM error — проверяются service account, `project_id`,
   `app_id` и соответствие Firebase-проектов;
-- Sygnal успешно отправил, но Android молчит — переходите к logcat.
+- Sygnal успешно отправил, но Android молчит — следующий шаг: logcat.
 
 ### 6.6. Проверить Android
 
-После установки Android-сборки `0.4.0+14`:
+После установки Android-сборки `0.4.0+25`:
 
 ```powershell
 adb logcat -c
@@ -249,8 +250,8 @@ Notification dropped: POST_NOTIFICATIONS is not granted
 
 Token и значения Matrix routing-полей не печатаются. Если строки
 `FCM data message received` нет, FCM data-message до приложения не дошёл. Если
-она есть, но нет `Message notification posted` / `Incoming call notification posted`, проверяйте permission/channel и
-следующую строку native-лога.
+она есть, но нет `Message notification posted` / `Incoming call notification posted`,
+проверяются permission/channel и следующая строка native-лога.
 
 ## 7. Что изменилось в `0.4.0+15`
 

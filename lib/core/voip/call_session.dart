@@ -17,8 +17,8 @@ import 'voice_state_repository.dart';
 
 enum CallStatus { connecting, connected, failed, ended }
 
-/// Нативный звонок на стеке Element Call (MatrixRTC): мы используем ВАШ
-/// LiveKit + lk-jwt-service и рисуем СВОЙ интерфейс — без встраивания
+/// Нативный звонок на стеке Element Call (MatrixRTC): LiveKit +
+/// lk-jwt-service используются под собственным Orex UI — без встраивания
 /// call.element.io.
 ///
 /// Два клиента Orex, нажавшие звонок в одной Matrix-комнате, получают от

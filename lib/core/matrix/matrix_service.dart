@@ -52,8 +52,8 @@ const _kBackupDisabledByUser = 'orex_backup_disabled_by_user';
 /// ВАЖНО про синхронизацию: Dart SDK работает на классическом `/sync` +
 /// локальный кэш. «Instant launch» достигается тем, что [Client.init] поднимает
 /// комнаты из БД ДО первого сетевого ответа. Нативный Sliding Sync (MSC4186)
-/// в Dart SDK на момент написания стабильно не выставлен публичным API —
-/// если ваша версия SDK его уже умеет, включайте отдельно и проверяйте.
+/// в Dart SDK на момент написания стабильно не выставлен публичным API. Его
+/// включение требует отдельной проверки совместимости с используемой версией SDK.
 class MatrixService extends ChangeNotifier {
   MatrixService({required this.homeserver, required this.database});
 

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="orex_launch_background">#1C140E</color>
-    <color name="orex_launch_icon_background">#8B5A2B</color>
+    <color name="orex_brand_copper">#D47939</color>
+    <color name="orex_launch_icon_background">@color/orex_brand_copper</color>
 </resources>

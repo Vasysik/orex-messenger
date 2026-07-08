@@ -15,6 +15,7 @@ class ThemeController extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     final stored = prefs.getString(_key);
     final mode = switch (stored) {
+      'system' => ThemeMode.system,
       'light' => ThemeMode.light,
       'dark' => ThemeMode.dark,
       _ => ThemeMode.dark, // «тёплая тёмная» по умолчанию

@@ -15,7 +15,7 @@
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowBackground">#1C140E</item>
-        <item name="android:colorAccent">#C8763C</item>
+        <item name="android:colorAccent">@color/orex_brand_copper</item>
     </style>
     <style name="OrexCallActionTheme" parent="@android:style/Theme.NoDisplay">
         <item name="android:windowNoTitle">true</item>
