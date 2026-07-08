@@ -13,6 +13,8 @@ class OrexAvatarCache {
 
   static Future<void> bindIdentity(String identity, Uri mxc) async {}
 
+  static Future<void> markIdentityWithoutAvatar(String identity) async {}
+
   static Future<void> clearIdentity(String identity) async {}
 
   static Future<bool> contains(Uri mxc) async => false;

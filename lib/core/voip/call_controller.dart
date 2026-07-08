@@ -52,6 +52,15 @@ class CallController extends ChangeNotifier {
   }
 
   void _onSessionChanged() {
+    final session = _session;
+    final rid = roomId;
+    if (_initiator && session?.sawRemote == true && rid != null) {
+      _cancelUnansweredTimeout();
+      // Media presence is an independent acceptance signal. If the explicit
+      // accepted to-device event was delayed/lost, still stop the same user's
+      // other devices from ringing. The ring token is consumed only once.
+      unawaited(matrix.voip?.cancelOutstandingRing(rid));
+    }
     notifyListeners();
   }
 
@@ -432,11 +441,18 @@ class CallController extends ChangeNotifier {
   }
 
   void _onIncomingDismissed(String callId) {
-    if (_systemCallId != callId ||
-        _systemActionInProgressCallId == callId ||
+    if (_systemActionInProgressCallId == callId ||
         (isActive && roomId == callId)) {
       return;
     }
+
+    // A direct FCM ring can exist before Core-Telecom/CallController owns the
+    // call. `handled` from another device still has to cancel that native
+    // notification/activity, otherwise the tablet keeps ringing forever even
+    // though Flutter already removed its incoming route.
+    unawaited(matrix.push.notifyCallEnded(callId));
+
+    if (_systemCallId != callId) return;
     _clearSystemCallState();
     unawaited(_systemCalls.endCall(callId, reason: 'remote'));
   }
@@ -444,10 +460,17 @@ class CallController extends ChangeNotifier {
   void _onRemoteCallAccepted(String callId) {
     if (_initiator && isActive && roomId == callId) {
       _cancelUnansweredTimeout();
+      // The accepting device already stopped itself locally. Send an exact
+      // cancellation from the original caller so the same account's killed
+      // tablet/secondary phone also stops ringing via FCM.
+      unawaited(matrix.voip?.cancelOutstandingRing(callId));
     }
   }
 
   void _onRemoteCallTermination(OrexRemoteCallTermination termination) {
+    if (_initiator && roomId == termination.roomId) {
+      unawaited(matrix.voip?.cancelOutstandingRing(termination.roomId));
+    }
     if (isActive && roomId == termination.roomId) {
       unawaited(hangUp(fromRemote: true));
       return;

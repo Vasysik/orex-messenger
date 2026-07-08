@@ -13,38 +13,58 @@ import java.io.File
 /**
  * Native reader for avatar files written by Flutter's OrexAvatarCache.
  *
- * The cache stores authenticated Matrix media in app-private files, so Android
- * notification/call UI can render avatars while Flutter is killed without
- * carrying Matrix access tokens into Kotlin.
+ * v2 separates sender and conversation identities and understands an explicit
+ * no-avatar tombstone. This prevents a user/channel without a picture from
+ * inheriting an unrelated cached room or participant avatar.
  */
 object OrexAvatarCache {
-    private const val DIRECTORY_NAME = "orex_avatar_cache_v1"
+    private const val DIRECTORY_NAME = "orex_avatar_cache_v2"
     private const val BINDING_PREFIX = "binding_"
+    private const val NO_AVATAR_MARKER = "-"
     private const val MAX_DECODE_SIZE = 512
     private val KEY_PATTERN = Regex("[0-9a-f]{16}")
     private val memoryCache = object : LruCache<String, Bitmap>(8 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
-    fun resolveKey(
-        context: Context,
-        explicitKey: String?,
-        roomId: String? = null,
-        userId: String? = null,
-    ): String? {
-        normalizeKey(explicitKey)?.let { return it }
-        lookupBinding(context, userId?.let { "user:$it" })?.let { return it }
-        return lookupBinding(context, roomId?.let { "room:$it" })
+    private sealed interface BindingLookup {
+        object Missing : BindingLookup
+        object NoAvatar : BindingLookup
+        data class Key(val value: String) : BindingLookup
     }
 
-    fun load(
+    fun resolveSenderKey(
         context: Context,
-        key: String?,
-        roomId: String? = null,
+        explicitKey: String?,
+        userId: String?,
+    ): String? {
+        return when (val binding = lookupBinding(context, userId?.let { "user:$it" })) {
+            is BindingLookup.Key -> binding.value
+            BindingLookup.NoAvatar -> null
+            BindingLookup.Missing -> normalizeKey(explicitKey)
+        }
+    }
+
+    fun resolveConversationKey(
+        context: Context,
+        explicitKey: String?,
+        roomId: String?,
         userId: String? = null,
-    ): Bitmap? {
-        val resolved = resolveKey(context, key, roomId = roomId, userId = userId)
-            ?: return null
+    ): String? {
+        when (val roomBinding = lookupBinding(context, roomId?.let { "room:$it" })) {
+            is BindingLookup.Key -> return roomBinding.value
+            BindingLookup.NoAvatar -> return null
+            BindingLookup.Missing -> Unit
+        }
+        normalizeKey(explicitKey)?.let { return it }
+        return when (val userBinding = lookupBinding(context, userId?.let { "user:$it" })) {
+            is BindingLookup.Key -> userBinding.value
+            BindingLookup.NoAvatar, BindingLookup.Missing -> null
+        }
+    }
+
+    fun load(context: Context, key: String?): Bitmap? {
+        val resolved = normalizeKey(key) ?: return null
         val cached = synchronized(memoryCache) { memoryCache.get(resolved) }
         if (cached != null) return cached
         val file = File(cacheDirectory(context), resolved)
@@ -72,18 +92,23 @@ object OrexAvatarCache {
         return output
     }
 
-    private fun lookupBinding(context: Context, identity: String?): String? {
+    private fun lookupBinding(context: Context, identity: String?): BindingLookup {
         val normalized = identity?.trim().orEmpty()
-        if (normalized.isEmpty()) return null
+        if (normalized.isEmpty()) return BindingLookup.Missing
         return try {
             val file = File(
                 cacheDirectory(context),
                 "$BINDING_PREFIX${stableKey(normalized)}",
             )
-            if (!file.isFile) return null
-            normalizeKey(file.readText().trim())
+            if (!file.isFile) return BindingLookup.Missing
+            val value = file.readText().trim().lowercase()
+            when {
+                value == NO_AVATAR_MARKER -> BindingLookup.NoAvatar
+                KEY_PATTERN.matches(value) -> BindingLookup.Key(value)
+                else -> BindingLookup.Missing
+            }
         } catch (_: Throwable) {
-            null
+            BindingLookup.Missing
         }
     }
 

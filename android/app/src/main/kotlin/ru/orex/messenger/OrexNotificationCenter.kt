@@ -31,14 +31,14 @@ object OrexNotificationCenter {
 
     private const val TAG = "OrexNotifications"
     private const val MESSAGE_GROUP_KEY = "orex_messages"
-    private const val MESSAGE_HISTORY_PREFS = "orex_message_history_v2"
+    private const val MESSAGE_HISTORY_PREFS = "orex_message_history_v3"
     private const val MAX_HISTORY_MESSAGES = 6
     private const val DEFAULT_CALL_LIFETIME_MS = 45_000L
     private const val MAX_CALL_LIFETIME_MS = 90_000L
     private const val CLOCK_SKEW_TOLERANCE_MS = 15_000L
 
     fun showPush(context: Context, payload: Map<String, String>, appResumed: Boolean) {
-        if (isCallEndPayload(payload)) {
+        if (isCallRingCancellationPayload(payload)) {
             val callId = firstValue(payload, "room_id", "call_id")
             val ringEventId = firstValue(
                 payload,
@@ -46,16 +46,25 @@ object OrexNotificationCenter {
                 "content.orex_ring_event_id",
                 "orex_ring_event_id",
             ) ?: contentString(payload, "orex_ring_event_id")
-            if (callId != null &&
-                ringEventId != null &&
-                OrexCallPresentationState.cancelRingIfMatches(context, callId, ringEventId)
-            ) {
-                cancelCallNotification(context)
-                OrexIncomingCallActivity.finishForCall(callId)
-                Log.i(TAG, "Incoming ring cancelled by matching remote end call=$callId")
-            } else if (callId != null) {
+            if (callId != null && ringEventId != null) {
+                val cancelled = OrexCallPresentationState.cancelRingIfMatches(
+                    context,
+                    callId,
+                    ringEventId,
+                )
+                if (cancelled) {
+                    cancelCallNotification(context)
+                    OrexIncomingCallActivity.finishForCall(callId)
+                    Log.i(TAG, "Incoming ring cancelled by exact control payload call=$callId")
+                }
+                // Exact cancellation also stores a tombstone for cancel-before-ring.
+                // Never fall back to cancelCall(): the same room may already be
+                // answering/active or may contain a newer redial attempt.
+                return
+            }
+            if (callId != null && isCallEndPayload(payload)) {
                 cancelCall(context, callId)
-                Log.i(TAG, "Incoming ring cancelled by remote end control payload call=$callId")
+                Log.i(TAG, "Incoming call cancelled by tokenless remote end call=$callId")
             }
             return
         }
@@ -105,7 +114,7 @@ object OrexNotificationCenter {
     }
 
     fun isIncomingCallPayload(payload: Map<String, String>): Boolean {
-        if (isCallEndPayload(payload)) return false
+        if (isCallRingCancellationPayload(payload)) return false
         if (payload["orex_kind"].equals("incoming_call", ignoreCase = true)) return true
         if (!isRtcNotificationPayload(payload)) return false
 
@@ -125,15 +134,23 @@ object OrexNotificationCenter {
         return notificationType == null || notificationType.equals("ring", ignoreCase = true)
     }
 
-    fun isCallEndPayload(payload: Map<String, String>): Boolean {
-        if (!isRtcNotificationPayload(payload)) return false
-        val action = firstValue(
+    fun isCallEndPayload(payload: Map<String, String>): Boolean =
+        callControlAction(payload).equals("ended", ignoreCase = true)
+
+    fun isCallRingCancellationPayload(payload: Map<String, String>): Boolean {
+        val action = callControlAction(payload) ?: return false
+        return action.equals("ended", ignoreCase = true) ||
+            action.equals("handled", ignoreCase = true)
+    }
+
+    private fun callControlAction(payload: Map<String, String>): String? {
+        if (!isRtcNotificationPayload(payload)) return null
+        return firstValue(
             payload,
             "content_orex_call_action",
             "content.orex_call_action",
             "orex_call_action",
         ) ?: contentString(payload, "orex_call_action")
-        return action.equals("ended", ignoreCase = true)
     }
 
     fun isRtcNotificationPayload(payload: Map<String, String>): Boolean {
@@ -184,18 +201,13 @@ object OrexNotificationCenter {
         val roomId = firstValue(payload, "room_id", "call_id") ?: return false
         if (firstValue(payload, "event_id") == null) return false
         val senderId = firstValue(payload, "sender")
-        val key = OrexAvatarCache.resolveKey(
+        val key = OrexAvatarCache.resolveConversationKey(
             context = context,
             explicitKey = firstValue(payload, "sender_avatar_key", "avatar_cache_key"),
             roomId = roomId,
             userId = senderId,
         )
-        return OrexAvatarCache.load(
-            context = context,
-            key = key,
-            roomId = roomId,
-            userId = senderId,
-        ) == null
+        return OrexAvatarCache.load(context, key) == null
     }
 
     fun showTelecomCall(
@@ -212,7 +224,7 @@ object OrexNotificationCenter {
     ) {
         if (!canPostNotifications(context)) return
         ensureChannels(context)
-        val resolvedAvatarCacheKey = OrexAvatarCache.resolveKey(
+        val resolvedAvatarCacheKey = OrexAvatarCache.resolveConversationKey(
             context = context,
             explicitKey = avatarCacheKey,
             roomId = callId,
@@ -314,7 +326,7 @@ object OrexNotificationCenter {
         val callId = firstValue(payload, "room_id", "call_id", "event_id") ?: return
         val displayName = callerDisplayName(payload)
         val senderId = firstValue(payload, "sender")
-        val avatarCacheKey = OrexAvatarCache.resolveKey(
+        val avatarCacheKey = OrexAvatarCache.resolveConversationKey(
             context = context,
             explicitKey = firstValue(payload, "sender_avatar_key", "avatar_cache_key"),
             roomId = callId,
@@ -465,7 +477,6 @@ object OrexNotificationCenter {
         val senderId: String?,
         val body: String,
         val timestamp: Long,
-        val avatarCacheKey: String?,
     )
 
     private fun showMessage(context: Context, payload: Map<String, String>) {
@@ -501,10 +512,9 @@ object OrexNotificationCenter {
         val senderName = callerDisplayName(payload)
         val senderId = firstValue(payload, "sender")
         val historyKey = firstValue(payload, "room_id") ?: stableId
-        val avatarCacheKey = OrexAvatarCache.resolveKey(
+        val avatarCacheKey = OrexAvatarCache.resolveSenderKey(
             context = context,
             explicitKey = firstValue(payload, "sender_avatar_key", "avatar_cache_key"),
-            roomId = historyKey,
             userId = senderId,
         )
         val currentAvatar = OrexAvatarCache.load(context, avatarCacheKey)
@@ -512,7 +522,7 @@ object OrexNotificationCenter {
         val history = appendMessageHistory(
             context = context,
             key = historyKey,
-            item = MessageHistoryItem(senderName, senderId, body, timestamp, avatarCacheKey),
+            item = MessageHistoryItem(senderName, senderId, body, timestamp),
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val user = Person.Builder().setName("Orex").build()
@@ -522,10 +532,12 @@ object OrexNotificationCenter {
                 val senderBuilder = Person.Builder().setName(item.sender)
                 if (!item.senderId.isNullOrBlank()) senderBuilder.setKey(item.senderId)
                 val senderAvatar = OrexAvatarCache.load(
-                    context = context,
-                    key = item.avatarCacheKey,
-                    roomId = historyKey,
-                    userId = item.senderId,
+                    context,
+                    OrexAvatarCache.resolveSenderKey(
+                        context = context,
+                        explicitKey = null,
+                        userId = item.senderId,
+                    ),
                 )
                 if (senderAvatar != null) {
                     senderBuilder.setIcon(
@@ -580,8 +592,7 @@ object OrexNotificationCenter {
                         .put("sender", entry.sender)
                         .put("sender_id", entry.senderId ?: JSONObject.NULL)
                         .put("body", entry.body)
-                        .put("timestamp", entry.timestamp)
-                        .put("avatar_key", entry.avatarCacheKey ?: JSONObject.NULL),
+                        .put("timestamp", entry.timestamp),
                 )
             }
         }
@@ -602,19 +613,8 @@ object OrexNotificationCenter {
                         .ifEmpty { null }
                     val body = item.optString("body", "").trim()
                     val timestamp = item.optLong("timestamp", 0L)
-                    val avatarCacheKey = item.optString("avatar_key", "")
-                        .trim()
-                        .ifEmpty { null }
                     if (body.isNotEmpty() && timestamp > 0L) {
-                        add(
-                            MessageHistoryItem(
-                                sender,
-                                senderId,
-                                body,
-                                timestamp,
-                                avatarCacheKey,
-                            ),
-                        )
+                        add(MessageHistoryItem(sender, senderId, body, timestamp))
                     }
                 }
             }

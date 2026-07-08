@@ -198,24 +198,26 @@ class OrexMatrixPushResolver {
 
   Future<void> _bindSenderAvatar(Event event, Uri mxc) => Future.wait<void>([
         OrexAvatarCache.bindIdentity('user:${event.senderId}', mxc),
-        if (_isPersonalRoom(event.room))
+        if (_isPersonalRoom(event.room) && event.room.avatar == null)
           OrexAvatarCache.bindIdentity('room:${event.room.id}', mxc),
       ]);
 
   Future<void> _clearSenderAvatarBindings(Event event) => Future.wait<void>([
-        OrexAvatarCache.clearIdentity('user:${event.senderId}'),
-        if (_isPersonalRoom(event.room))
-          OrexAvatarCache.clearIdentity('room:${event.room.id}'),
+        OrexAvatarCache.markIdentityWithoutAvatar('user:${event.senderId}'),
+        if (_isPersonalRoom(event.room) && event.room.avatar == null)
+          OrexAvatarCache.markIdentityWithoutAvatar('room:${event.room.id}'),
       ]);
 
   bool _isPersonalRoom(Room room) {
     if (room.isDirectChat) return true;
-    final joined = room
-        .getParticipants([Membership.join])
-        .map((user) => user.id)
-        .where((id) => id.isNotEmpty)
-        .toSet();
-    return joined.length == 2 && joined.contains(client.userID);
+    if (room.isSpace) return false;
+    final kind = room
+        .getState('ru.orex.room.kind')
+        ?.content['kind']
+        ?.toString()
+        .trim();
+    if (kind == 'channel' || kind == 'supergroup') return false;
+    return room.directChatMatrixID != null;
   }
 
   static bool _isFresh(DateTime eventTs, Duration maxAge) {

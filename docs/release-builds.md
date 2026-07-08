@@ -1,18 +1,12 @@
 # Orex Release Builds
 
-Эта инструкция нужна для сборки артефактов `0.4.0+14` тестировщикам.
+Эта инструкция нужна для сборки артефактов тестировщикам.
 README описывает продукт, а здесь лежит практическая часть: ключи Android,
 Windows production build и SQLCipher-проверки.
 
 ## 1. Перед сборкой
 
-Проверьте версию в `pubspec.yaml`:
-
-```yaml
-version: 0.4.0+14
-```
-
-Затем выполните базовый gate:
+Проверьте версию в `pubspec.yaml`, затем выполните:
 
 ```powershell
 flutter pub get
@@ -255,7 +249,7 @@ $Iscc = @(
 Артефакт:
 
 ```text
-build\windows\x64\installer\Orex-Setup-0.4.0+14.exe
+build\windows\x64\installer\Orex-Setup-<version-from-pubspec>.exe
 ```
 
 Именно этот `.exe` удобно отдавать тестировщикам вместо zip. Он ставит Orex в

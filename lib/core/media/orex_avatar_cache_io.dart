@@ -10,11 +10,13 @@ import 'orex_avatar_cache_key.dart';
 ///
 /// On Android `getApplicationSupportDirectory()` maps to the app's files
 /// directory, so Kotlin can read the same files from
-/// `filesDir/orex_avatar_cache_v1` without a token or network request.
+/// `filesDir/orex_avatar_cache_v2` without a token or network request.
 class OrexAvatarCache {
   const OrexAvatarCache._();
 
-  static const String directoryName = 'orex_avatar_cache_v1';
+  static const String directoryName = 'orex_avatar_cache_v2';
+  static const String _legacyDirectoryName = 'orex_avatar_cache_v1';
+  static const String _noAvatarMarker = '-';
   static const int _maxFileBytes = 8 * 1024 * 1024;
   static const int _maxCacheBytes = 64 * 1024 * 1024;
 
@@ -45,40 +47,66 @@ class OrexAvatarCache {
   static Future<void> bindIdentity(String identity, Uri mxc) async {
     final normalized = identity.trim();
     if (normalized.isEmpty || mxc.scheme != 'mxc') return;
-    final avatarKey = keyFor(mxc);
-    try {
-      final directory = await (_directoryFuture ??= _openDirectory());
-      final binding = File(
-        p.join(directory.path, 'binding_${orexStableCacheKey(normalized)}'),
-      );
-      final temporary = File(
-        '${binding.path}.tmp.${DateTime.now().microsecondsSinceEpoch}',
-      );
-      await temporary.writeAsString(avatarKey, flush: true);
-      if (await binding.exists()) await binding.delete();
-      await temporary.rename(binding.path);
-    } catch (_) {
-      // Bindings only improve native presentation; cache failures are non-fatal.
-    }
+    await _writeIdentityBinding(normalized, keyFor(mxc));
   }
 
+  /// Persists an explicit "this identity has no avatar" tombstone.
+  ///
+  /// Deleting a binding is ambiguous: native code cannot tell whether the
+  /// binding is simply not warmed yet and may fall back to a room/peer image.
+  /// The tombstone blocks that fallback and prevents foreign cached avatars
+  /// from leaking into users/channels that intentionally have no picture.
+  static Future<void> markIdentityWithoutAvatar(String identity) async {
+    final normalized = identity.trim();
+    if (normalized.isEmpty) return;
+    await _writeIdentityBinding(normalized, _noAvatarMarker);
+  }
+
+  /// Removes all knowledge about an identity. Use this for account/cache reset,
+  /// not for a Matrix profile whose avatar was intentionally removed.
   static Future<void> clearIdentity(String identity) async {
     final normalized = identity.trim();
     if (normalized.isEmpty) return;
     try {
       final directory = await (_directoryFuture ??= _openDirectory());
-      await _deleteQuietly(
-        File(
-          p.join(
-            directory.path,
-            'binding_${orexStableCacheKey(normalized)}',
-          ),
-        ),
-      );
+      await _deleteQuietly(_bindingFile(directory, normalized));
     } catch (_) {
       // Stale presentation data is non-critical.
     }
   }
+
+  static Future<void> _writeIdentityBinding(
+    String normalizedIdentity,
+    String value,
+  ) async {
+    try {
+      final directory = await (_directoryFuture ??= _openDirectory());
+      final binding = _bindingFile(directory, normalizedIdentity);
+      final temporary = File(
+        '${binding.path}.tmp.${DateTime.now().microsecondsSinceEpoch}',
+      );
+      await temporary.writeAsString(value, flush: true);
+      try {
+        // POSIX/Android can replace the destination atomically, so native code
+        // never observes a missing binding between avatar -> no-avatar changes.
+        await temporary.rename(binding.path);
+      } catch (_) {
+        // Windows does not replace an existing destination with rename().
+        if (await binding.exists()) await binding.delete();
+        await temporary.rename(binding.path);
+      }
+    } catch (_) {
+      // Bindings only improve native presentation; cache failures are non-fatal.
+    }
+  }
+
+  static File _bindingFile(Directory directory, String normalizedIdentity) =>
+      File(
+        p.join(
+          directory.path,
+          'binding_${orexStableCacheKey(normalizedIdentity)}',
+        ),
+      );
 
   static Future<bool> contains(Uri mxc) async {
     if (mxc.scheme != 'mxc') return false;
@@ -128,7 +156,47 @@ class OrexAvatarCache {
     final support = await getApplicationSupportDirectory();
     final directory = Directory(p.join(support.path, directoryName));
     if (!await directory.exists()) await directory.create(recursive: true);
+
+    // v1 had ambiguous/mixed bindings that could leak a room or peer avatar
+    // into identities without a picture. Preserve only immutable avatar bytes;
+    // never migrate identity bindings into the strict v2 cache.
+    final legacy = Directory(p.join(support.path, _legacyDirectoryName));
+    if (await legacy.exists()) {
+      await _migrateLegacyAvatarFiles(legacy, directory);
+      try {
+        await legacy.delete(recursive: true);
+      } catch (_) {
+        // Best effort. Native code already reads only v2.
+      }
+    }
     return directory;
+  }
+
+  static Future<void> _migrateLegacyAvatarFiles(
+    Directory legacy,
+    Directory targetDirectory,
+  ) async {
+    final keyPattern = RegExp(r'^[0-9a-f]{16}$');
+    try {
+      await for (final entity in legacy.list(followLinks: false)) {
+        if (entity is! File) continue;
+        final name = p.basename(entity.path);
+        if (!keyPattern.hasMatch(name)) continue;
+        final target = File(p.join(targetDirectory.path, name));
+        if (await target.exists()) continue;
+        try {
+          await entity.rename(target.path);
+        } catch (_) {
+          try {
+            await entity.copy(target.path);
+          } catch (_) {
+            // One cache entry can be downloaded again later.
+          }
+        }
+      }
+    } catch (_) {
+      // Migration must never delay or break messenger startup.
+    }
   }
 
   static void _touch(File file) {
