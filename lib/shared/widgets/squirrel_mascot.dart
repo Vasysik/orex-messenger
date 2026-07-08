@@ -30,7 +30,7 @@ class SquirrelMascot extends StatelessWidget {
               width: size,
               height: size,
               fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Text(
+              errorBuilder: (_, _, _) => Text(
                 '\u{1F43F}',
                 style: TextStyle(fontSize: size * 0.42),
               ),

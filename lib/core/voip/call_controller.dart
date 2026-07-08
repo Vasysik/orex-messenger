@@ -475,15 +475,20 @@ class CallController extends ChangeNotifier {
     _unansweredCallTimer = null;
   }
 
-  bool _shouldSendEndedSignal(Room room) {
+  bool _shouldSendEndedSignal(Room room, CallSession? session) {
     if (!(matrix.voip?.isPersonalCallRoom(room) ?? room.isDirectChat)) {
       return false;
     }
-    final remoteMembers = matrix
+
+    // Once a real peer has joined the media session, leaving is a local action:
+    // the other participant may intentionally stay in the room and wait for a
+    // reconnect. Do not let a temporarily stale Matrix membership cache turn
+    // that local leave into a remote `ended` for the whole personal call.
+    if (session?.sawRemote == true) return false;
+
+    return !matrix
         .callMemberIds(room)
-        .where((id) => id != matrix.client.userID)
-        .toList(growable: false);
-    return remoteMembers.isEmpty;
+        .any((id) => id != matrix.client.userID);
   }
 
   /// Начать/присоединиться к звонку в комнате.
@@ -706,8 +711,10 @@ class CallController extends ChangeNotifier {
     final initiator = _initiator;
     final start = _start;
     final sawRemote = s?.sawRemote ?? false;
-    final shouldSendEndedSignal = !fromRemote && room != null && _shouldSendEndedSignal(room);
-    final shouldPostSummary = initiator && rid != null && (fromRemote || shouldSendEndedSignal);
+    final shouldSendEndedSignal =
+        !fromRemote && room != null && _shouldSendEndedSignal(room, s);
+    final shouldPostSummary =
+        initiator && rid != null && (fromRemote || shouldSendEndedSignal);
     Future<void>? remoteEndSync;
     if (shouldSendEndedSignal && rid != null) {
       remoteEndSync = matrix.voip
@@ -738,7 +745,7 @@ class CallController extends ChangeNotifier {
     // Итоговое сообщение о звонке постит ТОЛЬКО инициатор — без дублей.
     // Если пользователь лишь временно вышел из уже подключённого личного
     // звонка, summary не публикуем: в комнате всё ещё может ждать собеседник.
-    if (shouldPostSummary && rid != null) {
+    if (shouldPostSummary) {
       await _postCallSummary(rid, sawRemote, start);
     }
   }

@@ -1,7 +1,7 @@
 name: orex_messenger
 description: "Orex Messenger — тёплый ореховый мессенджер на MatrixRTC + LiveKit."
 publish_to: "none"
-version: 0.4.0+22
+version: 0.4.0+23
 
 environment:
   sdk: ">=3.12.0 <4.0.0"
@@ -54,7 +54,7 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.0
 
 # Генерация иконок приложения из assets/icon/app_icon.png:
-#   flutter pub run flutter_launcher_icons
+#   dart run flutter_launcher_icons
 flutter_launcher_icons:
   image_path: "assets/icon/app_icon.png"
   android: true

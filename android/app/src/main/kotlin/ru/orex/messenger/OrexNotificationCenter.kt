@@ -38,14 +38,6 @@ object OrexNotificationCenter {
     private const val CLOCK_SKEW_TOLERANCE_MS = 15_000L
 
     fun showPush(context: Context, payload: Map<String, String>, appResumed: Boolean) {
-        if (isOrexHandledPayload(payload)) {
-            val callId = firstValue(payload, "room_id", "call_id")
-            if (callId != null) {
-                cancelCall(context, callId)
-                Log.i(TAG, "Incoming ring cancelled by handled control payload call=$callId")
-            }
-            return
-        }
         if (isCallEndPayload(payload)) {
             val callId = firstValue(payload, "room_id", "call_id")
             val ringEventId = firstValue(
@@ -142,11 +134,6 @@ object OrexNotificationCenter {
             "orex_call_action",
         ) ?: contentString(payload, "orex_call_action")
         return action.equals("ended", ignoreCase = true)
-    }
-
-    fun isOrexHandledPayload(payload: Map<String, String>): Boolean {
-        val eventType = firstValue(payload, "type", "event_type")?.lowercase()
-        return eventType == "com.orex.call.handled"
     }
 
     fun isRtcNotificationPayload(payload: Map<String, String>): Boolean {

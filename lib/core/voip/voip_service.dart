@@ -60,6 +60,7 @@ class VoipService extends ChangeNotifier {
         }
         final roomId = ev.content['room_id'] as String?;
         if (roomId != null) {
+          _recordCallDisposition(roomId);
           _suppress.add(roomId);
           _shown.remove(roomId);
           _dismiss.add(roomId);
@@ -162,8 +163,8 @@ class VoipService extends ChangeNotifier {
   final Map<String, Timer> _rejectedCleanupTimers = <String, Timer>{};
   final Map<String, DateTime> _busy = {};
   final Map<String, Timer> _busyCleanupTimers = <String, Timer>{};
-  final Map<String, DateTime> _remoteTerminatedAt = <String, DateTime>{};
-  final Map<String, Timer> _remoteTerminationCleanupTimers = <String, Timer>{};
+  final Map<String, DateTime> _callDispositionAt = <String, DateTime>{};
+  final Map<String, Timer> _callDispositionCleanupTimers = <String, Timer>{};
   final Map<String, String> _ringEventIds = <String, String>{};
   Timer? _staleMembershipCleanupTimer;
 
@@ -176,23 +177,27 @@ class VoipService extends ChangeNotifier {
     });
   }
 
+  void _recordCallDisposition(String roomId) {
+    final now = DateTime.now();
+    _callDispositionAt[roomId] = now;
+    _callDispositionCleanupTimers.remove(roomId)?.cancel();
+    _callDispositionCleanupTimers[roomId] = Timer(
+      const Duration(minutes: 2),
+      () {
+        _callDispositionCleanupTimers.remove(roomId);
+        if (_callDispositionAt[roomId] == now) {
+          _callDispositionAt.remove(roomId);
+        }
+      },
+    );
+  }
+
   void _handleRemoteTermination(
     String roomId,
     OrexRemoteCallTerminationReason reason,
   ) {
     _ringEventIds.remove(roomId);
-    final now = DateTime.now();
-    _remoteTerminatedAt[roomId] = now;
-    _remoteTerminationCleanupTimers.remove(roomId)?.cancel();
-    _remoteTerminationCleanupTimers[roomId] = Timer(
-      const Duration(minutes: 2),
-      () {
-        _remoteTerminationCleanupTimers.remove(roomId);
-        if (_remoteTerminatedAt[roomId] == now) {
-          _remoteTerminatedAt.remove(roomId);
-        }
-      },
-    );
+    _recordCallDisposition(roomId);
     _cancelRoomCallEnded(roomId);
     _suppress.add(roomId);
     _shown.remove(roomId);
@@ -413,7 +418,7 @@ class VoipService extends ChangeNotifier {
   String? _fallbackCallerFromLastEvent(Room room) {
     final event = room.lastEvent;
     if (event == null || event.type != EventTypes.GroupCallMember) return null;
-    final terminatedAt = _remoteTerminatedAt[room.id];
+    final terminatedAt = _callDispositionAt[room.id];
     if (terminatedAt != null && !event.originServerTs.isAfter(terminatedAt)) {
       return null;
     }
@@ -523,10 +528,9 @@ class VoipService extends ChangeNotifier {
     final currentCall = active;
     if (currentCall != null) {
       if (currentCall.room.id == room.id) return;
-      // Orex currently supports one personal media session at a time. Never
-      // stack a second incoming UI on top of an active call; the caller's own
-      // unanswered timeout remains the source of truth until a dedicated busy
-      // disposition is added to the protocol.
+      // Orex supports one personal media session at a time. Never stack a
+      // second incoming UI on top of an active call; answer the second attempt
+      // once with an explicit busy disposition instead.
       if (_shouldRingForRoom(room) && _suppress.add(room.id)) {
         OrexLog.d(
           'Voip',
@@ -562,7 +566,7 @@ class VoipService extends ChangeNotifier {
   }
 
   bool _resumeAfterNewRemoteCall(Room room) {
-    final terminatedAt = _remoteTerminatedAt[room.id];
+    final terminatedAt = _callDispositionAt[room.id];
     if (terminatedAt == null) return false;
     final event = room.lastEvent;
     if (event == null ||
@@ -572,8 +576,8 @@ class VoipService extends ChangeNotifier {
         !_groupCallMemberEventLooksActive(event)) {
       return false;
     }
-    _remoteTerminationCleanupTimers.remove(room.id)?.cancel();
-    _remoteTerminatedAt.remove(room.id);
+    _callDispositionCleanupTimers.remove(room.id)?.cancel();
+    _callDispositionAt.remove(room.id);
     _suppress.remove(room.id);
     return true;
   }
@@ -828,10 +832,11 @@ class VoipService extends ChangeNotifier {
       timer.cancel();
     }
     _busyCleanupTimers.clear();
-    for (final timer in _remoteTerminationCleanupTimers.values) {
+    for (final timer in _callDispositionCleanupTimers.values) {
       timer.cancel();
     }
-    _remoteTerminationCleanupTimers.clear();
+    _callDispositionCleanupTimers.clear();
+    _callDispositionAt.clear();
     _ringEventIds.clear();
     for (final timer in _endedDebounceTimers.values) {
       timer.cancel();
