@@ -1,6 +1,6 @@
 # Orex Push Infrastructure
 
-Этот документ фиксирует production-контракт клиентской ветки `0.4.0+25`.
+Этот документ фиксирует production-контракт клиентской ветки `0.4.0+4`.
 Секреты Firebase сюда не добавляются.
 
 ## 1. Production identity
