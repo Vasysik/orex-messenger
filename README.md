@@ -4,8 +4,6 @@
 сквозным шифрованием сообщений через **vodozemac** и нативными звонками Orex на
 стеке **MatrixRTC / LiveKit**. Единая кодовая база: **Web · Android · Windows**.
 
-Текущая версия: `0.4.0+25`.
-
 Orex сейчас находится в стадии **cross-platform alpha / dogfood и hardening
 версии 0.4.0**: это уже собираемый продукт с quality gate, системными Android-
 звонками и killed-process push flow, но ещё не публичный security-oriented релиз.
