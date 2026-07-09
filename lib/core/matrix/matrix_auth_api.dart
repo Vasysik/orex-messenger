@@ -138,7 +138,13 @@ extension MatrixAuthApi on MatrixService {
   }
 
   Future<void> logout() async {
-    await client.logout();
+    await push.unregisterBeforeLogout();
+    try {
+      await client.logout();
+    } catch (_) {
+      push.resumeAfterFailedLogout();
+      rethrow;
+    }
     _emitChange();
   }
 

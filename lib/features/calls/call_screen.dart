@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
 import '../../core/matrix/matrix_service.dart';
@@ -49,6 +51,7 @@ class _CallScreenState extends State<CallScreen> {
 
   @override
   void dispose() {
+    unawaited(widget.matrix.push.notifyCallUiHidden());
     // Выход с экрана (кнопка ▼ или системный «назад») = свернуть, не завершая.
     // notifyListeners нельзя дёргать прямо в dispose (дерево залочено —
     // ListenableBuilder падает), поэтому откладываем на следующий кадр.

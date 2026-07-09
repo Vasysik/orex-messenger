@@ -1,6 +1,7 @@
 package ru.orex.messenger
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
@@ -14,6 +15,39 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installScoBroadcastCrashGuard()
         super.onCreate(savedInstanceState)
+        OrexPushBridge.captureLaunchIntent(this, intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        OrexPushBridge.captureLaunchIntent(this, intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        OrexPushBridge.onActivityResumed(this)
+    }
+
+    override fun onPause() {
+        OrexPushBridge.onActivityPaused(this)
+        super.onPause()
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        if (OrexPushBridge.onRequestPermissionsResult(requestCode, permissions, grantResults)) {
+            return
+        }
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    }
+
+    override fun onDestroy() {
+        OrexPushBridge.detach(this)
+        super.onDestroy()
     }
 
     private val channelName = "orex/audio_devices"
@@ -21,6 +55,8 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        OrexAndroidTelecomManager.attach(this, flutterEngine.dartExecutor.binaryMessenger)
+        OrexPushBridge.attach(this, flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -31,7 +67,31 @@ class MainActivity : FlutterActivity() {
                     "selectAudioOutput" -> {
                         val id = call.argument<String>("id")?.trim()?.takeIf { it.isNotEmpty() }
                         val inCall = call.argument<Boolean>("inCall") == true
-                        result.success(selectAudioOutput(id, inCall))
+                        if (OrexAndroidTelecomManager.ownsCallRouting()) {
+                            if (!inCall) {
+                                // Telecom завершит communication routing вместе с системной
+                                // сессией. Не сбрасываем AudioManager, пока call ещё зарегистрирован.
+                                result.success(true)
+                            } else {
+                                volumeControlStream = AudioManager.STREAM_VOICE_CALL
+                                val route = parseRouteId(id)
+                                val preferredEndpointName = route?.let { wanted ->
+                                    availableOutputCandidates(
+                                        audioManager(),
+                                        includeCallRoutes = true,
+                                    ).firstOrNull { it.matches(wanted) }
+                                        ?.device
+                                        ?.cleanProductName()
+                                        ?.takeIf { it.isNotBlank() }
+                                }
+                                OrexAndroidTelecomManager.requestAudioRoute(
+                                    route?.type,
+                                    preferredEndpointName,
+                                ) { applied -> result.success(applied) }
+                            }
+                        } else {
+                            result.success(selectAudioOutput(id, inCall))
+                        }
                     }
                     else -> result.notImplemented()
                 }
@@ -392,4 +452,6 @@ class MainActivity : FlutterActivity() {
         val type: Int?,
         val id: Int?,
     )
+
+
 }

@@ -27,6 +27,11 @@ val hasReleaseSigning = listOf(
     releaseStorePassword,
 ).all { !it.isNullOrEmpty() }
 
+val googleServicesJson = file("google-services.json")
+val allowReleaseWithoutPush = System.getenv("OREX_ALLOW_ANDROID_RELEASE_WITHOUT_PUSH")
+    ?.trim()
+    ?.equals("true", ignoreCase = true) == true
+
 val allowUnsignedRelease = System.getenv("OREX_ALLOW_UNSIGNED_ANDROID_RELEASE")
     ?.trim()
     ?.equals("true", ignoreCase = true) == true
@@ -36,6 +41,13 @@ plugins {
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// google-services.json не хранится в репозитории. Debug/локальные compile-only
+// сборки могут жить без Firebase, но production release fail-closed: Orex не
+// должен молча выпускаться без FCM и потом просто не регистрировать pusher.
+if (googleServicesJson.exists()) {
+    apply(plugin = "com.google.gms.google-services")
 }
 
 android {
@@ -83,12 +95,43 @@ android {
     }
 }
 
+
+dependencies {
+    // Keep Android system-call integration isolated in OrexAndroidTelecomManager
+    // so future Core-Telecom upgrades remain native-only. 1.0.1 is the stable
+    // bug-fix release for audio routing and endpoint handling.
+    implementation("androidx.core:core-telecom:1.0.1")
+
+    // OrexAndroidTelecomManager uses Dispatchers.Main for MethodChannel and
+    // Telecom callbacks; make the Android Main dispatcher an explicit app
+    // dependency instead of relying on a transitive implementation detail.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+
+    // E2EE push decryption may need Matrix I/O and crypto work. Keep that work
+    // out of FirebaseMessagingService and run it as expedited background work.
+    implementation("androidx.work:work-runtime-ktx:2.11.2")
+
+    // Native FCM delivery must work before FlutterEngine exists. Firebase BoM
+    // keeps the Android SDK modules on a compatible version set.
+    implementation(platform("com.google.firebase:firebase-bom:34.15.0"))
+    implementation("com.google.firebase:firebase-messaging")
+}
+
 gradle.taskGraph.whenReady {
     val releaseArtifactRequested = allTasks.any { task ->
         val taskName = task.name
         taskName.equals("assembleRelease", ignoreCase = true) ||
             taskName.equals("bundleRelease", ignoreCase = true) ||
             taskName.equals("packageRelease", ignoreCase = true)
+    }
+    if (releaseArtifactRequested && !googleServicesJson.exists() && !allowReleaseWithoutPush) {
+        throw GradleException(
+            "Android release cannot be built without push configuration: " +
+                "android/app/google-services.json is missing. Download the Firebase Android " +
+                "config for applicationId ru.orex.messenger. For an explicit compile-only CI " +
+                "check (not a distributable Orex build), set " +
+                "OREX_ALLOW_ANDROID_RELEASE_WITHOUT_PUSH=true."
+        )
     }
     if (releaseArtifactRequested && !hasReleaseSigning && !allowUnsignedRelease) {
         throw GradleException(

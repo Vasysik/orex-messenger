@@ -29,7 +29,7 @@ final class OrexScreenShareController {
           error: 'В режиме просмотра трансляция экрана недоступна',
         );
       }
-      if (defaultTargetPlatform == TargetPlatform.android) {
+      if (!isSupported) {
         return const OrexScreenShareResult(
           error: 'Трансляция экрана на Android будет реализована позже',
         );
@@ -294,6 +294,11 @@ final class OrexScreenShareController {
 
   static bool isDesktopScreenSource(String? sourceType) =>
       sourceType == null || sourceType == 'screen';
+
+  static bool get isSupported {
+    if (kIsWeb) return true;
+    return defaultTargetPlatform != TargetPlatform.android;
+  }
 
   static bool get desktopNeedsExplicitSource {
     if (kIsWeb) return false;

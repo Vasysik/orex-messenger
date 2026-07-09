@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/matrix/matrix_service.dart';
 import '../../core/voip/call_session.dart';
+import '../../core/voip/screen_share_controller.dart';
 import '../../shared/theme/orex_theme.dart';
 import 'call_device_quick_sheet.dart';
 
@@ -298,7 +299,7 @@ class OrexCallControlsBar extends StatelessWidget {
         },
         onLongPress: () => showOrexOutputQuickSheet(context, matrix: matrix),
       ),
-      if (session.canPublishMedia)
+      if (session.canPublishMedia && OrexScreenShareController.isSupported)
         _button(
           context,
           tooltip: 'Трансляция экрана',

@@ -48,6 +48,12 @@ extension MatrixMediaApi on MatrixService {
   }
 
   Future<Uint8List?> _downloadMxcUncached(Uri mxc, String key) async {
+    final persisted = await OrexAvatarCache.read(mxc);
+    if (persisted != null) {
+      _putMxcCache(key, persisted);
+      return persisted;
+    }
+
     try {
       final serverName = mxc.host;
       final mediaId = mxc.pathSegments.isNotEmpty ? mxc.pathSegments.last : '';
@@ -57,6 +63,30 @@ extension MatrixMediaApi on MatrixService {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Возвращает детерминированный ключ файла, который понимает Android.
+  String avatarCacheKey(Uri mxc) => OrexAvatarCache.keyFor(mxc);
+
+  /// Загружает именно аватар и сохраняет его в общем Flutter/native disk-cache.
+  /// Обычные вложения и медиа сообщений никогда не пишутся в этот cache.
+  Future<Uint8List?> downloadAvatarMxc(Uri mxc) async {
+    if (mxc.scheme != 'mxc') return null;
+    final bytes = await downloadMxc(mxc);
+    if (bytes == null) return null;
+    await OrexAvatarCache.write(mxc, bytes);
+    return bytes;
+  }
+
+  /// Гарантирует, что аватар лежит в общем Flutter/native disk-cache.
+  Future<String?> ensureAvatarCached(Uri? mxc) async {
+    if (mxc == null || mxc.scheme != 'mxc') return null;
+    if (await OrexAvatarCache.contains(mxc)) {
+      return OrexAvatarCache.keyFor(mxc);
+    }
+    final bytes = await downloadMxc(mxc);
+    if (bytes == null) return null;
+    return await OrexAvatarCache.write(mxc, bytes);
   }
 
   void _putMxcCache(String key, Uint8List bytes) {

@@ -28,11 +28,15 @@ class HomeShell extends StatefulWidget {
     required this.matrix,
     required this.theme,
     required this.version,
+    this.pushRoomId,
+    this.pushOpenGeneration = 0,
   });
 
   final MatrixService matrix;
   final ThemeController theme;
   final OrexAppVersion version;
+  final String? pushRoomId;
+  final int pushOpenGeneration;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -47,6 +51,7 @@ class _HomeShellState extends State<HomeShell> {
   late final OrexHomeConversationCoordinator _conversation;
   bool _appliedSavedChatListWidth = false;
   bool _creatingRoom = false;
+  int _lastPushOpenGeneration = -1;
 
   static const double _wideBreakpoint = 900;
 
@@ -61,6 +66,16 @@ class _HomeShellState extends State<HomeShell> {
     _folders.load();
     widget.matrix.addListener(_onMatrixChanged);
     _conversation.syncForeground();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _tryApplyPushOpen());
+  }
+
+  @override
+  void didUpdateWidget(covariant HomeShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.pushOpenGeneration != widget.pushOpenGeneration ||
+        oldWidget.pushRoomId != widget.pushRoomId) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _tryApplyPushOpen());
+    }
   }
 
   void _onConversationChanged() {
@@ -78,12 +93,35 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   void _onMatrixChanged() {
+    _tryApplyPushOpen();
     final roomId = _conversation.selectedRoomId;
     if (roomId == null || !mounted) return;
     final room = widget.matrix.client.getRoomById(roomId);
     if (room == null || room.membership == Membership.leave) {
       _conversation.clearSelection();
     }
+  }
+
+  void _tryApplyPushOpen() {
+    if (!mounted ||
+        widget.pushOpenGeneration <= _lastPushOpenGeneration) {
+      return;
+    }
+    final roomId = widget.pushRoomId?.trim();
+    if (roomId == null || roomId.isEmpty) {
+      _lastPushOpenGeneration = widget.pushOpenGeneration;
+      return;
+    }
+
+    final room = widget.matrix.client.getRoomById(roomId);
+    if (room == null) {
+      // Cold start: sync может ещё не восстановить комнату. Оставляем событие
+      // pending и повторяем на следующем Matrix change.
+      return;
+    }
+    _lastPushOpenGeneration = widget.pushOpenGeneration;
+    if (room.membership == Membership.leave) return;
+    _selectRoom(roomId, source: 'push-notification');
   }
 
   @override

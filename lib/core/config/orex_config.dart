@@ -28,6 +28,7 @@ class OrexRuntimeConfig {
     required this.homeserver,
     required this.jwtService,
     required this.elementCallBase,
+    required this.pushGateway,
     required this.requireVodozemac,
     required this.debugLogs,
     required this.allowInsecureDesktopCache,
@@ -35,12 +36,15 @@ class OrexRuntimeConfig {
 
   static const productionHomeserver = 'https://vasys.ru';
   static const productionJwtService = 'https://jwt.vasys.ru';
+  static const productionPushGateway =
+      'http://sygnal:5000/_matrix/push/v1/notify';
   static const defaultElementCallBase = 'https://call.element.io';
 
   final OrexEnvironment environment;
   final String homeserver;
   final String jwtService;
   final String elementCallBase;
+  final String pushGateway;
   final bool requireVodozemac;
   final bool debugLogs;
   final bool allowInsecureDesktopCache;
@@ -50,6 +54,7 @@ class OrexRuntimeConfig {
     String homeserver = '',
     String jwtService = '',
     String elementCallBase = '',
+    String pushGateway = '',
     bool requireVodozemac = true,
     bool debugLogs = true,
     bool allowInsecureDesktopCache = false,
@@ -63,6 +68,10 @@ class OrexRuntimeConfig {
       jwtService,
       environment.isProduction ? productionJwtService : '',
     );
+    final resolvedPushGateway = _definedOrDefault(
+      pushGateway,
+      environment.isProduction ? productionPushGateway : '',
+    );
 
     return OrexRuntimeConfig(
       environment: environment,
@@ -72,6 +81,7 @@ class OrexRuntimeConfig {
         elementCallBase,
         defaultElementCallBase,
       ),
+      pushGateway: resolvedPushGateway,
       requireVodozemac: requireVodozemac,
       debugLogs: debugLogs,
       allowInsecureDesktopCache: allowInsecureDesktopCache,
@@ -85,6 +95,35 @@ class OrexRuntimeConfig {
   Uri get elementCallBaseUri =>
       _httpsUri(elementCallBase, 'OREX_ELEMENT_CALL_BASE');
 
+  Uri? get pushGatewayUri {
+    final value = pushGateway.trim();
+    if (value.isEmpty) return null;
+    final uri = Uri.parse(value);
+    final isProductionInternalGateway =
+        environment.isProduction && value == productionPushGateway;
+    if (!isProductionInternalGateway &&
+        (uri.scheme != 'https' || uri.host.isEmpty)) {
+      throw StateError(
+        'OREX_PUSH_GATEWAY must be an absolute https:// URL, except for the '
+        'built-in production Docker endpoint',
+      );
+    }
+    if (isProductionInternalGateway &&
+        (uri.scheme != 'http' || uri.host != 'sygnal' || uri.port != 5000)) {
+      throw StateError('Invalid built-in Orex production push gateway');
+    }
+    if (uri.userInfo.isNotEmpty ||
+        uri.path != '/_matrix/push/v1/notify' ||
+        uri.hasQuery ||
+        uri.hasFragment) {
+      throw StateError(
+        'OREX_PUSH_GATEWAY must be credential-free and use exactly '
+        '/_matrix/push/v1/notify',
+      );
+    }
+    return uri;
+  }
+
   String get homeserverHost => homeserverUri.host;
 
   void validateSecurity() {
@@ -95,6 +134,7 @@ class OrexRuntimeConfig {
     homeserverUri;
     jwtServiceUri;
     elementCallBaseUri;
+    pushGatewayUri;
   }
 
   static String _definedOrDefault(String value, String fallback) {
@@ -130,6 +170,7 @@ class OrexConfig {
   static const _elementCallBase = String.fromEnvironment(
     'OREX_ELEMENT_CALL_BASE',
   );
+  static const _pushGateway = String.fromEnvironment('OREX_PUSH_GATEWAY');
   static const _requireVodozemac = bool.fromEnvironment(
     'OREX_REQUIRE_VODOZEMAC',
     defaultValue: true,
@@ -148,6 +189,7 @@ class OrexConfig {
     homeserver: _homeserver,
     jwtService: _jwtService,
     elementCallBase: _elementCallBase,
+    pushGateway: _pushGateway,
     requireVodozemac: _requireVodozemac,
     debugLogs: _debugLogs,
     allowInsecureDesktopCache: _allowInsecureDesktopCache,
@@ -161,7 +203,8 @@ class OrexConfig {
 
   /// В продовом режиме приложение не должно стартовать без vodozemac:
   /// иначе приватные Matrix-комнаты могут внезапно стать фактически без E2EE.
-  /// Для локальной отладки можно временно поставить false, но не коммитить так.
+  /// Для локальной отладки допускается временное значение false; в репозитории
+  /// остаётся true.
   static bool get requireVodozemac => current.requireVodozemac;
 
   /// Подробные dev-логи продуктовых Matrix-flow: создание комнат, metadata,
@@ -181,13 +224,14 @@ class OrexConfig {
 
   /// Базовый адрес Element Call.
   ///
-  /// По умолчанию — публичный call.element.io. Если вы поднимаете свой
-  /// Element Call (рекомендуется, он будет ходить в ваш LiveKit+lk-jwt-service),
-  /// укажите его адрес, например 'https://call.vasys.ru'.
+  /// По умолчанию используется публичный call.element.io. Для собственного
+  /// Element Call поверх LiveKit + lk-jwt-service адрес задаётся отдельно,
+  /// например 'https://call.vasys.ru'.
   static String get elementCallBase => current.elementCallBase;
 
   static Uri get homeserverUri => current.homeserverUri;
   static Uri get jwtServiceUri => current.jwtServiceUri;
+  static Uri? get pushGatewayUri => current.pushGatewayUri;
 
   /// Хост homeserver без схемы (нужен Element Call для авторизации).
   static String get homeserverHost => current.homeserverHost;

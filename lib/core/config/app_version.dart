@@ -28,7 +28,7 @@ class OrexAppVersion {
 
     final logicalBuild = code % 1000;
     final abiPrefix = code ~/ 1000;
-    if (abiPrefix >= 1 && abiPrefix <= 9 && logicalBuild > 0) {
+    if (abiPrefix >= 1 && abiPrefix <= 4 && logicalBuild > 0) {
       return logicalBuild.toString();
     }
     return value;

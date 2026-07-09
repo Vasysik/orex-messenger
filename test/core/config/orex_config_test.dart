@@ -26,6 +26,10 @@ void main() {
       expect(config.jwtService, OrexRuntimeConfig.productionJwtService);
       expect(config.homeserverUri, Uri.parse('https://vasys.ru'));
       expect(config.jwtServiceUri, Uri.parse('https://jwt.vasys.ru'));
+      expect(
+        config.pushGatewayUri,
+        Uri.parse('http://sygnal:5000/_matrix/push/v1/notify'),
+      );
       expect(config.homeserverHost, 'vasys.ru');
       expect(config.allowInsecureDesktopCache, isFalse);
     });
@@ -78,6 +82,97 @@ void main() {
       expect(config.environment, OrexEnvironment.dev);
       expect(config.homeserverUri.host, 'matrix.dev.example.org');
       expect(config.jwtServiceUri.host, 'jwt.dev.example.org');
+    });
+
+    test('accepts a standard Matrix push gateway endpoint', () {
+      final config = OrexRuntimeConfig.fromDefines(
+        pushGateway: 'https://push.example.org/_matrix/push/v1/notify',
+      );
+
+      expect(
+        config.pushGatewayUri,
+        Uri.parse('https://push.example.org/_matrix/push/v1/notify'),
+      );
+    });
+
+    test('keeps push disabled outside production when gateway is omitted', () {
+      final config = OrexRuntimeConfig.fromDefines(
+        environmentName: 'dev',
+        homeserver: 'https://matrix.dev.example.org',
+        jwtService: 'https://jwt.dev.example.org',
+      );
+
+      expect(config.pushGatewayUri, isNull);
+    });
+
+    test('rejects non-standard push gateway paths', () {
+      expect(
+        () => OrexRuntimeConfig.fromDefines(
+          pushGateway: 'https://push.example.org/custom/notify',
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('/_matrix/push/v1/notify'),
+          ),
+        ),
+      );
+    });
+
+    test('allows only the built-in internal HTTP gateway in production', () {
+      final production = OrexRuntimeConfig.fromDefines();
+      expect(
+        production.pushGatewayUri,
+        Uri.parse(OrexRuntimeConfig.productionPushGateway),
+      );
+
+      expect(
+        () => OrexRuntimeConfig.fromDefines(
+          environmentName: 'dev',
+          homeserver: 'https://matrix.dev.example.org',
+          jwtService: 'https://jwt.dev.example.org',
+          pushGateway: OrexRuntimeConfig.productionPushGateway,
+        ),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('rejects insecure push gateway endpoints', () {
+      expect(
+        () => OrexRuntimeConfig.fromDefines(
+          pushGateway: 'http://push.example.org/_matrix/push/v1/notify',
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('absolute https:// URL'),
+          ),
+        ),
+      );
+    });
+
+    test('rejects credentials embedded in push gateway URLs', () {
+      expect(
+        () => OrexRuntimeConfig.fromDefines(
+          pushGateway:
+              'https://user:secret@push.example.org/_matrix/push/v1/notify',
+        ),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('rejects push gateway query strings and fragments', () {
+      for (final endpoint in <String>[
+        'https://push.example.org/_matrix/push/v1/notify?tenant=orex',
+        'https://push.example.org/_matrix/push/v1/notify#fragment',
+      ]) {
+        expect(
+          () => OrexRuntimeConfig.fromDefines(pushGateway: endpoint),
+          throwsA(isA<StateError>()),
+        );
+      }
     });
 
     test('accepts explicit insecure desktop cache escape hatch', () {

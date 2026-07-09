@@ -11,15 +11,21 @@ import 'core/config/orex_config.dart';
 import 'core/config/app_version.dart';
 import 'core/storage/database.dart';
 import 'core/matrix/matrix_service.dart';
+import 'core/push/push_background_resolver.dart';
+import 'core/push/push_platform_bridge.dart';
 import 'core/logging/orex_logger.dart';
 import 'features/auth/login_screen.dart';
+import 'features/calls/call_screen.dart';
 import 'features/calls/incoming_call_screen.dart';
 import 'features/home/home_shell.dart';
 import 'features/settings/verification_screen.dart';
 import 'shared/theme/glass.dart';
 import 'shared/theme/orex_theme.dart';
 import 'shared/theme/theme_controller.dart';
-import 'shared/widgets/squirrel_mascot.dart';
+import 'shared/widgets/orex_app_brand.dart';
+
+@pragma('vm:entry-point')
+Future<void> orexPushBackgroundMain() => runOrexPushBackgroundEntrypoint();
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -55,10 +61,12 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
   late final Future<_Services> _future = _init();
 
   Future<_Services> _init() async {
+    final minimumSplash =
+        Future<void>.delayed(const Duration(milliseconds: 720));
     final version = await _versionFuture;
     OrexLog.d(
       'Bootstrap',
-      'starting Orex Messenger ${version.version}, Сборка ${version.buildNumber}',
+      'starting $orexAppName ${version.version}, Сборка ${version.buildNumber}',
     );
     OrexConfig.validateSecurity();
     try {
@@ -80,6 +88,7 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
       database: database,
     );
     await matrix.init();
+    await minimumSplash;
     return _Services(matrix, theme, version);
   }
 
@@ -129,48 +138,29 @@ class SplashScreen extends StatelessWidget {
       child: Scaffold(
         backgroundColor: Colors.transparent,
         body: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SquirrelMascot(size: 132, caption: 'Orex Messenger'),
-              const SizedBox(height: 10),
-              FutureBuilder<OrexAppVersion>(
-                future: versionFuture,
-                initialData: OrexAppVersion.fallback,
-                builder: (context, snap) {
-                  final version = snap.data ?? OrexAppVersion.fallback;
-                  return Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        version.versionLine,
-                        style: const TextStyle(
-                          color: OrexColors.cream,
-                          fontSize: 13,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        version.buildLine,
-                        style: const TextStyle(
-                          color: OrexColors.cream,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ],
-                  );
-                },
-              ),
-              const SizedBox(height: 28),
-              const SizedBox(
-                width: 26,
-                height: 26,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2.5,
-                  color: OrexColors.copper,
+          child: Padding(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FutureBuilder<OrexAppVersion>(
+                  future: versionFuture,
+                  initialData: OrexAppVersion.fallback,
+                  builder: (context, snap) => OrexBrandHeader(
+                    version: snap.data ?? OrexAppVersion.fallback,
+                    iconSize: 136,
+                  ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 28),
+                const SizedBox.square(
+                  dimension: 28,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.6,
+                    color: OrexColors.copper,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -224,15 +214,28 @@ class OrexApp extends StatefulWidget {
   State<OrexApp> createState() => _OrexAppState();
 }
 
-class _OrexAppState extends State<OrexApp> {
+class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
   StreamSubscription? _verificationSub;
   StreamSubscription? _incomingCallSub;
+  StreamSubscription<String>? _systemAcceptedCallSub;
+  StreamSubscription<OrexPushOpen>? _pushOpenSub;
+  String? _pushRoomId;
+  String? _expandedCallRoomId;
+  int _pushOpenGeneration = 0;
+  late bool _wasLoggedIn;
   final Set<String> _incomingCallDialogs = <String>{};
+  final Set<String> _pendingCallActionRooms = <String>{};
+  AppLifecycleState _lifecycleState =
+      WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
+
+  bool get _isForeground => _lifecycleState == AppLifecycleState.resumed;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _wasLoggedIn = widget.matrix.isLoggedIn;
     widget.matrix.addListener(_onChanged);
     widget.theme.addListener(_onChanged);
     _verificationSub = widget.matrix.incomingVerifications.listen((kv) {
@@ -244,7 +247,16 @@ class _OrexAppState extends State<OrexApp> {
     });
     _incomingCallSub =
         widget.matrix.voip?.onIncomingCall.listen(_showIncomingCall);
+    _systemAcceptedCallSub = widget.matrix.call.onSystemIncomingAccepted.listen(
+      _openSystemAcceptedCall,
+    );
+    _pushOpenSub = widget.matrix.push.onNotificationOpened.listen(
+      _openPushNotification,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (widget.matrix.isLoggedIn) {
+        unawaited(widget.matrix.push.ensurePermissionRequested());
+      }
       for (final room in
           widget.matrix.voip?.visibleIncomingRooms() ?? const <Room>[]) {
         _showIncomingCall(room);
@@ -252,20 +264,144 @@ class _OrexAppState extends State<OrexApp> {
     });
   }
 
-  void _showIncomingCall(Room room) {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _lifecycleState = state;
+    if (state == AppLifecycleState.resumed) {
+      // Notification action / Core-Telecom answer can arrive in the same frame
+      // as lifecycle resume. Give that explicit user action priority before
+      // replaying an incoming-call route, otherwise Answer can briefly show the
+      // incoming panel again.
+      Future<void>.delayed(const Duration(milliseconds: 350), () {
+        if (!mounted || !_isForeground) return;
+        final rooms =
+            widget.matrix.voip?.visibleIncomingRooms() ?? const <Room>[];
+        for (final room in rooms) {
+          _showIncomingCall(room);
+        }
+      });
+      return;
+    }
+
+    // Пока Orex не виден, Flutter не открывает маршруты входящего звонка.
+    // Если Matrix /sync обнаружил вызов без FCM, Core-Telecom становится
+    // резервным системным presentation; native dedup не даст повторно звенеть.
+    final rooms = widget.matrix.voip?.visibleIncomingRooms() ?? const <Room>[];
+    for (final room in rooms) {
+      if (widget.matrix.call.isActive ||
+          widget.matrix.call.isAcceptingIncoming(room.id)) {
+        continue;
+      }
+      unawaited(widget.matrix.call.prepareIncoming(room));
+    }
+  }
+
+  void _openPushNotification(OrexPushOpen open) {
+    final actionRoomId =
+        open.kind == 'incoming_call' && open.action != null ? open.roomId : null;
+    if (actionRoomId != null) _pendingCallActionRooms.add(actionRoomId);
+    unawaited(
+      _handlePushNotificationOpen(open).whenComplete(() {
+        if (actionRoomId != null) _pendingCallActionRooms.remove(actionRoomId);
+      }),
+    );
+  }
+
+  Future<void> _handlePushNotificationOpen(OrexPushOpen open) async {
+    final roomId = open.roomId;
+    if (!mounted || roomId == null) return;
+
+    var room = widget.matrix.client.getRoomById(roomId);
+    if (open.kind == 'incoming_call' && room == null) {
+      try {
+        await widget.matrix.client.oneShotSync(timeout: Duration.zero);
+      } catch (e) {
+        OrexLog.d('Push', 'cold call room sync failed room=$roomId', e);
+      }
+      room = widget.matrix.client.getRoomById(roomId);
+    }
+
+    if (!mounted) return;
+    if (open.kind == 'incoming_call') {
+      if (room == null) {
+        OrexLog.d('Push', 'incoming call room unavailable room=$roomId');
+        return;
+      }
+      final call = widget.matrix.call;
+      if (open.action == null && call.isActive && call.roomId == room.id) {
+        _openAcceptedCall(room.id);
+        return;
+      }
+      switch (open.action) {
+        case 'answer':
+          widget.matrix.voip?.dismissIncomingFromSystem(room.id);
+          await widget.matrix.call.acceptIncoming(
+            room,
+            video: open.video,
+            fromSystem: open.fromSystem,
+          );
+          if (!mounted) return;
+          final call = widget.matrix.call;
+          if (call.isActive && call.roomId == room.id) {
+            _openAcceptedCall(room.id);
+          } else {
+            OrexLog.d(
+              'Push',
+              'incoming call answer completed without active call room=${room.id}',
+            );
+          }
+          return;
+        case 'reject':
+          widget.matrix.voip?.dismissIncomingFromSystem(room.id);
+          await widget.matrix.call.rejectIncoming(
+            room,
+            fromSystem: open.fromSystem,
+          );
+          return;
+        default:
+          _showIncomingCall(room);
+          return;
+      }
+    }
+
+    setState(() {
+      _pushRoomId = roomId;
+      _pushOpenGeneration++;
+    });
+  }
+
+  void _showIncomingCall(Room room, {int attempt = 0}) {
     if (!mounted) return;
     final call = widget.matrix.call;
     if (call.isActive && call.roomId == room.id) return;
+    if (call.isAcceptingIncoming(room.id)) return;
+    if (_pendingCallActionRooms.contains(room.id)) return;
+    if (!_isForeground) {
+      if (!call.isActive) unawaited(call.prepareIncoming(room));
+      return;
+    }
     if (!_incomingCallDialogs.add(room.id)) return;
 
     void retryLater() {
+      if (attempt >= 8) {
+        _incomingCallDialogs.remove(room.id);
+        OrexLog.d(
+          'Call',
+          'incoming call UI unavailable after retries room=${room.id}',
+        );
+        final call = widget.matrix.call;
+        if (!call.isActive && !call.isAcceptingIncoming(room.id)) {
+          unawaited(call.prepareIncoming(room));
+        }
+        return;
+      }
       Future<void>.delayed(const Duration(milliseconds: 200), () {
         if (!mounted) {
           _incomingCallDialogs.remove(room.id);
           return;
         }
         _incomingCallDialogs.remove(room.id);
-        _showIncomingCall(room);
+        _showIncomingCall(room, attempt: attempt + 1);
       });
     }
 
@@ -275,35 +411,143 @@ class _OrexAppState extends State<OrexApp> {
         return;
       }
       final call = widget.matrix.call;
-      if (call.isActive && call.roomId == room.id) {
+      if (!_isForeground ||
+          _pendingCallActionRooms.contains(room.id) ||
+          call.isAcceptingIncoming(room.id) ||
+          (call.isActive && call.roomId == room.id)) {
         _incomingCallDialogs.remove(room.id);
         return;
       }
       final nav = _navKey.currentState;
       final ctx = nav?.overlay?.context ?? _navKey.currentContext;
-      if (ctx == null || !ctx.mounted) {
+      if (nav == null || ctx == null || !ctx.mounted) {
         retryLater();
         return;
       }
-      showDialog<void>(
-        context: ctx,
-        barrierDismissible: false,
-        useRootNavigator: true,
-        builder: (_) => IncomingCallScreen(
-          matrix: widget.matrix,
-          room: room,
-          asDialog: true,
-        ),
-      ).whenComplete(() => _incomingCallDialogs.remove(room.id));
+      final isWide = MediaQuery.sizeOf(ctx).width >= 900;
+      final Future<void> future;
+      try {
+        future = isWide
+            ? showDialog<void>(
+              context: ctx,
+              barrierDismissible: false,
+              useRootNavigator: true,
+              builder: (_) => IncomingCallScreen(
+                matrix: widget.matrix,
+                room: room,
+                asDialog: true,
+              ),
+            )
+            : nav.push<void>(
+              MaterialPageRoute(
+                fullscreenDialog: true,
+                builder: (_) => IncomingCallScreen(
+                  matrix: widget.matrix,
+                  room: room,
+                ),
+              ),
+            );
+      } catch (error) {
+        OrexLog.d(
+          'Call',
+          'failed to present incoming call room=${room.id}',
+          error,
+        );
+        retryLater();
+        return;
+      }
+      unawaited(
+        future
+            .catchError((Object error, StackTrace _) {
+              OrexLog.d(
+                'Call',
+                'incoming call route failed room=${room.id}',
+                error,
+              );
+            })
+            .whenComplete(() => _incomingCallDialogs.remove(room.id)),
+      );
     });
   }
 
-  void _onChanged() => setState(() {});
+  void _openSystemAcceptedCall(String roomId) {
+    _openAcceptedCall(roomId);
+  }
+
+  void _openAcceptedCall(String roomId, {int attempt = 0}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          !widget.matrix.call.isActive ||
+          widget.matrix.call.roomId != roomId) {
+        return;
+      }
+
+      final nav = _navKey.currentState;
+      final ctx = nav?.overlay?.context ?? _navKey.currentContext;
+      if (nav == null || ctx == null || !ctx.mounted) {
+        if (attempt < 20) {
+          Future<void>.delayed(const Duration(milliseconds: 150), () {
+            if (mounted) _openAcceptedCall(roomId, attempt: attempt + 1);
+          });
+        }
+        return;
+      }
+
+      if (MediaQuery.sizeOf(ctx).width >= 900) {
+        widget.matrix.call.minimize();
+        unawaited(widget.matrix.push.notifyCallUiReady(roomId));
+        return;
+      }
+
+      if (_expandedCallRoomId == roomId) {
+        unawaited(widget.matrix.push.notifyCallUiReady(roomId));
+        return;
+      }
+
+      widget.matrix.call.expand();
+      _expandedCallRoomId = roomId;
+      final route = MaterialPageRoute<void>(
+        builder: (_) => CallScreen(matrix: widget.matrix),
+      );
+      final routeClosed = nav.push<void>(route);
+
+      // Закрываем нативную lock-screen оболочку только после того, как Flutter
+      // действительно отрисовал расширенный режим звонка.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            !widget.matrix.call.isActive ||
+            widget.matrix.call.roomId != roomId) {
+          return;
+        }
+        unawaited(widget.matrix.push.notifyCallUiReady(roomId));
+      });
+
+      routeClosed.whenComplete(() {
+        if (_expandedCallRoomId == roomId) _expandedCallRoomId = null;
+      });
+    });
+  }
+
+  void _onChanged() {
+    if (!mounted) return;
+    final isLoggedIn = widget.matrix.isLoggedIn;
+    if (isLoggedIn && !_wasLoggedIn) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !widget.matrix.isLoggedIn) return;
+        unawaited(widget.matrix.push.ensurePermissionRequested());
+      });
+    }
+    _wasLoggedIn = isLoggedIn;
+    setState(() {});
+  }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _verificationSub?.cancel();
     _incomingCallSub?.cancel();
+    _systemAcceptedCallSub?.cancel();
+    _pushOpenSub?.cancel();
     widget.matrix.removeListener(_onChanged);
     widget.theme.removeListener(_onChanged);
     super.dispose();
@@ -312,7 +556,7 @@ class _OrexAppState extends State<OrexApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Orex Messenger',
+      title: orexAppName,
       navigatorKey: _navKey,
       scrollBehavior: OrexScrollBehavior(),
       debugShowCheckedModeBanner: false,
@@ -324,6 +568,8 @@ class _OrexAppState extends State<OrexApp> {
               matrix: widget.matrix,
               theme: widget.theme,
               version: widget.version,
+              pushRoomId: _pushRoomId,
+              pushOpenGeneration: _pushOpenGeneration,
             )
           : LoginScreen(
               matrix: widget.matrix,

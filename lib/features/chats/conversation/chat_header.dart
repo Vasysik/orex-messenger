@@ -29,7 +29,12 @@ class _InviteView extends StatelessWidget {
                   onPressed: onBack,
                   icon: const Icon(Icons.arrow_back),
                 ),
-              MxcAvatar(matrix: matrix, name: name, mxc: room.avatar, size: 42),
+              MxcAvatar(
+                matrix: matrix,
+                name: name,
+                mxc: matrix.conversationAvatar(room),
+                size: 42,
+              ),
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
@@ -55,7 +60,7 @@ class _InviteView extends StatelessWidget {
                     MxcAvatar(
                       matrix: matrix,
                       name: name,
-                      mxc: room.avatar,
+                      mxc: matrix.conversationAvatar(room),
                       size: 88,
                     ),
                     const SizedBox(height: 16),

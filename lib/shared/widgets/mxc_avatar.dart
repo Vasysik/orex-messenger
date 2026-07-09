@@ -62,7 +62,7 @@ class _MxcAvatarState extends State<MxcAvatar> {
       return;
     }
 
-    final data = await widget.matrix.downloadMxc(mxc);
+    final data = await widget.matrix.downloadAvatarMxc(mxc);
     if (!mounted) return;
     if (_loadingMxc == mxc) _loadingMxc = null;
     if (widget.mxc != mxc) return;

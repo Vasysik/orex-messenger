@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import '../../core/audio/audio_device_utils.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../core/voip/call_session.dart';
+import '../../core/voip/screen_share_controller.dart';
 import 'call_controls.dart';
 import 'screen_source_picker.dart';
 
@@ -29,6 +30,7 @@ Future<void> orexToggleScreenShare({
   required CallSession session,
   required bool Function() isMounted,
 }) async {
+  if (!OrexScreenShareController.isSupported) return;
   if (session.screenShareOn) {
     await session.toggleScreenShare();
     return;

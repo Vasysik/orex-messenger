@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart';
 
 import '../../core/matrix/matrix_service.dart';
@@ -30,6 +31,9 @@ class IncomingCallScreen extends StatefulWidget {
 
 class _IncomingCallScreenState extends State<IncomingCallScreen> {
   StreamSubscription<String>? _dismissSub;
+  Timer? _ringTimeout;
+  bool _busy = false;
+  String? _status;
 
   Room get room => widget.room;
   String get _callId => widget.room.id;
@@ -38,52 +42,74 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   void initState() {
     super.initState();
     _dismissSub = widget.matrix.voip?.onDismissIncoming.listen((callId) {
-      if (callId == _callId && mounted) Navigator.of(context).maybePop();
+      if (callId == _callId && mounted && !_busy) {
+        Navigator.of(context).maybePop();
+      }
     });
     widget.matrix.audio.startIncomingRingtone();
+    _ringTimeout = Timer(const Duration(seconds: 45), () {
+      if (!mounted || _busy) return;
+      widget.matrix.audio.stopIncomingRingtone();
+      widget.matrix.voip?.dismissIncomingFromSystem(_callId);
+      Navigator.of(context).maybePop();
+    });
   }
 
   @override
   void dispose() {
+    _ringTimeout?.cancel();
     widget.matrix.audio.stopIncomingRingtone();
     _dismissSub?.cancel();
     super.dispose();
   }
 
   Future<void> _decline() async {
-    // Закрыть входящий на других своих устройствах + сообщить инициатору, что
-    // мы отклонили (он напишет «Отклонённый вызов»).
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _status = 'Отклоняем звонок…';
+    });
     widget.matrix.audio.stopIncomingRingtone();
-    await widget.matrix.voip?.markCallHandled(room.id, _callId);
-    await widget.matrix.voip?.notifyRejected(room.id);
-    if (mounted) Navigator.of(context).maybePop();
+    unawaited(HapticFeedback.mediumImpact());
+    try {
+      await widget.matrix.call.rejectIncoming(room);
+      if (mounted) Navigator.of(context).maybePop();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _status = 'Не удалось отклонить. Попробуйте ещё раз.';
+      });
+    }
   }
 
   Future<void> _accept({required bool video}) async {
+    if (_busy) return;
     final isWide = MediaQuery.sizeOf(context).width >= 900;
     final navigator = Navigator.of(context, rootNavigator: true);
+    setState(() {
+      _busy = true;
+      _status = video ? 'Подключаем видеозвонок…' : 'Подключаем звонок…';
+    });
     widget.matrix.audio.stopIncomingRingtone();
-    await widget.matrix.voip?.markCallHandled(room.id, _callId);
-    await widget.matrix.call.start(room.id, video: video);
+    unawaited(HapticFeedback.mediumImpact());
+    try {
+      await widget.matrix.call.acceptIncoming(room, video: video);
+    } catch (_) {
+      // CallController сохраняет подробную причину в lastError.
+    }
     if (!mounted) return;
     if (!widget.matrix.call.isActive) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            widget.matrix.call.lastError ?? 'Не удалось принять звонок',
-          ),
-        ),
-      );
-      navigator.maybePop();
+      setState(() {
+        _busy = false;
+        _status = widget.matrix.call.lastError ?? 'Не удалось принять звонок';
+      });
       return;
     }
     if (isWide) {
-      widget.matrix.call.minimize(); // десктоп — звонок панелью над чатом
+      widget.matrix.call.minimize();
       if (mounted) navigator.maybePop();
     } else {
-      // Мобильный — входящий был модальным overlay, а сам звонок открываем уже
-      // после ответа. Так звонок не выбивает пользователя из текущего чата до
-      // принятия вызова.
       widget.matrix.call.expand();
       if (widget.asDialog) {
         if (mounted) await navigator.maybePop();
@@ -148,7 +174,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
         MxcAvatar(
           matrix: widget.matrix,
           name: name,
-          mxc: room.avatar,
+          mxc: widget.matrix.conversationAvatar(room),
           size: size,
         ),
         const SizedBox(height: 16),
@@ -158,8 +184,24 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
             context,
           ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
         ),
-        const SizedBox(height: 4),
-        Text('Входящий звонок…', style: Theme.of(context).textTheme.bodyMedium),
+        const SizedBox(height: 6),
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 180),
+          child: Text(
+            _status ?? 'Входящий звонок',
+            key: ValueKey(_status),
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ),
+        if (_busy) ...[
+          const SizedBox(height: 14),
+          const SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(strokeWidth: 2.2),
+          ),
+        ],
       ],
     );
   }
@@ -172,19 +214,19 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
           icon: Icons.call_end,
           label: 'Отклонить',
           color: const Color(0xFFCF6679),
-          onTap: _decline,
+          onTap: _busy ? null : _decline,
         ),
         _ActionButton(
           icon: Icons.videocam,
           label: 'Видео',
           color: OrexColors.copper,
-          onTap: () => _accept(video: true),
+          onTap: _busy ? null : () => _accept(video: true),
         ),
         _ActionButton(
           icon: Icons.call,
           label: 'Ответить',
           color: OrexColors.online,
-          onTap: () => _accept(video: false),
+          onTap: _busy ? null : () => _accept(video: false),
         ),
       ],
     );
@@ -202,25 +244,30 @@ class _ActionButton extends StatelessWidget {
   final IconData icon;
   final String label;
   final Color color;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        GestureDetector(
-          onTap: onTap,
-          child: Container(
-            width: 60,
-            height: 60,
-            decoration: BoxDecoration(shape: BoxShape.circle, color: color),
-            child: Icon(icon, color: OrexColors.cream, size: 26),
+    final enabled = onTap != null;
+    return AnimatedOpacity(
+      duration: const Duration(milliseconds: 160),
+      opacity: enabled ? 1 : 0.45,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          GestureDetector(
+            onTap: onTap,
+            child: Container(
+              width: 60,
+              height: 60,
+              decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+              child: Icon(icon, color: OrexColors.cream, size: 26),
+            ),
           ),
-        ),
-        const SizedBox(height: 8),
-        Text(label, style: Theme.of(context).textTheme.bodySmall),
-      ],
+          const SizedBox(height: 8),
+          Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ],
+      ),
     );
   }
 }

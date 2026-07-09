@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
+
 import '../theme/orex_theme.dart';
 
-/// Маскот-Белочка. Пока ассета нет — рисует тёплый медальон с эмодзи-белочкой,
-/// чтобы экран не выглядел пустым. Когда добавите `assets/mascot/squirrel.png`
-/// (и пропишете в pubspec) — верните сюда `Image.asset(...)` с тем же
-/// `errorBuilder`. Раньше здесь был Image.asset, который на web спамил 404 в
-/// консоль (ассета нет) — заменено на прямую заглушку.
+/// Маскот Orex. Рендерит пользовательский ассет и откатывается на компактную
+/// заглушку только если ассет недоступен на конкретной платформе/сборке.
 class SquirrelMascot extends StatelessWidget {
   const SquirrelMascot({super.key, this.size = 140, this.caption});
+
+  static const String assetPath = 'assets/mascot/squirrel.png';
 
   final double size;
   final String? caption;
@@ -18,17 +18,23 @@ class SquirrelMascot extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Container(
-          width: size,
-          height: size,
-          decoration: const BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: OrexColors.copperGradient,
-          ),
-          alignment: Alignment.center,
-          child: Text(
-            '\u{1F43F}', // 🐿 — временная заглушка вместо ассета
-            style: TextStyle(fontSize: size * 0.42),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(size * 0.22),
+          child: Container(
+            width: size,
+            height: size,
+            decoration: const BoxDecoration(gradient: OrexColors.copperGradient),
+            alignment: Alignment.center,
+            child: Image.asset(
+              assetPath,
+              width: size,
+              height: size,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => Text(
+                '\u{1F43F}',
+                style: TextStyle(fontSize: size * 0.42),
+              ),
+            ),
           ),
         ),
         if (caption != null) ...[

@@ -1,18 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Theme applied to the Android Window while the process is starting when the OS's Dark Mode setting is off -->
     <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
-        <!-- Show a splash screen on the activity. Automatically removed when
-             the Flutter engine draws its first frame -->
+        <item name="android:forceDarkAllowed">false</item>
         <item name="android:windowBackground">@drawable/launch_background</item>
     </style>
-    <!-- Theme applied to the Android Window as soon as the process has started.
-         This theme determines the color of the Android Window while your
-         Flutter UI initializes, as well as behind your Flutter UI while its
-         running.
 
-         This Theme is only used starting with V2 of Flutter's Android embedding. -->
     <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
+        <item name="android:forceDarkAllowed">false</item>
         <item name="android:windowBackground">?android:colorBackground</item>
     </style>
+
+    <style name="OrexIncomingCallTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowBackground">#1C140E</item>
+        <item name="android:colorAccent">@color/orex_brand_copper</item>
+    </style>
+    <style name="OrexCallActionTheme" parent="@android:style/Theme.NoDisplay">
+        <item name="android:windowNoTitle">true</item>
+    </style>
+
 </resources>

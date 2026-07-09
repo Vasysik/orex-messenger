@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
-import '../../core/matrix/matrix_service.dart';
+
 import '../../core/config/app_version.dart';
+import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
-import '../../shared/widgets/squirrel_mascot.dart';
+import '../../shared/widgets/orex_app_brand.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({
@@ -12,6 +13,7 @@ class LoginScreen extends StatefulWidget {
     required this.version,
     required this.onLoggedIn,
   });
+
   final MatrixService matrix;
   final OrexAppVersion version;
   final VoidCallback onLoggedIn;
@@ -27,6 +29,14 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isRegistering = false;
   bool _busy = false;
   String? _error;
+
+  @override
+  void dispose() {
+    _user.dispose();
+    _pass.dispose();
+    _inviteToken.dispose();
+    super.dispose();
+  }
 
   Future<void> _submit() async {
     final username = _user.text.trim();
@@ -59,9 +69,9 @@ class _LoginScreenState extends State<LoginScreen> {
           password: password,
         );
       }
+      if (!mounted) return;
       widget.onLoggedIn();
     } catch (e) {
-      // Переводим сырые Matrix-коды в понятные сообщения.
       String msg = e.toString();
       if (msg.contains('M_USER_IN_USE')) {
         msg = 'Это имя пользователя уже занято';
@@ -71,12 +81,14 @@ class _LoginScreenState extends State<LoginScreen> {
         msg = _isRegistering
             ? 'Неверный или истёкший код приглашения'
             : 'Неверный логин или пароль';
-      } else if (msg.contains('M_UNKNOWN_TOKEN') || msg.contains('M_MISSING_TOKEN')) {
+      } else if (msg.contains('M_UNKNOWN_TOKEN') ||
+          msg.contains('M_MISSING_TOKEN')) {
         msg = 'Недействительный токен приглашения';
-      } else if (msg.contains('SocketException') || msg.contains('Connection refused')) {
+      } else if (msg.contains('SocketException') ||
+          msg.contains('Connection refused')) {
         msg = 'Нет подключения к серверу. Проверьте интернет.';
       }
-      setState(() => _error = msg);
+      if (mounted) setState(() => _error = msg);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -87,92 +99,118 @@ class _LoginScreenState extends State<LoginScreen> {
     return AmbientBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: Center(
-          child: SingleChildScrollView(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 380),
-              child: GlassPanel(
-                borderRadius: 28,
-                padding: const EdgeInsets.all(28),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const SquirrelMascot(size: 120),
-                    const SizedBox(height: 16),
-                    Text('Orex Messenger',
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleMedium
-                            ?.copyWith(fontSize: 22)),
-                    const SizedBox(height: 4),
-                    Text('Тепло. Быстро. Децентрализованно.',
-                        style: Theme.of(context).textTheme.bodySmall),
-                    const SizedBox(height: 8),
-                    Text(
-                      '${widget.version.versionLine}\n${widget.version.buildLine}',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: OrexColors.cream.withValues(alpha: 0.74),
-                            height: 1.35,
+        body: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(20),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 400),
+                child: GlassPanel(
+                  borderRadius: 28,
+                  padding: const EdgeInsets.all(28),
+                  child: AutofillGroup(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        OrexBrandHeader(
+                          version: widget.version,
+                          iconSize: 116,
+                        ),
+                        const SizedBox(height: 26),
+                        Text(
+                          _isRegistering ? 'Создать аккаунт' : 'С возвращением',
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                        const SizedBox(height: 16),
+                        _Field(
+                          controller: _user,
+                          hint: 'Имя пользователя',
+                          autofillHints: const [AutofillHints.username],
+                          textInputAction: TextInputAction.next,
+                        ),
+                        const SizedBox(height: 12),
+                        _Field(
+                          controller: _pass,
+                          hint: 'Пароль',
+                          obscure: true,
+                          autofillHints: _isRegistering
+                              ? const [AutofillHints.newPassword]
+                              : const [AutofillHints.password],
+                          textInputAction: _isRegistering
+                              ? TextInputAction.next
+                              : TextInputAction.done,
+                          onSubmitted: _isRegistering || _busy
+                              ? null
+                              : (_) => _submit(),
+                        ),
+                        if (_isRegistering) ...[
+                          const SizedBox(height: 12),
+                          _Field(
+                            controller: _inviteToken,
+                            hint: 'Код приглашения',
+                            textInputAction: TextInputAction.done,
+                            onSubmitted: _busy ? null : (_) => _submit(),
                           ),
-                    ),
-                    const SizedBox(height: 24),
-                    _Field(controller: _user, hint: 'Имя пользователя'),
-                    const SizedBox(height: 12),
-                    _Field(controller: _pass, hint: 'Пароль', obscure: true),
-                    if (_isRegistering) ...[
-                      const SizedBox(height: 12),
-                      _Field(controller: _inviteToken, hint: 'Код приглашения'),
-                    ],
-                    if (_error != null) ...[
-                      const SizedBox(height: 12),
-                      Text(_error!,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Color(0xFFCF6679))),
-                    ],
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: OrexColors.copper,
-                          foregroundColor: OrexColors.cream,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16),
+                        ],
+                        if (_error != null) ...[
+                          const SizedBox(height: 12),
+                          Semantics(
+                            liveRegion: true,
+                            child: Text(
+                              _error!,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Color(0xFFCF6679)),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 50,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: OrexColors.copper,
+                              foregroundColor: OrexColors.cream,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                            ),
+                            onPressed: _busy ? null : _submit,
+                            child: _busy
+                                ? const SizedBox.square(
+                                    dimension: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: OrexColors.cream,
+                                    ),
+                                  )
+                                : Text(_isRegistering ? 'Регистрация' : 'Войти'),
                           ),
                         ),
-                        onPressed: _busy ? null : _submit,
-                        child: _busy
-                            ? const SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: OrexColors.cream,
-                                ),
-                              )
-                            : Text(_isRegistering ? 'Регистрация' : 'Войти'),
-                      ),
+                        const SizedBox(height: 16),
+                        TextButton(
+                          onPressed: _busy
+                              ? null
+                              : () {
+                                  setState(() {
+                                    _isRegistering = !_isRegistering;
+                                    _error = null;
+                                  });
+                                },
+                          child: Text(
+                            _isRegistering
+                                ? 'Уже есть аккаунт? Войти'
+                                : 'Ещё нет аккаунта? Зарегистрироваться',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: OrexColors.copper),
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 16),
-                    TextButton(
-                      onPressed: _busy
-                          ? null
-                          : () {
-                              setState(() {
-                                _isRegistering = !_isRegistering;
-                                _error = null;
-                              });
-                            },
-                      child: Text(
-                        _isRegistering
-                            ? 'Уже есть аккаунт? Войти'
-                            : 'Ещё нет аккаунта? Зарегистрироваться',
-                        style: const TextStyle(color: OrexColors.copper),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -188,17 +226,28 @@ class _Field extends StatelessWidget {
     required this.controller,
     required this.hint,
     this.obscure = false,
+    this.autofillHints,
+    this.textInputAction,
+    this.onSubmitted,
   });
 
   final TextEditingController controller;
   final String hint;
   final bool obscure;
+  final Iterable<String>? autofillHints;
+  final TextInputAction? textInputAction;
+  final ValueChanged<String>? onSubmitted;
 
   @override
   Widget build(BuildContext context) {
     return TextField(
       controller: controller,
       obscureText: obscure,
+      autofillHints: autofillHints,
+      textInputAction: textInputAction,
+      onSubmitted: onSubmitted,
+      autocorrect: false,
+      enableSuggestions: !obscure,
       decoration: InputDecoration(
         hintText: hint,
         filled: true,
