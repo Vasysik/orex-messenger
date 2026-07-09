@@ -5,6 +5,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 
 import '../../core/audio/audio_cue_service.dart';
 import '../../core/audio/audio_device_utils.dart';
+import '../../core/logging/orex_logger.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/orex_settings_components.dart';
@@ -89,10 +90,11 @@ class OrexAudioDeviceSettingsActions {
         context,
       ).showSnackBar(const SnackBar(content: Text('Микрофон доступен')));
     } catch (e) {
+      OrexLog.d('Audio', 'microphone permission/test failed', e);
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Микрофон недоступен: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Микрофон недоступен')),
+      );
     }
   }
 }
@@ -146,8 +148,9 @@ class OrexAudioDeviceSettingsController extends ChangeNotifier {
       devices = nextDevices;
       cameras = nextCameras;
     } catch (e) {
+      OrexLog.d('Audio', 'device enumeration failed', e);
       if (_disposed) return;
-      error = '$e';
+      error = 'Не удалось получить список аудиоустройств';
     } finally {
       if (!_disposed) {
         loading = false;

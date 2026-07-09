@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 
+import '../../../core/logging/orex_logger.dart';
 import '../../../core/matrix/matrix_service.dart';
 import '../../../shared/theme/glass.dart';
 import '../../../shared/theme/orex_theme.dart';
@@ -71,10 +72,11 @@ class _ConversationPreviewViewState extends State<ConversationPreviewView> {
       final roomId = await widget.onEnter(widget.preview);
       if (mounted) widget.onEntered(roomId);
     } catch (e) {
+      OrexLog.d('Preview', 'enter conversation failed', e);
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Не удалось войти: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось войти в комнату')),
+        );
       }
     } finally {
       if (mounted) setState(() => _entering = false);

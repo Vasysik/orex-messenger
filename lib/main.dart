@@ -98,7 +98,13 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
       future: _future,
       builder: (context, snap) {
         if (snap.hasError) {
-          return _MiniApp(child: _StartupError(error: snap.error.toString()));
+          OrexLog.d('Bootstrap', 'startup failed', snap.error);
+          return const _MiniApp(
+            child: _StartupError(
+              error: 'Проверьте подключение и перезапустите приложение. '
+                  'Подробности сохранены только в отладочном логе.',
+            ),
+          );
         }
         if (!snap.hasData) {
           return _MiniApp(child: SplashScreen(versionFuture: _versionFuture));

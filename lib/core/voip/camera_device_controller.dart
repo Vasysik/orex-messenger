@@ -149,7 +149,8 @@ final class OrexCameraDeviceController {
       }
       return const OrexCameraDeviceResult.success();
     } catch (e) {
-      return OrexCameraDeviceResult.failure('$e');
+      OrexLog.d('Call', 'camera device change failed', e);
+      return const OrexCameraDeviceResult.failure('Камера недоступна');
     }
   }
 

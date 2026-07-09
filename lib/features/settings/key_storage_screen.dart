@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/logging/orex_logger.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
@@ -109,18 +110,20 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
               if (mounted) Navigator.pop(context); // закрываем индикатор
               retry = true; // SSSS разблокирован, повторяем включение бэкапа
             } catch (e2) {
+              OrexLog.d('Security', 'recovery key unlock failed', e2);
               if (mounted) {
                 Navigator.pop(context); // закрываем индикатор
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Неверный ключ восстановления: $e2')),
+                  const SnackBar(content: Text('Неверный ключ восстановления')),
                 );
               }
             }
           }
         } else {
+          OrexLog.d('Security', 'enable key backup failed', e);
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Ошибка при включении бэкапа: $e')),
+              const SnackBar(content: Text('Не удалось включить бэкап ключей')),
             );
           }
         }
@@ -162,10 +165,11 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
         );
       }
     } catch (e) {
+      OrexLog.d('Security', 'disable key backup failed', e);
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Ошибка при отключении: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось отключить бэкап ключей')),
+        );
       }
     }
   }

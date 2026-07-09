@@ -110,8 +110,9 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
           _updateLevel(OrexPcmAudioLevel.dbFromPcm16(data));
         },
         onError: (Object e) {
+          OrexLog.d('Audio', 'microphone PCM stream failed', e);
           if (!mounted) return;
-          setState(() => _error = '$e');
+          setState(() => _error = 'Ошибка чтения микрофона');
         },
       );
       _ampSub = recorder
@@ -121,8 +122,9 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
               _updateLevel(_normalizeDb(amp.current));
             },
             onError: (Object e) {
+              OrexLog.d('Audio', 'microphone amplitude stream failed', e);
               if (!mounted) return;
-              setState(() => _error = '$e');
+              setState(() => _error = 'Ошибка чтения микрофона');
             },
           );
 
@@ -146,10 +148,11 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
         await recorder?.dispose();
       } catch (_) {}
       if (!mounted) return;
+      OrexLog.d('Audio', 'microphone level test failed', e);
       setState(() {
         _starting = false;
         _testing = false;
-        _error = '$e';
+        _error = 'Не удалось запустить проверку микрофона';
       });
     }
   }

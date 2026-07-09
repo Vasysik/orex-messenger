@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 
+import '../../core/logging/orex_logger.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
@@ -78,10 +79,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
       await widget.matrix.deleteDevice(d.deviceId, password);
       _reload();
     } catch (e) {
+      OrexLog.d('Devices', 'delete device failed', e);
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Не удалось удалить: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось удалить устройство')),
+        );
       }
     }
   }

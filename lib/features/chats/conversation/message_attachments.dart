@@ -2,7 +2,8 @@ part of 'message_bubble.dart';
 
 final LinkedHashMap<String, Uint8List> _decryptedCache = LinkedHashMap();
 int _decryptedCacheBytes = 0;
-const int _decryptedCacheMaxBytes = 96 * 1024 * 1024;
+int get _decryptedCacheMaxBytes =>
+    OrexIncomingMediaPolicy.decryptedCacheLimit(isWeb: kIsWeb);
 
 Uint8List? _getDecryptedCache(String eventId) {
   final bytes = _decryptedCache.remove(eventId);
@@ -65,19 +66,41 @@ class _AttachmentImageState extends State<_AttachmentImage> with AutomaticKeepAl
       if (mounted) setState(() => _bytes = cached);
       return;
     }
-    try {
-      final file = await widget.event.downloadAndDecryptAttachment(getThumbnail: true);
-      _putDecryptedCache(widget.event.eventId, file.bytes);
-      if (mounted) setState(() => _bytes = file.bytes);
-    } catch (_) {
+
+    final content = Map<String, Object?>.from(widget.event.content);
+    final canLoadThumbnail = OrexIncomingMediaPolicy.shouldAutoLoadThumbnail(
+      content,
+      isWeb: kIsWeb,
+    );
+    final canLoadFullImage = OrexIncomingMediaPolicy.shouldAutoLoadImage(
+      content,
+      isWeb: kIsWeb,
+    );
+
+    if (canLoadThumbnail) {
+      try {
+        final file = await widget.event.downloadAndDecryptAttachment(
+          getThumbnail: true,
+        );
+        _putDecryptedCache(widget.event.eventId, file.bytes);
+        if (mounted) setState(() => _bytes = file.bytes);
+        return;
+      } catch (_) {
+        // Fallback ниже разрешён только для заранее объявленного безопасного
+        // размера. Никогда не скачиваем произвольный full-size файл вслепую.
+      }
+    }
+
+    if (canLoadFullImage) {
       try {
         final file = await widget.event.downloadAndDecryptAttachment();
         _putDecryptedCache(widget.event.eventId, file.bytes);
         if (mounted) setState(() => _bytes = file.bytes);
-      } catch (_) {
-        if (mounted) setState(() => _failed = true);
-      }
+        return;
+      } catch (_) {}
     }
+
+    if (mounted) setState(() => _failed = true);
   }
 
   void _openGallery() {
@@ -161,11 +184,16 @@ class _AttachmentMediaState extends State<_AttachmentMedia> with AutomaticKeepAl
       if (mounted) setState(() => _bytes = cached);
       return;
     }
-    try {
-      final file = await widget.event.downloadAndDecryptAttachment(getThumbnail: true);
-      _putDecryptedCache(widget.event.eventId, file.bytes);
-      if (mounted) setState(() => _bytes = file.bytes);
-    } catch (_) {
+
+    final content = Map<String, Object?>.from(widget.event.content);
+    if (!widget.isVideo) {
+      if (!OrexIncomingMediaPolicy.shouldAutoLoadAudio(
+        content,
+        isWeb: kIsWeb,
+      )) {
+        if (mounted) setState(() => _failed = true);
+        return;
+      }
       try {
         final file = await widget.event.downloadAndDecryptAttachment();
         _putDecryptedCache(widget.event.eventId, file.bytes);
@@ -173,6 +201,26 @@ class _AttachmentMediaState extends State<_AttachmentMedia> with AutomaticKeepAl
       } catch (_) {
         if (mounted) setState(() => _failed = true);
       }
+      return;
+    }
+
+    // Для видео в ленте загружаем только безопасный thumbnail. Автоматический
+    // fallback на полный ролик — DoS-вектор для Web и поэтому запрещён.
+    if (!OrexIncomingMediaPolicy.shouldAutoLoadThumbnail(
+      content,
+      isWeb: kIsWeb,
+    )) {
+      if (mounted) setState(() => _failed = true);
+      return;
+    }
+    try {
+      final file = await widget.event.downloadAndDecryptAttachment(
+        getThumbnail: true,
+      );
+      _putDecryptedCache(widget.event.eventId, file.bytes);
+      if (mounted) setState(() => _bytes = file.bytes);
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
     }
   }
 
@@ -188,6 +236,35 @@ class _AttachmentMediaState extends State<_AttachmentMedia> with AutomaticKeepAl
     );
   }
 
+  Future<void> _loadAudioOnDemand() async {
+    final blockReason = OrexIncomingMediaPolicy.manualDownloadBlockReason(
+      Map<String, Object?>.from(widget.event.content),
+      isWeb: kIsWeb,
+    );
+    if (blockReason != null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(blockReason)),
+        );
+      }
+      return;
+    }
+
+    if (mounted) setState(() => _failed = false);
+    try {
+      final file = await widget.event.downloadAndDecryptAttachment();
+      _putDecryptedCache(widget.event.eventId, file.bytes);
+      if (mounted) setState(() => _bytes = file.bytes);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _failed = true);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось безопасно загрузить аудио')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -195,7 +272,7 @@ class _AttachmentMediaState extends State<_AttachmentMedia> with AutomaticKeepAl
     final h = widget.height ?? (widget.isVideo ? 150.0 : 54.0);
 
     if (_failed) {
-      return Container(
+      final placeholder = Container(
         width: w,
         height: h,
         decoration: BoxDecoration(
@@ -203,7 +280,15 @@ class _AttachmentMediaState extends State<_AttachmentMedia> with AutomaticKeepAl
           borderRadius: BorderRadius.circular(8),
         ),
         alignment: Alignment.center,
-        child: const Icon(Icons.error_outline, color: Color(0xFFCF6679)),
+        child: Icon(
+          widget.isVideo ? Icons.play_circle_outline : Icons.download_outlined,
+          color: OrexColors.copper,
+          size: widget.isVideo ? 36 : 24,
+        ),
+      );
+      return GestureDetector(
+        onTap: widget.isVideo ? _openGallery : _loadAudioOnDemand,
+        child: placeholder,
       );
     }
     if (_bytes == null) {
@@ -266,6 +351,19 @@ class _FileTileState extends State<_FileTile> {
 
   Future<void> _download() async {
     if (_downloading) return;
+    final blockReason = OrexIncomingMediaPolicy.manualDownloadBlockReason(
+      Map<String, Object?>.from(widget.event.content),
+      isWeb: kIsWeb,
+    );
+    if (blockReason != null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(blockReason)),
+        );
+      }
+      return;
+    }
+
     setState(() => _downloading = true);
     try {
       final file = await widget.event.downloadAndDecryptAttachment();
@@ -273,10 +371,10 @@ class _FileTileState extends State<_FileTile> {
           widget.event.content.tryGet<String>('body') ??
           widget.body;
       await FileHelper.saveAndOpenFile(filename, file.bytes);
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось открыть файл: $e')),
+          const SnackBar(content: Text('Не удалось безопасно открыть файл')),
         );
       }
     } finally {

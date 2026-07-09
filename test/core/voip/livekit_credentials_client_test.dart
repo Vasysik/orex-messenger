@@ -93,6 +93,20 @@ void main() {
       );
     });
 
+    test('rejects LiveKit host outside explicit allowlist', () {
+      expect(
+        () => OrexLiveKitCredentialsClient.parseResponse(
+          statusCode: 200,
+          body: jsonEncode({
+            'url': 'wss://evil.example.org',
+            'jwt': _jwt(canPublish: false),
+          }),
+          allowedHosts: const {'livekit.example.org'},
+        ),
+        throwsStateError,
+      );
+    });
+
     test('rejects insecure or malformed LiveKit URLs', () {
       expect(
         () => OrexLiveKitCredentialsClient.parseResponse(

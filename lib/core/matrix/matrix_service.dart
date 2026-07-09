@@ -93,8 +93,9 @@ class MatrixService extends ChangeNotifier {
   late final MatrixVoicePermissionsService voicePermissions =
       MatrixVoicePermissionsService(this);
 
-  /// Локально отслеживаемая версия бэкапа на сервере.
-  /// null означает, что бэкап на сервере отсутствует или недоступен.
+  /// Локально отслеживаемая подтверждённая версия бэкапа на сервере.
+  /// null означает подтверждённое отсутствие/отключение; транспортная ошибка
+  /// не стирает ранее известное состояние и оставляет проверку на retry.
   String? _serverBackupVersion;
   String? get serverBackupVersion => _serverBackupVersion;
 

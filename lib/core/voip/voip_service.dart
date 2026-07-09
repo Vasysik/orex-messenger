@@ -11,6 +11,7 @@ import 'package:webrtc_interface/webrtc_interface.dart';
 import '../config/orex_config.dart';
 import '../logging/orex_logger.dart';
 import 'call_ring_targets.dart';
+import 'livekit_e2ee_key_provider.dart';
 
 enum OrexRemoteCallTerminationReason { ended, rejected, busy }
 
@@ -38,6 +39,9 @@ class OrexRemoteCallTermination {
 /// шифрование медиапотока зависит от конфигурации LiveKit/key-provider в
 /// [CallSession]. Это нужно держать отдельным security-инвариантом.
 class VoipService extends ChangeNotifier {
+  final OrexLiveKitE2eeKeyProvider e2eeKeyProvider =
+      OrexLiveKitE2eeKeyProvider();
+
   VoipService(this.client) {
     voip = VoIP(client, _OrexCallDelegate(this));
     // Входящие ловим СКАНИРОВАНИЕМ комнат на каждом sync (надёжнее, чем
@@ -769,9 +773,9 @@ class VoipService extends ChangeNotifier {
     final backend = LiveKitBackend(
       livekitServiceUrl: OrexConfig.jwtServiceUri.toString(),
       livekitAlias: roomId,
-      // Orex does not provide a MatrixRTC/LiveKit media key provider yet, so
-      // calls must not be advertised as media-E2EE capable.
-      e2eeEnabled: false,
+      // MatrixRTC distributes the same per-participant keys consumed by the
+      // LiveKit BaseKeyProvider in CallSession.
+      e2eeEnabled: true,
     );
 
     final gc = await voip.fetchOrCreateGroupCall(
@@ -780,7 +784,7 @@ class VoipService extends ChangeNotifier {
       backend,
       'm.call',
       'm.room',
-      preShareKey: false,
+      preShareKey: true,
     );
 
     try {
@@ -960,9 +964,9 @@ class _OrexCallDelegate implements WebRTCDelegate {
   @override
   bool get canHandleNewCall => service.active == null;
 
-  /// E2EE звонка пока выключено — ключей не предоставляем.
+  /// MatrixRTC key signaling and LiveKit frame crypto share one provider.
   @override
-  EncryptionKeyProvider? get keyProvider => null;
+  EncryptionKeyProvider get keyProvider => service.e2eeKeyProvider;
 
   @override
   Future<void> playRingtone() async {}

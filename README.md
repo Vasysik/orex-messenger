@@ -9,8 +9,9 @@
 Orex сейчас находится в стадии **cross-platform alpha / dogfood и hardening
 версии 0.4.0**: это уже собираемый продукт с quality gate, системными Android-
 звонками и killed-process push flow, но ещё не публичный security-oriented релиз.
-Media E2EE звонков и полностью устойчивый active-call background lifecycle пока
-не заявляются как готовые.
+Код звонков теперь включает media E2EE через MatrixRTC-backed key exchange и
+LiveKit frame encryption; до публичного заявления остаются обязательные
+cross-platform release-тесты и hardening active-call background lifecycle.
 
 ## 1. Продуктовый фокус
 
@@ -55,9 +56,10 @@ Flutter-запуск и авторизация используют единый
 - Windows/Linux desktop cache открывается через SQLCipher-backed FFI database и
   проверяет `PRAGMA cipher_version` перед использованием.
 
-Важно: E2EE сообщений не означает автоматическое E2EE для звонков или
-зашифрованный desktop-кэш на каждой платформе. Эти границы в Orex описаны
-явно, чтобы продукт не обещал больше, чем реально обеспечивает.
+Важно: E2EE сообщений и media E2EE звонков — разные криптографические слои.
+Orex включает их отдельно и не считает transport encryption заменой media E2EE.
+Desktop-кэш также защищается отдельным SQLCipher-backed слоем. Границы каждого
+механизма описаны явно, чтобы продукт не обещал больше, чем реально проверено.
 
 ## 3. Чаты и навигация
 
@@ -225,25 +227,27 @@ LiveKit JWT берётся через `lk-jwt-service` по legacy-compatible к
 `POST /sfu/get`. В этот endpoint нельзя отправлять `requested_livekit_grants`:
 совместимые backend-ы отклоняют неизвестные поля с HTTP 400.
 
-## 8. Честный статус E2EE звонков
+## 8. Media E2EE звонков
 
-LiveKit transport защищает соединение на транспортном уровне, но это не то же
-самое, что media E2EE. Настоящее media E2EE требует ключа, который известен
-только участникам звонка и подключается в `livekit_client` через
-`RoomOptions(encryption: E2EEOptions(...))`.
+Звонки Orex теперь подключают LiveKit frame encryption через
+`RoomOptions(encryption: E2EEOptions(...))`. Ключи не берутся из LiveKit URL,
+JWT или room id: один `BaseKeyProvider` используется одновременно MatrixRTC-
+signaling слоем и LiveKit media layer.
 
-Сейчас Orex не включает media E2EE для звонков, потому что ещё не построен
-надёжный key-management:
+MatrixRTC передаёт и запрашивает SFU-ключи через E2EE to-device события Matrix,
+а LiveKit шифрует audio/video/data frames теми же participant keys. Перед входом
+в медиа-комнату включён `preShareKey`, чтобы ключи были подготовлены до media
+connect. Если key provider недоступен, звонок завершается ошибкой, а не
+откатывается в plaintext.
 
-- нужно получить общий call key не от LiveKit/SFU;
-- нужно передать или согласовать его через Matrix E2EE-состояние комнаты;
-- нужно включить LiveKit E2EE только когда все участники умеют его использовать;
-- нужно обработать ротацию ключей, reconnect и join позднего участника;
-- нужно протестировать Web, Android и Windows отдельно.
+На Web обязателен version-matched `e2ee.worker.dart.js`. CI собирает worker из
+того же тега `livekit_client`, который зафиксирован в `pubspec.yaml`, и Web
+release не проходит security contract без этого файла.
 
-Поэтому Orex честно говорит: **сообщения — E2EE; звонки — пока не заявляются как
-media E2EE**. Это не финальная цель, а безопасная формулировка для текущей
-ветки `0.4.0+25`.
+Это не снимает оставшиеся release-требования: нужно прогнать реальные
+Android ↔ Windows ↔ Web звонки, late join, reconnect и key rotation. Server-side
+проверка ролей/voice grants в `/sfu/get` пока отдельно не реализована и не
+смешивается с media E2EE.
 
 ## 9. Локальное хранение
 
@@ -295,10 +299,13 @@ test/
 
 ## 11. Сборки и релизные артефакты
 
-Подробная инструкция по Android/Windows release-сборкам, ключам подписи и
-desktop storage лежит здесь:
+Release-инструкции разделены по платформам:
 
-[docs/release-builds.md](docs/release-builds.md)
+- [Android](docs/release-android.md)
+- [Windows](docs/release-windows.md)
+- [Web](docs/release-web.md)
+
+Общий индекс: [docs/release-builds.md](docs/release-builds.md)
 
 Короткий локальный quality gate перед release candidate:
 
@@ -521,7 +528,8 @@ killed-process resolution. Нельзя делать отдельную лока
 
 ### 12.8. Production security после первой публичной ветки
 
-* Media E2EE для звонков через LiveKit `E2EEOptions` и Matrix-backed call keys.
+* Cross-platform hardening media E2EE: late join, reconnect, key rotation и
+  совместимость Android ↔ Windows ↔ Web в release-сборках.
 * Server-side Orex authorization gateway для LiveKit token grants и настоящего
   enforcement voice permissions.
 * Дальнейшее сокращение plaintext-следов локального media cache и временных

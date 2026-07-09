@@ -1,7 +1,9 @@
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 import '../../core/files/file_helper.dart';
+import '../../core/media/incoming_media_policy.dart';
 import '../theme/orex_theme.dart';
 import 'media_player.dart';
 import 'orex_dialogs.dart';
@@ -75,9 +77,9 @@ class _MediaGalleryDialogState extends State<MediaGalleryDialog> {
         }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Ошибка удаления: $e')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Не удалось удалить сообщение')),
+          );
         }
       }
     }
@@ -195,6 +197,18 @@ class _MediaGalleryDialogState extends State<MediaGalleryDialog> {
 
   Future<void> _downloadCurrent() async {
     final event = _mediaEvents[_currentIndex];
+    final blockReason = OrexIncomingMediaPolicy.manualDownloadBlockReason(
+      Map<String, Object?>.from(event.content),
+      isWeb: kIsWeb,
+    );
+    if (blockReason != null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(blockReason)),
+        );
+      }
+      return;
+    }
     try {
       final file = await event.downloadAndDecryptAttachment();
       final filename =
@@ -202,11 +216,11 @@ class _MediaGalleryDialogState extends State<MediaGalleryDialog> {
           event.content.tryGet<String>('body') ??
           'file';
       await FileHelper.saveAndOpenFile(filename, file.bytes);
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Ошибка скачивания: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось безопасно скачать медиафайл')),
+        );
       }
     }
   }
@@ -234,6 +248,14 @@ class _GalleryItemState extends State<_GalleryItem> {
   }
 
   Future<void> _load() async {
+    final blockReason = OrexIncomingMediaPolicy.manualDownloadBlockReason(
+      Map<String, Object?>.from(widget.event.content),
+      isWeb: kIsWeb,
+    );
+    if (blockReason != null) {
+      if (mounted) setState(() => _failed = true);
+      return;
+    }
     try {
       final file = await widget.event.downloadAndDecryptAttachment();
       if (mounted) setState(() => _bytes = file.bytes);

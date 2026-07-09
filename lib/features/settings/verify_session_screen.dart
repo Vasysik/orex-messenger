@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/logging/orex_logger.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
@@ -45,7 +46,8 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
       );
       if (mounted) Navigator.of(context).maybePop();
     } catch (e) {
-      if (mounted) setState(() => _error = '$e');
+      OrexLog.d('Security', 'verification request failed', e);
+      if (mounted) setState(() => _error = 'Не удалось начать проверку сессии');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -74,9 +76,10 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
       ).showSnackBar(const SnackBar(content: Text('Сессия подтверждена')));
       Navigator.of(context).maybePop();
     } catch (e) {
+      OrexLog.d('Security', 'recovery-key verification failed', e);
       if (mounted) {
         setState(
-          () => _error = 'Не удалось: проверьте ключ восстановления.\n$e',
+          () => _error = 'Не удалось: проверьте ключ восстановления.',
         );
       }
     } finally {
@@ -107,7 +110,8 @@ class _VerifySessionScreenState extends State<VerifySessionScreen> {
       await _showRecoveryKey(recoveryKey);
       if (mounted) Navigator.of(context).maybePop();
     } catch (e) {
-      if (mounted) setState(() => _error = '$e');
+      OrexLog.d('Security', 'security bootstrap failed', e);
+      if (mounted) setState(() => _error = 'Не удалось настроить защиту');
     } finally {
       if (mounted) setState(() => _busy = false);
     }

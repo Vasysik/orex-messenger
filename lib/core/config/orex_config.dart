@@ -183,6 +183,9 @@ class OrexConfig {
     'OREX_ALLOW_INSECURE_DESKTOP_CACHE',
     defaultValue: false,
   );
+  static const _liveKitAllowedHosts = String.fromEnvironment(
+    'OREX_LIVEKIT_ALLOWED_HOSTS',
+  );
 
   static final OrexRuntimeConfig current = OrexRuntimeConfig.fromDefines(
     environmentName: _environmentName,
@@ -220,7 +223,40 @@ class OrexConfig {
   static bool get allowInsecureDesktopCache =>
       current.allowInsecureDesktopCache;
 
-  // LiveKit (wss://lk.vasys.ru) бэкенд возвращает сам через lk-jwt-service.
+  static const _productionLiveKitHost = 'lk.vasys.ru';
+
+  /// LiveKit endpoint returned by lk-jwt-service is accepted only from this
+  /// explicit host set. Dev/staging must opt in with a dart-define.
+  static Set<String> get liveKitAllowedHosts {
+    final raw = _liveKitAllowedHosts.trim();
+    if (raw.isEmpty) {
+      if (!environment.isProduction) {
+        throw StateError(
+          'OREX_LIVEKIT_ALLOWED_HOSTS is required when OREX_ENV is not production',
+        );
+      }
+      return const {_productionLiveKitHost};
+    }
+
+    final hosts = raw
+        .split(',')
+        .map((value) => value.trim().toLowerCase())
+        .where((value) => value.isNotEmpty)
+        .toSet();
+    if (hosts.isEmpty ||
+        hosts.any(
+          (host) =>
+              host.contains('/') ||
+              host.contains(':') ||
+              host.contains('@') ||
+              Uri.tryParse('https://$host')?.host != host,
+        )) {
+      throw StateError(
+        'OREX_LIVEKIT_ALLOWED_HOSTS must be a comma-separated host list',
+      );
+    }
+    return Set.unmodifiable(hosts);
+  }
 
   /// Базовый адрес Element Call.
   ///
@@ -237,5 +273,8 @@ class OrexConfig {
   static String get homeserverHost => current.homeserverHost;
 
   /// Быстрая проверка security-инвариантов конфигурации на старте.
-  static void validateSecurity() => current.validateSecurity();
+  static void validateSecurity() {
+    current.validateSecurity();
+    liveKitAllowedHosts;
+  }
 }

@@ -70,7 +70,7 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
       OrexLog.d('RoomSettings', 'action failed room=${widget.room.id}', e);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось выполнить действие: $e')),
+          const SnackBar(content: Text('Не удалось выполнить действие')),
         );
       }
     } finally {
@@ -141,7 +141,7 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
       OrexLog.d('RoomSettings', 'action failed room=${widget.room.id}', e);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось обновить аватар: $e')),
+          const SnackBar(content: Text('Не удалось обновить аватар')),
         );
       }
     } finally {
@@ -250,15 +250,16 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
   Future<void> _deleteForEveryone() async {
     final ok = await showOrexConfirmDialog(
       context,
-      title: 'Удалить для всех?',
+      title: 'Закрыть комнату?',
       message:
-          'Владелец выйдет из комнаты, остальные участники будут удалены. '
-          'Для супергруппы это также затронет её чаты.',
-      confirmLabel: 'Удалить',
+          'Доступ будет закрыт, участники удалены, а владелец выйдет из комнаты. '
+          'Серверная история Matrix физически не стирается. Для супергруппы '
+          'это также затронет её чаты.',
+      confirmLabel: 'Закрыть',
       danger: true,
     );
     if (!ok) return;
-    await _guard(() => widget.matrix.deleteRoomForEveryone(widget.room));
+    await _guard(() => widget.matrix.closeRoomForEveryone(widget.room));
     if (mounted) Navigator.pop(context);
   }
 

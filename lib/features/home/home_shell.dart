@@ -209,9 +209,9 @@ class _HomeShellState extends State<HomeShell> {
     } catch (e) {
       OrexLog.d('Home', 'create room failed kind=$kind name=${config.name}', e);
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Не удалось создать: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось создать комнату')),
+        );
       }
     } finally {
       if (mounted) setState(() => _creatingRoom = false);
@@ -339,7 +339,7 @@ class _HomeShellState extends State<HomeShell> {
       OrexLog.d('Home', 'open room reference failed ref=$ref', e);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось открыть приглашение: $e')),
+        const SnackBar(content: Text('Не удалось открыть приглашение')),
       );
     }
   }

@@ -221,8 +221,8 @@ class _DangerZone extends StatelessWidget {
       children: [
         OrexSettingsTile(
           icon: Icons.delete_forever,
-          title: 'Удалить для всех',
-          subtitle: 'Доступно владельцу комнаты',
+          title: 'Закрыть для участников',
+          subtitle: 'Закрывает доступ; серверная история не стирается',
           danger: true,
           onTap: onDeleteForEveryone,
         ),

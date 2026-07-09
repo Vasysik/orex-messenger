@@ -2,6 +2,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 
+import '../../core/logging/orex_logger.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../core/config/app_version.dart';
 import '../../shared/theme/glass.dart';
@@ -117,11 +118,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         await _showNewRecoveryKey(newKey);
       }
     } catch (e) {
+      OrexLog.d('Settings', 'security reset failed', e);
       if (mounted) {
         Navigator.pop(context); // закрываем индикатор
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Ошибка сброса: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось сбросить защиту')),
+        );
       }
     }
   }
@@ -221,11 +223,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ).showSnackBar(const SnackBar(content: Text('Пароль изменён успешно')));
       }
     } catch (e) {
+      OrexLog.d('Settings', 'password change failed', e);
       if (mounted) {
         Navigator.pop(context); // закрываем индикатор
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Ошибка смены пароля: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось изменить пароль')),
+        );
       }
     }
   }

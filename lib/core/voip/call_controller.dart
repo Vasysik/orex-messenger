@@ -563,6 +563,7 @@ class CallController extends ChangeNotifier {
           matrix.audio.speakingThresholdEnabled,
       callMicPreferenceSink: (enabled) =>
           matrix.audio.setCallMicEnabled(enabled),
+      e2eeKeyProvider: matrix.voip?.e2eeKeyProvider.liveKit,
     );
     focusedParticipantIdentity = null;
     _session = s;

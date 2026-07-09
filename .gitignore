@@ -43,15 +43,9 @@ windows/**/x86/
 windows/**/arm64/
 
 # --- Web: храним платформенную конфигурацию ---
-# web/index.html
-# web/manifest.json
-# web/icons/
-# web/favicon.png
-# и другие web-исходники должны попадать в Git.
-#
-# Игнорируем только генерируемые локальные артефакты, если появятся.
-/web/.dart_tool/
-/web/build/
+web/.dart_tool/
+web/build/
+web/e2ee.worker.dart.js*
 
 # --- Пока не храним эти платформы ---
 /ios/

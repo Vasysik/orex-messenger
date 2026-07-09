@@ -39,6 +39,7 @@ class CallSession extends ChangeNotifier {
     this.speakingThresholdDbProvider,
     this.speakingThresholdEnabledProvider,
     this.callMicPreferenceSink,
+    this.e2eeKeyProvider,
     OrexLiveKitCredentialsClient? credentialsClient,
   }) : _credentialsClient =
            credentialsClient ?? const OrexLiveKitCredentialsClient() {
@@ -71,6 +72,7 @@ class CallSession extends ChangeNotifier {
   final double Function()? speakingThresholdDbProvider;
   final bool Function()? speakingThresholdEnabledProvider;
   final FutureOr<void> Function(bool enabled)? callMicPreferenceSink;
+  final Future<lk.BaseKeyProvider>? e2eeKeyProvider;
   final OrexLiveKitCredentialsClient _credentialsClient;
 
   CallStatus status = CallStatus.connecting;
@@ -130,8 +132,17 @@ class CallSession extends ChangeNotifier {
     notifyListeners();
     try {
       final creds = await _fetchCredentials();
+      final providerFuture = e2eeKeyProvider;
+      if (providerFuture == null) {
+        throw StateError('Media E2EE key provider is unavailable');
+      }
+      final provider = await providerFuture;
       final room = lk.Room(
-        roomOptions: const lk.RoomOptions(adaptiveStream: true, dynacast: true),
+        roomOptions: lk.RoomOptions(
+          adaptiveStream: true,
+          dynacast: true,
+          encryption: lk.E2EEOptions(keyProvider: provider),
+        ),
       );
       await room.prepareConnection(creds.url, creds.jwt);
       await room.connect(creds.url, creds.jwt);
@@ -149,7 +160,8 @@ class CallSession extends ChangeNotifier {
             cameraCaptureOptions: _camera.captureOptions(),
           );
         } catch (e) {
-          cameraError = '$e';
+          OrexLog.d('Call', 'initial camera start failed room=$matrixRoomId', e);
+          cameraError = 'Камера недоступна';
         }
       }
 
@@ -165,7 +177,8 @@ class CallSession extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       if (_disposed) return;
-      error = '$e';
+      OrexLog.d('Call', 'secure media connect failed room=$matrixRoomId', e);
+      error = 'Не удалось подключиться к защищённому звонку';
       status = CallStatus.failed;
       notifyListeners();
     }
@@ -372,7 +385,8 @@ class CallSession extends ChangeNotifier {
         audioCaptureOptions: _audioCaptureOptions(),
       );
     } catch (e) {
-      error = 'Не удалось восстановить микрофон: $e';
+      OrexLog.d('Call', 'microphone recovery failed room=$matrixRoomId', e);
+      error = 'Не удалось восстановить микрофон';
     }
     await _voiceGate.sync();
   }
@@ -492,7 +506,8 @@ class CallSession extends ChangeNotifier {
     try {
       await _voiceStates.publishLocal();
     } catch (e) {
-      error = 'Не удалось обновить состояние голосового канала: $e';
+      OrexLog.d('Call', 'voice participant state publish failed', e);
+      error = 'Не удалось обновить состояние голосового канала';
       // Voice participant state is UX-only; failed state publish must not break
       // the media session.
     }
@@ -514,7 +529,8 @@ class CallSession extends ChangeNotifier {
       );
       cameraError = null;
     } catch (e) {
-      cameraError = '$e';
+      OrexLog.d('Call', 'camera toggle failed room=$matrixRoomId', e);
+      cameraError = 'Камера недоступна';
     }
     if (!_disposed) notifyListeners();
   }

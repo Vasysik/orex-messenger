@@ -64,7 +64,7 @@ final class OrexScreenShareController {
           ? ' для "${sourceName!.trim()}"'
           : '';
       return OrexScreenShareResult(
-        error: 'Не удалось включить трансляцию экрана$sourcePart: $e',
+        error: 'Не удалось включить трансляцию экрана$sourcePart',
       );
     } finally {
       isBusy = false;

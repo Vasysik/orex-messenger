@@ -32,6 +32,9 @@ final class OrexLiveKitCredentialsClient {
     required bool canPublishMedia,
     required bool listenOnly,
   }) async {
+    // Role grants are intentionally not client-selected. The legacy /sfu/get
+    // contract currently authorizes only room access; server-side role
+    // enforcement for canPublishMedia/listenOnly is a separate future feature.
     final userId = client.userID!;
     final openId = await client.requestOpenIdToken(userId, <String, Object?>{});
     final httpPost = post ?? http.post;
@@ -50,7 +53,11 @@ final class OrexLiveKitCredentialsClient {
       ),
     ).timeout(const Duration(seconds: 12));
 
-    return parseResponse(statusCode: response.statusCode, body: response.body);
+    return parseResponse(
+      statusCode: response.statusCode,
+      body: response.body,
+      allowedHosts: OrexConfig.liveKitAllowedHosts,
+    );
   }
 
   static Map<String, Object?> legacySfuGetRequestBody({
@@ -93,6 +100,7 @@ final class OrexLiveKitCredentialsClient {
   static OrexLiveKitCredentials parseResponse({
     required int statusCode,
     required String body,
+    Set<String>? allowedHosts,
   }) {
     if (statusCode != 200) {
       throw Exception('lk-jwt-service $statusCode${safeErrorDetails(body)}');
@@ -107,8 +115,16 @@ final class OrexLiveKitCredentialsClient {
     final uri = Uri.tryParse(url);
     if (uri == null ||
         uri.host.isEmpty ||
-        (uri.scheme != 'wss' && uri.scheme != 'https')) {
-      throw StateError('LiveKit URL должен быть wss:// или https://');
+        (uri.scheme != 'wss' && uri.scheme != 'https') ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasFragment) {
+      throw StateError('LiveKit URL должен быть безопасным wss:// или https://');
+    }
+    final normalizedHost = uri.host.toLowerCase();
+    if (allowedHosts != null &&
+        allowedHosts.isNotEmpty &&
+        !allowedHosts.map((host) => host.toLowerCase()).contains(normalizedHost)) {
+      throw StateError('LiveKit host не входит в разрешённый список');
     }
     return OrexLiveKitCredentials(url: url, jwt: jwt);
   }
