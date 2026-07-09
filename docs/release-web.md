@@ -71,4 +71,43 @@ build\web
 
 ## Web smoke
 
-Перед публикацией проверьте login/restore session, E2EE сообщения и вложения, большие входящие файлы, Android ↔ Windows ↔ Web media-E2EE звонок, late join и reconnect. Полный deployment gate: [web-deployment-security.md](web-deployment-security.md).
+Перед публикацией проверьте login/restore session, E2EE сообщения и вложения, большие входящие файлы, Android ↔ Windows ↔ Web media-E2EE звонок, late join и reconnect.
+
+## Деплой на `https://orex.vasys.ru/` через Traefik
+
+В репозитории есть готовый `docker-compose.web.yml`. Он публикует содержимое
+`build/web` через nginx в существующую внешнюю сеть `traefik-proxy`. BasicAuth
+не включён: сайт доступен публично, а доступ к Matrix-аккаунту по-прежнему
+требует обычную Matrix-аутентификацию.
+
+Сначала соберите production Web:
+
+```powershell
+flutter build web --release --no-pub --no-web-resources-cdn `
+  --dart-define=OREX_ENV=production `
+  --dart-define=OREX_DEBUG_LOGS=false
+```
+
+Затем на сервере из корня проекта:
+
+```bash
+docker compose -f docker-compose.web.yml up -d
+```
+
+Обновление после новой сборки:
+
+```bash
+docker compose -f docker-compose.web.yml restart orex-web
+```
+
+Проверка реальных заголовков после запуска:
+
+```bash
+curl -I https://orex.vasys.ru/
+```
+
+В ответе должны быть CSP, HSTS, `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, Permissions Policy и
+`Cache-Control: no-cache`. Файл `web/_headers` остаётся декларацией тех же
+требований для хостингов, которые умеют читать этот формат; при Traefik
+заголовки реально выставляет middleware из `docker-compose.web.yml`.

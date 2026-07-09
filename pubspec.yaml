@@ -14,45 +14,45 @@ dependencies:
     sdk: flutter
 
   # Matrix Dart SDK (Famedly)
-  matrix: ^7.2.0
+  matrix: 7.4.0
   # E2EE (vodozemac заменил olm). Совместим с matrix 7.x:
-  flutter_vodozemac: ^0.5.0
+  flutter_vodozemac: 0.5.0
 
   # LiveKit (нативные звонки в Orex UI поверх lk-jwt-service)
   # Must match the E2EE worker source ref used by CI.
   livekit_client: 2.9.0-dev.0
   # WebRTC-примитивы для WebRTCDelegate модуля VoIP (MatrixRTC-сигналинг).
-  flutter_webrtc: ^1.5.2
+  flutter_webrtc: 1.5.2
 
   # Короткие звуки уведомлений, входящих вызовов и голосовых каналов.
-  audioplayers: ^6.1.0
-  record: ^7.1.1          # быстрый тест микрофона/амплитуда dBFS
-  webrtc_interface: ^1.5.0   # типы MediaDevices/RTCPeerConnection для делегата
+  audioplayers: 6.8.1
+  record: 7.1.1 # быстрый тест микрофона/амплитуда dBFS
+  webrtc_interface: 1.5.1 # типы MediaDevices/RTCPeerConnection для делегата
 
   # Сеть/утилиты
-  http: ^1.2.0
-  path: ^1.9.0
-  file_picker: ^8.0.0        # выбор аватара
-  shared_preferences: ^2.2.0 # сохранение темы
-  package_info_plus: ^8.0.0 # версия/сборка из pubspec/platform bundle
-  desktop_drop: ^0.5.0       # Drag-and-drop файлов
-  open_app_file: ^4.0.4    # Открытие файлов на Android/Windows
+  http: 1.6.0
+  path: 1.9.1
+  file_picker: 8.3.7 # выбор аватара
+  shared_preferences: 2.5.5 # сохранение темы
+  package_info_plus: 8.3.1 # версия/сборка из pubspec/platform bundle
+  desktop_drop: 0.5.0 # Drag-and-drop файлов
+  open_app_file: 4.0.5 # Открытие файлов на Android/Windows
 
   # Локальный кэш для «мгновенного» старта.
-  path_provider: ^2.1.0
-  sqflite_sqlcipher: ^3.4.0
-  flutter_secure_storage: ^9.2.2
+  path_provider: 2.1.6
+  sqflite_sqlcipher: 3.4.0
+  flutter_secure_storage: 9.2.4
   sqlcipher_flutter_libs: 0.6.8
-  sqlite3: ^2.9.4
-  sqflite: ^2.3.0
-  sqflite_common_ffi: ^2.3.0
-  web: ^1.1.1
+  sqlite3: 2.9.4
+  sqflite: 2.4.3
+  sqflite_common_ffi: 2.3.7+1
+  web: 1.1.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^6.0.0
-  flutter_launcher_icons: ^0.14.0
+  flutter_lints: 6.0.0
+  flutter_launcher_icons: 0.14.4
 
 # Генерация иконок приложения из assets/icon/app_icon.png:
 #   dart run flutter_launcher_icons
