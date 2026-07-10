@@ -358,7 +358,10 @@ object OrexNotificationCenter {
             .setWhen(startedAt)
             .setShowWhen(true)
             .setUsesChronometer(true)
-            .setStyle(NotificationCompat.CallStyle.forOngoingCall(person, hangUp))
+            // CallStyle owns the compact action row and OEM SystemUI commonly
+            // drops custom actions. The foreground-service notification uses a
+            // normal call-category card so mic, audio and hang-up are always
+            // explicit and the notification is valid before startForeground().
             .addAction(
                 R.drawable.ic_stat_orex,
                 if (micEnabled) "Микрофон выкл." else "Микрофон вкл.",
@@ -368,6 +371,11 @@ object OrexNotificationCenter {
                 R.drawable.ic_stat_orex,
                 if (audioEnabled) "Звук выкл." else "Звук вкл.",
                 toggleAudio,
+            )
+            .addAction(
+                R.drawable.ic_stat_orex,
+                "Завершить",
+                hangUp,
             )
             .build()
     }
@@ -500,83 +508,125 @@ object OrexNotificationCenter {
         avatarCacheKey: String? = null,
     ): Notification {
         val channelId = if (incoming) INCOMING_CALL_CHANNEL_ID else ONGOING_CALL_CHANNEL_ID
-        val builder = callBuilder(context, channelId)
-            .setSmallIcon(R.drawable.ic_stat_orex)
-            .setColor(context.getColor(R.color.orex_launch_icon_background))
-            .setContentTitle(displayName)
-            .setContentText(
-                if (incoming) "Входящий звонок" else ongoingCallStatus(micEnabled, audioEnabled),
-            )
-            .setContentIntent(openApp)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setOngoing(true)
-            .setAutoCancel(false)
-            .setOnlyAlertOnce(true)
-        val avatar = OrexAvatarCache.load(context, avatarCacheKey)
-        if (avatar != null) builder.setLargeIcon(avatar)
-
-        if (!incoming && startedAt != null) {
-            builder
-                .setWhen(startedAt)
-                .setShowWhen(true)
-                .setUsesChronometer(true)
+        val effectiveFullScreen = fullScreen?.takeIf {
+            incoming && canUseFullScreenIntent(context)
         }
-        if (timeoutAfterMs != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            builder.setTimeoutAfter(timeoutAfterMs.coerceAtLeast(1_000L))
-        }
-
-        if (incoming && fullScreen != null && canUseFullScreenIntent(context)) {
-            builder.setFullScreenIntent(fullScreen, true)
-        }
-
+        val canAttachFullScreen = effectiveFullScreen != null
         val person = CompatPerson.Builder()
             .setName(displayName)
             .setImportant(true)
             .build()
-        builder.addPerson(person)
-        if (incoming) {
-            builder.setStyle(
-                NotificationCompat.CallStyle.forIncomingCall(person, decline, answer),
-            )
-        } else {
-            val disconnect = hangUp ?: decline
-            builder.setStyle(
-                NotificationCompat.CallStyle.forOngoingCall(person, disconnect),
-            )
-            if (toggleMic != null) {
-                builder.addAction(
-                    R.drawable.ic_stat_orex,
-                    if (micEnabled) "Микрофон выкл." else "Микрофон вкл.",
-                    toggleMic,
-                )
-            }
-            if (toggleAudio != null) {
-                builder.addAction(
-                    R.drawable.ic_stat_orex,
-                    if (audioEnabled) "Звук выкл." else "Звук вкл.",
-                    toggleAudio,
-                )
-            }
-        }
+        val avatar = OrexAvatarCache.load(context, avatarCacheKey)
 
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            builder.priority = if (incoming) {
-                NotificationCompat.PRIORITY_MAX
+        fun buildNotification(useCallStyle: Boolean): Notification {
+            val builder = callBuilder(context, channelId)
+                .setSmallIcon(R.drawable.ic_stat_orex)
+                .setColor(context.getColor(R.color.orex_launch_icon_background))
+                .setContentTitle(displayName)
+                .setContentText(
+                    if (incoming) "Входящий звонок"
+                    else ongoingCallStatus(micEnabled, audioEnabled),
+                )
+                .setContentIntent(openApp)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setOngoing(true)
+                .setAutoCancel(false)
+                .setOnlyAlertOnce(true)
+                .addPerson(person)
+            if (avatar != null) builder.setLargeIcon(avatar)
+
+            if (!incoming && startedAt != null) {
+                builder
+                    .setWhen(startedAt)
+                    .setShowWhen(true)
+                    .setUsesChronometer(true)
+            }
+            if (timeoutAfterMs != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                builder.setTimeoutAfter(timeoutAfterMs.coerceAtLeast(1_000L))
+            }
+            effectiveFullScreen?.let {
+                builder.setFullScreenIntent(it, true)
+            }
+
+            if (useCallStyle) {
+                if (incoming) {
+                    builder.setStyle(
+                        NotificationCompat.CallStyle.forIncomingCall(person, decline, answer),
+                    )
+                } else {
+                    builder.setStyle(
+                        NotificationCompat.CallStyle.forOngoingCall(person, hangUp ?: decline),
+                    )
+                }
+            } else if (incoming) {
+                builder
+                    .addAction(R.drawable.ic_stat_orex, "Отклонить", decline)
+                    .addAction(R.drawable.ic_stat_orex, "Ответить", answer)
             } else {
-                NotificationCompat.PRIORITY_DEFAULT
+                if (toggleMic != null) {
+                    builder.addAction(
+                        R.drawable.ic_stat_orex,
+                        if (micEnabled) "Микрофон выкл." else "Микрофон вкл.",
+                        toggleMic,
+                    )
+                }
+                if (toggleAudio != null) {
+                    builder.addAction(
+                        R.drawable.ic_stat_orex,
+                        if (audioEnabled) "Звук выкл." else "Звук вкл.",
+                        toggleAudio,
+                    )
+                }
+                builder.addAction(
+                    R.drawable.ic_stat_orex,
+                    "Завершить",
+                    hangUp ?: decline,
+                )
+            }
+
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                builder.priority = if (incoming) {
+                    NotificationCompat.PRIORITY_MAX
+                } else {
+                    NotificationCompat.PRIORITY_DEFAULT
+                }
+            }
+
+            return builder.build().apply {
+                if (incoming && alert) flags = flags or Notification.FLAG_INSISTENT
             }
         }
 
-        val notification = builder.build().apply {
-            if (incoming && alert) flags = flags or Notification.FLAG_INSISTENT
-        }
+        // Android 12+ accepts CallStyle only when the post is backed by a
+        // foreground service/user-initiated job or by a real full-screen call
+        // intent. FCM and early Telecom presentation run before our call service,
+        // so use CallStyle only for the full-screen incoming path.
+        val preferCallStyle = incoming && canAttachFullScreen
+        var notification = buildNotification(preferCallStyle)
         val notificationId = if (incoming) {
             INCOMING_CALL_NOTIFICATION_ID
         } else {
             ONGOING_CALL_NOTIFICATION_ID
         }
-        notificationManager(context).notify(notificationId, notification)
+        val manager = notificationManager(context)
+        try {
+            manager.notify(notificationId, notification)
+        } catch (error: RuntimeException) {
+            if (preferCallStyle) {
+                Log.w(TAG, "CallStyle rejected; retrying standard call notification", error)
+                notification = buildNotification(useCallStyle = false)
+                try {
+                    manager.notify(notificationId, notification)
+                } catch (fallbackError: RuntimeException) {
+                    // A push/Telecom callback must never crash the process because
+                    // an OEM rejected a notification presentation detail.
+                    Log.e(TAG, "Failed to post fallback call notification", fallbackError)
+                }
+            } else {
+                Log.e(TAG, "Failed to post call notification", error)
+            }
+        }
         return notification
     }
 

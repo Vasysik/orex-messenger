@@ -963,6 +963,9 @@ class CallController extends ChangeNotifier {
       );
       return;
     }
+    if ((systemIncoming || recovering) && cameraInitiallyOn) {
+      await s.recoverCameraAfterColdAnswer();
+    }
   }
 
   Future<void> _failStart(

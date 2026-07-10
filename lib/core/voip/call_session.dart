@@ -26,6 +26,15 @@ bool orexShouldReconnectCallAfterBackground({
 }
 
 @visibleForTesting
+bool orexShouldRefreshPublishedMediaAfterBackground({
+  required lk.ConnectionState? connectionState,
+  required Duration backgroundDuration,
+}) {
+  return connectionState == lk.ConnectionState.connected &&
+      backgroundDuration >= const Duration(milliseconds: 750);
+}
+
+@visibleForTesting
 bool orexShouldPlayRemoteReactionCue({
   required bool knownParticipant,
   required int? previousTs,
@@ -137,6 +146,7 @@ class CallSession extends ChangeNotifier {
   Timer? _reconnectTimer;
   Future<void>? _reconnectInFlight;
   Future<void>? _keyRefreshInFlight;
+  Future<void>? _backgroundRecoveryInFlight;
   lk.EventsListener<lk.RoomEvent>? _roomEvents;
   int _reconnectAttempt = 0;
   bool _cameraRequestedOn = false;
@@ -374,21 +384,108 @@ class CallSession extends ChangeNotifier {
     if (_disposed || status == CallStatus.ended) return;
 
     final connectionState = _room?.connectionState;
-    if (!orexShouldReconnectCallAfterBackground(
+    if (orexShouldReconnectCallAfterBackground(
       connectionState: connectionState,
     )) {
+      OrexLog.d(
+        'Call',
+        'reconnecting media after background room=$matrixRoomId '
+            'duration=${backgroundDuration.inSeconds}s state=$connectionState',
+      );
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _markMediaReconnecting();
+      await _attemptFullReconnect();
       return;
     }
 
-    OrexLog.d(
-      'Call',
-      'refreshing media after background room=$matrixRoomId '
-          'duration=${backgroundDuration.inSeconds}s state=$connectionState',
-    );
-    _reconnectTimer?.cancel();
-    _reconnectTimer = null;
-    _markMediaReconnecting();
-    await _attemptFullReconnect();
+    if (!orexShouldRefreshPublishedMediaAfterBackground(
+      connectionState: connectionState,
+      backgroundDuration: backgroundDuration,
+    )) {
+      return;
+    }
+    await _recoverConnectedMediaAfterBackground(backgroundDuration);
+  }
+
+  Future<void> _recoverConnectedMediaAfterBackground(
+    Duration backgroundDuration,
+  ) {
+    final inFlight = _backgroundRecoveryInFlight;
+    if (inFlight != null) return inFlight;
+
+    late final Future<void> operation;
+    operation = (() async {
+      OrexLog.d(
+        'Call',
+        'rebuilding published media after background room=$matrixRoomId '
+            'duration=${backgroundDuration.inSeconds}s',
+      );
+      await _refreshRemoteEncryptionKeys();
+      if (_disposed || status == CallStatus.ended || !mediaTransportConnected) {
+        return;
+      }
+      await applyAudioOutput();
+      await _restartMicIfInputChanged(force: true);
+      if (_cameraRequestedOn && canPublishMedia) {
+        // Give Android one frame after lifecycle resume before reopening the
+        // camera. This avoids recreating the capturer while Activity visibility
+        // and while-in-use camera access are still being restored.
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        _applyCameraResult(
+          await _camera.recoverCapture(
+            participant: _room?.localParticipant,
+            canPublishMedia: canPublishMedia,
+          ),
+        );
+      }
+      await _voiceGate.sync();
+      _applySpeakerMute();
+      if (!_disposed) notifyListeners();
+    })().catchError((Object error, StackTrace stackTrace) {
+      OrexLog.d(
+        'Call',
+        'published media recovery after background failed room=$matrixRoomId',
+        error,
+      );
+    }).whenComplete(() {
+      if (identical(_backgroundRecoveryInFlight, operation)) {
+        _backgroundRecoveryInFlight = null;
+      }
+    });
+    _backgroundRecoveryInFlight = operation;
+    return operation;
+  }
+
+  /// Incoming video calls can be answered while Android is launching the app
+  /// from a notification. The initial LiveKit sender may be connected before
+  /// foreground camera access is usable, so rebuild it once the call UI/media
+  /// session is ready and after MatrixRTC keys have settled.
+  Future<void> recoverCameraAfterColdAnswer() async {
+    if (_disposed ||
+        status == CallStatus.ended ||
+        !_cameraRequestedOn ||
+        !canPublishMedia) {
+      return;
+    }
+    try {
+      await _refreshRemoteEncryptionKeys();
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+      if (_disposed || status == CallStatus.ended || !mediaTransportConnected) {
+        return;
+      }
+      _applyCameraResult(
+        await _camera.recoverCapture(
+          participant: _room?.localParticipant,
+          canPublishMedia: canPublishMedia,
+        ),
+      );
+      if (!_disposed) notifyListeners();
+    } catch (e) {
+      OrexLog.d('Call', 'cold-answer camera recovery failed room=$matrixRoomId', e);
+      cameraError = 'Камера недоступна';
+      if (!_disposed) notifyListeners();
+    }
   }
 
   Future<void> _restoreMediaState() async {

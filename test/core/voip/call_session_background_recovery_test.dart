@@ -31,6 +31,38 @@ void main() {
     });
   });
 
+  group('orexShouldRefreshPublishedMediaAfterBackground', () {
+    test('hard-refreshes a connected room after a real background pause', () {
+      expect(
+        orexShouldRefreshPublishedMediaAfterBackground(
+          connectionState: lk.ConnectionState.connected,
+          backgroundDuration: const Duration(seconds: 2),
+        ),
+        isTrue,
+      );
+    });
+
+    test('does not churn camera/mic for a transient lifecycle bounce', () {
+      expect(
+        orexShouldRefreshPublishedMediaAfterBackground(
+          connectionState: lk.ConnectionState.connected,
+          backgroundDuration: const Duration(milliseconds: 300),
+        ),
+        isFalse,
+      );
+    });
+
+    test('leaves disconnected rooms to the full reconnect path', () {
+      expect(
+        orexShouldRefreshPublishedMediaAfterBackground(
+          connectionState: lk.ConnectionState.reconnecting,
+          backgroundDuration: const Duration(seconds: 3),
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group('orexShouldPlayRemoteReactionCue', () {
     test('does not replay a reaction that predates the media session', () {
       expect(

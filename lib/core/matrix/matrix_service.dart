@@ -71,6 +71,10 @@ class MatrixService extends ChangeNotifier {
       KeyVerificationMethod.emoji,
       KeyVerificationMethod.numbers,
     },
+    // MatrixRTC logs raw media keys at INFO. Never enable SDK INFO/FINE in the
+    // application process; opt-in debug builds retain warnings, production and
+    // explicitly quiet debug runs emit only SDK errors.
+    logLevel: kDebugMode && OrexConfig.debugLogs ? Level.warning : Level.error,
   );
 
   /// MatrixRTC-сигналинг звонков. Создаётся при init(); null, если модуль

@@ -60,6 +60,25 @@ final class OrexCameraDeviceController {
         force: force,
       ));
 
+  /// Recreate the managed camera publication even when LiveKit still reports
+  /// it as enabled. Android may preserve a connected sender whose capturer was
+  /// created while the app had no foreground camera access; that sender emits
+  /// black frames until the physical capture track is rebuilt.
+  Future<OrexCameraDeviceResult> recoverCapture({
+    required lk.LocalParticipant? participant,
+    required bool canPublishMedia,
+  }) => _serialize(() async {
+        if (participant == null || !canPublishMedia) {
+          return const OrexCameraDeviceResult.idle();
+        }
+        return _restartManagedCameraTrack(
+          participant,
+          deviceId: normalizedCameraDeviceId(),
+          cameraPosition: _currentCameraPositionFromTrack(participant) ??
+              _lastRequestedCameraPosition,
+        );
+      });
+
   Future<OrexCameraDeviceResult> selectDevice({
     required lk.LocalParticipant? participant,
     required bool canPublishMedia,
