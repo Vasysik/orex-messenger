@@ -398,7 +398,9 @@ object OrexPushBridge {
     fun handleCallNotificationAction(context: Context, intent: Intent) {
         if (intent.action == OrexAndroidTelecomManager.ACTION_ANSWER ||
             intent.action == OrexAndroidTelecomManager.ACTION_DECLINE ||
-            intent.action == OrexAndroidTelecomManager.ACTION_HANG_UP
+            intent.action == OrexAndroidTelecomManager.ACTION_HANG_UP ||
+            intent.action == OrexAndroidTelecomManager.ACTION_TOGGLE_MIC ||
+            intent.action == OrexAndroidTelecomManager.ACTION_TOGGLE_AUDIO
         ) {
             OrexAndroidTelecomManager.handleNotificationAction(intent)
             return
@@ -406,7 +408,6 @@ object OrexPushBridge {
         if (intent.action != ACTION_CALL_NOTIFICATION) return
         val payload = extractPayload(intent)
         if (payload.isEmpty()) return
-        OrexNotificationCenter.cancelCallNotification(context)
         val action = payload["orex_action"] ?: return
         val launched = launchIncomingCallAction(
             context = context,
@@ -525,17 +526,21 @@ object OrexPushBridge {
             }
             "showLocalMatrixNotification" -> {
                 val context = applicationContext
-                val roomId = call.argument<String>("roomId")?.trim().orEmpty()
-                if (context == null || roomId.isEmpty()) {
+                val payload = stringMap(call.arguments)
+                if (context == null || payload.isEmpty()) {
                     result.success(false)
                     return
                 }
-                OrexNotificationCenter.showLocalMatrixEvent(
-                    context = context,
-                    roomId = roomId,
-                    eventId = call.argument<String>("eventId")?.trim(),
-                )
+                OrexNotificationCenter.showPush(context, payload, appResumed = false)
                 result.success(true)
+            }
+            "dismissRoomNotifications" -> {
+                val context = applicationContext
+                val roomId = call.argument<String>("roomId")?.trim().orEmpty()
+                if (context != null && roomId.isNotEmpty()) {
+                    OrexNotificationCenter.dismissRoomNotifications(context, roomId)
+                }
+                result.success(context != null && roomId.isNotEmpty())
             }
             "callUiAnswering" -> {
                 val callId = call.argument<String>("callId")?.trim().orEmpty()
@@ -616,7 +621,7 @@ object OrexPushBridge {
 
     private fun requestPermission(result: MethodChannel.Result) {
         val currentActivity = activity
-        if (currentActivity == null || !isFirebaseConfigured()) {
+        if (currentActivity == null) {
             result.success("not_supported")
             return
         }

@@ -158,6 +158,7 @@ class MatrixService extends ChangeNotifier {
       _playNotificationCueIfNeeded();
       push.handleMatrixSync();
       _scheduleAvatarCacheWarmup();
+      if (client.isLogged()) unawaited(call.recoverPendingCall());
       // Проверяем версию бэкапа только один раз после логина,
       // и только если пользователь не выключал его вручную в этой сессии.
       if (!_checkedServerBackup &&
@@ -178,7 +179,9 @@ class MatrixService extends ChangeNotifier {
       _lastAvatarWarmup = null;
       await _loadBackupPrefs();
       push.handleLoginStateChanged();
-      if (client.isLogged()) _scheduleAvatarCacheWarmup(force: true);
+      if (client.isLogged()) {
+        _scheduleAvatarCacheWarmup(force: true);
+      }
       notifyListeners();
     });
     // Обновление профиля меняет сам MXC URI. Не чистим весь media-cache на
@@ -268,6 +271,9 @@ class MatrixService extends ChangeNotifier {
     for (final room in client.rooms) {
       final count = room.notificationCount;
       final previous = _notificationCounts[room.id] ?? 0;
+      if (_notificationSnapshotReady && previous > 0 && count == 0) {
+        unawaited(push.dismissRoomNotifications(room.id));
+      }
       if (_notificationSnapshotReady &&
           count > previous &&
           room.id != _foregroundRoomId) {
@@ -285,10 +291,16 @@ class MatrixService extends ChangeNotifier {
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     final appIsBackgrounded =
         lifecycle != null && lifecycle != AppLifecycleState.resumed;
-    if (appIsBackgrounded) {
-      // При настроенном Matrix pusher системным уведомлением владеет FCM.
-      // Локальный sync-fallback иначе создаст второй notification поверх него.
-      if (push.isConfigured) return;
+    final nativeLocalNotifications =
+        !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.windows);
+    if (nativeLocalNotifications) {
+      // В background Android remote pusher уже владеет доставкой и локальный
+      // sync не должен создавать дубль. В foreground FCM намеренно подавляется
+      // native bridge, поэтому сообщение из НЕ открытой комнаты публикуем из
+      // текущего Matrix sync. Windows всегда использует свой native runner.
+      if (appIsBackgrounded && push.ownsBackgroundNotifications) return;
       for (final room in increasedRooms) {
         unawaited(
           push.showSyncedMatrixNotification(
@@ -300,12 +312,17 @@ class MatrixService extends ChangeNotifier {
       return;
     }
 
+    // У платформ без собственного notification bridge остаётся только
+    // внутриприложенный звуковой cue.
     audio.playNotification();
   }
 
   void setForegroundRoomId(String? roomId) {
     final value = roomId?.trim();
-    _foregroundRoomId = value == null || value.isEmpty ? null : value;
+    final next = value == null || value.isEmpty ? null : value;
+    if (next == _foregroundRoomId) return;
+    _foregroundRoomId = next;
+    if (next != null) unawaited(push.dismissRoomNotifications(next));
   }
 
   /// Принудительно перерисовать слушателей (например, после завершения

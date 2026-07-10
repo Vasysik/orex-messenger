@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../../core/haptics/orex_haptics.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../core/voip/call_session.dart';
 import '../../core/voip/screen_share_controller.dart';
@@ -136,6 +139,7 @@ class OrexCallControlButton extends StatefulWidget {
     required this.onTap,
     this.onLongPress,
     this.background,
+    this.haptic = OrexHapticKind.action,
   });
 
   final IconData icon;
@@ -144,6 +148,7 @@ class OrexCallControlButton extends StatefulWidget {
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
   final Color? background;
+  final OrexHapticKind haptic;
 
   @override
   State<OrexCallControlButton> createState() => _OrexCallControlButtonState();
@@ -169,8 +174,18 @@ class _OrexCallControlButtonState extends State<OrexCallControlButton> {
         splashColor: Colors.white.withValues(alpha: 0.18),
         highlightColor: Colors.white.withValues(alpha: 0.08),
         onHighlightChanged: (value) => setState(() => _pressed = value),
-        onTap: widget.onTap,
-        onLongPress: widget.onLongPress,
+        onTap: () {
+          unawaited(OrexHaptics.trigger(widget.haptic));
+          widget.onTap();
+        },
+        onLongPress: widget.onLongPress == null
+            ? null
+            : () {
+                unawaited(
+                  OrexHaptics.trigger(OrexHapticKind.selection),
+                );
+                widget.onLongPress!();
+              },
         child: AnimatedScale(
           duration: const Duration(milliseconds: 90),
           scale: _pressed ? 0.94 : 1,
@@ -330,6 +345,7 @@ class OrexCallControlsBar extends StatelessWidget {
         tooltip: 'Завершить',
         icon: Icons.call_end,
         background: const Color(0xFFCF6679),
+        haptic: OrexHapticKind.destructive,
         onTap: onHangUpTap,
       ),
     ];
@@ -355,6 +371,7 @@ class OrexCallControlsBar extends StatelessWidget {
     String? tooltip,
     Color? background,
     bool selected = false,
+    OrexHapticKind haptic = OrexHapticKind.action,
   }) {
     final child = OrexCallControlButton(
       key: key,
@@ -362,6 +379,7 @@ class OrexCallControlsBar extends StatelessWidget {
       style: _style,
       background: background,
       selected: selected,
+      haptic: haptic,
       onTap: onTap,
       onLongPress: onLongPress,
     );

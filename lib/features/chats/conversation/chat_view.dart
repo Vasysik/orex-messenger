@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 import 'package:desktop_drop/desktop_drop.dart';
+import '../../../core/haptics/orex_haptics.dart';
 import '../../../core/matrix/matrix_service.dart';
 import '../../../core/logging/orex_logger.dart';
 import '../../../shared/theme/orex_theme.dart';

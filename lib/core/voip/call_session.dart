@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
@@ -17,6 +18,30 @@ import 'voice_state_repository.dart';
 
 enum CallStatus { connecting, connected, failed, ended }
 
+@visibleForTesting
+bool orexShouldReconnectCallAfterBackground({
+  required lk.ConnectionState? connectionState,
+}) {
+  return connectionState != lk.ConnectionState.connected;
+}
+
+@visibleForTesting
+bool orexShouldPlayRemoteReactionCue({
+  required bool knownParticipant,
+  required int? previousTs,
+  required int? nextTs,
+  required int baselineTs,
+}) {
+  if (nextTs == null) return false;
+  if (!knownParticipant) return nextTs > baselineTs;
+  return previousTs == null || nextTs > previousTs;
+}
+
+String _matrixUserIdFromParticipantIdentity(String identity) {
+  final match = RegExp(r'@[^:]+:[^:]+').firstMatch(identity);
+  return match?.group(0) ?? identity;
+}
+
 /// Нативный звонок на стеке Element Call (MatrixRTC): LiveKit +
 /// lk-jwt-service используются под собственным Orex UI — без встраивания
 /// call.element.io.
@@ -29,6 +54,7 @@ class CallSession extends ChangeNotifier {
     required this.client,
     required this.matrixRoomId,
     this.initialMicOn = true,
+    this.initialSpeakerMuted = false,
     this.canUseMic = true,
     this.listenOnly = false,
     this.canUseMicNow,
@@ -40,10 +66,14 @@ class CallSession extends ChangeNotifier {
     this.speakingThresholdEnabledProvider,
     this.callMicPreferenceSink,
     this.e2eeKeyProvider,
+    this.refreshE2eeKeys,
+    this.adaptiveStream = true,
+    this.remoteReactionCue,
     OrexLiveKitCredentialsClient? credentialsClient,
   }) : _credentialsClient =
            credentialsClient ?? const OrexLiveKitCredentialsClient() {
     _micRequestedOn = initialMicOn;
+    speakerMuted = initialSpeakerMuted;
     _voiceStates = OrexVoiceStateRepository(
       localUserIdProvider: () => client.userID,
       readContent: (userId) => client
@@ -62,6 +92,7 @@ class CallSession extends ChangeNotifier {
   final Client client;
   final String matrixRoomId;
   final bool initialMicOn;
+  final bool initialSpeakerMuted;
   bool canUseMic;
   bool listenOnly;
   final bool Function()? canUseMicNow;
@@ -73,6 +104,9 @@ class CallSession extends ChangeNotifier {
   final bool Function()? speakingThresholdEnabledProvider;
   final FutureOr<void> Function(bool enabled)? callMicPreferenceSink;
   final Future<lk.BaseKeyProvider>? e2eeKeyProvider;
+  final Future<void> Function(int expectedRemoteParticipants)? refreshE2eeKeys;
+  final bool adaptiveStream;
+  final FutureOr<void> Function()? remoteReactionCue;
   final OrexLiveKitCredentialsClient _credentialsClient;
 
   CallStatus status = CallStatus.connecting;
@@ -100,12 +134,22 @@ class CallSession extends ChangeNotifier {
   Timer? _reactionClearTimer;
   Timer? _voiceStateRefreshTimer;
   Timer? _mediaRecoveryTimer;
+  Timer? _reconnectTimer;
+  Future<void>? _reconnectInFlight;
+  Future<void>? _keyRefreshInFlight;
+  lk.EventsListener<lk.RoomEvent>? _roomEvents;
+  int _reconnectAttempt = 0;
+  bool _cameraRequestedOn = false;
   String? _lastAppliedInputDeviceId;
   bool speakerMuted = false;
   late bool _micRequestedOn;
   bool _systemMuted = false;
   bool _systemInactive = false;
+  bool _proximityEnabled = false;
+  bool _readinessDeferred = false;
   int _lastRemoteParticipantCount = 0;
+  int _remoteReactionBaselineMs = 0;
+  final Map<String, int?> _lastRemoteReactionTs = <String, int?>{};
 
   VoiceParticipantState voiceStateForUser(String userId) {
     return _voiceStates.stateForUser(userId);
@@ -118,70 +162,294 @@ class CallSession extends ChangeNotifier {
   int get remoteParticipantCount => _room?.remoteParticipants.length ?? 0;
 
   bool get micOn => _room?.localParticipant?.isMicrophoneEnabled() ?? false;
+  bool get microphoneRequestedOn => canPublishMedia && _micRequestedOn;
   bool get camOn => _room?.localParticipant?.isCameraEnabled() ?? false;
+  bool get cameraRequestedOn => _cameraRequestedOn;
   bool get canPublishMedia => canUseMic && !listenOnly;
+  bool get mediaTransportConnected =>
+      _room?.connectionState == lk.ConnectionState.connected;
 
   List<lk.Participant> get participants => [
     if (_room?.localParticipant != null) _room!.localParticipant!,
     ...?_room?.remoteParticipants.values,
   ];
 
-  Future<void> connect({required bool video}) async {
+  Future<void> connect({
+    required bool video,
+    bool deferReady = false,
+  }) async {
+    _cameraRequestedOn = video;
+    _readinessDeferred = deferReady;
+    _cancelReconnect();
     status = CallStatus.connecting;
     error = null;
     notifyListeners();
     try {
-      final creds = await _fetchCredentials();
-      final providerFuture = e2eeKeyProvider;
-      if (providerFuture == null) {
-        throw StateError('Media E2EE key provider is unavailable');
-      }
-      final provider = await providerFuture;
-      final room = lk.Room(
-        roomOptions: lk.RoomOptions(
-          adaptiveStream: true,
-          dynacast: true,
-          encryption: lk.E2EEOptions(keyProvider: provider),
-        ),
-      );
-      await room.prepareConnection(creds.url, creds.jwt);
-      await room.connect(creds.url, creds.jwt);
-      _room = room;
-      _applySpeakerMute();
-      await applyAudioOutput();
-      await _applyMicrophonePolicy(forceCaptureOptions: true);
-      await _voiceGate.sync();
-      if (video) {
-        // Камера может быть недоступна (занята другим окном/приложением —
-        // NotReadableError). Не валим весь звонок: продолжаем со звуком.
-        try {
-          await room.localParticipant?.setCameraEnabled(
-            true,
-            cameraCaptureOptions: _camera.captureOptions(),
-          );
-        } catch (e) {
-          OrexLog.d('Call', 'initial camera start failed room=$matrixRoomId', e);
-          cameraError = 'Камера недоступна';
-        }
-      }
-
-      if (_disposed) {
-        // Сессию закрыли, пока подключались — сворачиваем комнату.
-        await room.disconnect();
-        await room.dispose();
-        return;
-      }
-      room.addListener(_onRoom);
-      _startVoiceStateRefresh();
-      status = CallStatus.connected;
-      notifyListeners();
+      await _connectFreshRoom(completeReadiness: !deferReady);
     } catch (e) {
-      if (_disposed) return;
+      if (_disposed || status == CallStatus.ended) return;
       OrexLog.d('Call', 'secure media connect failed room=$matrixRoomId', e);
       error = 'Не удалось подключиться к защищённому звонку';
       status = CallStatus.failed;
+      await _syncProximitySensor(forceOff: true);
       notifyListeners();
     }
+  }
+
+  Future<void> _connectFreshRoom({bool completeReadiness = true}) async {
+    final creds = await _fetchCredentials();
+    final providerFuture = e2eeKeyProvider;
+    if (providerFuture == null) {
+      throw StateError('Media E2EE key provider is unavailable');
+    }
+    final provider = await providerFuture;
+    final candidate = lk.Room(
+      roomOptions: lk.RoomOptions(
+        adaptiveStream: adaptiveStream,
+        dynacast: adaptiveStream,
+        encryption: lk.E2EEOptions(keyProvider: provider),
+      ),
+    );
+
+    try {
+      await candidate.prepareConnection(creds.url, creds.jwt);
+      await candidate.connect(creds.url, creds.jwt);
+      if (_disposed || status == CallStatus.ended) {
+        await _disposeRoom(candidate);
+        return;
+      }
+
+      await _adoptRoom(candidate);
+      await _refreshRemoteEncryptionKeys();
+      await _restoreMediaState();
+      if (_disposed ||
+          status == CallStatus.ended ||
+          !identical(_room, candidate)) {
+        return;
+      }
+
+      _startVoiceStateRefresh();
+      _cancelReconnect();
+      error = null;
+      if (completeReadiness) {
+        await markReady();
+      } else {
+        await _syncProximitySensor(forceOff: true);
+        notifyListeners();
+      }
+    } catch (_) {
+      if (!identical(_room, candidate)) {
+        await _disposeRoom(candidate);
+      } else {
+        await _detachAndDisposeCurrentRoom(candidate);
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _adoptRoom(lk.Room room) async {
+    final previous = _room;
+    if (identical(previous, room)) return;
+
+    if (previous != null) {
+      previous.removeListener(_onRoom);
+      await _disposeRoomEvents();
+      await _voiceGate.stop(resetTrack: true);
+    }
+
+    _room = room;
+    _remoteReactionBaselineMs = DateTime.now().millisecondsSinceEpoch;
+    _lastRemoteReactionTs.clear();
+    _lastRemoteParticipantCount = room.remoteParticipants.length;
+    if (_lastRemoteParticipantCount > 0) sawRemote = true;
+    room.addListener(_onRoom);
+    _bindRoomEvents(room);
+
+    if (previous != null) {
+      await _disposeRoom(previous);
+    }
+  }
+
+  void _bindRoomEvents(lk.Room room) {
+    final listener = room.createListener()
+      ..on<lk.RoomReconnectingEvent>((_) {
+        if (_disposed || !identical(_room, room)) return;
+        _markMediaReconnecting();
+      })
+      ..on<lk.RoomReconnectedEvent>((_) {
+        if (_disposed || !identical(_room, room)) return;
+        unawaited(_handleSdkReconnected(room));
+      })
+      ..on<lk.RoomDisconnectedEvent>((_) {
+        if (_disposed || !identical(_room, room)) return;
+        _handleTerminalRoomDisconnect(room);
+      });
+    _roomEvents = listener;
+  }
+
+  void _markMediaReconnecting() {
+    if (_disposed || status == CallStatus.ended) return;
+    status = CallStatus.connecting;
+    error = null;
+    unawaited(_syncProximitySensor(forceOff: true));
+    notifyListeners();
+  }
+
+  Future<void> _handleSdkReconnected(lk.Room room) async {
+    if (_disposed || status == CallStatus.ended || !identical(_room, room)) {
+      return;
+    }
+    try {
+      await _refreshRemoteEncryptionKeys();
+      await _restoreMediaState();
+      if (_disposed || !identical(_room, room)) return;
+      _cancelReconnect();
+      error = null;
+      if (_readinessDeferred) {
+        status = CallStatus.connecting;
+        await _syncProximitySensor(forceOff: true);
+        notifyListeners();
+      } else {
+        await markReady();
+      }
+    } catch (e) {
+      OrexLog.d('Call', 'media restore after SDK reconnect failed', e);
+      _handleTerminalRoomDisconnect(room);
+    }
+  }
+
+  void _handleTerminalRoomDisconnect(lk.Room room) {
+    if (_disposed || status == CallStatus.ended || !identical(_room, room)) {
+      return;
+    }
+    OrexLog.d('Call', 'terminal media disconnect room=$matrixRoomId');
+    _markMediaReconnecting();
+    _scheduleFullReconnect();
+  }
+
+  void _scheduleFullReconnect() {
+    if (_disposed || status == CallStatus.ended || _reconnectTimer != null) {
+      return;
+    }
+    const delays = <Duration>[
+      Duration(milliseconds: 500),
+      Duration(seconds: 1),
+      Duration(seconds: 2),
+      Duration(seconds: 4),
+      Duration(seconds: 8),
+      Duration(seconds: 15),
+    ];
+    final index = _reconnectAttempt < delays.length
+        ? _reconnectAttempt
+        : delays.length - 1;
+    final delay = delays[index];
+    _reconnectAttempt++;
+    _reconnectTimer = Timer(delay, () {
+      _reconnectTimer = null;
+      unawaited(_attemptFullReconnect());
+    });
+  }
+
+  Future<void> _attemptFullReconnect() {
+    final inFlight = _reconnectInFlight;
+    if (inFlight != null) return inFlight;
+    if (_disposed || status == CallStatus.ended) return Future<void>.value();
+
+    late final Future<void> operation;
+    operation = _connectFreshRoom().catchError((Object error, StackTrace stack) {
+      if (_disposed || status == CallStatus.ended) return;
+      OrexLog.d('Call', 'full media reconnect failed room=$matrixRoomId', error);
+      status = CallStatus.connecting;
+      this.error = 'Восстанавливаем соединение…';
+      notifyListeners();
+      _scheduleFullReconnect();
+    }).whenComplete(() {
+      if (identical(_reconnectInFlight, operation)) _reconnectInFlight = null;
+    });
+    _reconnectInFlight = operation;
+    return operation;
+  }
+
+  Future<void> recoverAfterBackground(Duration backgroundDuration) async {
+    if (_disposed || status == CallStatus.ended) return;
+
+    final connectionState = _room?.connectionState;
+    if (!orexShouldReconnectCallAfterBackground(
+      connectionState: connectionState,
+    )) {
+      return;
+    }
+
+    OrexLog.d(
+      'Call',
+      'refreshing media after background room=$matrixRoomId '
+          'duration=${backgroundDuration.inSeconds}s state=$connectionState',
+    );
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _markMediaReconnecting();
+    await _attemptFullReconnect();
+  }
+
+  Future<void> _restoreMediaState() async {
+    final room = _room;
+    if (room == null) return;
+    _applySpeakerMute();
+    await applyAudioOutput();
+    await _applyMicrophonePolicy(forceCaptureOptions: true);
+    await _voiceGate.sync();
+
+    if (_cameraRequestedOn && canPublishMedia) {
+      try {
+        await room.localParticipant?.setCameraEnabled(
+          true,
+          cameraCaptureOptions: _camera.captureOptions(),
+        );
+        cameraError = null;
+      } catch (e) {
+        OrexLog.d('Call', 'camera restore failed room=$matrixRoomId', e);
+        cameraError = 'Камера недоступна';
+      }
+    }
+    _applySpeakerMute();
+  }
+
+  Future<void> _disposeRoomEvents() async {
+    final events = _roomEvents;
+    _roomEvents = null;
+    if (events == null) return;
+    try {
+      await events.dispose();
+    } catch (e) {
+      OrexLog.d('Call', 'room event listener dispose failed', e);
+    }
+  }
+
+  Future<void> _disposeRoom(lk.Room room) async {
+    try {
+      await room.disconnect();
+    } catch (e) {
+      OrexLog.d('Call', 'room disconnect during cleanup failed', e);
+    }
+    try {
+      await room.dispose();
+    } catch (e) {
+      OrexLog.d('Call', 'room dispose during cleanup failed', e);
+    }
+  }
+
+  Future<void> _detachAndDisposeCurrentRoom(lk.Room room) async {
+    if (!identical(_room, room)) return;
+    room.removeListener(_onRoom);
+    await _disposeRoomEvents();
+    _room = null;
+    await _disposeRoom(room);
+  }
+
+  void _cancelReconnect() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectAttempt = 0;
   }
 
   void _onRoom() {
@@ -189,21 +457,25 @@ class CallSession extends ChangeNotifier {
     // получаем «CallSession used after being disposed».
     if (_disposed) return;
     final remoteCount = _room?.remoteParticipants.length ?? 0;
-    final remoteCountChanged = remoteCount != _lastRemoteParticipantCount;
+    final previousRemoteCount = _lastRemoteParticipantCount;
+    final remoteCountChanged = remoteCount != previousRemoteCount;
     _lastRemoteParticipantCount = remoteCount;
     if (remoteCount > 0) sawRemote = true;
+    if (remoteCountChanged && remoteCount > previousRemoteCount) {
+      _refreshRemoteEncryptionKeysBestEffort();
+    }
     _applySpeakerMute();
-    _scheduleMediaRecovery(forceMicRestart: remoteCountChanged);
+    _scheduleMediaRecovery();
     notifyListeners();
   }
 
-  void _scheduleMediaRecovery({bool forceMicRestart = false}) {
+  void _scheduleMediaRecovery() {
     _mediaRecoveryTimer?.cancel();
     _mediaRecoveryTimer = Timer(const Duration(milliseconds: 450), () async {
       if (_disposed || status != CallStatus.connected) return;
       try {
         await applyAudioOutput();
-        await _restartMicIfInputChanged(force: forceMicRestart);
+        await _restartMicIfInputChanged();
         await _restartCameraIfInputChanged();
         await _voiceGate.sync();
         _applySpeakerMute();
@@ -213,18 +485,118 @@ class CallSession extends ChangeNotifier {
     });
   }
 
+  Future<void> _refreshRemoteEncryptionKeys() {
+    final current = _keyRefreshInFlight;
+    if (current != null) return current;
+    final refresh = refreshE2eeKeys;
+    if (refresh == null || _disposed || status == CallStatus.ended) {
+      return Future<void>.value();
+    }
+
+    final expectedRemoteParticipants = _room?.remoteParticipants.length ?? 0;
+    late final Future<void> operation;
+    operation = Future<void>.sync(
+      () => refresh(expectedRemoteParticipants),
+    ).whenComplete(() {
+      if (identical(_keyRefreshInFlight, operation)) {
+        _keyRefreshInFlight = null;
+      }
+    });
+    _keyRefreshInFlight = operation;
+    return operation;
+  }
+
+  void _refreshRemoteEncryptionKeysBestEffort() {
+    unawaited(
+      _refreshRemoteEncryptionKeys().catchError(
+        (Object error, StackTrace stack) {
+          OrexLog.d(
+            'Call',
+            'remote media key refresh failed room=$matrixRoomId',
+            error,
+          );
+        },
+      ),
+    );
+  }
+
+  Future<bool> markReady() async {
+    if (_disposed || status == CallStatus.ended) return false;
+    if (!mediaTransportConnected) {
+      _markMediaReconnecting();
+      return false;
+    }
+    _readinessDeferred = false;
+    error = null;
+    status = CallStatus.connected;
+    await _syncProximitySensor();
+    notifyListeners();
+    return true;
+  }
+
   void _startVoiceStateRefresh() {
     _voiceStateRefreshTimer?.cancel();
     _voiceStateRefreshTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       if (_disposed || status != CallStatus.connected) return;
+      final connectionState = _room?.connectionState;
+      if (connectionState != lk.ConnectionState.connected) {
+        OrexLog.d(
+          'Call',
+          'media health check detected stale room=$matrixRoomId '
+              'state=$connectionState',
+        );
+        _markMediaReconnecting();
+        _scheduleFullReconnect();
+        return;
+      }
       // Voice participant state comes from Matrix room state, not LiveKit
       // media events. Poll lightly so remote hands/reactions appear in the
       // call UI without writing them to the chat timeline. Permission changes
       // are checked here too, so admins can accept a raised-hand request while
       // the listener stays in the current channel call.
       unawaited(refreshVoicePermissions());
+      _detectRemoteReactions();
       notifyListeners();
     });
+  }
+
+  void _detectRemoteReactions() {
+    final room = _room;
+    if (room == null) return;
+
+    final activeUsers = <String>{};
+    for (final participant in room.remoteParticipants.values) {
+      final userId = _matrixUserIdFromParticipantIdentity(participant.identity);
+      activeUsers.add(userId);
+      final nextTs = _voiceStates.stateForUser(userId).reactionTs;
+      final knownParticipant = _lastRemoteReactionTs.containsKey(userId);
+      final previousTs = _lastRemoteReactionTs[userId];
+
+      if (orexShouldPlayRemoteReactionCue(
+        knownParticipant: knownParticipant,
+        previousTs: previousTs,
+        nextTs: nextTs,
+        baselineTs: _remoteReactionBaselineMs,
+      )) {
+        unawaited(_playRemoteReactionCue());
+      }
+      if (nextTs != null || !knownParticipant) {
+        _lastRemoteReactionTs[userId] = nextTs;
+      }
+    }
+    _lastRemoteReactionTs.removeWhere(
+      (userId, _) => !activeUsers.contains(userId),
+    );
+  }
+
+  Future<void> _playRemoteReactionCue() async {
+    final cue = remoteReactionCue;
+    if (cue == null || _disposed) return;
+    try {
+      await cue();
+    } catch (e) {
+      OrexLog.d('Call', 'remote reaction cue failed room=$matrixRoomId', e);
+    }
   }
 
   Future<void> refreshVoicePermissions() async {
@@ -250,6 +622,7 @@ class CallSession extends ChangeNotifier {
         if (lp.isCameraEnabled()) {
           await lp.setCameraEnabled(false);
         }
+        _cameraRequestedOn = false;
       } catch (e) {
         OrexLog.d('Call', 'voice revoke camera disable failed', e);
       }
@@ -396,6 +769,7 @@ class CallSession extends ChangeNotifier {
 
     if (orexIsMobileNativePlatform) {
       await OrexNativeAudioDevices.selectOutput(id, inCall: true);
+      await _syncProximitySensor();
       return;
     }
 
@@ -422,6 +796,21 @@ class CallSession extends ChangeNotifier {
         );
       }
     }
+  }
+
+  Future<void> _syncProximitySensor({bool forceOff = false}) async {
+    if (!orexIsAndroidNativePlatform) return;
+    final outputId = audioOutputDeviceIdProvider?.call()?.trim();
+    final shouldEnable = !forceOff &&
+        !_disposed &&
+        status == CallStatus.connected &&
+        !camOn &&
+        orexIsAndroidEarpieceOutputDeviceId(outputId);
+    if (!forceOff && shouldEnable == _proximityEnabled) return;
+
+    final applied =
+        await OrexNativeAudioDevices.setProximityEnabled(shouldEnable);
+    _proximityEnabled = shouldEnable && applied;
   }
 
   Future<void> syncVoiceGateFromSettings() => _voiceGate.sync();
@@ -527,11 +916,13 @@ class CallSession extends ChangeNotifier {
         next,
         cameraCaptureOptions: next ? _camera.captureOptions() : null,
       );
+      _cameraRequestedOn = next;
       cameraError = null;
     } catch (e) {
       OrexLog.d('Call', 'camera toggle failed room=$matrixRoomId', e);
       cameraError = 'Камера недоступна';
     }
+    await _syncProximitySensor();
     if (!_disposed) notifyListeners();
   }
 
@@ -545,12 +936,16 @@ class CallSession extends ChangeNotifier {
     );
   }
 
-  Future<void> selectCameraDevice(String? deviceId) async {
+  Future<void> selectCameraDevice(
+    String? deviceId, {
+    String? deviceCategory,
+  }) async {
     _applyCameraResult(
       await _camera.selectDevice(
         participant: _room?.localParticipant,
         canPublishMedia: canPublishMedia,
         deviceId: deviceId,
+        deviceCategory: deviceCategory,
       ),
     );
     if (!_disposed) notifyListeners();
@@ -602,6 +997,7 @@ class CallSession extends ChangeNotifier {
   Future<void> hangUp() async {
     status = CallStatus.ended;
     await _clearLocalVoiceUiState();
+    _cancelReconnect();
     _voiceStateRefreshTimer?.cancel();
     _voiceStateRefreshTimer = null;
     _mediaRecoveryTimer?.cancel();
@@ -610,8 +1006,10 @@ class CallSession extends ChangeNotifier {
     final room = _room;
     _room = null;
     if (room != null) {
-      // Снимаем слушатель ДО teardown, чтобы события закрытия не дёргали нас.
+      // Снимаем listeners ДО teardown, чтобы clientInitiated disconnect не
+      // запускал reconnect уже завершённого звонка.
       room.removeListener(_onRoom);
+      await _disposeRoomEvents();
       try {
         if (screenShareOn) {
           await _stopScreenShare(lp: room.localParticipant);
@@ -619,19 +1017,11 @@ class CallSession extends ChangeNotifier {
       } catch (e) {
         OrexLog.d('Call', 'hangup screen share stop failed', e);
       }
-      try {
-        await room.disconnect();
-      } catch (e) {
-        OrexLog.d('Call', 'hangup room disconnect failed', e);
-      }
-      try {
-        await room.dispose();
-      } catch (e) {
-        OrexLog.d('Call', 'hangup room dispose failed', e);
-      }
+      await _disposeRoom(room);
     }
     if (orexIsAndroidNativePlatform) {
       try {
+        await _syncProximitySensor(forceOff: true);
         await OrexNativeAudioDevices.selectOutput(null, inCall: false);
       } catch (e) {
         OrexLog.d('Call', 'hangup reset native audio route failed', e);
@@ -654,14 +1044,18 @@ class CallSession extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _reactionClearTimer?.cancel();
+    _cancelReconnect();
     _voiceStateRefreshTimer?.cancel();
     _mediaRecoveryTimer?.cancel();
     _voiceGate.dispose();
     unawaited(_screenShare.cleanupLocals());
-    _room?.removeListener(_onRoom);
-    _room?.dispose();
+    final room = _room;
+    room?.removeListener(_onRoom);
+    unawaited(_disposeRoomEvents());
+    if (room != null) unawaited(_disposeRoom(room));
     _room = null;
     if (orexIsAndroidNativePlatform) {
+      unawaited(OrexNativeAudioDevices.setProximityEnabled(false));
       unawaited(OrexNativeAudioDevices.selectOutput(null, inCall: false));
     }
     super.dispose();

@@ -32,11 +32,18 @@ final class OrexCameraDeviceController {
 
   String? _lastAppliedCameraDeviceId;
   String? _lastRequestedCameraDeviceId;
+  lk.CameraPosition? _lastRequestedCameraPosition;
+  Future<void> _operationTail = Future<void>.value();
 
   lk.CameraCaptureOptions captureOptions() {
     final normalized = normalizedCameraDeviceId();
-    _lastAppliedCameraDeviceId = normalized;
-    return lk.CameraCaptureOptions(deviceId: normalized);
+    final position = _lastRequestedCameraPosition;
+    return position == null
+        ? lk.CameraCaptureOptions(deviceId: normalized)
+        : lk.CameraCaptureOptions(
+            deviceId: normalized,
+            cameraPosition: position,
+          );
   }
 
   String? normalizedCameraDeviceId() {
@@ -47,6 +54,85 @@ final class OrexCameraDeviceController {
     required lk.LocalParticipant? participant,
     required bool canPublishMedia,
     bool force = false,
+  }) => _serialize(() => _restartIfInputChanged(
+        participant: participant,
+        canPublishMedia: canPublishMedia,
+        force: force,
+      ));
+
+  Future<OrexCameraDeviceResult> selectDevice({
+    required lk.LocalParticipant? participant,
+    required bool canPublishMedia,
+    required String? deviceId,
+    String? deviceCategory,
+  }) => _serialize(() async {
+        final normalized = normalizeSelectedDeviceId(deviceId);
+        final position = cameraPositionForCategory(deviceCategory);
+        _lastRequestedCameraPosition = position;
+        await _saveCameraDeviceId(normalized);
+        if (participant == null || !canPublishMedia) {
+          return const OrexCameraDeviceResult.idle();
+        }
+        return _switchOrRestart(
+          participant,
+          normalized,
+          cameraPosition: position,
+        );
+      });
+
+  Future<OrexCameraDeviceResult> cycleDevice({
+    required lk.LocalParticipant? participant,
+    required bool canPublishMedia,
+    required List<OrexAudioDevice> devices,
+  }) => _serialize(() async {
+        final ids = uniqueDeviceIds(devices);
+        if (ids.isEmpty) return const OrexCameraDeviceResult.idle();
+
+        // Keep camera state inside the same serial queue. Persisted settings can
+        // lag behind a rapid second tap, while _lastApplied is updated only after
+        // the previous physical switch/restart has completed.
+        final activeTrackId = _currentCameraDeviceIdFromTrack(participant);
+        final activePosition = _currentCameraPositionFromTrack(participant);
+        final positionMatchedId = deviceIdForPosition(
+          devices,
+          activePosition,
+        );
+        final current = activeTrackId ??
+            positionMatchedId ??
+            _lastAppliedCameraDeviceId ??
+            _lastRequestedCameraDeviceId ??
+            normalizedCameraDeviceId();
+        final next = nextDeviceId(
+          ids: ids,
+          configured: current,
+          lastRequested: null,
+          activeTrackId: null,
+        );
+        OrexAudioDevice? nextDevice;
+        for (final device in devices) {
+          if (device.id == next) {
+            nextDevice = device;
+            break;
+          }
+        }
+        final nextPosition = cameraPositionForCategory(nextDevice?.category);
+        _lastRequestedCameraPosition = nextPosition;
+        await _saveCameraDeviceId(next);
+
+        if (participant == null || !canPublishMedia) {
+          return const OrexCameraDeviceResult.idle();
+        }
+        return _switchOrRestart(
+          participant,
+          next,
+          cameraPosition: nextPosition,
+        );
+      });
+
+  Future<OrexCameraDeviceResult> _restartIfInputChanged({
+    required lk.LocalParticipant? participant,
+    required bool canPublishMedia,
+    required bool force,
   }) async {
     if (participant == null ||
         !participant.isCameraEnabled() ||
@@ -55,101 +141,80 @@ final class OrexCameraDeviceController {
     }
 
     final nextCameraId = normalizedCameraDeviceId();
-    if (!force && nextCameraId == _lastAppliedCameraDeviceId) {
+    final activeCameraId = _currentCameraDeviceIdFromTrack(participant);
+    if (!force &&
+        nextCameraId == (activeCameraId ?? _lastAppliedCameraDeviceId)) {
       return const OrexCameraDeviceResult.idle();
     }
-    if (nextCameraId != null &&
-        await _switchActiveCameraTrack(participant, nextCameraId)) {
-      return const OrexCameraDeviceResult.success();
-    }
-
-    return _recreateCameraTrack(participant);
-  }
-
-  Future<OrexCameraDeviceResult> selectDevice({
-    required lk.LocalParticipant? participant,
-    required bool canPublishMedia,
-    required String? deviceId,
-  }) async {
-    final normalized = normalizeSelectedDeviceId(deviceId);
-    await _saveCameraDeviceId(normalized);
-    if (participant == null || !canPublishMedia) {
-      return const OrexCameraDeviceResult.idle();
-    }
-    if (normalized != null &&
-        await _switchActiveCameraTrack(participant, normalized)) {
-      return const OrexCameraDeviceResult.success();
-    }
-    return restartIfInputChanged(
-      participant: participant,
-      canPublishMedia: canPublishMedia,
-      force: true,
+    return _switchOrRestart(
+      participant,
+      nextCameraId,
+      cameraPosition: _currentCameraPositionFromTrack(participant),
     );
   }
 
-  Future<OrexCameraDeviceResult> cycleDevice({
-    required lk.LocalParticipant? participant,
-    required bool canPublishMedia,
-    required List<OrexAudioDevice> devices,
-  }) async {
-    final ids = uniqueDeviceIds(devices);
-    if (ids.isEmpty) return const OrexCameraDeviceResult.idle();
-
-    final activeTrackId = _currentCameraDeviceIdFromTrack(participant);
-    final next = nextDeviceId(
-      ids: ids,
-      configured: normalizedCameraDeviceId(),
-      lastRequested: _lastRequestedCameraDeviceId,
-      activeTrackId: activeTrackId,
-    );
-    await _saveCameraDeviceId(next);
-
-    if (participant == null || !canPublishMedia) {
-      return const OrexCameraDeviceResult.idle();
-    }
-    if (await _switchActiveCameraTrack(participant, next)) {
-      return const OrexCameraDeviceResult.success();
-    }
-    return restartIfInputChanged(
-      participant: participant,
-      canPublishMedia: canPublishMedia,
-      force: true,
-    );
-  }
-
-  Future<OrexCameraDeviceResult> _recreateCameraTrack(
+  Future<OrexCameraDeviceResult> _switchOrRestart(
     lk.LocalParticipant participant,
-  ) async {
-    final oldTrack = _localCameraTrack(participant);
-    try {
-      await participant.setCameraEnabled(false);
-      try {
-        await oldTrack?.stop();
-      } catch (e) {
-        OrexLog.d('Call', 'old camera track stop failed', e);
-      }
-      try {
-        await oldTrack?.dispose();
-      } catch (e) {
-        OrexLog.d('Call', 'old camera track dispose failed', e);
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 180));
+    String? deviceId, {
+    lk.CameraPosition? cameraPosition,
+  }) async {
+    if (deviceId != null &&
+        await _switchActiveCameraTrack(
+          participant,
+          deviceId,
+          cameraPosition: cameraPosition,
+        )) {
+      return const OrexCameraDeviceResult.success();
+    }
+    return _restartManagedCameraTrack(
+      participant,
+      deviceId: deviceId,
+      cameraPosition: cameraPosition,
+    );
+  }
 
-      final options = captureOptions();
+  Future<T> _serialize<T>(Future<T> Function() operation) {
+    final completer = Completer<T>();
+    _operationTail = _operationTail.then((_) async {
       try {
-        final track = await lk.LocalVideoTrack.createCameraTrack(options);
-        await participant.publishVideoTrack(track);
-      } catch (e) {
-        OrexLog.d(
-          'Call',
-          'explicit camera recreate failed, fallback setCameraEnabled',
-          e,
-        );
-        await participant.setCameraEnabled(true, cameraCaptureOptions: options);
+        completer.complete(await operation());
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
       }
+    });
+    return completer.future;
+  }
+
+  Future<OrexCameraDeviceResult> _restartManagedCameraTrack(
+    lk.LocalParticipant participant, {
+    required String? deviceId,
+    required lk.CameraPosition? cameraPosition,
+  }) async {
+    try {
+      // Do not manually create/publish a second camera track here. Mixing
+      // setCameraEnabled() with publishVideoTrack() can leave more than one
+      // camera publication alive; remote UIs may keep rendering the stale one
+      // and some Android camera HALs keep both physical cameras busy.
+      if (participant.isCameraEnabled()) {
+        await participant.setCameraEnabled(false);
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      final selectedDeviceId = deviceId ?? normalizedCameraDeviceId();
+      final options = cameraPosition == null
+          ? lk.CameraCaptureOptions(deviceId: selectedDeviceId)
+          : lk.CameraCaptureOptions(
+              deviceId: selectedDeviceId,
+              cameraPosition: cameraPosition,
+            );
+      await participant.setCameraEnabled(
+        true,
+        cameraCaptureOptions: options,
+      );
+      _lastAppliedCameraDeviceId = selectedDeviceId;
+      if (cameraPosition != null) _lastRequestedCameraPosition = cameraPosition;
       return const OrexCameraDeviceResult.success();
     } catch (e) {
-      OrexLog.d('Call', 'camera device change failed', e);
+      OrexLog.d('Call', 'managed camera restart failed', e);
       return const OrexCameraDeviceResult.failure('Камера недоступна');
     }
   }
@@ -162,21 +227,38 @@ final class OrexCameraDeviceController {
 
   Future<bool> _switchActiveCameraTrack(
     lk.LocalParticipant participant,
-    String deviceId,
-  ) async {
+    String deviceId, {
+    required lk.CameraPosition? cameraPosition,
+  }) async {
     if (OrexScreenShareController.desktopNeedsExplicitSource) return false;
     if (!participant.isCameraEnabled()) return false;
     final track = _localCameraTrack(participant);
     if (track == null) return false;
     try {
-      await lk.LocalVideoTrackExt(
-        track,
-      ).switchCamera(deviceId, fastSwitch: true);
+      if (cameraPosition != null) {
+        // For built-in phone cameras use LiveKit's semantic front/back API.
+        // It restarts the existing published track and replaces the sender's
+        // media track, so the remote participant follows the switch without a
+        // second camera publication. It also keeps renderer mirror metadata in
+        // sync with the real facing direction.
+        await lk.LocalVideoTrackExt(track).setCameraPosition(cameraPosition);
+      } else {
+        // External/unknown cameras still need exact device selection. Keep
+        // fastSwitch disabled: the regular restart path stops the old capture
+        // before opening the new one.
+        await lk.LocalVideoTrackExt(
+          track,
+        ).switchCamera(deviceId, fastSwitch: false);
+      }
       _lastAppliedCameraDeviceId = deviceId;
-      OrexLog.d('Call', 'camera switched via LiveKit track device=$deviceId');
+      if (cameraPosition != null) _lastRequestedCameraPosition = cameraPosition;
+      OrexLog.d(
+        'Call',
+        'camera switched on published track device=$deviceId position=$cameraPosition',
+      );
       return true;
     } catch (e) {
-      OrexLog.d('Call', 'camera fast switch failed device=$deviceId', e);
+      OrexLog.d('Call', 'camera switch failed device=$deviceId', e);
       return false;
     }
   }
@@ -200,6 +282,11 @@ final class OrexCameraDeviceController {
     if (participant == null) return null;
     final track = _localCameraTrack(participant);
     if (track == null) return null;
+    final options = track.currentOptions;
+    if (options is lk.CameraCaptureOptions) {
+      final id = normalizeSelectedDeviceId(options.deviceId);
+      if (id != null) return id;
+    }
     for (final candidate in [
       OrexLiveKitTrackAccess.readDynamic(track, 'mediaStreamTrack'),
       OrexLiveKitTrackAccess.readDynamic(track, 'rtcTrack'),
@@ -219,6 +306,36 @@ final class OrexCameraDeviceController {
       }
     }
     return null;
+  }
+
+  lk.CameraPosition? _currentCameraPositionFromTrack(
+    lk.LocalParticipant? participant,
+  ) {
+    if (participant == null) return null;
+    final track = _localCameraTrack(participant);
+    final options = track?.currentOptions;
+    return options is lk.CameraCaptureOptions ? options.cameraPosition : null;
+  }
+
+  static String? deviceIdForPosition(
+    List<OrexAudioDevice> devices,
+    lk.CameraPosition? position,
+  ) {
+    if (position == null) return null;
+    for (final device in devices) {
+      if (cameraPositionForCategory(device.category) == position) {
+        return device.id;
+      }
+    }
+    return null;
+  }
+
+  static lk.CameraPosition? cameraPositionForCategory(String? category) {
+    return switch (category) {
+      'front_camera' => lk.CameraPosition.front,
+      'back_camera' => lk.CameraPosition.back,
+      _ => null,
+    };
   }
 
   static String? normalizeSelectedDeviceId(String? deviceId) {

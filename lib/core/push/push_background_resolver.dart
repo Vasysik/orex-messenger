@@ -23,6 +23,37 @@ class OrexResolvedPush {
   final Map<String, String> data;
 }
 
+/// Формирует plaintext payload из события, уже расшифрованного живым sync.
+/// Никаких повторных Matrix-запросов здесь нет: это локальный notification
+/// fallback для desktop и конфигураций без remote pusher.
+Map<String, String>? resolveOrexSyncedMatrixNotification(Event event) {
+  if (event.type != EventTypes.Message && event.type != EventTypes.Sticker) {
+    return null;
+  }
+  if (event.messageType == MessageTypes.BadEncrypted) return null;
+  final body = OrexMatrixPushResolver._messageBody(event);
+  if (body == null) return null;
+
+  final sender = OrexMatrixPushResolver._senderName(event, const {});
+  final roomName = OrexMatrixPushResolver._roomName(event, const {});
+  final title = event.room.isDirectChat == true || roomName == null
+      ? sender
+      : '$sender · $roomName';
+  return <String, String>{
+    'orex_kind': 'matrix_event',
+    'room_id': event.room.id,
+    'event_id': event.eventId,
+    'type': event.type,
+    'sender': event.senderId,
+    'sender_display_name': sender,
+    'room_name': ?roomName,
+    'title': title,
+    'body': body,
+    'content_body': body,
+    'content_msgtype': event.messageType,
+  };
+}
+
 class _OrexPushDecryptionPending implements Exception {
   const _OrexPushDecryptionPending(this.roomId, this.eventId);
 

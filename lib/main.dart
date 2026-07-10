@@ -234,6 +234,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
   final Set<String> _pendingCallActionRooms = <String>{};
   AppLifecycleState _lifecycleState =
       WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
+  DateTime? _backgroundedAt;
 
   bool get _isForeground => _lifecycleState == AppLifecycleState.resumed;
 
@@ -272,8 +273,17 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final previousState = _lifecycleState;
     _lifecycleState = state;
     if (state == AppLifecycleState.resumed) {
+      final backgroundedAt = _backgroundedAt;
+      _backgroundedAt = null;
+      if (backgroundedAt != null && widget.matrix.call.isActive) {
+        final backgroundDuration = DateTime.now().difference(backgroundedAt);
+        unawaited(
+          widget.matrix.call.recoverMediaAfterBackground(backgroundDuration),
+        );
+      }
       // Notification action / Core-Telecom answer can arrive in the same frame
       // as lifecycle resume. Give that explicit user action priority before
       // replaying an incoming-call route, otherwise Answer can briefly show the
@@ -287,6 +297,12 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
         }
       });
       return;
+    }
+
+    if (previousState == AppLifecycleState.resumed) {
+      _backgroundedAt = DateTime.now();
+    } else {
+      _backgroundedAt ??= DateTime.now();
     }
 
     // Пока Orex не виден, Flutter не открывает маршруты входящего звонка.
@@ -363,6 +379,39 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
             room,
             fromSystem: open.fromSystem,
           );
+          return;
+        case 'resume':
+          await call.recoverPendingCall();
+          if (!mounted) return;
+          if (call.isActive && call.roomId == room.id) {
+            _openAcceptedCall(room.id);
+          } else {
+            await call.discardRecoverableCall(room.id);
+          }
+          return;
+        case 'hangup':
+          await call.recoverPendingCall();
+          if (call.isActive && call.roomId == room.id) {
+            await call.hangUp();
+          } else {
+            await call.discardRecoverableCall(room.id);
+          }
+          return;
+        case 'toggle_mic':
+          await call.recoverPendingCall();
+          if (call.isActive && call.roomId == room.id) {
+            await call.session?.toggleMic();
+          } else {
+            await call.discardRecoverableCall(room.id);
+          }
+          return;
+        case 'toggle_audio':
+          await call.recoverPendingCall();
+          if (call.isActive && call.roomId == room.id) {
+            await call.session?.toggleSpeakerMute();
+          } else {
+            await call.discardRecoverableCall(room.id);
+          }
           return;
         default:
           _showIncomingCall(room);

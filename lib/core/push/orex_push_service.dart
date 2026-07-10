@@ -59,6 +59,11 @@ class OrexPushService {
 
   bool get isConfigured => gateway != null;
 
+  /// Только platform identity означает, что эта платформа действительно
+  /// зарегистрировала remote Matrix pusher и сама владеет background delivery.
+  bool get ownsBackgroundNotifications =>
+      isConfigured && _platform.identity != null;
+
   /// Поднимает только локальный bridge и подписки. Сетевой pusher sync не
   /// блокирует bootstrap: он запускается отдельно и имеет собственный error
   /// boundary.
@@ -199,13 +204,32 @@ class OrexPushService {
     String? eventId,
   }) async {
     if (_disposed || !_client.isLogged()) return;
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) return;
+    final room = _client.getRoomById(normalizedRoomId);
+    final event = room?.lastEvent;
+    if (event == null) return;
+    final normalizedEventId = eventId?.trim();
+    if (normalizedEventId != null &&
+        normalizedEventId.isNotEmpty &&
+        event.eventId != normalizedEventId) {
+      return;
+    }
+    final payload = resolveOrexSyncedMatrixNotification(event);
+    if (payload == null) return;
     try {
-      await _platform.showLocalMatrixNotification(
-        roomId: roomId,
-        eventId: eventId,
-      );
+      await _platform.showLocalMatrixNotification(payload);
     } catch (error) {
       OrexLog.d('Push', 'local Matrix notification failed', error);
+    }
+  }
+
+  Future<void> dismissRoomNotifications(String roomId) async {
+    if (_disposed) return;
+    try {
+      await _platform.dismissRoomNotifications(roomId);
+    } catch (error) {
+      OrexLog.d('Push', 'room notification dismissal failed', error);
     }
   }
 
@@ -217,10 +241,9 @@ class OrexPushService {
   }
 
   Future<void> _requestPermissionOnce() async {
-    if (_disposed || !isConfigured || !_client.isLogged()) return;
-    if (!await _platform.isSupported()) return;
+    if (_disposed || !_client.isLogged()) return;
     final prefs = await SharedPreferences.getInstance();
-    const key = 'orex_push_permission_prompted_v2';
+    const key = 'orex_local_notification_permission_prompted_v1';
     if (prefs.getBool(key) == true) return;
     final status = await _platform.requestPermission();
     if (status != OrexPushPermissionStatus.notSupported) {

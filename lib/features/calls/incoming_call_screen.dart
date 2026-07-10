@@ -1,9 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart';
 
+import '../../core/haptics/orex_haptics.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
@@ -70,7 +70,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
       _status = 'Отклоняем звонок…';
     });
     widget.matrix.audio.stopIncomingRingtone();
-    unawaited(HapticFeedback.mediumImpact());
+    unawaited(OrexHaptics.trigger(OrexHapticKind.destructive));
     try {
       await widget.matrix.call.rejectIncoming(room);
       if (mounted) Navigator.of(context).maybePop();
@@ -92,7 +92,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
       _status = video ? 'Подключаем видеозвонок…' : 'Подключаем звонок…';
     });
     widget.matrix.audio.stopIncomingRingtone();
-    unawaited(HapticFeedback.mediumImpact());
+    unawaited(OrexHaptics.trigger(OrexHapticKind.confirm));
     try {
       await widget.matrix.call.acceptIncoming(room, video: video);
     } catch (_) {

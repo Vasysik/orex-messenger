@@ -93,6 +93,26 @@ void main() {
     await client.dispose(closeDatabase: false);
   });
 
+  test('forwards room-scoped notification dismissal', () async {
+    final platform = _FakePushPlatform();
+    final client = Client(
+      'OrexPushDismissTest',
+      database: MatrixSdkDatabase.buildWithoutOpen('OrexPushDismissTest'),
+    );
+    final service = OrexPushService(
+      client: client,
+      gateway: null,
+      platform: platform,
+      tokenStore: _MemoryTokenStore(),
+    );
+
+    await service.dismissRoomNotifications('!room:example.org');
+
+    expect(platform.dismissedRooms, ['!room:example.org']);
+    await service.dispose();
+    await client.dispose(closeDatabase: false);
+  });
+
   test('same native delivery id is not published twice', () async {
     final platform = _FakePushPlatform();
     final client = Client(
@@ -142,8 +162,8 @@ class _FakePushPlatform implements OrexPushPlatform {
   final StreamController<OrexPushOpen> _opens =
       StreamController<OrexPushOpen>.broadcast();
   final List<String> acknowledged = <String>[];
-  final List<({String roomId, String? eventId})> localNotifications =
-      <({String roomId, String? eventId})>[];
+  final List<Map<String, String>> localNotifications = <Map<String, String>>[];
+  final List<String> dismissedRooms = <String>[];
   final Completer<void> firstAcknowledgement = Completer<void>();
 
   void emitOpen(OrexPushOpen open) => _opens.add(open);
@@ -187,11 +207,15 @@ class _FakePushPlatform implements OrexPushPlatform {
   Future<void> notifyCallUiHidden() async {}
 
   @override
-  Future<void> showLocalMatrixNotification({
-    required String roomId,
-    String? eventId,
-  }) async {
-    localNotifications.add((roomId: roomId, eventId: eventId));
+  Future<void> showLocalMatrixNotification(
+    Map<String, String> payload,
+  ) async {
+    localNotifications.add(Map<String, String>.of(payload));
+  }
+
+  @override
+  Future<void> dismissRoomNotifications(String roomId) async {
+    dismissedRooms.add(roomId);
   }
 
   @override

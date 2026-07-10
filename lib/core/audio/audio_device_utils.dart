@@ -194,6 +194,14 @@ String? orexResolveCurrentDeviceId(
         }
       }
     }
+    if (orexIsAndroidEarpieceOutputDeviceId(normalized)) {
+      for (final device in devices) {
+        if (orexIsAndroidEarpieceOutputDeviceId(device.id) ||
+            device.category == 'earpiece') {
+          return device.id;
+        }
+      }
+    }
   }
 
   final sorted = devices.toList()

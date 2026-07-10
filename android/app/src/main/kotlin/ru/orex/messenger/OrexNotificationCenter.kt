@@ -13,6 +13,8 @@ import android.os.Build
 import android.graphics.drawable.Icon
 import android.provider.Settings
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.Person as CompatPerson
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.absoluteValue
@@ -24,7 +26,8 @@ import kotlin.math.absoluteValue
  * содержит реальный plaintext или после Matrix/E2EE resolution worker.
  */
 object OrexNotificationCenter {
-    const val CALL_NOTIFICATION_ID = 4040
+    const val INCOMING_CALL_NOTIFICATION_ID = 4040
+    const val ONGOING_CALL_NOTIFICATION_ID = 4041
     const val MESSAGE_CHANNEL_ID = "orex_messages_v3"
     const val INCOMING_CALL_CHANNEL_ID = "orex_calls_incoming_v4"
     const val ONGOING_CALL_CHANNEL_ID = "orex_calls_ongoing_v2"
@@ -110,7 +113,14 @@ object OrexNotificationCenter {
 
     fun onNotificationOpened(context: Context, payload: Map<String, String>) {
         val roomId = firstValue(payload, "room_id") ?: return
+        dismissRoomNotifications(context, roomId)
+    }
+
+    fun dismissRoomNotifications(context: Context, rawRoomId: String) {
+        val roomId = rawRoomId.trim()
+        if (roomId.isEmpty()) return
         messageHistoryPrefs(context).edit().remove(roomId).apply()
+        notificationManager(context).cancel(messageNotificationId(roomId))
     }
 
     fun isIncomingCallPayload(payload: Map<String, String>): Boolean {
@@ -220,9 +230,14 @@ object OrexNotificationCenter {
         answer: PendingIntent,
         decline: PendingIntent,
         hangUp: PendingIntent,
+        toggleMic: PendingIntent,
+        toggleAudio: PendingIntent,
+        startedAt: Long,
+        micEnabled: Boolean,
+        audioEnabled: Boolean,
         avatarCacheKey: String? = null,
-    ) {
-        if (!canPostNotifications(context)) return
+    ): Notification? {
+        if (!canPostNotifications(context)) return null
         ensureChannels(context)
         val resolvedAvatarCacheKey = OrexAvatarCache.resolveConversationKey(
             context = context,
@@ -236,7 +251,7 @@ object OrexNotificationCenter {
             OrexCallPresentationState.markActive(context, callId)
             OrexCallPresentationState.IncomingDecision.SILENT_REFRESH
         }
-        if (decision == OrexCallPresentationState.IncomingDecision.SUPPRESS) return
+        if (decision == OrexCallPresentationState.IncomingDecision.SUPPRESS) return null
         val alert = decision == OrexCallPresentationState.IncomingDecision.FIRST_ALERT
 
         val openApp = if (isRinging) {
@@ -286,7 +301,7 @@ object OrexNotificationCenter {
         } else {
             decline
         }
-        postCall(
+        return postCall(
             context = context,
             displayName = displayName,
             incoming = isRinging,
@@ -297,20 +312,88 @@ object OrexNotificationCenter {
             answer = uiAnswer,
             decline = uiDecline,
             hangUp = hangUp,
+            toggleMic = toggleMic,
+            toggleAudio = toggleAudio,
+            startedAt = startedAt,
+            micEnabled = micEnabled,
+            audioEnabled = audioEnabled,
             timeoutAfterMs = null,
             alert = alert,
             avatarCacheKey = resolvedAvatarCacheKey,
         )
     }
 
+    fun buildForegroundCallFallback(
+        context: Context,
+        displayName: String,
+        openApp: PendingIntent,
+        hangUp: PendingIntent,
+        toggleMic: PendingIntent,
+        toggleAudio: PendingIntent,
+        startedAt: Long,
+        answered: Boolean,
+        micEnabled: Boolean,
+        audioEnabled: Boolean,
+    ): Notification {
+        ensureChannels(context)
+        val person = CompatPerson.Builder()
+            .setName(displayName)
+            .setImportant(true)
+            .build()
+        return callBuilder(context, ONGOING_CALL_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_orex)
+            .setColor(context.getColor(R.color.orex_launch_icon_background))
+            .setContentTitle(displayName)
+            .setContentText(
+                if (answered) ongoingCallStatus(micEnabled, audioEnabled)
+                else "Подключение к звонку…",
+            )
+            .setContentIntent(openApp)
+            .addPerson(person)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setOnlyAlertOnce(true)
+            .setWhen(startedAt)
+            .setShowWhen(true)
+            .setUsesChronometer(true)
+            .setStyle(NotificationCompat.CallStyle.forOngoingCall(person, hangUp))
+            .addAction(
+                R.drawable.ic_stat_orex,
+                if (micEnabled) "Микрофон выкл." else "Микрофон вкл.",
+                toggleMic,
+            )
+            .addAction(
+                R.drawable.ic_stat_orex,
+                if (audioEnabled) "Звук выкл." else "Звук вкл.",
+                toggleAudio,
+            )
+            .build()
+    }
+
     fun cancelCallNotification(context: Context) {
-        notificationManager(context).cancel(CALL_NOTIFICATION_ID)
+        notificationManager(context).cancel(INCOMING_CALL_NOTIFICATION_ID)
+    }
+
+    fun cancelOngoingCallNotification(context: Context) {
+        notificationManager(context).cancel(ONGOING_CALL_NOTIFICATION_ID)
+    }
+
+    fun cancelIncomingCall(context: Context, callId: String? = null) {
+        cancelCallNotification(context)
+        OrexCallPresentationState.markEnded(context, callId)
+        if (callId == null) OrexIncomingCallActivity.finishActive()
+        else OrexIncomingCallActivity.finishForCall(callId)
     }
 
     fun cancelCall(context: Context, callId: String? = null) {
         val canCancel = callId == null ||
             OrexCallPresentationState.canCancelPresentation(context, callId)
         if (canCancel) cancelCallNotification(context)
+        // Ongoing notification ownership belongs exclusively to
+        // OrexCallForegroundService. Ring/handled/end push cleanup must never
+        // remove the active media call card behind the service's back.
         OrexCallPresentationState.markEnded(context, callId)
         if (callId == null) OrexIncomingCallActivity.finishActive()
         else OrexIncomingCallActivity.finishForCall(callId)
@@ -407,25 +490,38 @@ object OrexNotificationCenter {
         answer: PendingIntent,
         decline: PendingIntent,
         hangUp: PendingIntent?,
+        toggleMic: PendingIntent? = null,
+        toggleAudio: PendingIntent? = null,
+        startedAt: Long? = null,
+        micEnabled: Boolean = true,
+        audioEnabled: Boolean = true,
         timeoutAfterMs: Long?,
         alert: Boolean,
         avatarCacheKey: String? = null,
-    ) {
+    ): Notification {
         val channelId = if (incoming) INCOMING_CALL_CHANNEL_ID else ONGOING_CALL_CHANNEL_ID
-        val builder = builder(context, channelId)
+        val builder = callBuilder(context, channelId)
             .setSmallIcon(R.drawable.ic_stat_orex)
             .setColor(context.getColor(R.color.orex_launch_icon_background))
             .setContentTitle(displayName)
-            .setContentText(if (incoming) "Входящий звонок" else "Звонок Orex")
+            .setContentText(
+                if (incoming) "Входящий звонок" else ongoingCallStatus(micEnabled, audioEnabled),
+            )
             .setContentIntent(openApp)
-            .setCategory(Notification.CATEGORY_CALL)
-            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
         val avatar = OrexAvatarCache.load(context, avatarCacheKey)
         if (avatar != null) builder.setLargeIcon(avatar)
 
+        if (!incoming && startedAt != null) {
+            builder
+                .setWhen(startedAt)
+                .setShowWhen(true)
+                .setUsesChronometer(true)
+        }
         if (timeoutAfterMs != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             builder.setTimeoutAfter(timeoutAfterMs.coerceAtLeast(1_000L))
         }
@@ -434,42 +530,60 @@ object OrexNotificationCenter {
             builder.setFullScreenIntent(fullScreen, true)
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val personBuilder = Person.Builder()
-                .setName(displayName)
-                .setImportant(true)
-            if (avatar != null) {
-                personBuilder.setIcon(Icon.createWithBitmap(OrexAvatarCache.circle(avatar)))
-            }
-            val person = personBuilder.build()
-            val style = if (incoming) {
-                Notification.CallStyle.forIncomingCall(person, decline, answer)
-            } else {
-                val disconnect = hangUp ?: decline
-                Notification.CallStyle.forOngoingCall(person, disconnect)
-            }
-            builder.setStyle(style)
-        } else if (incoming) {
-            builder
-                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Отклонить", decline)
-                .addAction(android.R.drawable.sym_action_call, "Ответить", answer)
-        } else if (hangUp != null) {
-            builder.addAction(
-                android.R.drawable.ic_menu_close_clear_cancel,
-                "Завершить",
-                hangUp,
+        val person = CompatPerson.Builder()
+            .setName(displayName)
+            .setImportant(true)
+            .build()
+        builder.addPerson(person)
+        if (incoming) {
+            builder.setStyle(
+                NotificationCompat.CallStyle.forIncomingCall(person, decline, answer),
             )
+        } else {
+            val disconnect = hangUp ?: decline
+            builder.setStyle(
+                NotificationCompat.CallStyle.forOngoingCall(person, disconnect),
+            )
+            if (toggleMic != null) {
+                builder.addAction(
+                    R.drawable.ic_stat_orex,
+                    if (micEnabled) "Микрофон выкл." else "Микрофон вкл.",
+                    toggleMic,
+                )
+            }
+            if (toggleAudio != null) {
+                builder.addAction(
+                    R.drawable.ic_stat_orex,
+                    if (audioEnabled) "Звук выкл." else "Звук вкл.",
+                    toggleAudio,
+                )
+            }
         }
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            @Suppress("DEPRECATION")
-            builder.setPriority(if (incoming) Notification.PRIORITY_MAX else Notification.PRIORITY_DEFAULT)
+            builder.priority = if (incoming) {
+                NotificationCompat.PRIORITY_MAX
+            } else {
+                NotificationCompat.PRIORITY_DEFAULT
+            }
         }
 
         val notification = builder.build().apply {
             if (incoming && alert) flags = flags or Notification.FLAG_INSISTENT
         }
-        notificationManager(context).notify(CALL_NOTIFICATION_ID, notification)
+        val notificationId = if (incoming) {
+            INCOMING_CALL_NOTIFICATION_ID
+        } else {
+            ONGOING_CALL_NOTIFICATION_ID
+        }
+        notificationManager(context).notify(notificationId, notification)
+        return notification
+    }
+
+    private fun ongoingCallStatus(micEnabled: Boolean, audioEnabled: Boolean): String {
+        val mic = if (micEnabled) "Микрофон включён" else "Микрофон выключен"
+        val audio = if (audioEnabled) "Звук включён" else "Звук выключен"
+        return "$mic · $audio"
     }
 
     private data class MessageHistoryItem(
@@ -478,6 +592,9 @@ object OrexNotificationCenter {
         val body: String,
         val timestamp: Long,
     )
+
+    private fun messageNotificationId(stableId: String): Int =
+        ("message|$stableId".hashCode().absoluteValue).coerceAtLeast(1)
 
     private fun showMessage(context: Context, payload: Map<String, String>) {
         if (!canPostNotifications(context)) return
@@ -488,7 +605,7 @@ object OrexNotificationCenter {
             return
         }
         val stableId = firstValue(payload, "room_id", "event_id", "message_id") ?: body
-        val notificationId = ("message|$stableId".hashCode().absoluteValue).coerceAtLeast(1)
+        val notificationId = messageNotificationId(stableId)
         val openApp = OrexPushBridge.notificationOpenPendingIntent(
             context = context,
             payload = payload,
@@ -814,6 +931,11 @@ object OrexNotificationCenter {
             false
         }
     }
+
+    private fun callBuilder(
+        context: Context,
+        channelId: String,
+    ): NotificationCompat.Builder = NotificationCompat.Builder(context, channelId)
 
     private fun builder(context: Context, channelId: String): Notification.Builder {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

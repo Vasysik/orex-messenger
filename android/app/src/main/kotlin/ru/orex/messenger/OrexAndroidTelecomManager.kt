@@ -41,6 +41,8 @@ object OrexAndroidTelecomManager {
     const val ACTION_ANSWER = "ru.orex.messenger.action.ANSWER_CALL"
     const val ACTION_DECLINE = "ru.orex.messenger.action.DECLINE_CALL"
     const val ACTION_HANG_UP = "ru.orex.messenger.action.HANG_UP_CALL"
+    const val ACTION_TOGGLE_MIC = "ru.orex.messenger.action.TOGGLE_CALL_MIC"
+    const val ACTION_TOGGLE_AUDIO = "ru.orex.messenger.action.TOGGLE_CALL_AUDIO"
     const val EXTRA_CALL_ID = "orex_call_id"
 
     private const val CHANNEL_NAME = "orex/system_calls"
@@ -69,6 +71,10 @@ object OrexAndroidTelecomManager {
         var lastMuted: Boolean? = null,
         var suppressDisconnectEvent: Boolean = false,
         var terminating: Boolean = false,
+        val startedAt: Long = System.currentTimeMillis(),
+        var micEnabled: Boolean = true,
+        var audioEnabled: Boolean = true,
+        var cameraEnabled: Boolean = video,
     )
 
     fun attach(context: Context, messenger: BinaryMessenger) {
@@ -112,6 +118,14 @@ object OrexAndroidTelecomManager {
                 emitActionAndAwait(call, "disconnect")
                 disconnectInternal(call, DisconnectCause.LOCAL)
             }
+            ACTION_TOGGLE_MIC -> appScope.launch {
+                val call = current?.takeIf { it.callId == callId } ?: return@launch
+                emitActionAndAwait(call, "toggleMic")
+            }
+            ACTION_TOGGLE_AUDIO -> appScope.launch {
+                val call = current?.takeIf { it.callId == callId } ?: return@launch
+                emitActionAndAwait(call, "toggleAudio")
+            }
         }
     }
 
@@ -137,15 +151,28 @@ object OrexAndroidTelecomManager {
                     }.orEmpty()
                     call.endpoints = endpoints
                 }
-                val compatibleEndpoints = endpoints.filter { it.type == endpointType }
-                val endpoint = preferredEndpointName
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { preferred ->
-                        compatibleEndpoints.firstOrNull {
-                            endpointNamesMatch(it.name.toString(), preferred)
+                fun selectEndpoint(items: List<CallEndpointCompat>): CallEndpointCompat? {
+                    val compatible = items.filter { it.type == endpointType }
+                    return preferredEndpointName
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { preferred ->
+                            compatible.firstOrNull {
+                                endpointNamesMatch(it.name.toString(), preferred)
+                            }
                         }
+                        ?: compatible.firstOrNull()
+                }
+
+                var endpoint = selectEndpoint(endpoints)
+                if (endpoint == null) {
+                    endpoint = withTimeoutOrNull(2500) {
+                        val refreshed = control.availableEndpoints.first { items ->
+                            selectEndpoint(items) != null
+                        }
+                        call.endpoints = refreshed
+                        selectEndpoint(refreshed)
                     }
-                    ?: compatibleEndpoints.firstOrNull()
+                }
                 if (endpoint == null) {
                     Log.w(
                         TAG,
@@ -154,7 +181,29 @@ object OrexAndroidTelecomManager {
                     callback(false)
                     return@launch
                 }
-                callback(control.requestEndpointChange(endpoint) is CallControlResult.Success)
+
+                val selectedEndpoint = endpoint
+                val requested = control.requestEndpointChange(selectedEndpoint)
+                if (requested !is CallControlResult.Success) {
+                    callback(false)
+                    return@launch
+                }
+
+                // requestEndpointChange() is transactional but the endpoint Flow
+                // updates asynchronously. Wait briefly for the system route to
+                // become observable before confirming the UI selection.
+                val confirmed = withTimeoutOrNull(2000) {
+                    control.currentCallEndpoint.first { currentEndpoint ->
+                        currentEndpoint.type == selectedEndpoint.type &&
+                            (preferredEndpointName.isNullOrBlank() ||
+                                endpointNamesMatch(
+                                    currentEndpoint.name.toString(),
+                                    preferredEndpointName,
+                                ))
+                    }
+                    true
+                } == true
+                callback(confirmed)
             } catch (error: Throwable) {
                 Log.e(TAG, "Failed to change Telecom audio endpoint", error)
                 callback(false)
@@ -164,6 +213,41 @@ object OrexAndroidTelecomManager {
 
     private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+            "updateForegroundCall" -> {
+                val context = appContext
+                val callId = call.argument<String>("callId")?.trim().orEmpty()
+                val displayName = call.argument<String>("displayName")?.trim().orEmpty()
+                if (context == null || callId.isEmpty() || displayName.isEmpty()) {
+                    result.success(false)
+                    return
+                }
+                val video = call.argument<Boolean>("video") == true
+                val startedAt = call.argument<Number>("startedAt")?.toLong()
+                    ?.takeIf { it > 0L } ?: System.currentTimeMillis()
+                val started = OrexCallForegroundService.update(
+                    context = context,
+                    descriptor = OrexCallForegroundService.Descriptor(
+                        callId = callId,
+                        displayName = displayName,
+                        incoming = call.argument<Boolean>("incoming") == true,
+                        video = video,
+                        answered = call.argument<Boolean>("answered") == true,
+                        startedAt = startedAt,
+                        micEnabled = call.argument<Boolean>("micEnabled") != false,
+                        audioEnabled = call.argument<Boolean>("audioEnabled") != false,
+                        cameraEnabled = call.argument<Boolean>("cameraEnabled") ?: video,
+                        updatedAt = System.currentTimeMillis(),
+                    ),
+                    notification = null,
+                )
+                result.success(started)
+            }
+            "stopForegroundCall" -> {
+                val context = appContext
+                val callId = call.argument<String>("callId")?.trim()?.ifEmpty { null }
+                if (context != null) OrexCallForegroundService.stop(context, callId)
+                result.success(context != null)
+            }
             "reportIncomingCall" -> reportFromMethod(call, result, incoming = true)
             "reportOutgoingCall" -> reportFromMethod(call, result, incoming = false)
             "answerCall" -> withCall(call, result) { managed ->
@@ -171,12 +255,17 @@ object OrexAndroidTelecomManager {
                 managed.video = video
                 answerInternal(managed, video)
             }
+            "updateControls" -> withCall(call, result) { managed ->
+                managed.micEnabled = call.argument<Boolean>("micEnabled") == true
+                managed.audioEnabled = call.argument<Boolean>("audioEnabled") == true
+                managed.cameraEnabled = call.argument<Boolean>("cameraEnabled") == true
+                true
+            }
             "setActive" -> withCall(call, result) { managed ->
                 val control = awaitControl(managed) ?: return@withCall false
                 val success = control.setActive() is CallControlResult.Success
                 if (success) {
                     managed.answered = true
-                    showNotification(managed)
                 }
                 success
             }
@@ -192,6 +281,20 @@ object OrexAndroidTelecomManager {
                 }
                 disconnectInternal(managed, cause)
             }
+            "getRecoverableCall" -> {
+                val context = appContext
+                result.success(
+                    if (context == null) null else OrexCallForegroundService.readRecovery(context),
+                )
+            }
+            "clearRecoverableCall" -> {
+                val context = appContext
+                val callId = call.argument<String>("callId")?.trim()?.ifEmpty { null }
+                if (context != null) {
+                    OrexCallForegroundService.clearRecovery(context, callId)
+                }
+                result.success(context != null)
+            }
             else -> result.notImplemented()
         }
     }
@@ -205,6 +308,11 @@ object OrexAndroidTelecomManager {
         val displayName = call.argument<String>("displayName")?.trim().orEmpty()
         val avatarCacheKey = call.argument<String>("avatarCacheKey")?.trim()?.ifEmpty { null }
         val video = call.argument<Boolean>("video") == true
+        val startedAt = call.argument<Number>("startedAt")?.toLong()
+            ?.takeIf { it > 0L } ?: System.currentTimeMillis()
+        val micEnabled = call.argument<Boolean>("micEnabled") ?: true
+        val audioEnabled = call.argument<Boolean>("audioEnabled") ?: true
+        val cameraEnabled = call.argument<Boolean>("cameraEnabled") ?: video
         if (callId.isEmpty() || displayName.isEmpty()) {
             result.error("invalid_arguments", "callId and displayName are required", null)
             return
@@ -212,7 +320,17 @@ object OrexAndroidTelecomManager {
         appScope.launch {
             try {
                 result.success(
-                    reportCall(callId, displayName, incoming, video, avatarCacheKey),
+                    reportCall(
+                        callId = callId,
+                        displayName = displayName,
+                        incoming = incoming,
+                        video = video,
+                        avatarCacheKey = avatarCacheKey,
+                        startedAt = startedAt,
+                        micEnabled = micEnabled,
+                        audioEnabled = audioEnabled,
+                        cameraEnabled = cameraEnabled,
+                    ),
                 )
             } catch (error: Throwable) {
                 Log.e(TAG, "Failed to report call id=$callId", error)
@@ -261,10 +379,24 @@ object OrexAndroidTelecomManager {
         incoming: Boolean,
         video: Boolean,
         avatarCacheKey: String?,
+        startedAt: Long,
+        micEnabled: Boolean,
+        audioEnabled: Boolean,
+        cameraEnabled: Boolean,
     ): Boolean {
         callMutationMutex.lock()
         return try {
-            reportCallLocked(callId, displayName, incoming, video, avatarCacheKey)
+            reportCallLocked(
+                callId,
+                displayName,
+                incoming,
+                video,
+                avatarCacheKey,
+                startedAt,
+                micEnabled,
+                audioEnabled,
+                cameraEnabled,
+            )
         } finally {
             callMutationMutex.unlock()
         }
@@ -276,12 +408,19 @@ object OrexAndroidTelecomManager {
         incoming: Boolean,
         video: Boolean,
         avatarCacheKey: String?,
+        startedAt: Long,
+        micEnabled: Boolean,
+        audioEnabled: Boolean,
+        cameraEnabled: Boolean,
     ): Boolean {
         if (!ensureRegistered()) return false
         val existing = current
         if (existing != null) {
             if (existing.callId == callId && !existing.terminating) {
                 existing.video = video
+                existing.micEnabled = micEnabled
+                existing.audioEnabled = audioEnabled
+                existing.cameraEnabled = cameraEnabled
                 if (!avatarCacheKey.isNullOrBlank()) existing.avatarCacheKey = avatarCacheKey
                 showNotification(existing)
                 return withTimeoutOrNull(4500) { existing.ready.await() } == true
@@ -308,6 +447,10 @@ object OrexAndroidTelecomManager {
             incoming = incoming,
             video = video,
             avatarCacheKey = avatarCacheKey,
+            startedAt = startedAt,
+            micEnabled = micEnabled,
+            audioEnabled = audioEnabled,
+            cameraEnabled = cameraEnabled,
         )
         current = managed
         showNotification(managed)
@@ -439,7 +582,6 @@ object OrexAndroidTelecomManager {
         if (success) {
             managed.answered = true
             managed.video = video
-            showNotification(managed)
         }
         return success
     }
@@ -472,7 +614,7 @@ object OrexAndroidTelecomManager {
         if (current !== managed) return
         current = null
         val context = appContext ?: return
-        OrexNotificationCenter.cancelCall(context, managed.callId)
+        OrexNotificationCenter.cancelIncomingCall(context, managed.callId)
     }
 
     private fun emitAction(
@@ -504,7 +646,9 @@ object OrexAndroidTelecomManager {
             val coldAction = when (action) {
                 "answer" -> "answer"
                 "reject" -> "reject"
-                "disconnect" -> "reject"
+                "disconnect" -> "hangup"
+                "toggleMic" -> "toggle_mic"
+                "toggleAudio" -> "toggle_audio"
                 else -> null
             } ?: return false
             return OrexPushBridge.launchIncomingCallAction(
@@ -585,17 +729,23 @@ object OrexAndroidTelecomManager {
     }
 
     private fun showNotification(managed: ManagedCall) {
+        if (!managed.incoming || managed.answered) return
         val context = appContext ?: return
         OrexNotificationCenter.showTelecomCall(
             context = context,
             callId = managed.callId,
             displayName = managed.displayName,
             video = managed.video,
-            incoming = managed.incoming,
-            answered = managed.answered,
+            incoming = true,
+            answered = false,
             answer = actionIntent(context, managed.callId, ACTION_ANSWER, 7001),
             decline = actionIntent(context, managed.callId, ACTION_DECLINE, 7002),
             hangUp = actionIntent(context, managed.callId, ACTION_HANG_UP, 7003),
+            toggleMic = actionIntent(context, managed.callId, ACTION_TOGGLE_MIC, 7004),
+            toggleAudio = actionIntent(context, managed.callId, ACTION_TOGGLE_AUDIO, 7005),
+            startedAt = managed.startedAt,
+            micEnabled = managed.micEnabled,
+            audioEnabled = managed.audioEnabled,
             avatarCacheKey = managed.avatarCacheKey,
         )
     }

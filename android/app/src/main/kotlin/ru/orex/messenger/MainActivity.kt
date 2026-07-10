@@ -6,6 +6,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -46,12 +47,14 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        setProximityEnabled(false)
         OrexPushBridge.detach(this)
         super.onDestroy()
     }
 
     private val channelName = "orex/audio_devices"
     private val androidOutputPrefix = "orex://android/audio-output/"
+    private var proximityWakeLock: PowerManager.WakeLock? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -69,10 +72,14 @@ class MainActivity : FlutterActivity() {
                         val inCall = call.argument<Boolean>("inCall") == true
                         if (OrexAndroidTelecomManager.ownsCallRouting()) {
                             if (!inCall) {
-                                // Telecom завершит communication routing вместе с системной
-                                // сессией. Не сбрасываем AudioManager, пока call ещё зарегистрирован.
+                                // Telecom завершит physical endpoint вместе с системной
+                                // сессией. Здесь меняем только stream аппаратных клавиш:
+                                // прямой AudioManager route всё ещё нельзя трогать до cleanup call.
+                                volumeControlStream = AudioManager.STREAM_MUSIC
                                 result.success(true)
                             } else {
+                                // Core-Telecom owns the endpoint, while call media
+                                // itself must stay on the voice-call stream for volume keys.
                                 volumeControlStream = AudioManager.STREAM_VOICE_CALL
                                 val route = parseRouteId(id)
                                 val preferredEndpointName = route?.let { wanted ->
@@ -81,6 +88,7 @@ class MainActivity : FlutterActivity() {
                                         includeCallRoutes = true,
                                     ).firstOrNull { it.matches(wanted) }
                                         ?.device
+                                        ?.takeIf { it.requiresEndpointNameMatch() }
                                         ?.cleanProductName()
                                         ?.takeIf { it.isNotBlank() }
                                 }
@@ -92,6 +100,10 @@ class MainActivity : FlutterActivity() {
                         } else {
                             result.success(selectAudioOutput(id, inCall))
                         }
+                    }
+                    "setProximityEnabled" -> {
+                        val enabled = call.argument<Boolean>("enabled") == true
+                        result.success(setProximityEnabled(enabled))
                     }
                     else -> result.notImplemented()
                 }
@@ -119,6 +131,39 @@ class MainActivity : FlutterActivity() {
 
     private fun audioManager(): AudioManager =
         getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+    @Suppress("DEPRECATION")
+    private fun setProximityEnabled(enabled: Boolean): Boolean {
+        if (!enabled) {
+            val wakeLock = proximityWakeLock
+            proximityWakeLock = null
+            if (wakeLock?.isHeld == true) {
+                try {
+                    wakeLock.release()
+                } catch (e: Throwable) {
+                    Log.w("OrexAudioDevices", "proximity wake lock release failed", e)
+                    return false
+                }
+            }
+            return true
+        }
+
+        return try {
+            val manager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!manager.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
+                return false
+            }
+            val wakeLock = proximityWakeLock ?: manager.newWakeLock(
+                PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
+                "$packageName:orex-call-proximity",
+            ).also { proximityWakeLock = it }
+            if (!wakeLock.isHeld) wakeLock.acquire()
+            true
+        } catch (e: Throwable) {
+            Log.w("OrexAudioDevices", "proximity wake lock update failed", e)
+            false
+        }
+    }
 
     private fun listAudioDevices(includeCallRoutes: Boolean): List<Map<String, String>> {
         val items = linkedMapOf<String, RouteCandidate>()
@@ -220,9 +265,9 @@ class MainActivity : FlutterActivity() {
     @Suppress("DEPRECATION")
     private fun forceSpeakerphone(manager: AudioManager): Boolean {
         return try {
-            manager.mode = AudioManager.MODE_NORMAL
+            manager.mode = AudioManager.MODE_IN_COMMUNICATION
             manager.isSpeakerphoneOn = true
-            volumeControlStream = AudioManager.STREAM_MUSIC
+            volumeControlStream = AudioManager.STREAM_VOICE_CALL
             true
         } catch (e: Throwable) {
             Log.w("OrexAudioDevices", "force speakerphone failed", e)
@@ -234,18 +279,15 @@ class MainActivity : FlutterActivity() {
     private fun applyCommunicationRoute(manager: AudioManager, target: RouteCandidate): Boolean {
         return try {
             val isSpeaker = target.device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-            if (isSpeaker) {
-                return forceSpeakerphone(manager)
-            }
             manager.mode = AudioManager.MODE_IN_COMMUNICATION
-            manager.isSpeakerphoneOn = false
+            manager.isSpeakerphoneOn = isSpeaker
             val applied = if (target.communication || target.device.isBuiltInOutput()) {
                 manager.setCommunicationDevice(target.device)
             } else {
                 false
             }
             volumeControlStream = AudioManager.STREAM_VOICE_CALL
-            applied
+            applied || (isSpeaker && manager.isSpeakerphoneOn)
         } catch (e: Throwable) {
             Log.w("OrexAudioDevices", "set route failed ${target.routeId()}", e)
             false
@@ -266,11 +308,7 @@ class MainActivity : FlutterActivity() {
                 false
             } else {
                 manager.isSpeakerphoneOn = isSpeaker
-                volumeControlStream = if (isSpeaker) {
-                    AudioManager.STREAM_MUSIC
-                } else {
-                    AudioManager.STREAM_VOICE_CALL
-                }
+                volumeControlStream = AudioManager.STREAM_VOICE_CALL
                 true
             }
         } catch (e: Throwable) {
@@ -382,6 +420,9 @@ class MainActivity : FlutterActivity() {
         AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> includeCallRoutes
         else -> isBleOutput() || isHearingAidOutput()
     }
+
+    private fun AudioDeviceInfo.requiresEndpointNameMatch(): Boolean =
+        isBluetoothOutput() || isWiredOutput() || isUsbOutput()
 
     private fun AudioDeviceInfo.isBuiltInOutput(): Boolean =
         type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ||

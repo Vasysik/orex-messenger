@@ -50,8 +50,7 @@ class AudioCueService extends ChangeNotifier {
       cameraDeviceId = _nullIfEmpty(prefs.getString(_kCameraDeviceId));
       if (orexIsMobileRouteId(outputDeviceId) &&
           (!orexIsMobileNativePlatform ||
-              orexIsAndroidSpeakerOutputDeviceId(outputDeviceId) ||
-              orexIsAndroidEarpieceOutputDeviceId(outputDeviceId))) {
+              orexIsAndroidSpeakerOutputDeviceId(outputDeviceId))) {
         outputDeviceId = null;
         await prefs.remove(_kOutputDeviceId);
       }

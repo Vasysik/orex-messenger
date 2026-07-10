@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:livekit_client/livekit_client.dart' as lk;
 // Matrix 7.4.0 exports its own VoIP CallSession. Orex intentionally owns a
 // separate media-session type below, so keep the SDK symbol out of this file.
 import 'package:matrix/matrix.dart' hide CallSession;
 
+import '../audio/audio_device_utils.dart';
 import 'call_session.dart';
 import 'system_call_integration.dart';
 import 'voip_service.dart';
@@ -61,7 +63,127 @@ class CallController extends ChangeNotifier {
       // other devices from ringing. The ring token is consumed only once.
       unawaited(matrix.voip?.cancelOutstandingRing(rid));
     }
+    unawaited(_syncSystemCallControls());
+    unawaited(_syncForegroundCall());
     notifyListeners();
+  }
+
+  Future<void> _setAndroidTelecomAudioPolicy(bool enabled) async {
+    if (!orexIsAndroidNativePlatform ||
+        _androidTelecomAudioPolicyApplied == enabled) {
+      return;
+    }
+    try {
+      if (enabled) {
+        // Telecom owns the physical endpoint. LiveKit stays in manual mode for
+        // the registered system-call lifetime, but unlike the old implementation
+        // it receives a complete communication session first (mode/focus/stream
+        // and active recording/playout policy). This keeps background media alive
+        // without letting LiveKit repeatedly re-assert its own speaker route.
+        await lk.AudioManager.instance.setAudioSessionOptions(
+          lk.AudioSessionOptions.communication(),
+        );
+      } else {
+        await lk.AudioManager.instance.setAudioSessionManagementMode(
+          lk.AudioSessionManagementMode.automatic,
+        );
+      }
+      _androidTelecomAudioPolicyApplied = enabled;
+      OrexLog.d(
+        'Call',
+        'LiveKit Android audio policy=${enabled ? 'telecom-managed' : 'automatic'}',
+      );
+    } catch (e) {
+      OrexLog.d(
+        'Call',
+        'failed to apply LiveKit Android Telecom audio policy',
+        e,
+      );
+    }
+  }
+
+  Future<void> _syncSystemCallControls() async {
+    final session = _session;
+    final callId = _systemCallId;
+    if (session == null || callId == null || roomId != callId) return;
+    final micEnabled = session.status == CallStatus.connected
+        ? session.micOn
+        : session.microphoneRequestedOn;
+    final audioEnabled = !session.speakerMuted;
+    final cameraEnabled = session.cameraRequestedOn;
+    if (_lastSystemMicEnabled == micEnabled &&
+        _lastSystemAudioEnabled == audioEnabled &&
+        _lastSystemCameraEnabled == cameraEnabled) {
+      return;
+    }
+    final applied = await _systemCalls.updateControls(
+      callId,
+      micEnabled: micEnabled,
+      audioEnabled: audioEnabled,
+      cameraEnabled: cameraEnabled,
+    );
+    if (!applied || _systemCallId != callId) return;
+    _lastSystemMicEnabled = micEnabled;
+    _lastSystemAudioEnabled = audioEnabled;
+    _lastSystemCameraEnabled = cameraEnabled;
+  }
+
+  Future<void> _syncForegroundCall({bool force = false}) async {
+    if (!orexIsAndroidNativePlatform) return;
+    final session = _session;
+    final callId = roomId;
+    final startedAt = _start;
+    final room = callId == null ? null : matrix.client.getRoomById(callId);
+    if (session == null || callId == null || startedAt == null || room == null) {
+      return;
+    }
+
+    final answered = session.status == CallStatus.connected;
+    final micEnabled = answered
+        ? session.micOn
+        : session.microphoneRequestedOn;
+    final audioEnabled = !session.speakerMuted;
+    final cameraEnabled = session.cameraRequestedOn;
+    if (!force &&
+        _foregroundCallId == callId &&
+        _lastForegroundAnswered == answered &&
+        _lastForegroundMicEnabled == micEnabled &&
+        _lastForegroundAudioEnabled == audioEnabled &&
+        _lastForegroundCameraEnabled == cameraEnabled) {
+      return;
+    }
+
+    final applied = await _systemCalls.updateForegroundCall(
+      callId: callId,
+      displayName: room.getLocalizedDisplayname(),
+      incoming: !_initiator,
+      video: video,
+      answered: answered,
+      startedAt: startedAt,
+      micEnabled: micEnabled,
+      audioEnabled: audioEnabled,
+      cameraEnabled: cameraEnabled,
+    );
+    if (!applied || _session != session || roomId != callId) return;
+    _foregroundCallId = callId;
+    _lastForegroundAnswered = answered;
+    _lastForegroundMicEnabled = micEnabled;
+    _lastForegroundAudioEnabled = audioEnabled;
+    _lastForegroundCameraEnabled = cameraEnabled;
+  }
+
+  Future<void> _stopForegroundCall(String? callId) async {
+    if (callId == null) return;
+    if (_foregroundCallId == callId) _clearForegroundCallState();
+    await _systemCalls.stopForegroundCall(callId);
+  }
+
+  void _clearForegroundCallState() {
+    _foregroundCallId = null;
+    _lastForegroundAnswered = null;
+    _lastForegroundMicEnabled = null;
+    _lastForegroundAudioEnabled = null;
+    _lastForegroundCameraEnabled = null;
   }
 
   CallSession? _session;
@@ -80,10 +202,21 @@ class CallController extends ChangeNotifier {
   Future<bool>? _systemPreparationFuture;
   bool _systemMutedByTelecom = false;
   bool _systemActiveByTelecom = true;
+  bool? _lastSystemMicEnabled;
+  bool? _lastSystemAudioEnabled;
+  bool? _lastSystemCameraEnabled;
+  String? _foregroundCallId;
+  bool? _lastForegroundAnswered;
+  bool? _lastForegroundMicEnabled;
+  bool? _lastForegroundAudioEnabled;
+  bool? _lastForegroundCameraEnabled;
+  bool _androidTelecomAudioPolicyApplied = false;
   String? _systemActionInProgressCallId;
   String? _incomingAcceptRoomId;
   Future<void>? _incomingAcceptFuture;
   Timer? _unansweredCallTimer;
+  Future<void>? _recoveryInFlight;
+  bool _recoveryResolved = false;
   int _lifecycleGeneration = 0;
 
   bool isAcceptingIncoming(String roomId) =>
@@ -103,6 +236,15 @@ class CallController extends ChangeNotifier {
         matrix.voicePermissions.canSpeak(room, matrix.client.userID);
   }
 
+  Future<void> recoverMediaAfterBackground(Duration backgroundDuration) async {
+    final session = _session;
+    if (session == null) return;
+    await session.recoverAfterBackground(backgroundDuration);
+    if (!identical(_session, session)) return;
+    await _syncSystemCallControls();
+    notifyListeners();
+  }
+
   Future<void> refreshVoicePermissions() async {
     await _session?.refreshVoicePermissions();
     final rid = roomId;
@@ -112,9 +254,11 @@ class CallController extends ChangeNotifier {
 
   bool get isActive => _session != null;
 
-  bool _isSystemCallEligible(Room? room) =>
+  bool _isPersonalCall(Room? room) =>
       room != null &&
       (matrix.voip?.isPersonalCallRoom(room) ?? room.isDirectChat);
+
+  bool _isSystemCallEligible(Room? room) => _isPersonalCall(room);
 
   String? _conversationAvatarCacheKey(Room room) {
     final avatar = matrix.conversationAvatar(room);
@@ -335,6 +479,20 @@ class CallController extends ChangeNotifier {
           final session = roomId == action.callId ? _session : null;
           if (session != null) await session.setSystemMuted(muted);
           return true;
+        case OrexSystemCallActionType.toggleMic:
+          if (!_ownsSystemCall(action.callId)) return false;
+          final session = roomId == action.callId ? _session : null;
+          if (session == null) return false;
+          await session.toggleMic();
+          await _syncSystemCallControls();
+          return true;
+        case OrexSystemCallActionType.toggleAudio:
+          if (!_ownsSystemCall(action.callId)) return false;
+          final session = roomId == action.callId ? _session : null;
+          if (session == null) return false;
+          await session.toggleSpeakerMute();
+          await _syncSystemCallControls();
+          return true;
       }
     } catch (e) {
       OrexLog.d(
@@ -514,13 +672,80 @@ class CallController extends ChangeNotifier {
         .any((id) => id != matrix.client.userID);
   }
 
+  Future<void> recoverPendingCall() {
+    if (_recoveryResolved) return Future<void>.value();
+    final inFlight = _recoveryInFlight;
+    if (inFlight != null) return inFlight;
+
+    late final Future<void> operation;
+    operation = _recoverPendingCall().whenComplete(() {
+      if (identical(_recoveryInFlight, operation)) _recoveryInFlight = null;
+    });
+    _recoveryInFlight = operation;
+    return operation;
+  }
+
+  Future<void> discardRecoverableCall(String callId) async {
+    _recoveryResolved = true;
+    await _systemCalls.clearRecoverableCall(callId);
+  }
+
+  Future<void> _recoverPendingCall() async {
+    if (isActive || !matrix.client.isLogged() || matrix.voip == null) return;
+    final recoverable = await _systemCalls.recoverableCall();
+    if (recoverable == null) {
+      _recoveryResolved = true;
+      return;
+    }
+    if (!recoverable.answered) {
+      _recoveryResolved = true;
+      await _systemCalls.clearRecoverableCall(recoverable.callId);
+      return;
+    }
+
+    final age = DateTime.now().difference(recoverable.updatedAt);
+    if (age > const Duration(hours: 4)) {
+      _recoveryResolved = true;
+      await _systemCalls.clearRecoverableCall(recoverable.callId);
+      return;
+    }
+
+    final room = matrix.client.getRoomById(recoverable.callId);
+    if (room == null || !matrix.roomHasActiveCall(room)) {
+      _recoveryResolved = true;
+      await _systemCalls.clearRecoverableCall(recoverable.callId);
+      return;
+    }
+
+    OrexLog.d('Call', 'recovering active call room=${recoverable.callId}');
+    await start(
+      recoverable.callId,
+      video: recoverable.video,
+      initialMicOn: recoverable.micEnabled,
+      initialCameraOn: recoverable.cameraEnabled,
+      initialAudioEnabled: recoverable.audioEnabled,
+      recoveredStartedAt: recoverable.startedAt,
+      // An answered call must never be restored as a fresh incoming call:
+      // Core-Telecom would be allowed to surface ringing UI again. Register
+      // the recreated system session as ongoing and mark it active only after
+      // media reconnects successfully.
+      systemIncoming: false,
+      recovering: true,
+    );
+    if (isActive && roomId == recoverable.callId) _recoveryResolved = true;
+  }
+
   /// Начать/присоединиться к звонку в комнате.
   Future<void> start(
     String roomId, {
     required bool video,
     bool? initialMicOn,
+    bool? initialCameraOn,
+    bool? initialAudioEnabled,
+    DateTime? recoveredStartedAt,
     bool systemIncoming = false,
     bool? systemCallPrepared,
+    bool recovering = false,
   }) async {
     if (_session != null) {
       if (this.roomId == roomId) return;
@@ -544,12 +769,15 @@ class CallController extends ChangeNotifier {
         initialMicOn ??
         matrix.audio.callMicEnabledOverride ??
         (room?.isDirectChat == true ? true : false);
-    _initiator = room != null && !matrix.roomHasActiveCall(room);
-    _start = DateTime.now();
+    _initiator = !recovering && room != null && !matrix.roomHasActiveCall(room);
+    _start = recoveredStartedAt ?? DateTime.now();
+    final cameraInitiallyOn = initialCameraOn ?? video;
+    final audioInitiallyEnabled = initialAudioEnabled ?? true;
     final s = CallSession(
       client: matrix.client,
       matrixRoomId: roomId,
       initialMicOn: canSpeak && micInitiallyOn,
+      initialSpeakerMuted: !audioInitiallyEnabled,
       canUseMic: canSpeak,
       listenOnly: listenOnly,
       canUseMicNow: () => _canUseMicNowFor(roomId),
@@ -564,11 +792,30 @@ class CallController extends ChangeNotifier {
       callMicPreferenceSink: (enabled) =>
           matrix.audio.setCallMicEnabled(enabled),
       e2eeKeyProvider: matrix.voip?.e2eeKeyProvider.liveKit,
+      refreshE2eeKeys: (expectedRemoteParticipants) async {
+        await matrix.voip?.ensureActiveCallEncryptionKeys(
+          expectedRemoteParticipants: expectedRemoteParticipants,
+        );
+      },
+      adaptiveStream: !_isPersonalCall(room),
+      remoteReactionCue: matrix.audio.playReaction,
     );
     focusedParticipantIdentity = null;
     _session = s;
     s.addListener(_onSessionChanged);
     notifyListeners();
+
+    // Claim foreground execution before signaling/Telecom/network waits. A
+    // user may background the app while the call is still connecting; delaying
+    // the service until after MatrixRTC enter() would make that race depend on
+    // Android's background-start exemptions. Any start failure below rolls this
+    // owner back through _failStart().
+    await _syncForegroundCall(force: true);
+    if (generation != _lifecycleGeneration || _session != s) {
+      await _stopForegroundCall(roomId);
+      return;
+    }
+
     // Сигналинг (membership) — чтобы у собеседника зазвонило. Если он
     // не прошёл, медиа не подключаем: иначе можно получить локальный фантомный
     // звонок и зависшее состояние MatrixRTC.
@@ -589,6 +836,7 @@ class CallController extends ChangeNotifier {
       return;
     }
     if (generation != _lifecycleGeneration || _session != s) {
+      await _stopForegroundCall(roomId);
       await voip.leaveCurrent();
       return;
     }
@@ -603,6 +851,9 @@ class CallController extends ChangeNotifier {
           _systemCallId = roomId;
           _systemMutedByTelecom = false;
           _systemActiveByTelecom = true;
+          _lastSystemMicEnabled = null;
+          _lastSystemAudioEnabled = null;
+          _lastSystemCameraEnabled = null;
         }
         systemRegistered = systemIncoming
             ? await _systemCalls.reportIncomingCall(
@@ -610,12 +861,20 @@ class CallController extends ChangeNotifier {
                 displayName: room!.getLocalizedDisplayname(),
                 video: video,
                 avatarCacheKey: _conversationAvatarCacheKey(room),
+                startedAt: _start,
+                micEnabled: canSpeak && micInitiallyOn,
+                audioEnabled: audioInitiallyEnabled,
+                cameraEnabled: cameraInitiallyOn,
               )
             : await _systemCalls.reportOutgoingCall(
                 callId: roomId,
                 displayName: room!.getLocalizedDisplayname(),
                 video: video,
                 avatarCacheKey: _conversationAvatarCacheKey(room),
+                startedAt: _start,
+                micEnabled: canSpeak && micInitiallyOn,
+                audioEnabled: audioInitiallyEnabled,
+                cameraEnabled: cameraInitiallyOn,
               );
         if (!systemRegistered && _systemCallId == roomId) {
           _clearSystemCallState();
@@ -639,16 +898,36 @@ class CallController extends ChangeNotifier {
         await _systemCalls.endCall(roomId);
         _clearSystemCallState();
       }
+      await _stopForegroundCall(roomId);
       await voip.leaveCurrent();
       return;
     }
 
-    await s.connect(video: video);
+    // Core-Telecom must be the only Android route owner while a registered
+    // self-managed call is active. LiveKit otherwise applies its own Android
+    // audio-session route policy (speaker-preferred by default), which races
+    // requestEndpointChange() and can immediately undo earpiece selection.
+    if (systemRegistered) {
+      await _setAndroidTelecomAudioPolicy(true);
+      if (generation != _lifecycleGeneration || _session != s) {
+        if (_systemCallId == roomId) {
+          await _systemCalls.endCall(roomId);
+          _clearSystemCallState();
+        }
+        await _setAndroidTelecomAudioPolicy(false);
+        await _stopForegroundCall(roomId);
+        await voip.leaveCurrent();
+        return;
+      }
+    }
+
+    await s.connect(video: cameraInitiallyOn, deferReady: true);
     if (generation != _lifecycleGeneration || _session != s) {
+      await _stopForegroundCall(roomId);
       await voip.leaveCurrent();
       return;
     }
-    if (s.status != CallStatus.connected) {
+    if (s.status == CallStatus.failed || !s.mediaTransportConnected) {
       final message = s.error?.trim().isNotEmpty == true
           ? s.error!.trim()
           : 'Не удалось подключиться к медиа звонка';
@@ -659,13 +938,30 @@ class CallController extends ChangeNotifier {
       await _failStart(s, message, leaveSignaling: true);
       return;
     }
-    if (s.status == CallStatus.connected) {
-      if (systemRegistered && _systemCallId == roomId) {
-        await s.setSystemMuted(_systemMutedByTelecom);
-        await s.setSystemActive(_systemActiveByTelecom);
-        if (_systemActiveByTelecom) await _systemCalls.setActive(roomId);
-      }
+
+    if (systemRegistered && _systemCallId == roomId) {
+      await s.setSystemMuted(_systemMutedByTelecom);
+      await s.setSystemActive(_systemActiveByTelecom);
+      if (_systemActiveByTelecom) await _systemCalls.setActive(roomId);
+      await _syncSystemCallControls();
+    } else {
+      // Do not start a second Android media player after Telecom activation:
+      // audioplayers owns a separate native audio context and can overwrite the
+      // call mode/speaker route immediately after requestEndpointChange().
       await matrix.audio.playVoiceJoin();
+    }
+
+    if (generation != _lifecycleGeneration || _session != s) {
+      await voip.leaveCurrent();
+      return;
+    }
+    if (!await s.markReady()) {
+      await _failStart(
+        s,
+        'Не удалось завершить подключение к медиа звонка',
+        leaveSignaling: true,
+      );
+      return;
     }
   }
 
@@ -705,9 +1001,11 @@ class CallController extends ChangeNotifier {
       _clearSystemCallState();
       _lifecycleGeneration++;
     }
+    await _stopForegroundCall(session.matrixRoomId);
     if (failedSystemCallId != null) {
       await _systemCalls.endCall(failedSystemCallId, reason: 'error');
     }
+    await _setAndroidTelecomAudioPolicy(false);
     notifyListeners();
   }
 
@@ -766,6 +1064,9 @@ class CallController extends ChangeNotifier {
     if (!fromSystem && systemCallId != null) {
       await _systemCalls.endCall(systemCallId);
     }
+    await _stopForegroundCall(rid);
+    await _setAndroidTelecomAudioPolicy(false);
+    if (rid != null) await _systemCalls.clearRecoverableCall(rid);
     // Итоговое сообщение о звонке постит ТОЛЬКО инициатор — без дублей.
     // Если пользователь лишь временно вышел из уже подключённого личного
     // звонка, summary не публикуем: в комнате всё ещё может ждать собеседник.
@@ -778,6 +1079,9 @@ class CallController extends ChangeNotifier {
     _systemCallId = null;
     _systemMutedByTelecom = false;
     _systemActiveByTelecom = true;
+    _lastSystemMicEnabled = null;
+    _lastSystemAudioEnabled = null;
+    _lastSystemCameraEnabled = null;
   }
 
   Future<void> _postCallSummary(
@@ -832,6 +1136,8 @@ class CallController extends ChangeNotifier {
     if (systemCallId != null) {
       unawaited(_systemCalls.endCall(systemCallId, reason: 'local'));
     }
+    unawaited(_stopForegroundCall(roomId));
+    unawaited(_setAndroidTelecomAudioPolicy(false));
     _clearSystemCallState();
     _systemCalls.clearActionHandler(this);
     _incomingDismissSub?.cancel();

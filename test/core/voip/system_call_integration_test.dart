@@ -11,6 +11,8 @@ void main() {
         'setActive': OrexSystemCallActionType.setActive,
         'setInactive': OrexSystemCallActionType.setInactive,
         'muteChanged': OrexSystemCallActionType.muteChanged,
+        'toggleMic': OrexSystemCallActionType.toggleMic,
+        'toggleAudio': OrexSystemCallActionType.toggleAudio,
       };
 
       for (final entry in expectations.entries) {
@@ -78,6 +80,62 @@ void main() {
       );
       expect(
         OrexSystemCallAction.fromNative('systemCallAction', 'not-a-map'),
+        isNull,
+      );
+    });
+  });
+
+  group('OrexRecoverableSystemCall.fromNative', () {
+    test('parses persisted active call metadata', () {
+      final call = OrexRecoverableSystemCall.fromNative({
+        'callId': '!room:example.org',
+        'displayName': 'Alice',
+        'incoming': true,
+        'video': false,
+        'answered': true,
+        'startedAt': 1_749_999_900_000,
+        'micEnabled': false,
+        'audioEnabled': false,
+        'cameraEnabled': false,
+        'updatedAt': 1_750_000_000_000,
+      });
+
+      expect(call, isNotNull);
+      expect(call!.callId, '!room:example.org');
+      expect(call.displayName, 'Alice');
+      expect(call.incoming, isTrue);
+      expect(call.answered, isTrue);
+      expect(call.startedAt.millisecondsSinceEpoch, 1_749_999_900_000);
+      expect(call.micEnabled, isFalse);
+      expect(call.audioEnabled, isFalse);
+      expect(call.cameraEnabled, isFalse);
+      expect(call.updatedAt.millisecondsSinceEpoch, 1_750_000_000_000);
+    });
+
+    test('keeps backward-compatible recovery defaults', () {
+      final call = OrexRecoverableSystemCall.fromNative({
+        'callId': '!room:example.org',
+        'displayName': 'Alice',
+        'video': true,
+        'answered': true,
+        'updatedAt': 1_750_000_000_000,
+      });
+
+      expect(call, isNotNull);
+      expect(call!.startedAt, call.updatedAt);
+      expect(call.micEnabled, isTrue);
+      expect(call.audioEnabled, isTrue);
+      expect(call.cameraEnabled, isTrue);
+    });
+
+    test('rejects incomplete recovery descriptors', () {
+      expect(OrexRecoverableSystemCall.fromNative(const {}), isNull);
+      expect(
+        OrexRecoverableSystemCall.fromNative(const {
+          'callId': '!room:example.org',
+          'displayName': '',
+          'updatedAt': 1,
+        }),
         isNull,
       );
     });

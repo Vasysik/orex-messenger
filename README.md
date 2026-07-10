@@ -143,12 +143,16 @@ helper с sanitization имени и защитой от path traversal.
 - единые call controls для полного и свёрнутого вида;
 - плитки участников, фокус на участника, zoom и предпочтение screen share;
 - microphone/camera/speaker controls;
-- быстрое переключение активной камеры без пересоздания звонка;
+- последовательное переключение активной камеры с одной управляемой LiveKit
+  publication: без второй вручную опубликованной camera publication и без
+  permission-probe, открывающего дополнительный capture во время звонка;
 - screen-share controls и desktop source picker на поддерживаемых платформах;
 - Android screen share пока не показывается в controls: MediaProjection flow ещё
   не реализован;
 - настройки аудиоустройств;
-- реакции и поднятая рука как состояние участника звонка;
+- реакции и поднятая рука как состояние участника звонка; звук реакции
+  воспроизводится только у удалённых участников при появлении нового remote
+  reaction timestamp, а не локально у отправителя;
 - голосовые каналы для групп, каналов и чатов супергрупп;
 - listen-only UX для каналов;
 - rollback при ошибках signaling/media connect, чтобы не оставлять фантомную
@@ -161,12 +165,23 @@ Telecom через Jetpack Core-Telecom:
 - ответ, отклонение, завершение, mute и hold из системного UI/гарнитуры
   синхронизируются с `CallController` и LiveKit;
 - во время зарегистрированного системного звонка выбор earpiece/speaker/wired/
-  Bluetooth endpoint передаётся Telecom, а старый `AudioManager` route не
-  конкурирует с системным call stack;
+  Bluetooth endpoint передаётся только Core-Telecom; встроенные speaker/earpiece
+  подтверждаются по типу endpoint, а громкость остаётся на системном
+  `STREAM_VOICE_CALL`; сохранённый выбор earpiece больше не сбрасывается при
+  следующем запуске приложения; после успешной Telecom-регистрации LiveKit
+  получает полноценную `communication` audio-session configuration и остаётся в
+  manual lifecycle на время системного вызова, поэтому Core-Telecom сохраняет
+  единоличное владение endpoint routing; после завершения возвращается automatic
+  lifecycle, а fallback без Telecom его не покидает;
 - системные mute/hold не перезаписывают пользовательское предпочтение микрофона:
   после восстановления возвращается выбранное в Orex состояние;
 - входящие и активные вызовы разделены на разные notification channels: входящий
   вызов использует high-importance канал, активный — обычный ongoing-канал;
+  active-call notification принадлежит только `OrexCallForegroundService`, поэтому
+  поздний ring/handled/end cleanup не может удалить её из push-слоя; call cards
+  строятся через `NotificationCompat.CallStyle`: ongoing-карточка получает
+  обязательное системное действие завершения и два пользовательских действия —
+  микрофон и локальный звук;
 - на Android ниже API 26 и для несистемных голосовых каналов сохраняется прежний
   безопасный in-app fallback.
 
@@ -204,9 +219,9 @@ Matrix push локальными таймерами или фоновым pollin
 - на Android 14+ Orex проверяет `canUseFullScreenIntent()` и при первом запросе
   notification permission открывает системную страницу доступа, если право на
   полноэкранный звонок не выдано;
-- один фиксированный call notification ID используется push-слоем и
-  Core-Telecom, поэтому переход от cold push к системной call-сессии обновляет
-  одну карточку вместо создания дублей;
+- ringing и ongoing call notifications используют разные ID и разных владельцев:
+  answer/reject/push cleanup снимает только входящую карточку, а ongoing-карточку
+  создаёт и удаляет исключительно foreground call service;
 - внутри открытого приложения используется полноэкранный Flutter call UI той же
   двухкнопочной композиции; native full-screen intent подавляется, пока Activity
   реально находится в foreground;
@@ -234,8 +249,12 @@ signaling слоем и LiveKit media layer.
 
 MatrixRTC передаёт и запрашивает SFU-ключи через E2EE to-device события Matrix,
 а LiveKit шифрует audio/video/data frames теми же participant keys. Перед входом
-в медиа-комнату включён `preShareKey`, чтобы ключи были подготовлены до media
-connect. Если key provider недоступен, звонок завершается ошибкой, а не
+в медиа-комнату включён `preShareKey`. Для late join Orex после LiveKit transport
+явно пересинхронизирует MatrixRTC membership, запрашивает отсутствующие remote
+media keys и ждёт callbacks key-provider до публикации состояния `connected`.
+Тот же resync запускается при появлении нового remote participant и после media
+reconnect. Если key provider или обязательные remote keys недоступны, звонок
+завершается ошибкой, а не продолжает работу с чёрным/немым ciphertext и не
 откатывается в plaintext.
 
 На Web обязателен version-matched `e2ee.worker.dart.js`. CI собирает worker из
@@ -348,18 +367,46 @@ desktop database открывается через SQLCipher-backed FFI.
    входящий вызов получает отдельное full-screen окно поверх lock screen и
    cold-start действия «Ответить»/«Отклонить». До публичного релиза остаётся не
    разработка feature, а обязательный device smoke на поддерживаемых Android.
-3. **✅ Переключение камеры в видеозвонке — реализовано.** Локальная видеоплитка
-   умеет быстро переключать активное camera device через LiveKit track и
-   откатываться к безопасному пересозданию track при ошибке fast switch.
-4. **🟡 Звонки в фоне и при заблокированном экране — частично.** Lock-screen
-   incoming flow работает, но активный звонок всё ещё живёт вместе с Flutter-
-   процессом: отдельного foreground call service и гарантированного reconnect
-   после process death нет.
-5. **🟡 Слуховой режим и голосовая связь — частично.** Earpiece/speaker/wired/
-   Bluetooth routing интегрирован с Android Telecom. Proximity sensor и
-   автоматическое выключение экрана у уха ещё не реализованы.
-6. **🟡 Вибро-отклик — частично.** Haptics есть на принятии и отклонении входящего
-   звонка; единой политики для остальных ключевых действий интерфейса пока нет.
+3. **✅ Переключение камеры в видеозвонке — реализовано.** Camera transitions
+   сериализованы и работают через одну управляемую LiveKit publication. Для
+   встроенных front/back камер используется `setCameraPosition`, который
+   перезапускает существующий опубликованный track и заменяет sender track;
+   точный `deviceId` остаётся для внешних камер. Android не использует
+   `fastSwitch`, не публикует второй camera track и не запускает permission-probe
+   поверх активной камеры, а front/back metadata остаётся синхронизированной с
+   renderer, поэтому задняя камера не должна зеркалиться как фронтальная.
+4. **🟡 Звонки в фоне и при заблокированном экране — существенно продвинуто.**
+   Реальная media-сессия через `CallController`, независимо от успеха Core-Telecom,
+   владеет `START_STICKY` foreground service, partial wake lock и отдельным
+   ongoing-уведомлением с хронометром. Service поднимается до MatrixRTC/Telecom/
+   network waits, пока действие пользователя ещё foreground; на Android 11+
+   runtime type расширяется от `phoneCall` до `microphone` и при активной камере
+   `camera`. CallStyle-карточка содержит системное завершение и действия
+   «микрофон»/«звук», а ringing-card не может удалить её по общему ID. Для
+   зарегистрированного Core-Telecom вызова LiveKit получает полноценную
+   communication audio-session configuration вместо пустого manual mode.
+   LiveKit reconnect-события отслеживаются, а media-health check ловит пропущенный
+   terminal disconnect. На resume фактический `Room.connectionState` проверяется
+   отдельно от локального UI-статуса: нездоровая сессия заменяется свежей E2EE
+   Room с восстановлением выбранных mic/camera/audio state. Late join audio/video
+   дополнительно ждёт явного MatrixRTC key-resync, поэтому `connected` выставляется
+   только после transport, remote media keys, восстановления локального media state
+   и системного call-state. После recreation процесса свежий Matrix sync проверяет
+   живой MatrixRTC call и восстанавливает сохранённое состояние без повторного
+   ring. Полностью headless media без FlutterEngine всё ещё остаётся отдельной
+   задачей.
+5. **✅ Слуховой режим и голосовая связь — реализовано.** Earpiece/speaker/wired/
+   Bluetooth routing имеет одного владельца — Android Telecom; LiveKit получает
+   фиксированную call-oriented audio session на время зарегистрированного вызова
+   и не ведёт параллельный automatic route lifecycle, сохранённый earpiece route
+   переживает перезапуск приложения, а call media и аппаратные кнопки
+   громкости используют `STREAM_VOICE_CALL`. Для connected
+   audio-call на earpiece proximity wake lock автоматически гасит экран у уха и
+   освобождается при включении видео, смене маршрута, hangup и dispose.
+6. **✅ Вибро-отклик — реализовано.** Единая семантическая политика
+   `selection / action / confirm / destructive` используется во входящем
+   звонке, call controls и ключевых действиях composer; desktop/web остаются
+   безопасным no-op.
 7. **🔴 Демонстрация экрана на Android — не реализована.** Controller явно
    блокирует Android до появления MediaProjection flow; неработающая кнопка в
    call controls скрыта, чтобы release-сборка не обещала недоступную функцию.
@@ -368,12 +415,12 @@ desktop database открывается через SQLCipher-backed FFI.
 
 #### Что сейчас реально мешает закрыть 0.4.0
 
-- active-call lifecycle всё ещё привязан к Flutter-процессу, а не к отдельному
-  Android foreground call service;
+- полностью headless media после hard process death ещё не закрыто: foreground
+  call service сохраняет активный системный вызов, точное состояние mic/audio/
+  camera и recovery после свежего Matrix sync, но сама LiveKit media-сессия
+  по-прежнему требует восстановленного FlutterEngine;
 - Android screen share требует полноценного MediaProjection lifecycle, а не
   ещё одного fallback вокруг desktop-контроллера;
-- proximity sensor и haptics пока существуют как отдельные незавершённые куски,
-  без платформенного lifecycle/controller слоя;
 - killed-process push/call flow нуждается в воспроизводимом device smoke matrix
   по Android API и OEM, потому что CI проверяет сборку, но не системное поведение;
 - QR-login отсутствует, если он остаётся обязательной частью scope `0.4.0`.
@@ -388,6 +435,20 @@ desktop database открывается через SQLCipher-backed FFI.
   media player; контролируемая очистка временных файлов ещё нужна;
 * обработка legacy `orex.sqlite` из dogfood-сборок, чтобы старый plaintext cache
   не оставался рядом с новой SQLCipher-базой;
+* ✅ прочитанная комната очищает своё системное уведомление точечно — при
+  открытии foreground-чата и при переходе unread count в ноль, без `cancelAll`;
+* ✅ Android и Windows используют системные уведомления для новых сообщений из
+  неоткрытых комнат даже когда приложение активно; локальный notification sound
+  остаётся только fallback для платформ без native notification bridge;
+* ✅ выход из продолжающегося звонка сохраняет локальный tombstone комнаты:
+  обычные MatrixRTC membership refresh не превращают продолжающийся разговор в
+  новый входящий после перезапуска, а новый explicit ring снимает suppress;
+  свежие ring events слушаются напрямую из timeline, поэтому их не может скрыть
+  следующий membership state-event; startup scan подавляет только звонки из
+  начального snapshot, а не вызовы, пришедшие во время восстановления состояния;
+* ✅ Windows получает локальные Matrix sync-уведомления с переходом в комнату,
+  пока desktop-процесс запущен; закрытый Windows-процесс всё ещё требует
+  отдельного remote-push канала;
 * ✅ явная Android backup policy: platform backup отключён для приложения;
 * privacy-safe crash reporting и диагностика критических flow: login, sync,
   calls и media;
@@ -429,9 +490,9 @@ desktop database открывается через SQLCipher-backed FFI.
 - кто может приглашать в группы — `Все / Контакты / Никто`;
 - получение сообщений от неподтверждённых сессий — `Разрешить / Запретить`.
 
-### 12.4. Версия 0.6.0 — уведомления и локальный контроль данных
+### 12.4. Ветка 0.5.x — уведомления и локальный контроль данных
 
-Главная цель `0.6.0` — дать пользователю предсказуемый контроль над тем, что
+Главная цель `0.5.x` — дать пользователю предсказуемый контроль над тем, что
 приложение сообщает системе, загружает автоматически и хранит локально.
 
 #### Глобальные настройки уведомлений
@@ -467,9 +528,9 @@ killed-process resolution. Нельзя делать отдельную лока
 - очистка всех локальных данных с отдельным подтверждением и ясным объяснением,
   что произойдёт с сессией и зашифрованным локальным состоянием.
 
-### 12.5. Версия 0.7.0 — полноценная семантика переписки
+### 12.5. Версия 0.6.0 — полноценная семантика переписки
 
-Главная цель `0.7.0` — сделать timeline удобным для длинных и активных диалогов.
+Главная цель `0.6.0` — сделать timeline удобным для длинных и активных диалогов.
 
 1. **Юзабельные ответы.** Базовые reply events уже поддерживаются, но нужны
    полноценная цитата исходного сообщения, понятная связь reply chain, переход к
@@ -490,9 +551,9 @@ killed-process resolution. Нельзя делать отдельную лока
 7. **Голосования.** Создание опросов, выбор вариантов, результаты и обновление
    состояния в реальном времени.
 
-### 12.6. Версия 0.8.0 — профили, аватары и идентичность
+### 12.6. Ветка 0.6.x — профили, аватары и идентичность
 
-Главная цель `0.8.0` — превратить текущие карточки пользователя и комнаты в
+Главная цель `0.6.x` — превратить текущие карточки пользователя и комнаты в
 полноценные управляемые профили.
 
 1. **Полноценные профили пользователей.** Аватар, описание, Matrix ID, общие
@@ -508,9 +569,9 @@ killed-process resolution. Нельзя делать отдельную лока
 5. **Настройки профиля.** Управление публичными данными, аватарами и связанными
    privacy-настройками из одного места.
 
-### 12.7. Версия 0.9.0 — развитие мультимедиа
+### 12.7. Версия 0.7.0 — развитие мультимедиа
 
-Главная цель `0.9.0` — довести медиавозможности Orex до уровня повседневного
+Главная цель `0.7.0` — довести медиавозможности Orex до уровня повседневного
 мессенджера без зависимости от стороннего клиента.
 
 1. **Голосовые сообщения.** Запись, предпросмотр, отправка, waveform и
