@@ -440,12 +440,13 @@ desktop database открывается через SQLCipher-backed FFI.
 * ✅ Android и Windows используют системные уведомления для новых сообщений из
   неоткрытых комнат даже когда приложение активно; локальный notification sound
   остаётся только fallback для платформ без native notification bridge;
-* ✅ выход из продолжающегося звонка сохраняет локальный tombstone комнаты:
-  обычные MatrixRTC membership refresh не превращают продолжающийся разговор в
-  новый входящий после перезапуска, а новый explicit ring снимает suppress;
-  свежие ring events слушаются напрямую из timeline, поэтому их не может скрыть
-  следующий membership state-event; startup scan подавляет только звонки из
-  начального snapshot, а не вызовы, пришедшие во время восстановления состояния;
+* ✅ выход из продолжающегося звонка сохраняет fingerprints удалённых MatrixRTC
+  memberships (`user/device/call/membershipId`): тот же продолжающийся call
+  instance после перезапуска не превращается во входящий, а новый membership
+  instance или действительно новый explicit ring снимает suppress; старый ring
+  из timeline не может воскресить уже завершённый вызов, а startup scan подавляет
+  только звонки из начального snapshot, не вызовы, пришедшие во время восстановления
+  локального состояния;
 * ✅ Windows получает локальные Matrix sync-уведомления с переходом в комнату,
   пока desktop-процесс запущен; закрытый Windows-процесс всё ещё требует
   отдельного remote-push канала;

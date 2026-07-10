@@ -81,7 +81,7 @@ class CallController extends ChangeNotifier {
         // and active recording/playout policy). This keeps background media alive
         // without letting LiveKit repeatedly re-assert its own speaker route.
         await lk.AudioManager.instance.setAudioSessionOptions(
-          lk.AudioSessionOptions.communication(),
+          const lk.AudioSessionOptions.communication(),
         );
       } else {
         await lk.AudioManager.instance.setAudioSessionManagementMode(

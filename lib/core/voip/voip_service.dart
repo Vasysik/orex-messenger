@@ -24,9 +24,30 @@ bool orexShouldMarkStartupCallAsSeen({
 }) => existedAtStartup && !hasFreshExplicitRing;
 
 @visibleForTesting
-bool orexShouldResumePersistedCallAfterRing({
-  required bool hasFreshExplicitRing,
-}) => hasFreshExplicitRing;
+bool orexIsNewCallInstanceAfterPersistedLeave({
+  required Set<String> previousMemberships,
+  required Set<String> currentMemberships,
+  required bool hasFreshRing,
+}) {
+  if (hasFreshRing) return true;
+  if (previousMemberships.isEmpty) return false;
+  return currentMemberships.any(
+    (signature) => !previousMemberships.contains(signature),
+  );
+}
+
+@visibleForTesting
+bool orexIsFreshRingAfterLeave({
+  required DateTime? ringAt,
+  required DateTime leftAt,
+}) => ringAt != null && ringAt.isAfter(leftAt);
+
+class _PendingIncomingRing {
+  const _PendingIncomingRing(this.room, this.occurredAt);
+
+  final Room room;
+  final DateTime occurredAt;
+}
 
 class OrexRemoteCallTermination {
   const OrexRemoteCallTermination({
@@ -61,9 +82,10 @@ class VoipService extends ChangeNotifier {
     // voip.onIncomingGroupCall: не зависит от того, открывали ли мы чат, и не
     // «перезванивает» по уже существующему звонку при перезагрузке).
     // Snapshot calls and ring events already present in the startup cache. A
-    // A ring that arrives while persisted suppress state is being restored must
-    // still be treated as new; without this baseline the final startup scan marked all
-    // visible calls as historical and swallowed genuine foreground calls.
+    // ring that arrives while persisted suppress state is being restored must
+    // still be treated as new; without this baseline the final startup scan
+    // marked all visible calls as historical and swallowed genuine foreground
+    // calls.
     _seedStartupIncomingState();
     // A ring event can be followed immediately by MatrixRTC membership state,
     // so room.lastEvent is not a reliable transport for foreground incoming
@@ -203,6 +225,8 @@ class VoipService extends ChangeNotifier {
   final Map<String, DateTime> _callDispositionAt = <String, DateTime>{};
   final Map<String, Timer> _callDispositionCleanupTimers = <String, Timer>{};
   final Map<String, DateTime> _persistedLeftAt = <String, DateTime>{};
+  final Map<String, Set<String>> _persistedLeftMemberships =
+      <String, Set<String>>{};
   Future<void>? _suppressionRestore;
   bool _suppressionRestored = false;
   bool _disposed = false;
@@ -210,7 +234,8 @@ class VoipService extends ChangeNotifier {
   final Set<String> _seenIncomingRingEventIds = <String>{};
   static const int _maxRememberedIncomingRingEvents = 256;
   final Set<String> _startupExistingCallRoomIds = <String>{};
-  final Map<String, Room> _pendingFreshRingRooms = <String, Room>{};
+  final Map<String, _PendingIncomingRing> _pendingFreshRingRooms =
+      <String, _PendingIncomingRing>{};
   Timer? _staleMembershipCleanupTimer;
 
   static const _leftCallsPrefsKey = 'orex_voip_left_calls_v1';
@@ -286,7 +311,16 @@ class VoipService extends ChangeNotifier {
             final leftAt = DateTime.fromMillisecondsSinceEpoch(milliseconds);
             final age = now.difference(leftAt);
             if (age.isNegative || age > _maxPersistedLeftAge) continue;
+            final memberships = <String>{};
+            final rawMemberships = value is Map ? value['memberships'] : null;
+            if (rawMemberships is List) {
+              for (final raw in rawMemberships) {
+                final signature = raw?.toString().trim() ?? '';
+                if (signature.isNotEmpty) memberships.add(signature);
+              }
+            }
             _persistedLeftAt[roomId] = leftAt;
+            _persistedLeftMemberships[roomId] = memberships;
             _recordCallDisposition(
               roomId,
               occurredAt: leftAt,
@@ -305,8 +339,11 @@ class VoipService extends ChangeNotifier {
           growable: false,
         );
         _pendingFreshRingRooms.clear();
-        for (final room in pendingRings) {
-          _presentFreshIncomingRing(room);
+        for (final pending in pendingRings) {
+          _presentFreshIncomingRing(
+            pending.room,
+            pending.occurredAt,
+          );
         }
         _scan(markExistingAsSeen: true);
       }
@@ -320,6 +357,9 @@ class VoipService extends ChangeNotifier {
         for (final entry in _persistedLeftAt.entries)
           entry.key: <String, Object?>{
             'left_at': entry.value.millisecondsSinceEpoch,
+            'memberships':
+                (_persistedLeftMemberships[entry.key] ?? const <String>{})
+                    .toList(growable: false),
           },
       };
       if (payload.isEmpty) {
@@ -333,8 +373,31 @@ class VoipService extends ChangeNotifier {
   }
 
   void _clearPersistedLeftCall(String roomId) {
-    if (_persistedLeftAt.remove(roomId) == null) return;
+    final removedAt = _persistedLeftAt.remove(roomId);
+    final removedMemberships = _persistedLeftMemberships.remove(roomId);
+    if (removedAt == null && removedMemberships == null) return;
     unawaited(_persistLeftCalls());
+  }
+
+  Set<String> _remoteCallMembershipSignatures(Room room) {
+    final myId = client.userID;
+    return room
+        .getCallMembershipsFromRoom(voip)
+        .values
+        .expand((memberships) => memberships)
+        .where(
+          (membership) =>
+              !membership.isExpired && membership.userId != myId,
+        )
+        .map(
+          (membership) => <Object?>[
+            membership.userId,
+            membership.deviceId,
+            membership.callId,
+            membership.membershipId,
+          ].join('\u001f'),
+        )
+        .toSet();
   }
 
   void _handleRemoteTermination(
@@ -620,7 +683,7 @@ class VoipService extends ChangeNotifier {
               .toList(growable: false);
           if (missing.isEmpty) return;
 
-          await groupCall.requestEncrytionKey(missing);
+          await groupCall.backend.requestEncrytionKey(groupCall, missing);
           if (await e2eeKeyProvider.waitForKeys(missing, timeout: timeout)) {
             return;
           }
@@ -742,14 +805,15 @@ class VoipService extends ChangeNotifier {
   /// Сканируем все комнаты на активные звонки.
   void _scan({bool markExistingAsSeen = false}) {
     for (final room in client.rooms) {
-      final hasFreshExplicitRing = _consumeFreshIncomingRing(room);
+      final freshExplicitRingAt = _consumeFreshIncomingRing(room);
+      final hasFreshExplicitRing = freshExplicitRingAt != null;
       if (!_roomHasCall(room)) {
         if (hasFreshExplicitRing) {
           _cancelRoomCallEnded(room.id);
           _considerIncomingRoom(
             room,
             markExistingAsSeen: false,
-            hasFreshExplicitRing: true,
+            freshExplicitRingAt: freshExplicitRingAt,
           );
         } else {
           _scheduleRoomCallEnded(room.id);
@@ -765,7 +829,7 @@ class VoipService extends ChangeNotifier {
           existedAtStartup: existedAtStartup,
           hasFreshExplicitRing: hasFreshExplicitRing,
         ),
-        hasFreshExplicitRing: hasFreshExplicitRing,
+        freshExplicitRingAt: freshExplicitRingAt,
       );
     }
   }
@@ -773,8 +837,8 @@ class VoipService extends ChangeNotifier {
   void _seedStartupIncomingState() {
     for (final room in client.rooms) {
       if (_roomHasCall(room)) _startupExistingCallRoomIds.add(room.id);
-      final eventId = _incomingRingEventId(room);
-      if (eventId != null) _rememberIncomingRingEventId(eventId);
+      final event = _freshIncomingRingEvent(room);
+      if (event != null) _rememberIncomingRingEventId(event.eventId);
     }
   }
 
@@ -791,24 +855,30 @@ class VoipService extends ChangeNotifier {
     if (eventId.isEmpty || !_rememberIncomingRingEventId(eventId)) return;
 
     if (!_suppressionRestored) {
-      _pendingFreshRingRooms[event.room.id] = event.room;
+      _pendingFreshRingRooms[event.room.id] = _PendingIncomingRing(
+        event.room,
+        event.originServerTs,
+      );
       return;
     }
-    _presentFreshIncomingRing(event.room);
+    _presentFreshIncomingRing(event.room, event.originServerTs);
   }
 
-  void _presentFreshIncomingRing(Room room) {
+  void _presentFreshIncomingRing(Room room, DateTime occurredAt) {
     _cancelRoomCallEnded(room.id);
     _considerIncomingRoom(
       room,
       markExistingAsSeen: false,
-      hasFreshExplicitRing: true,
+      freshExplicitRingAt: occurredAt,
     );
   }
 
-  bool _consumeFreshIncomingRing(Room room) {
-    final eventId = _incomingRingEventId(room);
-    return eventId != null && _rememberIncomingRingEventId(eventId);
+  DateTime? _consumeFreshIncomingRing(Room room) {
+    final event = _freshIncomingRingEvent(room);
+    if (event == null || !_rememberIncomingRingEventId(event.eventId)) {
+      return null;
+    }
+    return event.originServerTs;
   }
 
   bool _rememberIncomingRingEventId(String eventId) {
@@ -819,15 +889,17 @@ class VoipService extends ChangeNotifier {
     return true;
   }
 
-  String? _incomingRingEventId(Room room) {
+  Event? _freshIncomingRingEvent(Room room) {
     final event = room.lastEvent;
     if (event == null || event.senderId == client.userID) return null;
     if (event.tryParseRtcNotificationContent()?.notificationType !=
         RtcNotificationType.ring) {
       return null;
     }
+    final age = DateTime.now().difference(event.originServerTs);
+    if (age > _timelineCallFallbackTtl) return null;
     final eventId = event.eventId.trim();
-    return eventId.isEmpty ? null : eventId;
+    return eventId.isEmpty ? null : event;
   }
 
   bool _explicitlyNonPersonalRoom(Room room) {
@@ -870,8 +942,9 @@ class VoipService extends ChangeNotifier {
   void _considerIncomingRoom(
     Room room, {
     required bool markExistingAsSeen,
-    bool hasFreshExplicitRing = false,
+    DateTime? freshExplicitRingAt,
   }) {
+    final hasFreshExplicitRing = freshExplicitRingAt != null;
     final myId = client.userID;
     final currentCall = active;
     if (currentCall != null) {
@@ -889,15 +962,18 @@ class VoipService extends ChangeNotifier {
       return;
     }
     if (_shown.contains(room.id)) return;
-    if (hasFreshExplicitRing && !_persistedLeftAt.containsKey(room.id)) {
-      _suppress.remove(room.id);
-    }
-    if (_suppress.contains(room.id) &&
-        !_resumeAfterNewRemoteCall(
-          room,
-          hasFreshExplicitRing: hasFreshExplicitRing,
-        )) {
-      return;
+    if (_suppress.contains(room.id)) {
+      final resumed = _resumeAfterNewRemoteCall(
+        room,
+        freshExplicitRingAt: freshExplicitRingAt,
+      );
+      if (!resumed) {
+        final mayBypassStartupSuppress = hasFreshExplicitRing &&
+            !_persistedLeftAt.containsKey(room.id) &&
+            !_callDispositionAt.containsKey(room.id);
+        if (!mayBypassStartupSuppress) return;
+        _suppress.remove(room.id);
+      }
     }
     final others = _callMembers(room).where((id) => id != myId).toSet();
     if (others.isEmpty && !hasFreshExplicitRing) {
@@ -927,13 +1003,28 @@ class VoipService extends ChangeNotifier {
 
   bool _resumeAfterNewRemoteCall(
     Room room, {
-    bool hasFreshExplicitRing = false,
+    DateTime? freshExplicitRingAt,
   }) {
     final terminatedAt = _callDispositionAt[room.id];
     if (terminatedAt == null) return false;
-    if (!orexShouldResumePersistedCallAfterRing(
-      hasFreshExplicitRing: hasFreshExplicitRing,
-    )) {
+
+    final hasFreshRing = orexIsFreshRingAfterLeave(
+      ringAt: freshExplicitRingAt,
+      leftAt: terminatedAt,
+    );
+    final persistedMemberships = _persistedLeftMemberships[room.id];
+    if (persistedMemberships != null) {
+      final currentMemberships = _remoteCallMembershipSignatures(room);
+      final isNewCall = orexIsNewCallInstanceAfterPersistedLeave(
+        previousMemberships: persistedMemberships,
+        currentMemberships: currentMemberships,
+        hasFreshRing: hasFreshRing,
+      );
+      if (!isNewCall) return false;
+    } else if (!hasFreshRing) {
+      // Legacy disposition state has no exact membership baseline. Do not infer
+      // a new call from a periodic MatrixRTC membership refresh; only a fresh
+      // explicit ring may clear it.
       return false;
     }
 
@@ -962,10 +1053,10 @@ class VoipService extends ChangeNotifier {
   void _finishRoomCallEnded(String roomId) {
     final wasShown = _shown.remove(roomId);
     if (wasShown) _dismiss.add(roomId);
-    // Persisted leave-state suppresses the continuing MatrixRTC room call.
-    // Membership refreshes are not a new invitation, so a transient empty
-    // frame after our own leave must not erase the tombstone. Only a fresh
-    // explicit ring clears it in _resumeAfterNewRemoteCall().
+    // Persisted leave-state suppresses one continuing MatrixRTC call instance.
+    // A transient empty membership frame after our own leave must not erase the
+    // tombstone. A new membership fingerprint or a genuinely fresh explicit
+    // ring clears it in _resumeAfterNewRemoteCall().
     if (_persistedLeftAt.containsKey(roomId)) return;
     _suppress.remove(roomId);
     _callDispositionCleanupTimers.remove(roomId)?.cancel();
@@ -987,7 +1078,11 @@ class VoipService extends ChangeNotifier {
   Future<void> markLeft(String roomId) async {
     _cancelRoomCallEnded(roomId);
     final leftAt = DateTime.now();
+    final room = client.getRoomById(roomId);
     _persistedLeftAt[roomId] = leftAt;
+    _persistedLeftMemberships[roomId] = room == null
+        ? <String>{}
+        : _remoteCallMembershipSignatures(room);
     _recordCallDisposition(
       roomId,
       occurredAt: leftAt,
@@ -1066,8 +1161,8 @@ class VoipService extends ChangeNotifier {
     }
 
     // Explicitly entering a room supersedes an old local-leave tombstone.
-    // If the user leaves again, the continuing room call stays suppressed
-    // until a genuinely new explicit ring event arrives.
+    // If the user leaves again, markLeft() records the current remote
+    // membership fingerprint as the baseline for the continuing call.
     _clearPersistedLeftCall(roomId);
     _callDispositionCleanupTimers.remove(roomId)?.cancel();
     _callDispositionAt.remove(roomId);

@@ -486,18 +486,26 @@ class CallSession extends ChangeNotifier {
   }
 
   Future<void> _refreshRemoteEncryptionKeys() {
-    final current = _keyRefreshInFlight;
-    if (current != null) return current;
     final refresh = refreshE2eeKeys;
     if (refresh == null || _disposed || status == CallStatus.ended) {
       return Future<void>.value();
     }
 
     final expectedRemoteParticipants = _room?.remoteParticipants.length ?? 0;
+    final previous = _keyRefreshInFlight;
     late final Future<void> operation;
-    operation = Future<void>.sync(
-      () => refresh(expectedRemoteParticipants),
-    ).whenComplete(() {
+    operation = (() async {
+      if (previous != null) {
+        try {
+          await previous;
+        } catch (_) {
+          // A later participant-count request must still run after an earlier
+          // failed request; each caller observes the failure of its own refresh.
+        }
+      }
+      if (_disposed || status == CallStatus.ended) return;
+      await refresh(expectedRemoteParticipants);
+    })().whenComplete(() {
       if (identical(_keyRefreshInFlight, operation)) {
         _keyRefreshInFlight = null;
       }
