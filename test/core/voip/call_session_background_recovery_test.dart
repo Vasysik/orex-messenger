@@ -63,6 +63,16 @@ void main() {
     });
   });
 
+  group('orexEncryptionKeyRetryDelay', () {
+    test('backs off and caps retries during a Matrix control-plane outage', () {
+      expect(orexEncryptionKeyRetryDelay(-1), const Duration(seconds: 2));
+      expect(orexEncryptionKeyRetryDelay(0), const Duration(seconds: 2));
+      expect(orexEncryptionKeyRetryDelay(1), const Duration(seconds: 5));
+      expect(orexEncryptionKeyRetryDelay(4), const Duration(seconds: 30));
+      expect(orexEncryptionKeyRetryDelay(99), const Duration(seconds: 30));
+    });
+  });
+
   group('orexShouldPlayRemoteReactionCue', () {
     test('does not replay a reaction that predates the media session', () {
       expect(

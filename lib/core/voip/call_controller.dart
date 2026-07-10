@@ -13,6 +13,31 @@ import 'voip_service.dart';
 import '../matrix/matrix_service.dart';
 import '../logging/orex_logger.dart';
 
+@visibleForTesting
+bool orexShouldInitiateCall({
+  required bool systemIncoming,
+  required bool recovering,
+  required bool roomExists,
+  required bool roomHasActiveCall,
+}) {
+  return !systemIncoming &&
+      !recovering &&
+      roomExists &&
+      !roomHasActiveCall;
+}
+
+@visibleForTesting
+bool orexShouldEndEstablishedCallForRemoteDisposition({
+  required OrexRemoteCallTerminationReason reason,
+  required bool sawRemote,
+}) {
+  // Rejected/busy describe an unanswered ring attempt. They can arrive late
+  // or be produced by a duplicate reverse ring and must never tear down media
+  // after a real peer has already joined. An explicit ended event still means
+  // the remote participant hung up.
+  return !sawRemote || reason == OrexRemoteCallTerminationReason.ended;
+}
+
 /// Долгоживущий «активный звонок»: владеет медиа-сессией ([CallSession]) и
 /// сигналингом ([VoipService]), чтобы звонок переживал сворачивание экрана.
 ///
@@ -275,6 +300,10 @@ class CallController extends ChangeNotifier {
     unawaited(
       matrix.ensureConversationAvatarCached(room).then((cacheKey) async {
         if (cacheKey == null || _systemCallId != room.id) return;
+        // Avatar resolution can finish after the user has already answered.
+        // Never resurrect an incoming Telecom presentation for an active media
+        // call; ongoing state is maintained by updateForegroundCall instead.
+        if (incoming && isActive && roomId == room.id) return;
         if (incoming) {
           await _systemCalls.reportIncomingCall(
             callId: room.id,
@@ -301,7 +330,14 @@ class CallController extends ChangeNotifier {
   /// присылает remote-dismiss, пока Core-Telecom ещё создаёт системную сессию.
   Future<bool> prepareIncoming(Room room, {bool video = false}) {
     if (!_isSystemCallEligible(room)) return Future<bool>.value(false);
-    if (isActive && roomId != room.id) return Future<bool>.value(false);
+    if (isActive) {
+      // An already-running media call must never be re-registered as incoming.
+      // If Core-Telecom disappeared, keep the call alive without system UI
+      // instead of surfacing another ringing session for the same Matrix room.
+      return Future<bool>.value(
+        roomId == room.id && _systemCallId == room.id,
+      );
+    }
     if (_systemCallId != null && _systemCallId != room.id) {
       return Future<bool>.value(false);
     }
@@ -391,7 +427,9 @@ class CallController extends ChangeNotifier {
     required bool fromSystem,
   }) async {
     matrix.audio.stopIncomingRingtone();
-    unawaited(matrix.push.notifyCallAnswering(room.id));
+    // Persist ANSWERING before any potentially slow Telecom/Matrix operation,
+    // so a delayed duplicate FCM delivery cannot ring again in the meantime.
+    await matrix.push.notifyCallAnswering(room.id);
     if (isActive && roomId != room.id) await hangUp();
     final otherSystemCallId = _systemCallId;
     if (otherSystemCallId != null && otherSystemCallId != room.id) {
@@ -432,7 +470,7 @@ class CallController extends ChangeNotifier {
 
   Future<void> rejectIncoming(Room room, {bool fromSystem = false}) async {
     matrix.audio.stopIncomingRingtone();
-    unawaited(matrix.push.notifyCallEnded(room.id));
+    await matrix.push.notifyCallEnded(room.id);
     if (fromSystem) matrix.voip?.dismissIncomingFromSystem(room.id);
     final dispositionSync = Future.wait<void>([
       _markIncomingHandled(room.id),
@@ -630,6 +668,18 @@ class CallController extends ChangeNotifier {
       unawaited(matrix.voip?.cancelOutstandingRing(termination.roomId));
     }
     if (isActive && roomId == termination.roomId) {
+      final currentSession = _session;
+      if (!orexShouldEndEstablishedCallForRemoteDisposition(
+        reason: termination.reason,
+        sawRemote: currentSession?.sawRemote ?? false,
+      )) {
+        OrexLog.d(
+          'Call',
+          'ignored stale ${termination.reason.name} for established call '
+              'room=${termination.roomId}',
+        );
+        return;
+      }
       unawaited(hangUp(fromRemote: true));
       return;
     }
@@ -769,7 +819,12 @@ class CallController extends ChangeNotifier {
         initialMicOn ??
         matrix.audio.callMicEnabledOverride ??
         (room?.isDirectChat == true ? true : false);
-    _initiator = !recovering && room != null && !matrix.roomHasActiveCall(room);
+    _initiator = orexShouldInitiateCall(
+      systemIncoming: systemIncoming,
+      recovering: recovering,
+      roomExists: room != null,
+      roomHasActiveCall: room != null && matrix.roomHasActiveCall(room),
+    );
     _start = recoveredStartedAt ?? DateTime.now();
     final cameraInitiallyOn = initialCameraOn ?? video;
     final audioInitiallyEnabled = initialAudioEnabled ?? true;
@@ -795,6 +850,12 @@ class CallController extends ChangeNotifier {
       refreshE2eeKeys: (expectedRemoteParticipants) async {
         await matrix.voip?.ensureActiveCallEncryptionKeys(
           expectedRemoteParticipants: expectedRemoteParticipants,
+          // A temporary Matrix /sync or DNS outage must not hold a working
+          // LiveKit transport in the initial CONNECTING state for many seconds.
+          // CallSession retries this best-effort; encrypted frames remain
+          // blocked by the key provider until the keys are actually present.
+          timeout: const Duration(milliseconds: 1200),
+          maxAttempts: 1,
         );
       },
       adaptiveStream: !_isPersonalCall(room),
@@ -975,10 +1036,11 @@ class CallController extends ChangeNotifier {
   }) async {
     _cancelUnansweredTimeout();
     lastError = message;
-    unawaited(matrix.push.notifyCallEnded(session.matrixRoomId));
+    // Store the exact ring tombstone before native cleanup. This makes late FCM
+    // retries idempotent even if Telecom tears its session down immediately.
+    await matrix.push.notifyCallEnded(session.matrixRoomId);
     final failedRoom = matrix.client.getRoomById(session.matrixRoomId);
-    if (failedRoom != null &&
-        (matrix.voip?.isPersonalCallRoom(failedRoom) ?? failedRoom.isDirectChat)) {
+    if (failedRoom != null && _shouldSendEndedSignal(failedRoom, session)) {
       unawaited(matrix.voip?.notifyEnded(session.matrixRoomId));
     }
     session.removeListener(_onSessionChanged);
@@ -1055,7 +1117,7 @@ class CallController extends ChangeNotifier {
     _start = null;
     focusedParticipantIdentity = null;
     _clearSystemCallState();
-    if (rid != null) unawaited(matrix.push.notifyCallEnded(rid));
+    if (rid != null) await matrix.push.notifyCallEnded(rid);
     notifyListeners();
     if (s != null) {
       s.removeListener(_onSessionChanged);

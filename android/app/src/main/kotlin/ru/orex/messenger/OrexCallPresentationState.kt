@@ -149,6 +149,21 @@ object OrexCallPresentationState {
         val prefs = prefs(context)
         val currentCallId = prefs.getString(KEY_CALL_ID, null)
         if (callId != null && currentCallId != null && currentCallId != callId) return@synchronized
+
+        // FCM can redeliver the original ring after answer/end. Preserve an
+        // exact event-token tombstone before clearing presentation state so the
+        // stale delivery stays suppressed, while a real redial with a new
+        // event_id is still allowed immediately.
+        val currentRingToken = prefs.getString(KEY_RING_TOKEN, null)
+        val tombstoneCallId = currentCallId ?: callId
+        if (!tombstoneCallId.isNullOrBlank() && !currentRingToken.isNullOrBlank()) {
+            rememberCancelledRing(
+                context = context,
+                callId = tombstoneCallId,
+                ringToken = currentRingToken,
+                now = System.currentTimeMillis(),
+            )
+        }
         prefs.edit().clear().apply()
     }
 

@@ -35,6 +35,19 @@ bool orexShouldRefreshPublishedMediaAfterBackground({
 }
 
 @visibleForTesting
+Duration orexEncryptionKeyRetryDelay(int attempt) {
+  const delays = <Duration>[
+    Duration(seconds: 2),
+    Duration(seconds: 5),
+    Duration(seconds: 10),
+    Duration(seconds: 20),
+    Duration(seconds: 30),
+  ];
+  final safeAttempt = attempt < 0 ? 0 : attempt;
+  return delays[safeAttempt < delays.length ? safeAttempt : delays.length - 1];
+}
+
+@visibleForTesting
 bool orexShouldPlayRemoteReactionCue({
   required bool knownParticipant,
   required int? previousTs,
@@ -146,6 +159,8 @@ class CallSession extends ChangeNotifier {
   Timer? _reconnectTimer;
   Future<void>? _reconnectInFlight;
   Future<void>? _keyRefreshInFlight;
+  Timer? _keyRefreshRetryTimer;
+  int _keyRefreshRetryAttempt = 0;
   Future<void>? _backgroundRecoveryInFlight;
   lk.EventsListener<lk.RoomEvent>? _roomEvents;
   int _reconnectAttempt = 0;
@@ -230,7 +245,11 @@ class CallSession extends ChangeNotifier {
       }
 
       await _adoptRoom(candidate);
-      await _refreshRemoteEncryptionKeys();
+      // Matrix key delivery is a second, eventually-consistent control plane.
+      // A temporary /sync/DNS failure must not destroy a LiveKit transport that
+      // is already connected. The key provider still drops encrypted frames
+      // until the matching keys arrive, so this is fail-closed, not plaintext.
+      await _refreshRemoteEncryptionKeysBestEffort();
       await _restoreMediaState();
       if (_disposed ||
           status == CallStatus.ended ||
@@ -310,7 +329,7 @@ class CallSession extends ChangeNotifier {
       return;
     }
     try {
-      await _refreshRemoteEncryptionKeys();
+      await _refreshRemoteEncryptionKeysBestEffort();
       await _restoreMediaState();
       if (_disposed || !identical(_room, room)) return;
       _cancelReconnect();
@@ -421,7 +440,7 @@ class CallSession extends ChangeNotifier {
         'rebuilding published media after background room=$matrixRoomId '
             'duration=${backgroundDuration.inSeconds}s',
       );
-      await _refreshRemoteEncryptionKeys();
+      await _refreshRemoteEncryptionKeysBestEffort();
       if (_disposed || status == CallStatus.ended || !mediaTransportConnected) {
         return;
       }
@@ -469,7 +488,7 @@ class CallSession extends ChangeNotifier {
       return;
     }
     try {
-      await _refreshRemoteEncryptionKeys();
+      await _refreshRemoteEncryptionKeysBestEffort();
       await Future<void>.delayed(const Duration(milliseconds: 350));
       if (_disposed || status == CallStatus.ended || !mediaTransportConnected) {
         return;
@@ -559,7 +578,7 @@ class CallSession extends ChangeNotifier {
     _lastRemoteParticipantCount = remoteCount;
     if (remoteCount > 0) sawRemote = true;
     if (remoteCountChanged && remoteCount > previousRemoteCount) {
-      _refreshRemoteEncryptionKeysBestEffort();
+      _queueRemoteEncryptionKeyRefresh();
     }
     _applySpeakerMute();
     _scheduleMediaRecovery();
@@ -611,18 +630,47 @@ class CallSession extends ChangeNotifier {
     return operation;
   }
 
-  void _refreshRemoteEncryptionKeysBestEffort() {
-    unawaited(
-      _refreshRemoteEncryptionKeys().catchError(
-        (Object error, StackTrace stack) {
-          OrexLog.d(
-            'Call',
-            'remote media key refresh failed room=$matrixRoomId',
-            error,
-          );
-        },
-      ),
-    );
+  Future<bool> _refreshRemoteEncryptionKeysBestEffort({
+    bool scheduleRetry = true,
+  }) async {
+    try {
+      await _refreshRemoteEncryptionKeys();
+      _cancelEncryptionKeyRefreshRetry();
+      return true;
+    } catch (error) {
+      OrexLog.d(
+        'Call',
+        'remote media key refresh deferred room=$matrixRoomId',
+        error,
+      );
+      if (scheduleRetry) _scheduleEncryptionKeyRefreshRetry();
+      return false;
+    }
+  }
+
+  void _queueRemoteEncryptionKeyRefresh() {
+    unawaited(_refreshRemoteEncryptionKeysBestEffort());
+  }
+
+  void _scheduleEncryptionKeyRefreshRetry() {
+    if (_disposed ||
+        status == CallStatus.ended ||
+        _keyRefreshRetryTimer != null) {
+      return;
+    }
+    final delay = orexEncryptionKeyRetryDelay(_keyRefreshRetryAttempt);
+    _keyRefreshRetryAttempt++;
+    _keyRefreshRetryTimer = Timer(delay, () {
+      _keyRefreshRetryTimer = null;
+      if (_disposed || status == CallStatus.ended) return;
+      unawaited(_refreshRemoteEncryptionKeysBestEffort());
+    });
+  }
+
+  void _cancelEncryptionKeyRefreshRetry({bool resetAttempt = true}) {
+    _keyRefreshRetryTimer?.cancel();
+    _keyRefreshRetryTimer = null;
+    if (resetAttempt) _keyRefreshRetryAttempt = 0;
   }
 
   Future<bool> markReady() async {
@@ -1103,6 +1151,7 @@ class CallSession extends ChangeNotifier {
     status = CallStatus.ended;
     await _clearLocalVoiceUiState();
     _cancelReconnect();
+    _cancelEncryptionKeyRefreshRetry();
     _voiceStateRefreshTimer?.cancel();
     _voiceStateRefreshTimer = null;
     _mediaRecoveryTimer?.cancel();
@@ -1150,6 +1199,7 @@ class CallSession extends ChangeNotifier {
     _disposed = true;
     _reactionClearTimer?.cancel();
     _cancelReconnect();
+    _cancelEncryptionKeyRefreshRetry();
     _voiceStateRefreshTimer?.cancel();
     _mediaRecoveryTimer?.cancel();
     _voiceGate.dispose();

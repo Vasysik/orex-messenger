@@ -16,6 +16,7 @@ import androidx.core.telecom.CallsManager
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,6 +48,7 @@ object OrexAndroidTelecomManager {
 
     private const val CHANNEL_NAME = "orex/system_calls"
     private const val TAG = "OrexSystemCall"
+    private const val CALL_READY_TIMEOUT_MS = 6_500L
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -423,7 +425,7 @@ object OrexAndroidTelecomManager {
                 existing.cameraEnabled = cameraEnabled
                 if (!avatarCacheKey.isNullOrBlank()) existing.avatarCacheKey = avatarCacheKey
                 showNotification(existing)
-                return withTimeoutOrNull(4500) { existing.ready.await() } == true
+                return withTimeoutOrNull(CALL_READY_TIMEOUT_MS) { existing.ready.await() } == true
             }
             if (!existing.terminating &&
                 !disconnectInternal(existing, DisconnectCause.LOCAL)
@@ -553,6 +555,10 @@ object OrexAndroidTelecomManager {
                         }
                     }
                 }
+            } catch (_: CancellationException) {
+                // Expected when a stale/duplicate registration is explicitly
+                // replaced or timed out. Do not report it as a call failure.
+                if (!managed.ready.isCompleted) managed.ready.complete(false)
             } catch (error: Throwable) {
                 Log.e(TAG, "Core-Telecom call failed id=$callId", error)
                 if (!managed.ready.isCompleted) managed.ready.complete(false)
@@ -561,7 +567,7 @@ object OrexAndroidTelecomManager {
             }
         }
 
-        val ready = withTimeoutOrNull(4500) { managed.ready.await() } == true
+        val ready = withTimeoutOrNull(CALL_READY_TIMEOUT_MS) { managed.ready.await() } == true
         if (!ready) {
             managed.job?.cancel()
             cleanup(managed)
@@ -614,7 +620,16 @@ object OrexAndroidTelecomManager {
         if (current !== managed) return
         current = null
         val context = appContext ?: return
-        OrexNotificationCenter.cancelIncomingCall(context, managed.callId)
+        if (managed.answered) {
+            // Core-Telecom can finish its coroutine while LiveKit remains active
+            // (for example during replacement/re-registration). Do not mark the
+            // accepted call as ended or reopen ringing state; Flutter owns the
+            // ongoing foreground notification from this point.
+            OrexNotificationCenter.cancelCallNotification(context)
+            OrexIncomingCallActivity.finishForCall(managed.callId)
+        } else {
+            OrexNotificationCenter.cancelIncomingCall(context, managed.callId)
+        }
     }
 
     private fun emitAction(
