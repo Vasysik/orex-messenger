@@ -21,6 +21,7 @@ object OrexCallPresentationState {
     private const val TAG = "OrexCallState"
     private const val PREFS = "orex_call_presentation_v1"
     private const val CANCEL_PREFS = "orex_call_cancel_tombstone_v1"
+    private const val ENDED_PREFS = "orex_call_ended_tombstone_v1"
     private const val KEY_CALL_ID = "call_id"
     private const val KEY_PHASE = "phase"
     private const val KEY_EXPIRES_AT = "expires_at"
@@ -28,6 +29,9 @@ object OrexCallPresentationState {
     private const val KEY_CANCEL_CALL_ID = "cancel_call_id"
     private const val KEY_CANCEL_RING_TOKEN = "cancel_ring_token"
     private const val KEY_CANCEL_EXPIRES_AT = "cancel_expires_at"
+    private const val KEY_ENDED_CALL_ID = "ended_call_id"
+    private const val KEY_ENDED_AT = "ended_at"
+    private const val KEY_ENDED_EXPIRES_AT = "ended_expires_at"
 
     private const val PHASE_RINGING = "ringing"
     private const val PHASE_ANSWERING = "answering"
@@ -35,6 +39,8 @@ object OrexCallPresentationState {
 
     private const val DEFAULT_RING_WINDOW_MS = 45_000L
     private const val CANCEL_TOMBSTONE_WINDOW_MS = 120_000L
+    private const val ENDED_TOMBSTONE_WINDOW_MS = 120_000L
+    private const val SENT_TIME_SLOP_MS = 1_500L
     private const val ANSWER_WINDOW_MS = 120_000L
     private const val ACTIVE_WINDOW_MS = 12 * 60 * 60 * 1000L
 
@@ -44,10 +50,16 @@ object OrexCallPresentationState {
         context: Context,
         callId: String,
         ringToken: String?,
+        sentAt: Long?,
         timeoutAfterMs: Long,
         refreshOnly: Boolean = false,
     ): IncomingDecision = synchronized(lock) {
         val now = System.currentTimeMillis()
+        if (isLateRingForRecentlyEndedCall(context, callId, sentAt, now)) {
+            rememberSuppressedRingLocked(context, callId, ringToken, now)
+            Log.i(TAG, "Late incoming push suppressed after local call end")
+            return@synchronized IncomingDecision.SUPPRESS
+        }
         if (!ringToken.isNullOrBlank() && isCancelledRing(context, callId, ringToken, now)) {
             Log.i(TAG, "Late ring suppressed by exact cancellation tombstone")
             return@synchronized IncomingDecision.SUPPRESS
@@ -81,6 +93,7 @@ object OrexCallPresentationState {
                         IncomingDecision.SUPPRESS
                     }
                 }
+                rememberSuppressedRingLocked(context, callId, ringToken, now)
                 return@synchronized IncomingDecision.SUPPRESS
             } else {
                 Log.i(TAG, "Incoming call suppressed while another call is ${state.phase}")
@@ -145,17 +158,32 @@ object OrexCallPresentationState {
         )
     }
 
-    fun markEnded(context: Context, callId: String? = null) = synchronized(lock) {
+    fun markEnded(
+        context: Context,
+        callId: String? = null,
+        endedAt: Long = System.currentTimeMillis(),
+    ) = synchronized(lock) {
         val prefs = prefs(context)
         val currentCallId = prefs.getString(KEY_CALL_ID, null)
-        if (callId != null && currentCallId != null && currentCallId != callId) return@synchronized
+        // Always remember the explicitly ended room, even if presentation prefs
+        // have already moved to another call. Do not clear that newer call below.
+        if (!callId.isNullOrBlank()) {
+            rememberEndedCall(context, callId, endedAt)
+        }
+        if (callId != null && currentCallId != null && currentCallId != callId) {
+            return@synchronized
+        }
+
+        val tombstoneCallId = currentCallId ?: callId
+        if (callId == null && !tombstoneCallId.isNullOrBlank()) {
+            rememberEndedCall(context, tombstoneCallId, endedAt)
+        }
 
         // FCM can redeliver the original ring after answer/end. Preserve an
         // exact event-token tombstone before clearing presentation state so the
         // stale delivery stays suppressed, while a real redial with a new
         // event_id is still allowed immediately.
         val currentRingToken = prefs.getString(KEY_RING_TOKEN, null)
-        val tombstoneCallId = currentCallId ?: callId
         if (!tombstoneCallId.isNullOrBlank() && !currentRingToken.isNullOrBlank()) {
             rememberCancelledRing(
                 context = context,
@@ -195,6 +223,62 @@ object OrexCallPresentationState {
         }
         prefs(context).edit().clear().apply()
         true
+    }
+
+
+    fun rememberSuppressedRing(
+        context: Context,
+        callId: String,
+        ringToken: String?,
+    ) = synchronized(lock) {
+        rememberSuppressedRingLocked(
+            context = context,
+            callId = callId,
+            ringToken = ringToken,
+            now = System.currentTimeMillis(),
+        )
+    }
+
+    private fun rememberSuppressedRingLocked(
+        context: Context,
+        callId: String,
+        ringToken: String?,
+        now: Long,
+    ) {
+        if (!ringToken.isNullOrBlank()) {
+            rememberCancelledRing(context, callId, ringToken, now)
+        }
+    }
+
+    private fun rememberEndedCall(
+        context: Context,
+        callId: String,
+        endedAt: Long,
+    ) {
+        endedPrefs(context).edit()
+            .putString(KEY_ENDED_CALL_ID, callId)
+            .putLong(KEY_ENDED_AT, endedAt)
+            .putLong(KEY_ENDED_EXPIRES_AT, endedAt + ENDED_TOMBSTONE_WINDOW_MS)
+            .apply()
+    }
+
+    private fun isLateRingForRecentlyEndedCall(
+        context: Context,
+        callId: String,
+        sentAt: Long?,
+        now: Long,
+    ): Boolean {
+        if (sentAt == null || sentAt <= 0L) return false
+        val prefs = endedPrefs(context)
+        val expiresAt = prefs.getLong(KEY_ENDED_EXPIRES_AT, 0L)
+        if (expiresAt <= now) {
+            if (expiresAt > 0L) prefs.edit().clear().apply()
+            return false
+        }
+        val endedAt = prefs.getLong(KEY_ENDED_AT, 0L)
+        return prefs.getString(KEY_ENDED_CALL_ID, null) == callId &&
+            endedAt > 0L &&
+            sentAt <= endedAt + SENT_TIME_SLOP_MS
     }
 
     private fun rememberCancelledRing(
@@ -277,4 +361,7 @@ object OrexCallPresentationState {
 
     private fun cancelPrefs(context: Context) =
         context.applicationContext.getSharedPreferences(CANCEL_PREFS, Context.MODE_PRIVATE)
+
+    private fun endedPrefs(context: Context) =
+        context.applicationContext.getSharedPreferences(ENDED_PREFS, Context.MODE_PRIVATE)
 }

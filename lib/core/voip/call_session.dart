@@ -35,6 +35,17 @@ bool orexShouldRefreshPublishedMediaAfterBackground({
 }
 
 @visibleForTesting
+bool orexShouldEnsureCameraAfterBackground({
+  required bool cameraRequestedOn,
+  required bool cameraEnabled,
+}) {
+  // Never rebuild an already-enabled camera merely because a room/lifecycle
+  // event fired. Replacing the published camera track itself emits another
+  // room event, so doing that from generic recovery creates an on/off loop.
+  return cameraRequestedOn && !cameraEnabled;
+}
+
+@visibleForTesting
 Duration orexEncryptionKeyRetryDelay(int attempt) {
   const delays = <Duration>[
     Duration(seconds: 2),
@@ -162,6 +173,9 @@ class CallSession extends ChangeNotifier {
   Timer? _keyRefreshRetryTimer;
   int _keyRefreshRetryAttempt = 0;
   Future<void>? _backgroundRecoveryInFlight;
+  Future<void>? _coldAnswerCameraRecoveryInFlight;
+  Future<void>? _cameraToggleInFlight;
+  bool _coldAnswerCameraRecoveryDone = false;
   lk.EventsListener<lk.RoomEvent>? _roomEvents;
   int _reconnectAttempt = 0;
   bool _cameraRequestedOn = false;
@@ -446,17 +460,27 @@ class CallSession extends ChangeNotifier {
       }
       await applyAudioOutput();
       await _restartMicIfInputChanged(force: true);
-      if (_cameraRequestedOn && canPublishMedia) {
-        // Give Android one frame after lifecycle resume before reopening the
-        // camera. This avoids recreating the capturer while Activity visibility
-        // and while-in-use camera access are still being restored.
-        await Future<void>.delayed(const Duration(milliseconds: 250));
-        _applyCameraResult(
-          await _camera.recoverCapture(
-            participant: _room?.localParticipant,
-            canPublishMedia: canPublishMedia,
-          ),
-        );
+      final participant = _room?.localParticipant;
+      if (participant != null &&
+          canPublishMedia &&
+          orexShouldEnsureCameraAfterBackground(
+            cameraRequestedOn: _cameraRequestedOn,
+            cameraEnabled: participant.isCameraEnabled(),
+          )) {
+        // A lifecycle resume may leave a requested camera disabled, but an
+        // already-enabled publication must be left untouched. Rebuilding it on
+        // every resume/room event causes the camera-open/camera-close loop seen
+        // on Android and replaceTrack() against a closed peer on web.
+        try {
+          await participant.setCameraEnabled(
+            true,
+            cameraCaptureOptions: _camera.captureOptions(),
+          );
+          cameraError = null;
+        } catch (e) {
+          OrexLog.d('Call', 'camera resume failed room=$matrixRoomId', e);
+          cameraError = 'Камера недоступна';
+        }
       }
       await _voiceGate.sync();
       _applySpeakerMute();
@@ -480,31 +504,51 @@ class CallSession extends ChangeNotifier {
   /// from a notification. The initial LiveKit sender may be connected before
   /// foreground camera access is usable, so rebuild it once the call UI/media
   /// session is ready and after MatrixRTC keys have settled.
-  Future<void> recoverCameraAfterColdAnswer() async {
+  Future<void> recoverCameraAfterColdAnswer() {
     if (_disposed ||
         status == CallStatus.ended ||
         !_cameraRequestedOn ||
-        !canPublishMedia) {
-      return;
+        !canPublishMedia ||
+        _coldAnswerCameraRecoveryDone) {
+      return Future<void>.value();
     }
-    try {
-      await _refreshRemoteEncryptionKeysBestEffort();
-      await Future<void>.delayed(const Duration(milliseconds: 350));
-      if (_disposed || status == CallStatus.ended || !mediaTransportConnected) {
-        return;
-      }
-      _applyCameraResult(
-        await _camera.recoverCapture(
+    final inFlight = _coldAnswerCameraRecoveryInFlight;
+    if (inFlight != null) return inFlight;
+
+    late final Future<void> operation;
+    operation = (() async {
+      try {
+        await _refreshRemoteEncryptionKeysBestEffort();
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        if (_disposed ||
+            status == CallStatus.ended ||
+            !mediaTransportConnected ||
+            !_cameraRequestedOn) {
+          return;
+        }
+        final result = await _camera.recoverCapture(
           participant: _room?.localParticipant,
           canPublishMedia: canPublishMedia,
-        ),
-      );
-      if (!_disposed) notifyListeners();
-    } catch (e) {
-      OrexLog.d('Call', 'cold-answer camera recovery failed room=$matrixRoomId', e);
-      cameraError = 'Камера недоступна';
-      if (!_disposed) notifyListeners();
-    }
+        );
+        _applyCameraResult(result);
+        if (result.error == null) _coldAnswerCameraRecoveryDone = true;
+        if (!_disposed) notifyListeners();
+      } catch (e) {
+        OrexLog.d(
+          'Call',
+          'cold-answer camera recovery failed room=$matrixRoomId',
+          e,
+        );
+        cameraError = 'Камера недоступна';
+        if (!_disposed) notifyListeners();
+      }
+    })().whenComplete(() {
+      if (identical(_coldAnswerCameraRecoveryInFlight, operation)) {
+        _coldAnswerCameraRecoveryInFlight = null;
+      }
+    });
+    _coldAnswerCameraRecoveryInFlight = operation;
+    return operation;
   }
 
   Future<void> _restoreMediaState() async {
@@ -592,7 +636,10 @@ class CallSession extends ChangeNotifier {
       try {
         await applyAudioOutput();
         await _restartMicIfInputChanged();
-        await _restartCameraIfInputChanged();
+        // Camera publication changes are themselves RoomEvents. Restarting the
+        // camera here creates a feedback loop: publish -> event -> restart ->
+        // event -> restart. Device changes are handled only by explicit camera
+        // selection/cycle actions and the one-shot cold-answer recovery.
         await _voiceGate.sync();
         _applySpeakerMute();
       } catch (e) {
@@ -1055,28 +1102,45 @@ class CallSession extends ChangeNotifier {
     }
   }
 
-  Future<void> toggleCam() async {
-    final lp = _room?.localParticipant;
-    if (lp == null) return;
-    if (!canPublishMedia) {
-      cameraError = 'В режиме просмотра камера недоступна';
-      if (!_disposed) notifyListeners();
-      return;
-    }
-    try {
+  Future<void> toggleCam() {
+    final current = _cameraToggleInFlight;
+    if (current != null) return current;
+
+    late final Future<void> operation;
+    operation = (() async {
+      final lp = _room?.localParticipant;
+      if (lp == null || _disposed || status == CallStatus.ended) return;
+      if (!canPublishMedia) {
+        cameraError = 'В режиме просмотра камера недоступна';
+        if (!_disposed) notifyListeners();
+        return;
+      }
+      final previousRequested = _cameraRequestedOn;
       final next = !lp.isCameraEnabled();
-      await lp.setCameraEnabled(
-        next,
-        cameraCaptureOptions: next ? _camera.captureOptions() : null,
-      );
+      // Publish intent before awaiting WebRTC so lifecycle/room callbacks cannot
+      // infer the opposite state while replaceTrack is still in flight.
       _cameraRequestedOn = next;
-      cameraError = null;
-    } catch (e) {
-      OrexLog.d('Call', 'camera toggle failed room=$matrixRoomId', e);
-      cameraError = 'Камера недоступна';
-    }
-    await _syncProximitySensor();
-    if (!_disposed) notifyListeners();
+      try {
+        await lp.setCameraEnabled(
+          next,
+          cameraCaptureOptions: next ? _camera.captureOptions() : null,
+        );
+        cameraError = null;
+        if (next) _coldAnswerCameraRecoveryDone = true;
+      } catch (e) {
+        _cameraRequestedOn = previousRequested;
+        OrexLog.d('Call', 'camera toggle failed room=$matrixRoomId', e);
+        cameraError = 'Камера недоступна';
+      }
+      await _syncProximitySensor();
+      if (!_disposed) notifyListeners();
+    })().whenComplete(() {
+      if (identical(_cameraToggleInFlight, operation)) {
+        _cameraToggleInFlight = null;
+      }
+    });
+    _cameraToggleInFlight = operation;
+    return operation;
   }
 
   Future<void> _restartCameraIfInputChanged({bool force = false}) async {

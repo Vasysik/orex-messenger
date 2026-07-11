@@ -12,6 +12,9 @@ import android.media.AudioAttributes
 import android.os.Build
 import android.graphics.drawable.Icon
 import android.provider.Settings
+import android.os.SystemClock
+import android.view.View
+import android.widget.RemoteViews
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person as CompatPerson
@@ -77,7 +80,15 @@ object OrexNotificationCenter {
                 return
             }
             if (appResumed) {
-                Log.i(TAG, "Native call presentation suppressed while Orex is foreground")
+                // Even when Flutter owns the visible incoming UI, persist the
+                // exact ring token. Otherwise a delayed/redelivered FCM can
+                // arrive after answer or hang-up and look like a brand-new call.
+                val decision = claimIncomingPresentation(context, payload)
+                Log.i(
+                    TAG,
+                    "Native call presentation suppressed while Orex is foreground " +
+                        "decision=$decision",
+                )
                 return
             }
             showIncomingCall(context, payload, allowFullScreen = true)
@@ -363,20 +374,38 @@ object OrexNotificationCenter {
             // normal call-category card so mic, audio and hang-up are always
             // explicit and the notification is valid before startForeground().
             .addAction(
-                R.drawable.ic_stat_orex,
+                if (micEnabled) R.drawable.ic_call_mic_on
+                else R.drawable.ic_call_mic_off,
                 if (micEnabled) "Микрофон выкл." else "Микрофон вкл.",
                 toggleMic,
             )
             .addAction(
-                R.drawable.ic_stat_orex,
+                if (audioEnabled) R.drawable.ic_call_volume_on
+                else R.drawable.ic_call_volume_off,
                 if (audioEnabled) "Звук выкл." else "Звук вкл.",
                 toggleAudio,
             )
             .addAction(
-                R.drawable.ic_stat_orex,
+                R.drawable.ic_call_end,
                 "Завершить",
                 hangUp,
             )
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .also { builder ->
+                applyOngoingCallCustomControls(
+                    context = context,
+                    builder = builder,
+                    displayName = displayName,
+                    openApp = openApp,
+                    toggleMic = toggleMic,
+                    toggleAudio = toggleAudio,
+                    hangUp = hangUp,
+                    startedAt = startedAt,
+                    answered = answered,
+                    micEnabled = micEnabled,
+                    audioEnabled = audioEnabled,
+                )
+            }
             .build()
     }
 
@@ -435,12 +464,12 @@ object OrexNotificationCenter {
             "content.sender_ts",
             "sender_ts",
         )
-        val decision = OrexCallPresentationState.claimPushRing(
+        val decision = claimIncomingPresentation(
             context = context,
+            payload = payload,
             callId = callId,
             ringToken = ringToken,
             timeoutAfterMs = timeoutAfterMs,
-            refreshOnly = payload["orex_call_refresh"].equals("true", ignoreCase = true),
         )
         if (decision == OrexCallPresentationState.IncomingDecision.SUPPRESS) {
             Log.i(TAG, "Duplicate/handled incoming call push suppressed call=$callId")
@@ -487,6 +516,109 @@ object OrexNotificationCenter {
             avatarCacheKey = avatarCacheKey,
         )
         Log.i(TAG, "Incoming call notification posted call=$callId alert=$alert")
+    }
+
+    private fun claimIncomingPresentation(
+        context: Context,
+        payload: Map<String, String>,
+        callId: String = firstValue(payload, "room_id", "call_id", "event_id").orEmpty(),
+        ringToken: String? = firstValue(
+            payload,
+            "event_id",
+            "content_sender_ts",
+            "content.sender_ts",
+            "sender_ts",
+        ),
+        timeoutAfterMs: Long = remainingCallLifetimeMs(payload),
+    ): OrexCallPresentationState.IncomingDecision {
+        if (callId.isBlank()) return OrexCallPresentationState.IncomingDecision.SUPPRESS
+        if (OrexCallForegroundService.ownsCall(context, callId)) {
+            OrexCallPresentationState.markActive(context, callId)
+            OrexCallPresentationState.rememberSuppressedRing(
+                context = context,
+                callId = callId,
+                ringToken = ringToken,
+            )
+            Log.i(TAG, "Incoming push suppressed by active foreground call call=$callId")
+            return OrexCallPresentationState.IncomingDecision.SUPPRESS
+        }
+        return OrexCallPresentationState.claimPushRing(
+            context = context,
+            callId = callId,
+            ringToken = ringToken,
+            sentAt = incomingSentAt(payload),
+            timeoutAfterMs = timeoutAfterMs,
+            refreshOnly = payload["orex_call_refresh"].equals("true", ignoreCase = true),
+        )
+    }
+
+    private fun applyOngoingCallCustomControls(
+        context: Context,
+        builder: NotificationCompat.Builder,
+        displayName: String,
+        openApp: PendingIntent,
+        toggleMic: PendingIntent,
+        toggleAudio: PendingIntent,
+        hangUp: PendingIntent,
+        startedAt: Long,
+        answered: Boolean,
+        micEnabled: Boolean,
+        audioEnabled: Boolean,
+    ) {
+        fun createRemoteViews(): RemoteViews {
+            return RemoteViews(context.packageName, R.layout.orex_notification_call).apply {
+                setTextViewText(R.id.orex_call_title, displayName)
+                setTextViewText(
+                    R.id.orex_call_status,
+                    if (answered) ongoingCallStatus(micEnabled, audioEnabled)
+                    else "Подключение к звонку…",
+                )
+                setImageViewResource(
+                    R.id.orex_call_toggle_mic,
+                    if (micEnabled) R.drawable.ic_call_mic_on
+                    else R.drawable.ic_call_mic_off,
+                )
+                setImageViewResource(
+                    R.id.orex_call_toggle_audio,
+                    if (audioEnabled) R.drawable.ic_call_volume_on
+                    else R.drawable.ic_call_volume_off,
+                )
+                setContentDescription(
+                    R.id.orex_call_toggle_mic,
+                    if (micEnabled) "Выключить микрофон" else "Включить микрофон",
+                )
+                setContentDescription(
+                    R.id.orex_call_toggle_audio,
+                    if (audioEnabled) "Выключить звук" else "Включить звук",
+                )
+                setContentDescription(R.id.orex_call_hang_up, "Завершить звонок")
+                setOnClickPendingIntent(R.id.orex_call_content, openApp)
+                setOnClickPendingIntent(R.id.orex_call_toggle_mic, toggleMic)
+                setOnClickPendingIntent(R.id.orex_call_toggle_audio, toggleAudio)
+                setOnClickPendingIntent(R.id.orex_call_hang_up, hangUp)
+                if (answered) {
+                    val elapsed = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
+                    val base = SystemClock.elapsedRealtime() - elapsed
+                    setViewVisibility(R.id.orex_call_duration, View.VISIBLE)
+                    setChronometer(R.id.orex_call_duration, base, null, true)
+                } else {
+                    setViewVisibility(R.id.orex_call_duration, View.GONE)
+                }
+            }
+        }
+
+        val compact = createRemoteViews()
+        val expanded = createRemoteViews()
+        builder
+            // A custom foreground-call card is intentional here. OEM SystemUI
+            // may hide NotificationCompat actions in the collapsed row, while
+            // these three PendingIntent-backed controls remain directly visible.
+            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+            .setCustomContentView(compact)
+            .setCustomBigContentView(expanded)
+            .setCustomHeadsUpContentView(compact)
+            .setColor(context.getColor(R.color.orex_launch_icon_background))
+            .setColorized(true)
     }
 
     private fun postCall(
@@ -566,23 +698,40 @@ object OrexNotificationCenter {
             } else {
                 if (toggleMic != null) {
                     builder.addAction(
-                        R.drawable.ic_stat_orex,
+                        if (micEnabled) R.drawable.ic_call_mic_on
+                        else R.drawable.ic_call_mic_off,
                         if (micEnabled) "Микрофон выкл." else "Микрофон вкл.",
                         toggleMic,
                     )
                 }
                 if (toggleAudio != null) {
                     builder.addAction(
-                        R.drawable.ic_stat_orex,
+                        if (audioEnabled) R.drawable.ic_call_volume_on
+                        else R.drawable.ic_call_volume_off,
                         if (audioEnabled) "Звук выкл." else "Звук вкл.",
                         toggleAudio,
                     )
                 }
                 builder.addAction(
-                    R.drawable.ic_stat_orex,
+                    R.drawable.ic_call_end,
                     "Завершить",
                     hangUp ?: decline,
                 )
+                if (toggleMic != null && toggleAudio != null && hangUp != null) {
+                    applyOngoingCallCustomControls(
+                        context = context,
+                        builder = builder,
+                        displayName = displayName,
+                        openApp = openApp,
+                        toggleMic = toggleMic,
+                        toggleAudio = toggleAudio,
+                        hangUp = hangUp,
+                        startedAt = startedAt ?: System.currentTimeMillis(),
+                        answered = true,
+                        micEnabled = micEnabled,
+                        audioEnabled = audioEnabled,
+                    )
+                }
             }
 
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
@@ -871,6 +1020,17 @@ object OrexNotificationCenter {
             return sentTime + lifetime - now
         }
         return lifetime
+    }
+
+    private fun incomingSentAt(payload: Map<String, String>): Long? {
+        return firstLong(
+            payload,
+            "content_sender_ts",
+            "content.sender_ts",
+            "sender_ts",
+            "orex_ring_ts_ms",
+            "orex_sent_time_ms",
+        )?.takeIf { it > 0L } ?: contentLong(payload, "sender_ts")?.takeIf { it > 0L }
     }
 
     private fun isVideoCall(payload: Map<String, String>): Boolean {

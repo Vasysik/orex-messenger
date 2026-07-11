@@ -23,6 +23,27 @@ void main() {
       );
     });
 
+    test('does not treat the platform default camera as a device change', () {
+      expect(
+        OrexCameraDeviceController.shouldRestartForConfiguredDevice(
+          force: false,
+          requestedCameraId: null,
+          activeCameraId: 'front-camera-id',
+          lastAppliedCameraId: null,
+        ),
+        isFalse,
+      );
+      expect(
+        OrexCameraDeviceController.shouldRestartForConfiguredDevice(
+          force: false,
+          requestedCameraId: 'back-camera-id',
+          activeCameraId: 'front-camera-id',
+          lastAppliedCameraId: null,
+        ),
+        isTrue,
+      );
+    });
+
     test('deduplicates non-empty camera ids while preserving order', () {
       final ids = OrexCameraDeviceController.uniqueDeviceIds([
         const OrexAudioDevice(id: ' camera-a ', kind: 'videoinput', label: 'A'),

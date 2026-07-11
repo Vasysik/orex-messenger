@@ -63,6 +63,35 @@ void main() {
     });
   });
 
+  group('orexShouldEnsureCameraAfterBackground', () {
+    test('does not rebuild an already enabled camera publication', () {
+      expect(
+        orexShouldEnsureCameraAfterBackground(
+          cameraRequestedOn: true,
+          cameraEnabled: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('enables the camera only when requested but actually disabled', () {
+      expect(
+        orexShouldEnsureCameraAfterBackground(
+          cameraRequestedOn: true,
+          cameraEnabled: false,
+        ),
+        isTrue,
+      );
+      expect(
+        orexShouldEnsureCameraAfterBackground(
+          cameraRequestedOn: false,
+          cameraEnabled: false,
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group('orexEncryptionKeyRetryDelay', () {
     test('backs off and caps retries during a Matrix control-plane outage', () {
       expect(orexEncryptionKeyRetryDelay(-1), const Duration(seconds: 2));

@@ -70,6 +70,25 @@ class OrexCallForegroundService : Service() {
                     notification,
                 )
             }
+            // The foreground descriptor is the native source of truth while
+            // Flutter/Telecom callbacks race. As soon as answer/start reaches
+            // this service, suppress and close every stale incoming surface for
+            // the same Matrix room.
+            if (descriptor.answered) {
+                OrexCallPresentationState.markActive(this, descriptor.callId)
+            } else if (descriptor.incoming) {
+                OrexCallPresentationState.markAnswering(this, descriptor.callId)
+            }
+            if (descriptor.answered || descriptor.incoming) {
+                OrexNotificationCenter.cancelCallNotification(this)
+                OrexIncomingCallActivity.finishForCall(descriptor.callId)
+            }
+            Log.i(
+                TAG,
+                "Foreground call notification active call=${descriptor.callId} " +
+                    "answered=${descriptor.answered} mic=${descriptor.micEnabled} " +
+                    "audio=${descriptor.audioEnabled}",
+            )
         } catch (error: Throwable) {
             Log.e(TAG, "Failed to enter call foreground state", error)
             stopSelf()
@@ -237,6 +256,7 @@ class OrexCallForegroundService : Service() {
         private const val KEY_CAMERA_ENABLED = "camera_enabled"
         private const val KEY_UPDATED_AT = "updated_at"
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
+        private const val DESCRIPTOR_STALE_MS = 3 * HEARTBEAT_INTERVAL_MS
 
         @Volatile
         private var pendingNotification: Notification? = null
@@ -263,10 +283,24 @@ class OrexCallForegroundService : Service() {
         fun stop(context: Context, callId: String?) {
             val current = readDescriptor(context)
             if (callId != null && current != null && current.callId != callId) return
+            val endedCallId = current?.callId ?: callId
+            if (!endedCallId.isNullOrBlank()) {
+                OrexCallPresentationState.markEnded(
+                    context = context,
+                    callId = endedCallId,
+                    endedAt = System.currentTimeMillis(),
+                )
+            }
             clearDescriptor(context)
             pendingNotification = null
             context.stopService(Intent(context, OrexCallForegroundService::class.java))
             OrexNotificationCenter.cancelOngoingCallNotification(context)
+        }
+
+        fun ownsCall(context: Context, callId: String): Boolean {
+            val descriptor = readDescriptor(context) ?: return false
+            if (descriptor.callId != callId) return false
+            return System.currentTimeMillis() - descriptor.updatedAt <= DESCRIPTOR_STALE_MS
         }
 
         fun readRecovery(context: Context): Map<String, Any?>? =

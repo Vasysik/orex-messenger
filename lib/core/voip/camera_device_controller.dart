@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
 
 import '../audio/audio_device_utils.dart';
@@ -159,15 +160,21 @@ final class OrexCameraDeviceController {
       return const OrexCameraDeviceResult.idle();
     }
 
-    final nextCameraId = normalizedCameraDeviceId();
+    final configuredCameraId = normalizedCameraDeviceId();
+    final requestedCameraId =
+        configuredCameraId ?? _lastRequestedCameraDeviceId;
     final activeCameraId = _currentCameraDeviceIdFromTrack(participant);
-    if (!force &&
-        nextCameraId == (activeCameraId ?? _lastAppliedCameraDeviceId)) {
+    if (!shouldRestartForConfiguredDevice(
+      force: force,
+      requestedCameraId: requestedCameraId,
+      activeCameraId: activeCameraId,
+      lastAppliedCameraId: _lastAppliedCameraDeviceId,
+    )) {
       return const OrexCameraDeviceResult.idle();
     }
     return _switchOrRestart(
       participant,
-      nextCameraId,
+      requestedCameraId,
       cameraPosition: _currentCameraPositionFromTrack(participant),
     );
   }
@@ -355,6 +362,22 @@ final class OrexCameraDeviceController {
       'back_camera' => lk.CameraPosition.back,
       _ => null,
     };
+  }
+
+  @visibleForTesting
+  static bool shouldRestartForConfiguredDevice({
+    required bool force,
+    required String? requestedCameraId,
+    required String? activeCameraId,
+    required String? lastAppliedCameraId,
+  }) {
+    if (force) return true;
+    // `null` means "use the platform/default camera", not "the selected
+    // device changed". Android reports a concrete id for that default track,
+    // so comparing null to the active id used to restart it after every room
+    // event and produced an endless camera open/close cycle.
+    if (requestedCameraId == null) return false;
+    return requestedCameraId != (activeCameraId ?? lastAppliedCameraId);
   }
 
   static String? normalizeSelectedDeviceId(String? deviceId) {
