@@ -107,6 +107,19 @@ void main() {
       );
     });
 
+    test('rejects credential-bearing LiveKit URL query strings', () {
+      expect(
+        () => OrexLiveKitCredentialsClient.parseResponse(
+          statusCode: 200,
+          body: jsonEncode({
+            'url': 'wss://livekit.example.org?token=must-not-be-here',
+            'jwt': _jwt(canPublish: false),
+          }),
+        ),
+        throwsStateError,
+      );
+    });
+
     test('rejects insecure or malformed LiveKit URLs', () {
       expect(
         () => OrexLiveKitCredentialsClient.parseResponse(

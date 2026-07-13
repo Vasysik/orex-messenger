@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
-// Matrix 7.4.0 exports its own VoIP CallSession. Orex intentionally owns a
+// Matrix SDK exports its own VoIP CallSession. Orex intentionally owns a
 // separate media-session type below, so keep the SDK symbol out of this file.
 import 'package:matrix/matrix.dart' hide CallSession;
 
@@ -1579,7 +1579,11 @@ class CallController extends ChangeNotifier {
         return;
       }
       OrexLog.d('Call', 'signaling failed room=$roomId', e);
-      await _failStart(s, 'Не удалось запустить сигналинг звонка');
+      final message = orexIsMatrixRateLimitError(e)
+          ? 'Сервер временно ограничил запросы. '
+                'Повторите звонок через несколько секунд.'
+          : 'Не удалось запустить сигналинг звонка';
+      await _failStart(s, message, leaveSignaling: true);
       return;
     }
     if (wasCancelled() || generation != _lifecycleGeneration || _session != s) {

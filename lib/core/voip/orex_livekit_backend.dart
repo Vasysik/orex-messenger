@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:matrix/matrix.dart';
 
 import '../logging/orex_logger.dart';
+import 'matrix_request_gate.dart';
 
 @visibleForTesting
 bool orexMediaKeySenderEpochMatches({
@@ -19,10 +20,9 @@ Set<String> orexMediaKeyRecipientIdsAfterLeaveDebounce(
   Iterable<String> currentParticipantIds,
 ) => currentParticipantIds.toSet();
 
-/// Matrix 7.4's LiveKit backend leaves delayed sender-key callbacks alive after
-/// dispose and silently omits encrypted recipients whose DeviceKeys are not in
-/// cache. This session-scoped backend keeps the SDK's wire format while making
-/// key rotation cancellable, recipient-complete, and bounded.
+/// Session-scoped MatrixRTC/LiveKit backend. It keeps the SDK wire format while
+/// making delayed sender-key work cancellable, loading missing DeviceKeys, and
+/// bounding key-delivery retries.
 final class OrexLiveKitBackend extends LiveKitBackend {
   OrexLiveKitBackend({
     required super.livekitServiceUrl,
@@ -424,23 +424,14 @@ final class OrexLiveKitBackend extends LiveKitBackend {
     Map<String, Object> data,
     String eventType,
     int expectedEpoch,
-  ) async {
-    Object? lastError;
-    for (var attempt = 0; attempt < _sendAttempts; attempt++) {
-      if (!_isCurrent(expectedEpoch)) return;
-      try {
+  ) {
+    return OrexMatrixRequestGate.shared.run<void>(
+      operationName: 'matrixrtc-media-key:$eventType',
+      maxAttempts: _sendAttempts,
+      operation: () async {
+        if (!_isCurrent(expectedEpoch)) return;
         await _sendToDevice(groupCall, recipients, data, eventType);
-        return;
-      } catch (error) {
-        lastError = error;
-        if (attempt + 1 < _sendAttempts) {
-          await Future<void>.delayed(Duration(milliseconds: 250 << attempt));
-        }
-      }
-    }
-    throw StateError(
-      'MatrixRTC media-key send failed after $_sendAttempts attempts: '
-      '$lastError',
+      },
     );
   }
 
@@ -512,7 +503,7 @@ final class OrexLiveKitBackend extends LiveKitBackend {
               .userDeviceKeys[target.userId]!
               .deviceKeys[target.deviceId]!,
         )
-        // matrix 7.4 removes filtered targets in-place before encryption.
+        // The Matrix SDK may filter targets in-place before encryption.
         .toList();
     final blocked = deviceKeys.where((device) => device.blocked).toList();
     if (blocked.isNotEmpty) {

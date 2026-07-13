@@ -1,21 +1,21 @@
 name: orex_messenger
 description: "Orex Messenger — тёплый ореховый мессенджер на MatrixRTC + LiveKit."
 publish_to: "none"
-version: 0.4.1+4
+version: 0.4.2+8
 
 environment:
   sdk: ">=3.12.0 <4.0.0"
-  flutter: ">=3.24.0"
+  flutter: ">=3.41.6"
 
-# pubspec.lock фиксирует проверенный набор зависимостей; Matrix сейчас 7.4.0.
-# Обновляйте SDK только отдельным PR с полным analyze/test и smoke звонков/push.
+# После первого `flutter pub get` закоммитьте новый pubspec.lock из той же
+# Flutter toolchain, которой собирается пререлиз. Analyze/test/smoke обязательны.
 dependencies:
   flutter:
     sdk: flutter
 
   # Matrix Dart SDK (Famedly)
-  matrix: 7.4.0
-  # E2EE (vodozemac заменил olm). Совместим с matrix 7.x:
+  matrix: 8.1.0
+  # E2EE (vodozemac заменил olm). Совместимость проверяется с Matrix 8.x:
   flutter_vodozemac: 0.5.0
 
   # LiveKit (нативные звонки в Orex UI поверх lk-jwt-service)
@@ -32,18 +32,20 @@ dependencies:
   # Сеть/утилиты
   http: 1.6.0
   path: 1.9.1
-  file_picker: 8.3.7 # выбор аватара
+  file_picker: 11.0.2 # Android path-traversal fix; 11.x uses static FilePicker methods
   shared_preferences: 2.5.5 # сохранение темы
-  package_info_plus: 8.3.1 # версия/сборка из pubspec/platform bundle
-  desktop_drop: 0.5.0 # Drag-and-drop файлов
+  package_info_plus: 9.0.1 # последняя ветка, совместимая с win32 5.x/file_picker 11
+  desktop_drop: 0.7.1 # Drag-and-drop файлов
   open_app_file: 4.0.5 # Открытие файлов на Android/Windows
 
   # Локальный кэш для «мгновенного» старта.
   path_provider: 2.1.6
   sqflite_sqlcipher: 3.4.0
   flutter_secure_storage: 9.2.4
-  sqlcipher_flutter_libs: 0.6.8
+  # Matrix 8.1.0 currently constrains package:sqlite3 to the 2.x line.
+  # Keep the matching SQLCipher carrier until Matrix moves to sqlite3 3.x.
   sqlite3: 2.9.4
+  sqlcipher_flutter_libs: 0.6.8
   sqflite: 2.4.3
   sqflite_common_ffi: 2.3.7+1
   web: 1.1.1

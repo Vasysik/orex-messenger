@@ -117,6 +117,7 @@ final class OrexLiveKitCredentialsClient {
         uri.host.isEmpty ||
         (uri.scheme != 'wss' && uri.scheme != 'https') ||
         uri.userInfo.isNotEmpty ||
+        uri.hasQuery ||
         uri.hasFragment) {
       throw StateError('LiveKit URL должен быть безопасным wss:// или https://');
     }

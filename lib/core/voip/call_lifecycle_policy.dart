@@ -1,12 +1,14 @@
-import 'package:flutter/foundation.dart';
-
-import 'voip_service.dart';
+import 'call_attempt.dart';
 
 /// Pure lifecycle decisions for calls.
 ///
 /// Keeping these rules outside the stateful controller makes signaling
 /// races testable without constructing Matrix, LiveKit or Android Telecom objects.
-@visibleForTesting
+bool orexCanEnterCallRoom({
+  required bool roomEncrypted,
+  required bool allowUnencryptedCalls,
+}) => roomEncrypted || allowUnencryptedCalls;
+
 bool orexShouldInitiateCall({
   required bool systemIncoming,
   required bool recovering,
@@ -16,7 +18,6 @@ bool orexShouldInitiateCall({
   return !systemIncoming && !recovering && roomExists && !roomHasActiveCall;
 }
 
-@visibleForTesting
 bool orexShouldEndEstablishedCallForRemoteDisposition({
   required OrexRemoteCallTerminationReason reason,
 }) {
@@ -27,28 +28,24 @@ bool orexShouldEndEstablishedCallForRemoteDisposition({
   return reason == OrexRemoteCallTerminationReason.ended;
 }
 
-@visibleForTesting
 bool orexShouldReusePreparedIncomingSystemCall({
   required bool fromSystem,
   required bool hasPreparedIncomingCall,
   required bool nativeCallExists,
 }) => nativeCallExists && (fromSystem || hasPreparedIncomingCall);
 
-@visibleForTesting
 bool orexNextAnsweredState({
   required bool alreadyAnswered,
   required bool answerAccepted,
   required bool mediaConnected,
 }) => alreadyAnswered || answerAccepted || mediaConnected;
 
-@visibleForTesting
 bool orexIsCallStartRequestCancelled({
   required bool disposed,
   required int capturedGeneration,
   required int currentGeneration,
 }) => disposed || capturedGeneration != currentGeneration;
 
-@visibleForTesting
 bool orexShouldNotifyEndedForSystemTermination({
   required bool rejected,
   required bool acceptedInProgress,

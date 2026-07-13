@@ -32,6 +32,7 @@ class OrexRuntimeConfig {
     required this.requireVodozemac,
     required this.debugLogs,
     required this.allowInsecureDesktopCache,
+    required this.allowUnencryptedCalls,
   });
 
   static const productionHomeserver = 'https://vasys.ru';
@@ -48,6 +49,7 @@ class OrexRuntimeConfig {
   final bool requireVodozemac;
   final bool debugLogs;
   final bool allowInsecureDesktopCache;
+  final bool allowUnencryptedCalls;
 
   factory OrexRuntimeConfig.fromDefines({
     String environmentName = 'production',
@@ -56,8 +58,9 @@ class OrexRuntimeConfig {
     String elementCallBase = '',
     String pushGateway = '',
     bool requireVodozemac = true,
-    bool debugLogs = true,
+    bool debugLogs = false,
     bool allowInsecureDesktopCache = false,
+    bool allowUnencryptedCalls = false,
   }) {
     final environment = OrexEnvironment.parse(environmentName);
     final resolvedHomeserver = _definedOrDefault(
@@ -85,6 +88,7 @@ class OrexRuntimeConfig {
       requireVodozemac: requireVodozemac,
       debugLogs: debugLogs,
       allowInsecureDesktopCache: allowInsecureDesktopCache,
+      allowUnencryptedCalls: allowUnencryptedCalls,
     )..validateSecurity();
   }
 
@@ -177,10 +181,14 @@ class OrexConfig {
   );
   static const _debugLogs = bool.fromEnvironment(
     'OREX_DEBUG_LOGS',
-    defaultValue: true,
+    defaultValue: false,
   );
   static const _allowInsecureDesktopCache = bool.fromEnvironment(
     'OREX_ALLOW_INSECURE_DESKTOP_CACHE',
+    defaultValue: false,
+  );
+  static const _allowUnencryptedCalls = bool.fromEnvironment(
+    'OREX_ALLOW_UNENCRYPTED_CALLS',
     defaultValue: false,
   );
   static const _liveKitAllowedHosts = String.fromEnvironment(
@@ -196,6 +204,7 @@ class OrexConfig {
     requireVodozemac: _requireVodozemac,
     debugLogs: _debugLogs,
     allowInsecureDesktopCache: _allowInsecureDesktopCache,
+    allowUnencryptedCalls: _allowUnencryptedCalls,
   );
 
   static OrexEnvironment get environment => current.environment;
@@ -213,8 +222,8 @@ class OrexConfig {
   /// Подробные dev-логи продуктовых Matrix-flow: создание комнат, metadata,
   /// права каналов, preview супергрупп.
   ///
-  /// Отключение для release/dev-build:
-  /// `--dart-define=OREX_DEBUG_LOGS=false`.
+  /// По умолчанию выключены даже в debug-сборке. Для локальной диагностики:
+  /// `--dart-define=OREX_DEBUG_LOGS=true`.
   static bool get debugLogs => current.debugLogs;
 
   /// Escape hatch for Windows/Linux dogfooding while desktop SQLCipher is not
@@ -222,6 +231,11 @@ class OrexConfig {
   /// explicitly positioned as using an unencrypted local Matrix cache.
   static bool get allowInsecureDesktopCache =>
       current.allowInsecureDesktopCache;
+
+  /// Security escape hatch for legacy/public Matrix rooms. Keep false in
+  /// production: media keys sent through an unencrypted room are visible to
+  /// the homeserver even though LiveKit frame encryption itself is enabled.
+  static bool get allowUnencryptedCalls => current.allowUnencryptedCalls;
 
   static const _productionLiveKitHost = 'lk.vasys.ru';
 

@@ -4,12 +4,13 @@
 сквозным шифрованием сообщений через **vodozemac** и нативными звонками Orex на
 стеке **MatrixRTC / LiveKit**. Единая кодовая база: **Web · Android · Windows**.
 
-Orex сейчас находится в стадии **cross-platform alpha / dogfood и hardening
-версии 0.4.0**: это уже собираемый продукт с quality gate, системными Android-
-звонками и killed-process push flow, но ещё не публичный security-oriented релиз.
-Код звонков теперь включает media E2EE через MatrixRTC-backed key exchange и
-LiveKit frame encryption; до публичного заявления остаются обязательные
-cross-platform release-тесты и hardening active-call background lifecycle.
+Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+8**: это
+исходный release candidate для dogfood с системными Android-звонками,
+killed-process push, MatrixRTC/LiveKit media E2EE и обязательным release quality
+gate. После обновления зависимостей сборки должны быть заново подтверждены на
+Android, Web и Windows. Версия ещё не является
+публичным security-certified релизом: перед таким заявлением нужны независимый
+аудит и полный Android ↔ Web ↔ Windows device smoke.
 
 ## 1. Продуктовый фокус
 
@@ -137,6 +138,8 @@ helper с sanitization имени и защитой от path traversal.
 
 Что есть сейчас:
 
+- мобильный исходящий и принятый звонок сразу открывается развёрнутым; экран
+  показывает подготовку/соединение, пока MatrixRTC и LiveKit запускаются;
 - входящий личный звонок поверх текущего экрана;
 - полный экран звонка;
 - свёрнутая панель активного звонка;
@@ -156,7 +159,21 @@ helper с sanitization имени и защитой от path traversal.
 - голосовые каналы для групп, каналов и чатов супергрупп;
 - listen-only UX для каналов;
 - rollback при ошибках signaling/media connect, чтобы не оставлять фантомную
-  активную сессию.
+  активную сессию;
+- точная идентичность попытки `room + ring event`: stale accept/reject/ended не
+  применяется к следующему звонку в той же комнате;
+- `accepted` публикуется после успешного MatrixRTC membership, `handled` закрывает
+  только лишние ringing surfaces, а reject/busy не уничтожает созданный
+  вызывающим зашифрованный MatrixRTC-канал;
+- delayed ring без живого membership подавляется и не может воскресить старый
+  Android incoming call;
+- accepted/rejected/busy/ended/handled в E2EE-комнатах отправляются как
+  Olm-encrypted to-device события конкретным Matrix DeviceKeys;
+- все call-control Matrix writes проходят через общую очередь с coalescing и
+  backoff по серверному `retry_after_ms`;
+- звонок fail-closed не запускается в незашифрованной Matrix-комнате. Временный
+  `OREX_ALLOW_UNENCRYPTED_CALLS=true` предназначен только для локальной
+  диагностики и снимает защиту доставки медиаключей от homeserver.
 
 Начиная с `0.4.0+4`, личные звонки на Android 8+ интегрированы с Android
 Telecom через Jetpack Core-Telecom:
@@ -232,13 +249,38 @@ Production gateway развёрнут рядом с Synapse как внутре�
 `http://sygnal:5000/_matrix/push/v1/notify`. Android сам к нему не подключается.
 Production build использует `app_id = ru.vasys.orex_messenger`.
 
-Практическая настройка Firebase и release gate описана в
-`docs/release-builds.md`, а диагностика цепочки Synapse → Sygnal → FCM — в
-`docs/push-infrastructure.md`.
+Практическая сборка описана в `docs/release-android.md`,
+`docs/release-windows.md` и `docs/release-web.md`; диагностика цепочки
+Synapse → Sygnal → FCM — в `docs/push-infrastructure.md`.
 
 LiveKit JWT берётся через `lk-jwt-service` по legacy-compatible контракту
 `POST /sfu/get`. В этот endpoint нельзя отправлять `requested_livekit_grants`:
 совместимые backend-ы отклоняют неизвестные поля с HTTP 400.
+
+## 7.2. `M_LIMIT_EXCEEDED` и приватный Synapse
+
+`M_LIMIT_EXCEEDED` возвращает homeserver или reverse proxy, а не LiveKit.
+Orex сериализует call-related Matrix writes, объединяет одинаковые in-flight
+операции и соблюдает `retry_after_ms`, чтобы ring, membership cleanup и
+media-key retry не создавали повторный request storm.
+
+Для маленького доверенного Synapse лимит сообщений настраивается в
+`homeserver.yaml`:
+
+```yaml
+rc_message:
+  per_second: 50
+  burst_count: 200
+```
+
+После изменения требуется полный restart Synapse и его workers. Если 429
+остаётся, отдельно проверяется rate limiting в nginx/Traefik.
+
+Для конкретного локального пользователя message ratelimit можно отключить через
+Synapse Admin API `/_synapse/admin/v1/users/<user_id>/override_ratelimit`, передав
+`messages_per_second: 0` и `burst_count: 0`. Admin access token никогда не должен
+попадать в клиент Orex или репозиторий. Глобально отключать защиту не требуется:
+клиентский backoff всё равно остаётся обязательным на случай перегрузки сервера.
 
 ## 8. Media E2EE звонков
 
@@ -247,15 +289,21 @@ LiveKit JWT берётся через `lk-jwt-service` по legacy-compatible к
 JWT или room id: один `BaseKeyProvider` используется одновременно MatrixRTC-
 signaling слоем и LiveKit media layer.
 
+По умолчанию звонки разрешены только в Matrix-комнатах с включённым E2EE.
+Управляющие accepted/rejected/busy/ended/handled также идут через encrypted
+to-device; открытым остаётся только короткоживущий wake/cancel envelope, нужный
+Android-процессу до разблокировки Matrix crypto.
+
 MatrixRTC передаёт и запрашивает SFU-ключи через E2EE to-device события Matrix,
 а LiveKit шифрует audio/video/data frames теми же participant keys. Перед входом
 в медиа-комнату включён `preShareKey`. Для late join Orex после LiveKit transport
 явно пересинхронизирует MatrixRTC membership, запрашивает отсутствующие remote
 media keys и ждёт callbacks key-provider до публикации состояния `connected`.
 Тот же resync запускается при появлении нового remote participant и после media
-reconnect. Если key provider или обязательные remote keys недоступны, звонок
+reconnect. Если комната не зашифрована, key provider или обязательные remote keys недоступны, звонок
 завершается ошибкой, а не продолжает работу с чёрным/немым ciphertext и не
-откатывается в plaintext.
+откатывается в plaintext. Escape hatch `OREX_ALLOW_UNENCRYPTED_CALLS=true`
+осознанно ослабляет эту гарантию и запрещён для production-пререлиза.
 
 На Web обязателен version-matched `e2ee.worker.dart.js`. CI собирает worker из
 того же тега `livekit_client`, который зафиксирован в `pubspec.yaml`, и Web
@@ -268,20 +316,22 @@ Android ↔ Windows ↔ Web звонки, late join, reconnect и key rotation. 
 
 ## 9. Локальное хранение
 
-Локальная Matrix-БД шифруется на поддерживаемых платформах:
+Локальная Matrix-БД шифруется на всех нативных платформах:
 
-- Android/iOS/macOS: `sqflite_sqlcipher`;
-- Windows/Linux: `sqlcipher_flutter_libs` + `sqlite3`/`sqflite_common_ffi`;
-- пароль БД генерируется как 256-битный секрет и хранится через
-  `flutter_secure_storage`.
+- Android/iOS/macOS: `sqflite_sqlcipher 3.4.x`;
+- Windows/Linux: `sqlite3 2.9.x` + `sqflite_common_ffi 2.3.x` +
+  `sqlcipher_flutter_libs 0.6.8`; эта совместимая ветка временно сохраняется,
+  потому что `matrix 8.1.0` ограничивает `sqlite3` диапазоном 2.x;
+- 256-битный пароль БД хранится через `flutter_secure_storage`.
 
-Desktop backend открывает новый файл `orex-sqlcipher.sqlite`. Старый
-`orex.sqlite` из dogfood-сборок не мигрируется и не читается: для Windows перед
-`0.3.3+3` миграции не нужны.
+Имена базы и ключа не менялись: мобильные платформы продолжают использовать
+`orex.sqlite`, Windows/Linux — `orex-sqlcipher.sqlite`, а пароль хранится под
+ключом `orex_db_pass`. Обновление `0.4.2` не удаляет существующий локальный кэш
+и не требует повторного входа только из-за изменений зависимостей.
 
-Если на Windows/Linux вместо SQLCipher случайно загрузится обычный `sqlite3`,
-Orex сразу падает на проверке `PRAGMA cipher_version`, чтобы не создать
-plaintext Matrix cache.
+На Windows/Linux Orex проверяет `PRAGMA cipher_version` и отказывается запускать
+Matrix cache, если native asset оказался обычным SQLite. Plaintext fallback в
+production отсутствует.
 
 ## 10. Архитектура
 
@@ -292,7 +342,7 @@ lib/
     storage/      platform database selection and cache security policy
     matrix/       MatrixService facade and Matrix APIs
     push/         Matrix pusher lifecycle and native notification bridge
-    voip/         CallController, CallSession, LiveKit credentials, media controllers
+    voip/         lifecycle orchestration, attempt/disposition/ring policies, Matrix signaling gate, media controllers
     audio/        audio cues and device preferences
   domain/
     rooms/        Orex room/domain preview models and Matrix mappers
@@ -314,6 +364,12 @@ test/
 этапе важнее стабильность, чем ещё один большой перенос API по папкам.
 Дальнейшая миграция должна идти по мере реальных продуктовых задач.
 
+Телефония после 0.4.2 разделена на presentation/coordinator, lifecycle policy,
+идентичность попытки и tombstone registry, encrypted Matrix control transport,
+rate-limit gate и media/platform integration. `VoipService` остаётся orchestration
+root для Matrix sync, MatrixRTC, push и UI streams; дальнейшее деление выполняется
+только вместе с конкретной runtime-проблемой, а не ради количества файлов.
+
 ## 11. Сборки и релизные артефакты
 
 Release-инструкции разделены по платформам:
@@ -322,27 +378,46 @@ Release-инструкции разделены по платформам:
 - [Windows](docs/release-windows.md)
 - [Web](docs/release-web.md)
 
-Общий индекс: [docs/release-builds.md](docs/release-builds.md)
-
 Короткий локальный quality gate перед release candidate:
 
 ```powershell
+flutter clean
+flutter pub get
 flutter analyze --no-pub
 flutter test --no-pub
-flutter build web --release --no-pub
-flutter build apk --debug --no-pub
-flutter build apk --release --split-per-abi --no-pub
-flutter build windows --release --no-pub
+flutter build web --release --no-web-resources-cdn
+flutter build apk --release --split-per-abi
+flutter build windows --release
 ```
 
-Android release требует signing и собирается только отдельными APK по ABI через
-`--split-per-abi`, чтобы тестировщик не скачивал единый fat APK с native-библиотеками
-для всех архитектур. Windows release теперь можно собирать с `OREX_ENV=production`:
-desktop database открывается через SQLCipher-backed FFI.
+`pubspec.lock` коммитится после успешного `flutter pub get` той же Flutter
+версией, которой собирается пререлиз. Android release требует signing и Firebase
+configuration; Windows/Linux дополнительно проверяют наличие SQLCipher через
+runtime fail-closed check.
 
-## 12. Дорожная карта
+## 12. Древо разработки
 
-Дорожная карта ниже фиксирует продуктовый порядок работ и зависимости между
+### Текущий статус ветки 0.4.2
+
+**Сделано:** полноэкранный запуск мобильного звонка, исправленный accept/reject,
+точная идентичность попытки, anti-replay по ID/времени, encrypted call-control,
+Matrix request gate с `retry_after_ms`, fail-closed media E2EE и SQLCipher 4.10
+через совместимую ветку `sqlite3 2.x` на desktop без смены существующей базы
+или ключа.
+
+**До выдачи пререлиза:** успешные `pub get`, `analyze`, `test`; smoke Android ↔
+Web ↔ Windows для accept/reject/redial/background/reconnect; проверка logout и
+soft logout после Matrix 8.x; release-сборки и проверка push на убитом Android-
+процессе. Переход на `sqlite3 3.x` отложен до снятия ограничения в Matrix SDK;
+он не должен форсироваться через `dependency_overrides`.
+
+**Отложено:** режим «только подтверждённые cross-signed устройства», серверный
+enforcement LiveKit grants/voice permissions, переход на `sqlite3 3.x` после
+совместимого Matrix SDK, миграция `flutter_secure_storage` на следующий major и
+дальнейшее дробление `VoipService` без подтверждённой runtime-проблемы.
+
+
+Древо разработки ниже фиксирует продуктовый порядок работ и зависимости между
 функциями. Она не превращает каждый пункт в обещание конкретной даты: версии —
 это логические этапы, а не календарный контракт.
 
@@ -433,8 +508,6 @@ desktop database открывается через SQLCipher-backed FFI.
 * 🟡 единый безопасный pipeline временных медиафайлов: sanitization имён и
   запрет path traversal уже используются и для скачанных файлов, и для системного
   media player; контролируемая очистка временных файлов ещё нужна;
-* обработка legacy `orex.sqlite` из dogfood-сборок, чтобы старый plaintext cache
-  не оставался рядом с новой SQLCipher-базой;
 * ✅ прочитанная комната очищает своё системное уведомление точечно — при
   открытии foreground-чата и при переходе unread count в ноль, без `cancelAll`;
 * ✅ Android и Windows используют системные уведомления для новых сообщений из
@@ -613,7 +686,10 @@ killed-process resolution. Нельзя делать отдельную лока
 
 - Лицензии Matrix SDK и зависимостей перед публичным релизом надо проверить
   отдельно относительно модели распространения Orex.
-- После первой стабильной сборки стоит закрепить версии пакетов: у Matrix SDK и
-  LiveKit бывают breaking changes между major-версиями.
+- Пререлиз фиксирует Matrix 8.1.0, LiveKit 2.9.0-dev.0 и flutter_webrtc 1.5.2.
+  `file_picker 11.0.2` использует новый static API `FilePicker.pickFiles`;
+  `package_info_plus 9.0.1` выбран как совместимая с `win32 5.x` ветка. Major
+  dependency upgrades делаются только вместе с `pub get`, analyze/test и device
+  smoke.
 - README описывает продукт и архитектурные границы. Детальные команды и ключи
   должны жить в release-документах, а не растворяться в продуктовой презентации.

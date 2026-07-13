@@ -3,6 +3,38 @@ import 'package:orex_messenger/core/voip/call_controller.dart';
 import 'package:orex_messenger/core/voip/voip_service.dart';
 
 void main() {
+  group('encrypted call-room policy', () {
+    test('production policy fails closed for unencrypted rooms', () {
+      expect(
+        orexCanEnterCallRoom(
+          roomEncrypted: false,
+          allowUnencryptedCalls: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('encrypted rooms are always allowed', () {
+      expect(
+        orexCanEnterCallRoom(
+          roomEncrypted: true,
+          allowUnencryptedCalls: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('legacy escape hatch is explicit', () {
+      expect(
+        orexCanEnterCallRoom(
+          roomEncrypted: false,
+          allowUnencryptedCalls: true,
+        ),
+        isTrue,
+      );
+    });
+  });
+
   group('orexShouldInitiateCall', () {
     test('an accepted system incoming call never rings back', () {
       expect(

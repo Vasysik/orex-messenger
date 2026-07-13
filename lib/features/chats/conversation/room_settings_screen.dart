@@ -121,7 +121,7 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
     if (_savingAvatar) return;
     setState(() => _savingAvatar = true);
     try {
-      final res = await FilePicker.platform.pickFiles(
+      final res = await FilePicker.pickFiles(
         type: FileType.image,
         withData: true,
       );

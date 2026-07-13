@@ -406,7 +406,7 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _attach() async {
-    final res = await FilePicker.platform.pickFiles(
+    final res = await FilePicker.pickFiles(
       withData: true,
       allowMultiple: true,
     );

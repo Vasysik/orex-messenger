@@ -10,40 +10,14 @@ flutter test --no-pub
 
 ## Windows production build для тестировщиков
 
-Windows использует SQLCipher через `sqlcipher_flutter_libs` и
-`sqflite_common_ffi`. Перед сборкой на машине разработчика должны быть доступны
-инструменты CMake/MSVC из обычного Flutter Windows toolchain. Для сборки
-SQLCipher-плагина также нужен OpenSSL с headers/libs. Runtime/Light-пакет не
-подходит.
+Windows временно использует совместимую связку `sqlite3 2.9.x`,
+`sqflite_common_ffi 2.3.x` и `sqlcipher_flutter_libs 0.6.8`. Matrix 8.1.0
+ограничивает `sqlite3` веткой 2.x, поэтому переход на native build hooks
+`sqlite3 3.x` отложен до обновления ограничения в Matrix SDK.
 
-```powershell
-choco install openssl
-```
-
-Если Chocolatey не установлен:
-
-```powershell
-winget install --id ShiningLight.OpenSSL.Dev -e `
-  --accept-package-agreements `
-  --accept-source-agreements
-```
-
-Проверка, что установлен именно dev-вариант:
-
-```powershell
-Test-Path "C:\Program Files\OpenSSL-Win64\include\openssl\opensslv.h"
-Test-Path "C:\Program Files\OpenSSL-Win64\lib\VC\x64\MD\libcrypto_static.lib"
-```
-
-Обе команды должны вернуть `True`. Если CMake всё ещё пишет:
-
-```text
-Could NOT find OpenSSL
-```
-
-`OpenSSL Light` заменяется на `ShiningLight.OpenSSL.Dev`. Проект передаёт CMake
-стандартный путь `C:\Program Files\OpenSSL-Win64`; для нестандартной установки
-задаётся `OPENSSL_ROOT_DIR`.
+`sqlcipher_flutter_libs 0.6.8` поставляет SQLCipher 4.10.0. Orex дополнительно
+проверяет `PRAGMA cipher_version`, поэтому случайная загрузка обычного SQLite
+завершает запуск fail-closed.
 
 Сборка:
 
@@ -65,8 +39,8 @@ build\windows\x64\runner\Release\orex_messenger.exe
 build\windows\x64\runner\Release\
 ```
 
-а не один `.exe`, потому что рядом лежат DLL, включая SQLCipher-backed
-`sqlite3.dll`, и runtime-файлы Flutter.
+а не один `.exe`, потому что рядом лежат Flutter runtime-файлы и
+`sqlite3.dll`, поставляемая SQLCipher-плагином.
 
 ### Windows installer вместо zip
 
@@ -116,14 +90,15 @@ build\windows\x64\installer\Orex-Setup-<version-from-pubspec>.exe
 user-level папку `%LOCALAPPDATA%\Programs\Orex Messenger`, не требует админских
 прав и забирает все DLL из `build\windows\x64\runner\Release\`.
 
-Windows-БД создаётся как новый файл:
+Windows-БД создаётся как новое поколение:
 
 ```text
-orex-sqlcipher.sqlite
+orex-cache-v3.sqlite
 ```
 
-Старый `orex.sqlite` из прежних dogfood-сборок не мигрируется. Для `0.4.0+25`
-это всё ещё ожидаемое ограничение.
+Старые `orex.sqlite` и `orex-sqlcipher.sqlite` из dogfood-сборок не
+мигрируются и удаляются вместе с WAL/SHM/journal. После обновления локальный
+Matrix-кэш создаётся заново.
 
 При старте Orex проверяет `PRAGMA cipher_version`. Если вместо SQLCipher
 подхватится обычный SQLite, приложение не откроет Matrix cache как plaintext.
