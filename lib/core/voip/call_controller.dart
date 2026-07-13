@@ -7,60 +7,14 @@ import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:matrix/matrix.dart' hide CallSession;
 
 import '../audio/audio_device_utils.dart';
+import 'call_lifecycle_policy.dart';
 import 'call_session.dart';
 import 'system_call_integration.dart';
 import 'voip_service.dart';
 import '../matrix/matrix_service.dart';
 import '../logging/orex_logger.dart';
 
-@visibleForTesting
-bool orexShouldInitiateCall({
-  required bool systemIncoming,
-  required bool recovering,
-  required bool roomExists,
-  required bool roomHasActiveCall,
-}) {
-  return !systemIncoming && !recovering && roomExists && !roomHasActiveCall;
-}
-
-@visibleForTesting
-bool orexShouldEndEstablishedCallForRemoteDisposition({
-  required OrexRemoteCallTerminationReason reason,
-  required bool sawRemote,
-}) {
-  // Rejected/busy describe an unanswered ring attempt. They can arrive late
-  // or be produced by a duplicate reverse ring and must never tear down media
-  // after a real peer has already joined. An explicit ended event still means
-  // the remote participant hung up.
-  return !sawRemote || reason == OrexRemoteCallTerminationReason.ended;
-}
-
-@visibleForTesting
-bool orexShouldReusePreparedIncomingSystemCall({
-  required bool fromSystem,
-  required bool hasPreparedIncomingCall,
-  required bool nativeCallExists,
-}) => nativeCallExists && (fromSystem || hasPreparedIncomingCall);
-
-@visibleForTesting
-bool orexNextAnsweredState({
-  required bool alreadyAnswered,
-  required bool answerAccepted,
-  required bool mediaConnected,
-}) => alreadyAnswered || answerAccepted || mediaConnected;
-
-@visibleForTesting
-bool orexIsCallStartRequestCancelled({
-  required bool disposed,
-  required int capturedGeneration,
-  required int currentGeneration,
-}) => disposed || capturedGeneration != currentGeneration;
-
-@visibleForTesting
-bool orexShouldNotifyEndedForSystemTermination({
-  required bool rejected,
-  required bool acceptedInProgress,
-}) => !rejected && acceptedInProgress;
+export 'call_lifecycle_policy.dart';
 
 /// Долгоживущий «активный звонок»: владеет медиа-сессией ([CallSession]) и
 /// сигналингом ([VoipService]), чтобы звонок переживал сворачивание экрана.
@@ -526,6 +480,10 @@ class CallController extends ChangeNotifier {
 
   bool get isActive => _session != null;
 
+  /// A start request can wait behind teardown or Telecom before it creates the
+  /// media session. Mobile presentation stays expanded during that interval.
+  bool get isStarting => _startOperation != null;
+
   bool _isPersonalCall(Room? room) =>
       room != null &&
       (matrix.voip?.isPersonalCallRoom(room) ?? room.isDirectChat);
@@ -842,13 +800,17 @@ class CallController extends ChangeNotifier {
     }
     if (!refreshOwnership()) return;
 
-    // Do not start the accepted disposition until the native ownership checks
-    // above have survived a possible answer -> immediate disconnect race.
+    // Stop this account's sibling devices immediately, but do not tell the
+    // remote caller that media was accepted until our MatrixRTC membership is
+    // actually published. Sending `accepted` before enterCall() caused the
+    // caller to return an exact `handled` cancellation while this start was
+    // still pending, which cancelled the very accept operation that produced it.
     final acceptedInstance = currentInstance;
-    final acceptedSync = Future.wait<void>([
-      _markIncomingHandled(acceptedInstance),
-      _notifyIncomingAccepted(acceptedInstance),
-    ]);
+    final handledSync = _markIncomingHandled(acceptedInstance);
+    Future<void>? acceptedSync;
+    void publishAccepted(OrexCallInstance signalingInstance) {
+      acceptedSync ??= _notifyIncomingAccepted(signalingInstance);
+    }
 
     // Never create a fresh Core-Telecom incoming call after the user answered.
     // If no native incoming existed, the independent foreground-call owner is
@@ -879,9 +841,12 @@ class CallController extends ChangeNotifier {
               }
             }
           : null,
+      onSignalingReady: publishAccepted,
     );
     await mediaStart;
-    await acceptedSync;
+    await handledSync;
+    final remoteAcceptedSync = acceptedSync;
+    if (remoteAcceptedSync != null) await remoteAcceptedSync;
   }
 
   OrexCallInstance? _currentIncomingAcceptInstance(
@@ -1223,16 +1188,21 @@ class CallController extends ChangeNotifier {
     _cancelPendingIncomingAccept(instance);
     if (_initiator && _isCurrentControllerInstance(instance)) {
       unawaited(matrix.voip?.cancelOutstandingRing(instance));
+      if (termination.reason != OrexRemoteCallTerminationReason.ended) {
+        _cancelUnansweredTimeout();
+      }
     }
     if (isActive && _isCurrentControllerInstance(instance)) {
-      final currentSession = _session;
       if (!orexShouldEndEstablishedCallForRemoteDisposition(
         reason: termination.reason,
-        sawRemote: currentSession?.sawRemote ?? false,
       )) {
+        _callAnswered = true;
+        unawaited(_syncForegroundCall(force: true));
+        unawaited(_syncSystemCallControls());
+        notifyListeners();
         OrexLog.d(
           'Call',
-          'ignored stale ${termination.reason.name} for established call '
+          'kept MatrixRTC channel open after ${termination.reason.name} '
               'room=${termination.roomId}',
         );
         return;
@@ -1384,6 +1354,7 @@ class CallController extends ChangeNotifier {
     bool recovering = false,
     bool initialAnswered = false,
     void Function()? onSessionCreated,
+    void Function(OrexCallInstance instance)? onSignalingReady,
   }) {
     if (_disposed) return Future<void>.value();
     final startCancellationGeneration = _startCancellationGeneration;
@@ -1426,11 +1397,16 @@ class CallController extends ChangeNotifier {
             recovering: recovering,
             initialAnswered: initialAnswered,
             onSessionCreated: onSessionCreated,
+            onSignalingReady: onSignalingReady,
           );
         })().whenComplete(() {
-          if (identical(_startOperation, operation)) _startOperation = null;
+          if (identical(_startOperation, operation)) {
+            _startOperation = null;
+            if (!_disposed) notifyListeners();
+          }
         });
     _startOperation = operation;
+    if (_session == null) notifyListeners();
     return operation;
   }
 
@@ -1448,6 +1424,7 @@ class CallController extends ChangeNotifier {
     bool recovering = false,
     bool initialAnswered = false,
     void Function()? onSessionCreated,
+    void Function(OrexCallInstance instance)? onSignalingReady,
   }) async {
     bool wasCancelled() => orexIsCallStartRequestCancelled(
       disposed: _disposed,
@@ -1581,10 +1558,19 @@ class CallController extends ChangeNotifier {
         expectedRingEventId: ringEventId,
       );
       _currentRingEventId = voip.activeRingEventId(roomId) ?? ringEventId;
+      final signalingInstance = OrexCallInstance(
+        roomId: roomId,
+        ringEventId: _currentRingEventId,
+      );
       // The first explicit Matrix ring id may only become known after enter().
       // Promote the native foreground descriptor to the strong identity before
       // any further asynchronous work can observe it as a second call.
       await _syncForegroundCall(force: true);
+      if (!wasCancelled() &&
+          generation == _lifecycleGeneration &&
+          _session == s) {
+        onSignalingReady?.call(signalingInstance);
+      }
     } catch (e) {
       mediaKeyProvider?.discardPreparedSession(mediaKeySession);
       if (wasCancelled() ||
@@ -1868,7 +1854,7 @@ class CallController extends ChangeNotifier {
 
   void minimize() {
     if (_disposed) return;
-    if (_session == null) return;
+    if (_session == null && _startOperation == null) return;
     minimized = true;
     notifyListeners();
   }

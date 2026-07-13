@@ -11,6 +11,7 @@ import '../../shared/widgets/orex_choice_sheet.dart';
 import '../../shared/widgets/orex_dialogs.dart';
 import '../../shared/widgets/squirrel_mascot.dart';
 import '../calls/call_screen.dart';
+import '../calls/call_launch_coordinator.dart';
 import '../calls/minimized_call_panel.dart';
 import '../chats/conversation/chat_view.dart';
 import '../chats/conversation/conversation_preview_view.dart';
@@ -360,28 +361,17 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  /// Начать/присоединиться к звонку. На десктопе показываем сразу свёрнутой
-  /// панелью над чатом (не на весь экран); на узком экране — полноэкранно.
+  /// Начать/присоединиться к звонку. Presentation order централизован в
+  /// [launchOrexCall], чтобы мобильный экран открывался до сетевого ожидания.
   Future<void> _startCall(String roomId, bool video) async {
     OrexLog.d('Home', 'start/join call room=$roomId video=$video');
-    await widget.matrix.call.start(roomId, video: video);
-    if (!mounted) return;
-    if (!widget.matrix.call.isActive) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            widget.matrix.call.lastError ?? 'Не удалось начать звонок',
-          ),
-        ),
-      );
-      return;
-    }
-    final isWide = MediaQuery.sizeOf(context).width >= _wideBreakpoint;
-    if (isWide) {
-      widget.matrix.call.minimize();
-    } else {
-      _openCallFullScreen();
-    }
+    await launchOrexCall(
+      context,
+      matrix: widget.matrix,
+      roomId: roomId,
+      video: video,
+      wideBreakpoint: _wideBreakpoint,
+    );
   }
 
   /// Панель звонка над областью разговора: активный звонок (плитки+управление)

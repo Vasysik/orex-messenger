@@ -272,4 +272,26 @@ void main() {
       );
     });
   });
+
+  group('remote disposition room classification', () {
+    test('keeps a current attempt valid when membership changes mid-ring', () {
+      expect(
+        orexShouldTrustRemoteDispositionForRoom(
+          isPersonalRoom: false,
+          hasCurrentCall: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('rejects unrelated dispositions in non-personal rooms', () {
+      expect(
+        orexShouldTrustRemoteDispositionForRoom(
+          isPersonalRoom: false,
+          hasCurrentCall: false,
+        ),
+        isFalse,
+      );
+    });
+  });
 }

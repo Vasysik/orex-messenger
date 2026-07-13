@@ -51,37 +51,23 @@ void main() {
   });
 
   group('orexShouldEndEstablishedCallForRemoteDisposition', () {
-    test('ignores late reject and busy after a peer joined media', () {
+    test('reject and busy keep the encrypted MatrixRTC channel alive', () {
       for (final reason in <OrexRemoteCallTerminationReason>[
         OrexRemoteCallTerminationReason.rejected,
         OrexRemoteCallTerminationReason.busy,
       ]) {
         expect(
-          orexShouldEndEstablishedCallForRemoteDisposition(
-            reason: reason,
-            sawRemote: true,
-          ),
+          orexShouldEndEstablishedCallForRemoteDisposition(reason: reason),
           isFalse,
           reason: reason.name,
         );
       }
     });
 
-    test('still applies explicit remote hangup to an established call', () {
+    test('explicit remote ended tears down the established call', () {
       expect(
         orexShouldEndEstablishedCallForRemoteDisposition(
           reason: OrexRemoteCallTerminationReason.ended,
-          sawRemote: true,
-        ),
-        isTrue,
-      );
-    });
-
-    test('applies reject before a peer joins media', () {
-      expect(
-        orexShouldEndEstablishedCallForRemoteDisposition(
-          reason: OrexRemoteCallTerminationReason.rejected,
-          sawRemote: false,
         ),
         isTrue,
       );

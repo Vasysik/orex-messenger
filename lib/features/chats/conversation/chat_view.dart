@@ -10,7 +10,7 @@ import '../../../core/matrix/matrix_service.dart';
 import '../../../core/logging/orex_logger.dart';
 import '../../../shared/theme/orex_theme.dart';
 import '../../../shared/widgets/mxc_avatar.dart';
-import '../../calls/call_screen.dart';
+import '../../calls/call_launch_coordinator.dart';
 import '../../calls/minimized_call_panel.dart';
 import 'chat_timeline_items.dart';
 import 'message_bubble.dart';
@@ -525,27 +525,12 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _openCall(bool video) async {
-    await widget.matrix.call.start(widget.roomId, video: video);
-    if (!mounted) return;
-    if (!widget.matrix.call.isActive) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            widget.matrix.call.lastError ?? 'Не удалось начать звонок',
-          ),
-        ),
-      );
-      return;
-    }
-    final isWide = MediaQuery.sizeOf(context).width >= 900;
-    if (isWide) {
-      widget.matrix.call.minimize();
-    } else {
-      widget.matrix.call.expand();
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
-      );
-    }
+    await launchOrexCall(
+      context,
+      matrix: widget.matrix,
+      roomId: widget.roomId,
+      video: video,
+    );
   }
 
   void _openRoomSettings(Room room) {

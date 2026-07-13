@@ -55,10 +55,10 @@ class _CallScreenState extends State<CallScreen> {
     // Выход с экрана (кнопка ▼ или системный «назад») = свернуть, не завершая.
     // notifyListeners нельзя дёргать прямо в dispose (дерево залочено —
     // ListenableBuilder падает), поэтому откладываем на следующий кадр.
-    if (_call.isActive) {
+    if (_call.isActive || _call.isStarting) {
       final call = _call;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (call.isActive) call.minimize();
+        if (call.isActive || call.isStarting) call.minimize();
       });
     }
     super.dispose();
@@ -75,6 +75,14 @@ class _CallScreenState extends State<CallScreen> {
             builder: (context, _) {
               final s = _session;
               if (s == null) {
+                if (_call.isStarting) {
+                  return const Center(
+                    child: SquirrelMascot(
+                      size: 120,
+                      caption: 'Подготавливаем звонок…',
+                    ),
+                  );
+                }
                 // Звонок завершён — закрываем экран.
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (!mounted) return;

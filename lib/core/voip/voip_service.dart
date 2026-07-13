@@ -107,6 +107,16 @@ bool orexShouldRecordOutOfOrderExactTombstone({
     receivedRingEventId != null &&
     currentRingEventId != receivedRingEventId;
 
+/// Room membership can change between ring and disposition (for example, a
+/// third member accepts an invite while a two-person room is ringing). A live
+/// exact call attempt must keep its original control plane instead of dropping
+/// accept/reject merely because the room no longer looks personal at receipt.
+@visibleForTesting
+bool orexShouldTrustRemoteDispositionForRoom({
+  required bool isPersonalRoom,
+  required bool hasCurrentCall,
+}) => isPersonalRoom || hasCurrentCall;
+
 @visibleForTesting
 bool orexIsDifferentExactCallAttempt({
   required String? previousRingEventId,
@@ -421,6 +431,7 @@ class VoipService extends ChangeNotifier {
   void _tombstoneAndDismissCallAttempt(
     OrexCallInstance instance, {
     DateTime? occurredAt,
+    bool cancelsPendingAccept = true,
   }) {
     _recordCallDisposition(
       instance.roomId,
@@ -434,6 +445,7 @@ class VoipService extends ChangeNotifier {
       OrexIncomingCallDismissal(
         roomId: instance.roomId,
         ringEventId: instance.ringEventId,
+        cancelsPendingAccept: cancelsPendingAccept,
       ),
     );
   }
@@ -492,9 +504,7 @@ class VoipService extends ChangeNotifier {
     _DeferredRemoteDisposition disposition,
   ) {
     final room = client.getRoomById(disposition.roomId);
-    if (room == null ||
-        !isPersonalCallRoom(room) ||
-        disposition.sender == client.userID) {
+    if (room == null || disposition.sender == client.userID) {
       OrexLog.d(
         'Voip',
         'ignored remote disposition type=${disposition.type} '
@@ -514,6 +524,19 @@ class VoipService extends ChangeNotifier {
       return null;
     }
 
+    final hasCurrentCall = _hasCurrentCallInstance(disposition.roomId);
+    if (!orexShouldTrustRemoteDispositionForRoom(
+      isPersonalRoom: isPersonalCallRoom(room),
+      hasCurrentCall: hasCurrentCall,
+    )) {
+      OrexLog.d(
+        'Voip',
+        'ignored disposition outside current personal attempt '
+            'type=${disposition.type} room=${disposition.roomId}',
+      );
+      return null;
+    }
+
     if (disposition.ringEventId != null) {
       _promoteLegacyCallInstance(
         disposition.roomId,
@@ -521,7 +544,6 @@ class VoipService extends ChangeNotifier {
         occurredAt: disposition.occurredAt,
       );
     }
-    final hasCurrentCall = _hasCurrentCallInstance(disposition.roomId);
     final expectedRingEventId = _currentRingEventId(disposition.roomId);
     if (!orexShouldApplyCallDisposition(
       hasCurrentCall: hasCurrentCall,
@@ -565,6 +587,10 @@ class VoipService extends ChangeNotifier {
       _tombstoneAndDismissCallAttempt(
         instance,
         occurredAt: disposition.occurredAt,
+        // This is the original caller cancelling the outstanding ring UI after
+        // receiving `accepted`. It must close stale/sibling presentations, but
+        // must never invalidate the accepting device's in-flight MatrixRTC join.
+        cancelsPendingAccept: false,
       );
       return;
     }
