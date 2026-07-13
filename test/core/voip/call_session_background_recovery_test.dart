@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:orex_messenger/core/voip/call_session.dart';
@@ -8,12 +10,13 @@ void main() {
       expect(
         orexShouldReconnectCallAfterBackground(
           connectionState: lk.ConnectionState.connected,
+          hasReachedMediaReady: true,
         ),
         isFalse,
       );
     });
 
-    test('refreshes any non-connected room immediately on resume', () {
+    test('refreshes a previously-ready non-connected room on resume', () {
       for (final state in <lk.ConnectionState?>[
         null,
         lk.ConnectionState.connecting,
@@ -23,8 +26,26 @@ void main() {
         expect(
           orexShouldReconnectCallAfterBackground(
             connectionState: state,
+            hasReachedMediaReady: true,
           ),
           isTrue,
+          reason: 'state=$state',
+        );
+      }
+    });
+
+    test('does not start recovery over the initial connection', () {
+      for (final state in <lk.ConnectionState?>[
+        null,
+        lk.ConnectionState.connecting,
+        lk.ConnectionState.reconnecting,
+      ]) {
+        expect(
+          orexShouldReconnectCallAfterBackground(
+            connectionState: state,
+            hasReachedMediaReady: false,
+          ),
+          isFalse,
           reason: 'state=$state',
         );
       }
@@ -100,6 +121,29 @@ void main() {
       expect(orexEncryptionKeyRetryDelay(4), const Duration(seconds: 30));
       expect(orexEncryptionKeyRetryDelay(99), const Duration(seconds: 30));
     });
+  });
+
+  group('media E2EE provider release barrier', () {
+    test(
+      'outlives bounded UI teardown until stale media operations drain',
+      () async {
+        final mediaTeardown = Completer<void>();
+        final pendingMediaOperation = Completer<void>();
+        var completed = false;
+        final barrier = orexWaitForMediaProviderRelease(
+          mediaTeardown: mediaTeardown.future,
+          waitForPendingMediaOperations: () => pendingMediaOperation.future,
+        ).whenComplete(() => completed = true);
+
+        mediaTeardown.complete();
+        await Future<void>.delayed(Duration.zero);
+        expect(completed, isFalse);
+
+        pendingMediaOperation.complete();
+        await barrier;
+        expect(completed, isTrue);
+      },
+    );
   });
 
   group('orexShouldPlayRemoteReactionCue', () {

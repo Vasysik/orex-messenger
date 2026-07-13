@@ -3,6 +3,11 @@ import 'package:flutter/services.dart';
 import '../audio/audio_device_utils.dart';
 import '../logging/orex_logger.dart';
 
+String? _normalizedRingEventId(Object? value) {
+  final normalized = value?.toString().trim();
+  return normalized == null || normalized.isEmpty ? null : normalized;
+}
+
 enum OrexSystemCallActionType {
   answer,
   reject,
@@ -18,12 +23,14 @@ class OrexSystemCallAction {
   const OrexSystemCallAction({
     required this.type,
     required this.callId,
+    this.ringEventId,
     this.video,
     this.muted,
   });
 
   final OrexSystemCallActionType type;
   final String callId;
+  final String? ringEventId;
   final bool? video;
   final bool? muted;
 
@@ -49,6 +56,7 @@ class OrexSystemCallAction {
     return OrexSystemCallAction(
       type: type,
       callId: callId,
+      ringEventId: _normalizedRingEventId(arguments['ringEventId']),
       video: arguments['video'] is bool ? arguments['video'] as bool : null,
       muted: arguments['muted'] is bool ? arguments['muted'] as bool : null,
     );
@@ -58,6 +66,7 @@ class OrexSystemCallAction {
 class OrexRecoverableSystemCall {
   const OrexRecoverableSystemCall({
     required this.callId,
+    this.ringEventId,
     required this.displayName,
     required this.incoming,
     required this.video,
@@ -70,6 +79,7 @@ class OrexRecoverableSystemCall {
   });
 
   final String callId;
+  final String? ringEventId;
   final String displayName;
   final bool incoming;
   final bool video;
@@ -93,15 +103,18 @@ class OrexRecoverableSystemCall {
     if (callId.isEmpty || displayName.isEmpty || updatedAtMs == null) {
       return null;
     }
-    final startedAtMs = switch (raw['startedAt']) {
-      int value => value,
-      num value => value.toInt(),
-      String value => int.tryParse(value),
-      _ => updatedAtMs,
-    } ?? updatedAtMs;
+    final startedAtMs =
+        switch (raw['startedAt']) {
+          int value => value,
+          num value => value.toInt(),
+          String value => int.tryParse(value),
+          _ => updatedAtMs,
+        } ??
+        updatedAtMs;
     final video = raw['video'] == true;
     return OrexRecoverableSystemCall(
       callId: callId,
+      ringEventId: _normalizedRingEventId(raw['ringEventId']),
       displayName: displayName,
       incoming: raw['incoming'] == true,
       video: video,
@@ -169,6 +182,7 @@ class OrexSystemCallIntegration {
     required String callId,
     required String displayName,
     required bool video,
+    String? ringEventId,
     String? avatarCacheKey,
     DateTime? startedAt,
     bool? micEnabled,
@@ -176,6 +190,7 @@ class OrexSystemCallIntegration {
     bool? cameraEnabled,
   }) => _invokeBool('reportIncomingCall', {
     'callId': callId,
+    'ringEventId': ?_normalizedRingEventId(ringEventId),
     'displayName': displayName,
     'video': video,
     'avatarCacheKey': ?avatarCacheKey,
@@ -189,6 +204,7 @@ class OrexSystemCallIntegration {
     required String callId,
     required String displayName,
     required bool video,
+    String? ringEventId,
     String? avatarCacheKey,
     DateTime? startedAt,
     bool? micEnabled,
@@ -196,6 +212,7 @@ class OrexSystemCallIntegration {
     bool? cameraEnabled,
   }) => _invokeBool('reportOutgoingCall', {
     'callId': callId,
+    'ringEventId': ?_normalizedRingEventId(ringEventId),
     'displayName': displayName,
     'video': video,
     'avatarCacheKey': ?avatarCacheKey,
@@ -205,19 +222,30 @@ class OrexSystemCallIntegration {
     'cameraEnabled': ?cameraEnabled,
   });
 
-  Future<bool> answerCall(String callId, {required bool video}) =>
-      _invokeBool('answerCall', {'callId': callId, 'video': video});
+  Future<bool> answerCall(
+    String callId, {
+    required bool video,
+    String? ringEventId,
+  }) => _invokeBool('answerCall', {
+    'callId': callId,
+    'ringEventId': ?_normalizedRingEventId(ringEventId),
+    'video': video,
+  });
 
-  Future<bool> setActive(String callId) =>
-      _invokeBool('setActive', {'callId': callId});
+  Future<bool> setActive(String callId, {String? ringEventId}) => _invokeBool(
+    'setActive',
+    {'callId': callId, 'ringEventId': ?_normalizedRingEventId(ringEventId)},
+  );
 
   Future<bool> updateControls(
     String callId, {
     required bool micEnabled,
     required bool audioEnabled,
     required bool cameraEnabled,
+    String? ringEventId,
   }) => _invokeBool('updateControls', {
     'callId': callId,
+    'ringEventId': ?_normalizedRingEventId(ringEventId),
     'micEnabled': micEnabled,
     'audioEnabled': audioEnabled,
     'cameraEnabled': cameraEnabled,
@@ -238,8 +266,10 @@ class OrexSystemCallIntegration {
     required bool micEnabled,
     required bool audioEnabled,
     required bool cameraEnabled,
+    String? ringEventId,
   }) => _invokeBool('updateForegroundCall', {
     'callId': callId,
+    'ringEventId': ?_normalizedRingEventId(ringEventId),
     'displayName': displayName,
     'incoming': incoming,
     'video': video,
@@ -250,16 +280,34 @@ class OrexSystemCallIntegration {
     'cameraEnabled': cameraEnabled,
   });
 
-  Future<bool> stopForegroundCall(String callId) =>
-      _invokeBool('stopForegroundCall', {'callId': callId});
+  Future<bool> stopForegroundCall(String callId, {String? ringEventId}) =>
+      _invokeBool('stopForegroundCall', {
+        'callId': callId,
+        'ringEventId': ?_normalizedRingEventId(ringEventId),
+      });
 
-  Future<bool> rejectCall(String callId) =>
-      _invokeBool('rejectCall', {'callId': callId});
+  Future<bool> rejectCall(String callId, {String? ringEventId}) => _invokeBool(
+    'rejectCall',
+    {'callId': callId, 'ringEventId': ?_normalizedRingEventId(ringEventId)},
+  );
 
   Future<bool> endCall(
     String callId, {
     String reason = 'local',
-  }) => _invokeBool('endCall', {'callId': callId, 'reason': reason});
+    String? ringEventId,
+  }) => _invokeBool('endCall', {
+    'callId': callId,
+    'ringEventId': ?_normalizedRingEventId(ringEventId),
+    'reason': reason,
+  });
+
+  /// Checks the process-local Core-Telecom call, not the persisted foreground
+  /// descriptor. A PendingIntent can survive process death while CallControl
+  /// cannot, so recovery code must not treat those two lifecycles as identical.
+  Future<bool> hasCall(String callId, {String? ringEventId}) => _invokeBool(
+    'hasCall',
+    {'callId': callId, 'ringEventId': ?_normalizedRingEventId(ringEventId)},
+  );
 
   Future<OrexRecoverableSystemCall?> recoverableCall() async {
     if (!orexIsAndroidNativePlatform) return null;
@@ -277,10 +325,16 @@ class OrexSystemCallIntegration {
     }
   }
 
-  Future<bool> clearRecoverableCall(String callId) =>
-      _invokeBool('clearRecoverableCall', {'callId': callId});
+  Future<bool> clearRecoverableCall(String callId, {String? ringEventId}) =>
+      _invokeBool('clearRecoverableCall', {
+        'callId': callId,
+        'ringEventId': ?_normalizedRingEventId(ringEventId),
+      });
 
-  Future<bool> _invokeBool(String method, Map<String, Object?> arguments) async {
+  Future<bool> _invokeBool(
+    String method,
+    Map<String, Object?> arguments,
+  ) async {
     if (!orexIsAndroidNativePlatform) return false;
     try {
       return await _channel.invokeMethod<bool>(method, arguments) ?? false;

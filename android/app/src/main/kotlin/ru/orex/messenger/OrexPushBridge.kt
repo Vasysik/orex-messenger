@@ -296,10 +296,12 @@ object OrexPushBridge {
         action: String?,
         requestCode: Int,
         fromSystem: Boolean = false,
+        ringEventId: String? = null,
         avatarCacheKey: String? = null,
     ): PendingIntent {
         val payload = incomingCallPayload(
             callId = callId,
+            ringEventId = ringEventId,
             displayName = displayName,
             video = video,
             fromSystem = fromSystem,
@@ -307,7 +309,7 @@ object OrexPushBridge {
         )
         return PendingIntent.getActivity(
             context,
-            requestCode xor callId.hashCode(),
+            callAttemptRequestCode(requestCode, callId, ringEventId),
             buildOpenIntent(context, payload, action),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -322,11 +324,13 @@ object OrexPushBridge {
         requestCode: Int,
         action: String? = null,
         systemManaged: Boolean = false,
+        ringEventId: String? = null,
         avatarCacheKey: String? = null,
     ): PendingIntent {
         val intent = OrexIncomingCallActivity.createIntent(
             context = context,
             callId = callId,
+            ringEventId = ringEventId,
             displayName = displayName,
             video = video,
             timeoutAfterMs = timeoutAfterMs,
@@ -336,7 +340,7 @@ object OrexPushBridge {
         )
         return PendingIntent.getActivity(
             context,
-            requestCode xor callId.hashCode(),
+            callAttemptRequestCode(requestCode, callId, ringEventId),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -350,13 +354,15 @@ object OrexPushBridge {
         action: String,
         requestCode: Int,
         systemManaged: Boolean = false,
+        ringEventId: String? = null,
     ): PendingIntent {
         return PendingIntent.getActivity(
             context,
-            requestCode xor callId.hashCode(),
+            callAttemptRequestCode(requestCode, callId, ringEventId),
             OrexCallActionActivity.createIntent(
                 context = context,
                 callId = callId,
+                ringEventId = ringEventId,
                 displayName = displayName,
                 video = video,
                 action = action,
@@ -373,9 +379,11 @@ object OrexPushBridge {
         video: Boolean,
         action: String,
         requestCode: Int,
+        ringEventId: String? = null,
     ): PendingIntent {
         val payload = incomingCallPayload(
             callId = callId,
+            ringEventId = ringEventId,
             displayName = displayName,
             video = video,
             fromSystem = false,
@@ -389,7 +397,7 @@ object OrexPushBridge {
         }
         return PendingIntent.getBroadcast(
             context,
-            requestCode xor callId.hashCode(),
+            callAttemptRequestCode(requestCode, callId, ringEventId),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -412,6 +420,7 @@ object OrexPushBridge {
         val launched = launchIncomingCallAction(
             context = context,
             callId = payload["call_id"] ?: payload["room_id"] ?: return,
+            ringEventId = payload["event_id"],
             displayName = payload["sender_display_name"] ?: "Orex",
             video = payload["orex_video"].equals("true", ignoreCase = true),
             action = action,
@@ -429,9 +438,11 @@ object OrexPushBridge {
         video: Boolean,
         action: String,
         fromSystem: Boolean,
+        ringEventId: String? = null,
     ) {
         val payload = incomingCallPayload(
             callId = callId,
+            ringEventId = ringEventId,
             displayName = displayName,
             video = video,
             fromSystem = fromSystem,
@@ -450,9 +461,11 @@ object OrexPushBridge {
         action: String,
         fromSystem: Boolean,
         bringUiToFront: Boolean = action == "answer",
+        ringEventId: String? = null,
     ): Boolean {
         val payload = incomingCallPayload(
             callId = callId,
+            ringEventId = ringEventId,
             displayName = displayName,
             video = video,
             fromSystem = fromSystem,
@@ -485,6 +498,7 @@ object OrexPushBridge {
 
     private fun incomingCallPayload(
         callId: String,
+        ringEventId: String? = null,
         displayName: String,
         video: Boolean,
         fromSystem: Boolean,
@@ -493,6 +507,7 @@ object OrexPushBridge {
         put("orex_kind", "incoming_call")
         put("room_id", callId)
         put("call_id", callId)
+        normalizeRingEventId(ringEventId)?.let { put("event_id", it) }
         put("sender_display_name", displayName)
         put("orex_video", video.toString())
         put("orex_from_system", fromSystem.toString())
@@ -544,31 +559,37 @@ object OrexPushBridge {
             }
             "callUiAnswering" -> {
                 val callId = call.argument<String>("callId")?.trim().orEmpty()
+                val ringEventId = call.argument<String>("ringEventId")
                 val context = applicationContext
-                if (callId.isNotEmpty() && context != null) {
-                    OrexCallPresentationState.markAnswering(context, callId)
+                val matched = callId.isNotEmpty() && context != null &&
+                    OrexCallPresentationState.markAnswering(context, callId, ringEventId)
+                if (matched) {
                     OrexNotificationCenter.cancelCallNotification(context)
                 }
-                result.success(callId.isNotEmpty())
+                result.success(matched)
             }
             "callUiReady" -> {
                 val callId = call.argument<String>("callId")?.trim().orEmpty()
+                val ringEventId = call.argument<String>("ringEventId")
                 val context = applicationContext
-                if (callId.isNotEmpty() && context != null) {
-                    OrexCallPresentationState.markActive(context, callId)
-                    OrexIncomingCallActivity.finishForCall(callId)
+                val matched = callId.isNotEmpty() && context != null &&
+                    OrexCallPresentationState.markActive(context, callId, ringEventId)
+                if (matched) {
+                    OrexIncomingCallActivity.finishForCall(callId, ringEventId)
                 }
-                result.success(callId.isNotEmpty())
+                result.success(matched)
             }
             "callUiEnded" -> {
                 val callId = call.argument<String>("callId")?.trim().orEmpty()
+                val ringEventId = call.argument<String>("ringEventId")
                 val context = applicationContext
-                if (callId.isNotEmpty() && context != null) {
-                    OrexCallPresentationState.markEnded(context, callId)
+                val matched = callId.isNotEmpty() && context != null &&
+                    OrexCallPresentationState.markEnded(context, callId, ringEventId)
+                if (matched) {
                     OrexNotificationCenter.cancelCallNotification(context)
-                    OrexIncomingCallActivity.finishForCall(callId)
+                    OrexIncomingCallActivity.finishForCall(callId, ringEventId)
                 }
-                result.success(callId.isNotEmpty())
+                result.success(matched)
             }
             "callUiHidden" -> result.success(true)
             "requestPermission" -> requestPermission(result)

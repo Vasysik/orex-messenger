@@ -20,10 +20,7 @@ bool orexShouldInitiateCall({
   required bool roomExists,
   required bool roomHasActiveCall,
 }) {
-  return !systemIncoming &&
-      !recovering &&
-      roomExists &&
-      !roomHasActiveCall;
+  return !systemIncoming && !recovering && roomExists && !roomHasActiveCall;
 }
 
 @visibleForTesting
@@ -37,6 +34,33 @@ bool orexShouldEndEstablishedCallForRemoteDisposition({
   // the remote participant hung up.
   return !sawRemote || reason == OrexRemoteCallTerminationReason.ended;
 }
+
+@visibleForTesting
+bool orexShouldReusePreparedIncomingSystemCall({
+  required bool fromSystem,
+  required bool hasPreparedIncomingCall,
+  required bool nativeCallExists,
+}) => nativeCallExists && (fromSystem || hasPreparedIncomingCall);
+
+@visibleForTesting
+bool orexNextAnsweredState({
+  required bool alreadyAnswered,
+  required bool answerAccepted,
+  required bool mediaConnected,
+}) => alreadyAnswered || answerAccepted || mediaConnected;
+
+@visibleForTesting
+bool orexIsCallStartRequestCancelled({
+  required bool disposed,
+  required int capturedGeneration,
+  required int currentGeneration,
+}) => disposed || capturedGeneration != currentGeneration;
+
+@visibleForTesting
+bool orexShouldNotifyEndedForSystemTermination({
+  required bool rejected,
+  required bool acceptedInProgress,
+}) => !rejected && acceptedInProgress;
 
 /// Долгоживущий «активный звонок»: владеет медиа-сессией ([CallSession]) и
 /// сигналингом ([VoipService]), чтобы звонок переживал сворачивание экрана.
@@ -57,21 +81,44 @@ class CallController extends ChangeNotifier {
     _remoteTerminationSub = matrix.voip?.onRemoteCallTermination.listen(
       _onRemoteCallTermination,
     );
+    _instancePromotionSub = matrix.voip?.onCallInstancePromotion.listen(
+      _onCallInstancePromotion,
+    );
   }
 
   final MatrixService matrix;
   final OrexSystemCallIntegration _systemCalls =
       OrexSystemCallIntegration.instance;
-  StreamSubscription<String>? _incomingDismissSub;
-  StreamSubscription<String>? _remoteAcceptedSub;
+  StreamSubscription<OrexIncomingCallDismissal>? _incomingDismissSub;
+  StreamSubscription<OrexRemoteCallAccepted>? _remoteAcceptedSub;
   StreamSubscription<OrexRemoteCallTermination>? _remoteTerminationSub;
-  final StreamController<String> _systemIncomingAccepted =
-      StreamController<String>.broadcast();
+  StreamSubscription<OrexCallInstancePromotion>? _instancePromotionSub;
+  final StreamController<OrexCallInstance> _systemIncomingAccepted =
+      StreamController<OrexCallInstance>.broadcast();
+  OrexCallInstance? _pendingAcceptedIncomingCallUi;
 
-  Stream<String> get onSystemIncomingAccepted =>
+  /// Requests the expanded mobile call route as soon as an accepted call has a
+  /// local session. The session may still be connecting.
+  Stream<OrexCallInstance> get onAcceptedIncomingCallUiRequested =>
       _systemIncomingAccepted.stream;
 
+  /// Replays an accepted-call route request that was emitted while Flutter's
+  /// root navigator was still bootstrapping after a cold notification answer.
+  OrexCallInstance? takePendingAcceptedIncomingCallUiRequest() {
+    final instance = _pendingAcceptedIncomingCallUi;
+    _pendingAcceptedIncomingCallUi = null;
+    return instance;
+  }
+
+  void _requestAcceptedIncomingCallUi(OrexCallInstance instance) {
+    if (_disposed) return;
+    if (!_isCurrentControllerInstance(instance)) return;
+    _pendingAcceptedIncomingCallUi = instance;
+    _systemIncomingAccepted.add(instance);
+  }
+
   void _onAudioSettingsChanged() {
+    if (_disposed) return;
     unawaited(
       _session?.syncAudioSettingsFromSettings(refreshVoiceGateCapture: true),
     );
@@ -79,14 +126,23 @@ class CallController extends ChangeNotifier {
   }
 
   void _onSessionChanged() {
+    if (_disposed) return;
     final session = _session;
     final rid = roomId;
+    _callAnswered = orexNextAnsweredState(
+      alreadyAnswered: _callAnswered,
+      answerAccepted: false,
+      mediaConnected: session?.status == CallStatus.connected,
+    );
     if (_initiator && session?.sawRemote == true && rid != null) {
       _cancelUnansweredTimeout();
       // Media presence is an independent acceptance signal. If the explicit
       // accepted to-device event was delayed/lost, still stop the same user's
       // other devices from ringing. The ring token is consumed only once.
-      unawaited(matrix.voip?.cancelOutstandingRing(rid));
+      final instance = currentCallInstance;
+      if (instance != null) {
+        unawaited(matrix.voip?.cancelOutstandingRing(instance));
+      }
     }
     unawaited(_syncSystemCallControls());
     unawaited(_syncForegroundCall());
@@ -129,8 +185,12 @@ class CallController extends ChangeNotifier {
 
   Future<void> _syncSystemCallControls() async {
     final session = _session;
-    final callId = _systemCallId;
-    if (session == null || callId == null || roomId != callId) return;
+    final instance = _systemCallInstance;
+    if (session == null ||
+        instance == null ||
+        !_isCurrentControllerInstance(instance)) {
+      return;
+    }
     final micEnabled = session.status == CallStatus.connected
         ? session.micOn
         : session.microphoneRequestedOn;
@@ -142,12 +202,13 @@ class CallController extends ChangeNotifier {
       return;
     }
     final applied = await _systemCalls.updateControls(
-      callId,
+      instance.roomId,
+      ringEventId: instance.ringEventId,
       micEnabled: micEnabled,
       audioEnabled: audioEnabled,
       cameraEnabled: cameraEnabled,
     );
-    if (!applied || _systemCallId != callId) return;
+    if (!applied || !_sameCallInstance(_systemCallInstance, instance)) return;
     _lastSystemMicEnabled = micEnabled;
     _lastSystemAudioEnabled = audioEnabled;
     _lastSystemCameraEnabled = cameraEnabled;
@@ -156,21 +217,26 @@ class CallController extends ChangeNotifier {
   Future<void> _syncForegroundCall({bool force = false}) async {
     if (!orexIsAndroidNativePlatform) return;
     final session = _session;
-    final callId = roomId;
+    final instance = currentCallInstance;
+    final callId = instance?.roomId;
     final startedAt = _start;
     final room = callId == null ? null : matrix.client.getRoomById(callId);
-    if (session == null || callId == null || startedAt == null || room == null) {
+    if (session == null ||
+        callId == null ||
+        startedAt == null ||
+        room == null) {
       return;
     }
 
-    final answered = session.status == CallStatus.connected;
-    final micEnabled = answered
-        ? session.micOn
-        : session.microphoneRequestedOn;
+    // Answering is a user/signaling transition, not a transport-health state.
+    // Once latched it must survive LiveKit reconnects; otherwise Android sees an
+    // established call move back to an incoming/answering presentation.
+    final answered = _callAnswered;
+    final micEnabled = answered ? session.micOn : session.microphoneRequestedOn;
     final audioEnabled = !session.speakerMuted;
     final cameraEnabled = session.cameraRequestedOn;
     if (!force &&
-        _foregroundCallId == callId &&
+        _sameCallInstance(_foregroundCallInstance, instance) &&
         _lastForegroundAnswered == answered &&
         _lastForegroundMicEnabled == micEnabled &&
         _lastForegroundAudioEnabled == audioEnabled &&
@@ -188,23 +254,34 @@ class CallController extends ChangeNotifier {
       micEnabled: micEnabled,
       audioEnabled: audioEnabled,
       cameraEnabled: cameraEnabled,
+      ringEventId: instance?.ringEventId,
     );
-    if (!applied || _session != session || roomId != callId) return;
-    _foregroundCallId = callId;
+    if (!applied ||
+        _session != session ||
+        instance == null ||
+        !_isCurrentControllerInstance(instance)) {
+      return;
+    }
+    _foregroundCallInstance = instance;
     _lastForegroundAnswered = answered;
     _lastForegroundMicEnabled = micEnabled;
     _lastForegroundAudioEnabled = audioEnabled;
     _lastForegroundCameraEnabled = cameraEnabled;
   }
 
-  Future<void> _stopForegroundCall(String? callId) async {
-    if (callId == null) return;
-    if (_foregroundCallId == callId) _clearForegroundCallState();
-    await _systemCalls.stopForegroundCall(callId);
+  Future<void> _stopForegroundCall(OrexCallInstance? instance) async {
+    if (instance == null) return;
+    if (_sameCallInstance(_foregroundCallInstance, instance)) {
+      _clearForegroundCallState();
+    }
+    await _systemCalls.stopForegroundCall(
+      instance.roomId,
+      ringEventId: instance.ringEventId,
+    );
   }
 
   void _clearForegroundCallState() {
-    _foregroundCallId = null;
+    _foregroundCallInstance = null;
     _lastForegroundAnswered = null;
     _lastForegroundMicEnabled = null;
     _lastForegroundAudioEnabled = null;
@@ -222,32 +299,190 @@ class CallController extends ChangeNotifier {
   DateTime? _start;
   String? focusedParticipantIdentity;
   String? lastError;
-  String? _systemCallId;
-  String? _systemPreparationCallId;
+  String? _currentRingEventId;
+  OrexCallInstance? _systemCallInstance;
+  OrexCallInstance? _systemPreparationInstance;
   Future<bool>? _systemPreparationFuture;
+  bool _systemCallVideo = false;
   bool _systemMutedByTelecom = false;
   bool _systemActiveByTelecom = true;
   bool? _lastSystemMicEnabled;
   bool? _lastSystemAudioEnabled;
   bool? _lastSystemCameraEnabled;
-  String? _foregroundCallId;
+  OrexCallInstance? _foregroundCallInstance;
   bool? _lastForegroundAnswered;
   bool? _lastForegroundMicEnabled;
   bool? _lastForegroundAudioEnabled;
   bool? _lastForegroundCameraEnabled;
   bool _androidTelecomAudioPolicyApplied = false;
-  String? _systemActionInProgressCallId;
-  String? _incomingAcceptRoomId;
+  OrexCallInstance? _systemAnswerInProgress;
+  OrexCallInstance? _systemTerminationInProgress;
+  OrexCallInstance? _incomingAcceptInstance;
   Future<void>? _incomingAcceptFuture;
+  int _incomingAcceptGeneration = 0;
   Timer? _unansweredCallTimer;
   Future<void>? _recoveryInFlight;
+  Future<void>? _startOperation;
+  Future<void>? _hangUpOperation;
+  Future<void> _shutdownComplete = Future<void>.value();
   bool _recoveryResolved = false;
+  Duration? _deferredInitialMediaRecovery;
+  bool _callAnswered = false;
   int _lifecycleGeneration = 0;
+  int _startCancellationGeneration = 0;
+  bool _disposed = false;
+
+  OrexCallInstance _instanceForRoom(String roomId) => OrexCallInstance(
+    roomId: roomId,
+    ringEventId: this.roomId == roomId
+        ? _currentRingEventId
+        : matrix.voip?.incomingRingEventId(roomId),
+  );
 
   bool isAcceptingIncoming(String roomId) =>
-      _incomingAcceptRoomId == roomId && _incomingAcceptFuture != null;
+      _incomingAcceptInstance?.roomId == roomId &&
+      _incomingAcceptFuture != null;
+
+  bool isAcceptingIncomingInstance(OrexCallInstance instance) =>
+      _incomingAcceptFuture != null &&
+      _sameCallInstance(_incomingAcceptInstance, instance);
+
+  OrexCallInstance? get currentCallInstance {
+    final rid = roomId;
+    return rid == null
+        ? null
+        : OrexCallInstance(roomId: rid, ringEventId: _currentRingEventId);
+  }
+
+  bool _sameCallInstance(OrexCallInstance? left, OrexCallInstance? right) =>
+      left != null &&
+      right != null &&
+      left.roomId == right.roomId &&
+      orexCallInstanceIdsMatch(left.ringEventId, right.ringEventId);
+
+  bool _isCurrentControllerInstance(OrexCallInstance instance) =>
+      roomId == instance.roomId &&
+      orexCallInstanceIdsMatch(_currentRingEventId, instance.ringEventId);
+
+  OrexCallInstance? _promoteOwnedInstance(
+    OrexCallInstance? owned,
+    OrexCallInstancePromotion promotion,
+  ) => _sameCallInstance(owned, promotion.previous) ? promotion.current : owned;
+
+  void _onCallInstancePromotion(OrexCallInstancePromotion promotion) {
+    if (_disposed ||
+        promotion.previous.ringEventId != null ||
+        promotion.current.ringEventId == null ||
+        promotion.previous.roomId != promotion.current.roomId) {
+      return;
+    }
+
+    final systemWasPromoted = _sameCallInstance(
+      _systemCallInstance,
+      promotion.previous,
+    );
+    var changed = systemWasPromoted;
+
+    OrexCallInstance? migrate(OrexCallInstance? owned) {
+      final promoted = _promoteOwnedInstance(owned, promotion);
+      if (!identical(promoted, owned)) changed = true;
+      return promoted;
+    }
+
+    _systemCallInstance = migrate(_systemCallInstance);
+    // Keep an in-flight legacy registration scoped to its original identity.
+    // A concurrent exact prepare may then replace it; promoting this field in
+    // place would make accept await the stale null-token registration instead.
+    _foregroundCallInstance = migrate(_foregroundCallInstance);
+    _systemAnswerInProgress = migrate(_systemAnswerInProgress);
+    _systemTerminationInProgress = migrate(_systemTerminationInProgress);
+    _incomingAcceptInstance = migrate(_incomingAcceptInstance);
+    _pendingAcceptedIncomingCallUi = migrate(_pendingAcceptedIncomingCallUi);
+    if (roomId == promotion.previous.roomId && _currentRingEventId == null) {
+      _currentRingEventId = promotion.current.ringEventId;
+      changed = true;
+    }
+    if (!changed) return;
+
+    if (systemWasPromoted) {
+      unawaited(_promoteNativeSystemCall(promotion.current));
+    }
+    if (_isCurrentControllerInstance(promotion.current)) {
+      unawaited(_syncForegroundCall(force: true));
+    }
+    notifyListeners();
+  }
+
+  void _adoptTrustedExactInstance(OrexCallInstance instance) {
+    if (instance.ringEventId == null) return;
+    _onCallInstancePromotion(
+      OrexCallInstancePromotion(
+        previous: OrexCallInstance(roomId: instance.roomId),
+        current: instance,
+      ),
+    );
+  }
+
+  Future<void> _promoteNativeSystemCall(OrexCallInstance instance) async {
+    final room = matrix.client.getRoomById(instance.roomId);
+    if (room == null || !_sameCallInstance(_systemCallInstance, instance)) {
+      return;
+    }
+    final session = _isCurrentControllerInstance(instance) ? _session : null;
+    final micEnabled = session == null
+        ? true
+        : session.status == CallStatus.connected
+        ? session.micOn
+        : session.microphoneRequestedOn;
+    final audioEnabled = session == null ? true : !session.speakerMuted;
+    final cameraEnabled = session == null
+        ? _systemCallVideo
+        : session.cameraRequestedOn;
+    final incoming = session == null || !_initiator;
+    final registered = incoming
+        ? await _systemCalls.reportIncomingCall(
+            callId: instance.roomId,
+            ringEventId: instance.ringEventId,
+            displayName: room.getLocalizedDisplayname(),
+            video: _systemCallVideo,
+            avatarCacheKey: _conversationAvatarCacheKey(room),
+            startedAt: _start,
+            micEnabled: micEnabled,
+            audioEnabled: audioEnabled,
+            cameraEnabled: cameraEnabled,
+          )
+        : await _systemCalls.reportOutgoingCall(
+            callId: instance.roomId,
+            ringEventId: instance.ringEventId,
+            displayName: room.getLocalizedDisplayname(),
+            video: _systemCallVideo,
+            avatarCacheKey: _conversationAvatarCacheKey(room),
+            startedAt: _start,
+            micEnabled: micEnabled,
+            audioEnabled: audioEnabled,
+            cameraEnabled: cameraEnabled,
+          );
+    if (!registered) return;
+    if (!_sameCallInstance(_systemCallInstance, instance)) {
+      await _systemCalls.endCall(
+        instance.roomId,
+        ringEventId: instance.ringEventId,
+        reason: 'remote',
+      );
+      return;
+    }
+    _refreshSystemCallAvatar(
+      room,
+      instance: instance,
+      video: _systemCallVideo,
+      incoming: incoming,
+    );
+  }
+
+  Future<void> get shutdownComplete => _shutdownComplete;
 
   void focusParticipant(String? identity) {
+    if (_disposed) return;
     if (focusedParticipantIdentity == identity) return;
     focusedParticipantIdentity = identity;
     notifyListeners();
@@ -264,6 +499,17 @@ class CallController extends ChangeNotifier {
   Future<void> recoverMediaAfterBackground(Duration backgroundDuration) async {
     final session = _session;
     if (session == null) return;
+    // Answering from a notification resumes MainActivity while the initial
+    // LiveKit connection is still running. Recovery must never start a second
+    // WebRTC room over that first connection, but the device/media refresh must
+    // still run once that connection becomes ready.
+    if (!session.hasReachedMediaReady) {
+      final pending = _deferredInitialMediaRecovery;
+      if (pending == null || backgroundDuration > pending) {
+        _deferredInitialMediaRecovery = backgroundDuration;
+      }
+      return;
+    }
     await session.recoverAfterBackground(backgroundDuration);
     if (!identical(_session, session)) return;
     await _syncSystemCallControls();
@@ -272,9 +518,10 @@ class CallController extends ChangeNotifier {
 
   Future<void> refreshVoicePermissions() async {
     await _session?.refreshVoicePermissions();
+    if (_disposed) return;
     final rid = roomId;
     listenOnly = rid == null ? false : !_canUseMicNowFor(rid);
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   bool get isActive => _session != null;
@@ -292,6 +539,7 @@ class CallController extends ChangeNotifier {
 
   void _refreshSystemCallAvatar(
     Room room, {
+    required OrexCallInstance instance,
     required bool video,
     required bool incoming,
   }) {
@@ -299,14 +547,20 @@ class CallController extends ChangeNotifier {
     if (avatar == null) return;
     unawaited(
       matrix.ensureConversationAvatarCached(room).then((cacheKey) async {
-        if (cacheKey == null || _systemCallId != room.id) return;
+        if (cacheKey == null ||
+            !_sameCallInstance(_systemCallInstance, instance)) {
+          return;
+        }
         // Avatar resolution can finish after the user has already answered.
         // Never resurrect an incoming Telecom presentation for an active media
         // call; ongoing state is maintained by updateForegroundCall instead.
-        if (incoming && isActive && roomId == room.id) return;
+        if (incoming && isActive && _isCurrentControllerInstance(instance)) {
+          return;
+        }
         if (incoming) {
           await _systemCalls.reportIncomingCall(
             callId: room.id,
+            ringEventId: instance.ringEventId,
             displayName: room.getLocalizedDisplayname(),
             video: video,
             avatarCacheKey: cacheKey,
@@ -314,6 +568,7 @@ class CallController extends ChangeNotifier {
         } else {
           await _systemCalls.reportOutgoingCall(
             callId: room.id,
+            ringEventId: instance.ringEventId,
             displayName: room.getLocalizedDisplayname(),
             video: video,
             avatarCacheKey: cacheKey,
@@ -328,95 +583,150 @@ class CallController extends ChangeNotifier {
   /// Для одного callId существует только один in-flight запрос. Это закрывает
   /// гонку, когда пользователь успевает ответить/отклонить вызов или Matrix
   /// присылает remote-dismiss, пока Core-Telecom ещё создаёт системную сессию.
-  Future<bool> prepareIncoming(Room room, {bool video = false}) {
+  Future<bool> prepareIncoming(
+    Room room, {
+    bool video = false,
+    OrexCallInstance? instance,
+  }) {
+    final callInstance = instance ?? _instanceForRoom(room.id);
     if (!_isSystemCallEligible(room)) return Future<bool>.value(false);
+    _systemCallVideo = video;
     if (isActive) {
       // An already-running media call must never be re-registered as incoming.
       // If Core-Telecom disappeared, keep the call alive without system UI
       // instead of surfacing another ringing session for the same Matrix room.
       return Future<bool>.value(
-        roomId == room.id && _systemCallId == room.id,
+        _isCurrentControllerInstance(callInstance) &&
+            _sameCallInstance(_systemCallInstance, callInstance),
       );
     }
-    if (_systemCallId != null && _systemCallId != room.id) {
-      return Future<bool>.value(false);
+    final existingSystemCall = _systemCallInstance;
+    if (existingSystemCall != null &&
+        !_sameCallInstance(existingSystemCall, callInstance)) {
+      return (() async {
+        await _systemCalls.endCall(
+          existingSystemCall.roomId,
+          ringEventId: existingSystemCall.ringEventId,
+          reason: 'remote',
+        );
+        if (_sameCallInstance(_systemCallInstance, existingSystemCall)) {
+          _clearSystemCallState();
+        }
+        return prepareIncoming(room, video: video, instance: callInstance);
+      })();
     }
 
     final pending = _systemPreparationFuture;
-    if (_systemPreparationCallId == room.id && pending != null) {
+    if (_sameCallInstance(_systemPreparationInstance, callInstance) &&
+        pending != null) {
       return pending;
     }
 
-    if (_systemCallId != room.id) {
-      _systemCallId = room.id;
+    if (!_sameCallInstance(_systemCallInstance, callInstance)) {
+      _systemCallInstance = callInstance;
       _systemMutedByTelecom = false;
       _systemActiveByTelecom = true;
     }
 
     late final Future<bool> registration;
-    registration = _registerIncomingSystemCall(room, video).whenComplete(() {
-      if (identical(_systemPreparationFuture, registration)) {
-        _systemPreparationCallId = null;
-        _systemPreparationFuture = null;
-      }
-    });
-    _systemPreparationCallId = room.id;
+    registration = _registerIncomingSystemCall(room, video, callInstance)
+        .whenComplete(() {
+          if (identical(_systemPreparationFuture, registration)) {
+            _systemPreparationInstance = null;
+            _systemPreparationFuture = null;
+          }
+        });
+    _systemPreparationInstance = callInstance;
     _systemPreparationFuture = registration;
     return registration;
   }
 
-  Future<bool> _registerIncomingSystemCall(Room room, bool video) async {
+  Future<bool> _registerIncomingSystemCall(
+    Room room,
+    bool video,
+    OrexCallInstance instance,
+  ) async {
     final registered = await _systemCalls.reportIncomingCall(
       callId: room.id,
+      ringEventId: instance.ringEventId,
       displayName: room.getLocalizedDisplayname(),
       video: video,
       avatarCacheKey: _conversationAvatarCacheKey(room),
     );
     if (!registered) {
-      if (_systemCallId == room.id) _clearSystemCallState();
+      if (_sameCallInstance(_systemCallInstance, instance)) {
+        _clearSystemCallState();
+      }
       return false;
     }
 
     // Владение могло быть снято, пока native addCall ожидал Telecom. Не даём
     // запоздавшей регистрации оставить фантомный CallStyle/системный звонок.
-    if (_systemCallId != room.id) {
-      await _systemCalls.endCall(room.id, reason: 'remote');
+    if (!_sameCallInstance(_systemCallInstance, instance)) {
+      await _systemCalls.endCall(
+        room.id,
+        ringEventId: instance.ringEventId,
+        reason: 'remote',
+      );
       return false;
     }
-    _refreshSystemCallAvatar(room, video: video, incoming: true);
+    _refreshSystemCallAvatar(
+      room,
+      instance: instance,
+      video: video,
+      incoming: true,
+    );
     return true;
   }
 
-  Future<bool> _rejectPreparedSystemCall(String callId) async {
-    final pending = _systemPreparationCallId == callId
+  Future<bool> _rejectPreparedSystemCall(OrexCallInstance instance) async {
+    final pending = _sameCallInstance(_systemPreparationInstance, instance)
         ? _systemPreparationFuture
         : null;
     if (pending != null && !await pending) return true;
-    if (_systemCallId != callId) return true;
-    return _systemCalls.rejectCall(callId);
+    if (!_sameCallInstance(_systemCallInstance, instance)) return true;
+    return _systemCalls.rejectCall(
+      instance.roomId,
+      ringEventId: instance.ringEventId,
+    );
   }
 
   Future<void> acceptIncoming(
     Room room, {
     required bool video,
+    OrexCallInstance? instance,
     bool fromSystem = false,
+    bool requestExpandedUi = false,
   }) {
-    if (isActive && roomId == room.id) return Future<void>.value();
+    if (_disposed) return Future<void>.value();
+    final callInstance = instance ?? _instanceForRoom(room.id);
+    _adoptTrustedExactInstance(callInstance);
+    if (isActive && _isCurrentControllerInstance(callInstance)) {
+      return Future<void>.value();
+    }
     final pending = _incomingAcceptFuture;
-    if (_incomingAcceptRoomId == room.id && pending != null) return pending;
+    if (_sameCallInstance(_incomingAcceptInstance, callInstance) &&
+        pending != null) {
+      return pending;
+    }
 
+    final acceptGeneration = ++_incomingAcceptGeneration;
     late final Future<void> operation;
-    operation = _acceptIncomingImpl(
-      room,
-      video: video,
-      fromSystem: fromSystem,
-    ).whenComplete(() {
-      if (identical(_incomingAcceptFuture, operation)) {
-        _incomingAcceptRoomId = null;
-        _incomingAcceptFuture = null;
-      }
-    });
-    _incomingAcceptRoomId = room.id;
+    operation =
+        _acceptIncomingImpl(
+          room,
+          video: video,
+          fromSystem: fromSystem,
+          requestExpandedUi: requestExpandedUi,
+          acceptGeneration: acceptGeneration,
+          instance: callInstance,
+        ).whenComplete(() {
+          if (identical(_incomingAcceptFuture, operation)) {
+            _incomingAcceptInstance = null;
+            _incomingAcceptFuture = null;
+          }
+        });
+    _incomingAcceptInstance = callInstance;
     _incomingAcceptFuture = operation;
     return operation;
   }
@@ -425,65 +735,200 @@ class CallController extends ChangeNotifier {
     Room room, {
     required bool video,
     required bool fromSystem,
+    required bool requestExpandedUi,
+    required int acceptGeneration,
+    required OrexCallInstance instance,
   }) async {
+    var currentInstance = instance;
+    bool refreshOwnership() {
+      final refreshed = _currentIncomingAcceptInstance(
+        instance,
+        acceptGeneration,
+      );
+      if (refreshed == null) return false;
+      currentInstance = refreshed;
+      return true;
+    }
+
     matrix.audio.stopIncomingRingtone();
     // Persist ANSWERING before any potentially slow Telecom/Matrix operation,
     // so a delayed duplicate FCM delivery cannot ring again in the meantime.
-    await matrix.push.notifyCallAnswering(room.id);
+    await matrix.push.notifyCallAnswering(
+      room.id,
+      ringEventId: currentInstance.ringEventId,
+    );
+    if (!refreshOwnership()) return;
     if (isActive && roomId != room.id) await hangUp();
-    final otherSystemCallId = _systemCallId;
-    if (otherSystemCallId != null && otherSystemCallId != room.id) {
-      await _systemCalls.endCall(otherSystemCallId, reason: 'local');
-      if (_systemCallId == otherSystemCallId) _clearSystemCallState();
+    if (!refreshOwnership()) return;
+    final otherSystemCall = _systemCallInstance;
+    if (otherSystemCall != null && otherSystemCall.roomId != room.id) {
+      await _systemCalls.endCall(
+        otherSystemCall.roomId,
+        ringEventId: otherSystemCall.ringEventId,
+        reason: 'local',
+      );
+      if (_sameCallInstance(_systemCallInstance, otherSystemCall)) {
+        _clearSystemCallState();
+      }
     }
-    if (fromSystem) matrix.voip?.dismissIncomingFromSystem(room.id);
-    // Не задерживаем локальный ответ на звонок сетью, но обязательно дожидаемся
-    // best-effort Matrix sync до выхода из flow. Это особенно важно при
-    // системном answer: native callback уже подтверждён, а дальнейшая работа
-    // идёт асинхронно вне Telecom 5-секундного окна.
-    final acceptedSync = Future.wait<void>([
-      _markIncomingHandled(room.id),
-      _notifyIncomingAccepted(room.id),
-    ]);
+    if (!refreshOwnership()) return;
+    if (fromSystem) {
+      matrix.voip?.dismissIncomingFromSystem(currentInstance);
+    }
 
-    var registered = await prepareIncoming(room, video: video);
-    if (registered && !fromSystem) {
-      final answered = await _systemCalls.answerCall(room.id, video: video);
+    var nativeAlreadyAnswered = false;
+    var hasPreparedIncomingCall =
+        _sameCallInstance(_systemCallInstance, currentInstance) ||
+        _sameCallInstance(_systemPreparationInstance, currentInstance);
+    final nativeCallExists = await _systemCalls.hasCall(
+      room.id,
+      ringEventId: currentInstance.ringEventId,
+    );
+    if (!refreshOwnership()) return;
+    if (nativeCallExists && !hasPreparedIncomingCall) {
+      final nativeCall = await _systemCalls.recoverableCall();
+      if (!refreshOwnership()) return;
+      final nativeInstance = nativeCall == null
+          ? null
+          : OrexCallInstance(
+              roomId: nativeCall.callId,
+              ringEventId: nativeCall.ringEventId,
+            );
+      if (nativeCall == null ||
+          (_sameCallInstance(nativeInstance, currentInstance) &&
+              nativeCall.incoming)) {
+        hasPreparedIncomingCall = true;
+        nativeAlreadyAnswered = nativeCall?.answered == true;
+        _systemCallInstance = currentInstance;
+      }
+    }
+    // A persisted PendingIntent can cold-start Flutter after Android killed the
+    // process-local CallControl. Trust the native manager, not [fromSystem],
+    // before enabling Telecom ownership and its audio policy.
+    var registered = orexShouldReusePreparedIncomingSystemCall(
+      fromSystem: fromSystem,
+      hasPreparedIncomingCall: hasPreparedIncomingCall,
+      nativeCallExists: nativeCallExists,
+    );
+    if (hasPreparedIncomingCall && !fromSystem && !nativeAlreadyAnswered) {
+      // Tell native code that the user accepted before waiting for an in-flight
+      // addCall. It silences the app-owned ring immediately and its setup scope
+      // answers before completing the registration future.
+      final nativeAnswer = _systemCalls.answerCall(
+        room.id,
+        ringEventId: currentInstance.ringEventId,
+        video: video,
+      );
+      if (_sameCallInstance(_systemPreparationInstance, currentInstance)) {
+        registered = await prepareIncoming(
+          room,
+          video: video,
+          instance: currentInstance,
+        );
+      }
+      final answered = await nativeAnswer;
+      if (!refreshOwnership()) return;
       if (!answered) {
-        await _systemCalls.endCall(room.id, reason: 'error');
-        if (_systemCallId == room.id) _clearSystemCallState();
+        await _systemCalls.endCall(
+          room.id,
+          ringEventId: currentInstance.ringEventId,
+          reason: 'error',
+        );
+        if (_sameCallInstance(_systemCallInstance, currentInstance)) {
+          _clearSystemCallState();
+        }
         registered = false;
       }
     }
+    if (!refreshOwnership()) return;
 
-    await start(
+    // Do not start the accepted disposition until the native ownership checks
+    // above have survived a possible answer -> immediate disconnect race.
+    final acceptedInstance = currentInstance;
+    final acceptedSync = Future.wait<void>([
+      _markIncomingHandled(acceptedInstance),
+      _notifyIncomingAccepted(acceptedInstance),
+    ]);
+
+    // Never create a fresh Core-Telecom incoming call after the user answered.
+    // If no native incoming existed, the independent foreground-call owner is
+    // sufficient and avoids a second system RINGING transition by construction.
+    final shouldRequestExpandedUi =
+        fromSystem ||
+        requestExpandedUi ||
+        (!kIsWeb &&
+            (defaultTargetPlatform == TargetPlatform.android ||
+                defaultTargetPlatform == TargetPlatform.iOS));
+    final mediaStart = start(
       room.id,
       video: video,
       systemIncoming: true,
       systemCallPrepared: registered,
+      initialAnswered: true,
+      ringEventId: acceptedInstance.ringEventId,
+      onSessionCreated: shouldRequestExpandedUi
+          ? () {
+              final promoted = _currentIncomingAcceptInstance(
+                acceptedInstance,
+                acceptGeneration,
+              );
+              final uiInstance = promoted ?? currentCallInstance;
+              if (uiInstance != null &&
+                  uiInstance.roomId == acceptedInstance.roomId) {
+                _requestAcceptedIncomingCallUi(uiInstance);
+              }
+            }
+          : null,
     );
-    if (fromSystem && isActive && roomId == room.id) {
-      _systemIncomingAccepted.add(room.id);
-    }
+    await mediaStart;
     await acceptedSync;
   }
 
-  Future<void> rejectIncoming(Room room, {bool fromSystem = false}) async {
+  OrexCallInstance? _currentIncomingAcceptInstance(
+    OrexCallInstance initial,
+    int generation,
+  ) {
+    if (_disposed ||
+        _incomingAcceptInstance?.roomId != initial.roomId ||
+        _incomingAcceptGeneration != generation) {
+      return null;
+    }
+    final current = _incomingAcceptInstance ?? initial;
+    if (!(matrix.voip?.isCurrentCallInstance(current) ?? true)) return null;
+    return current;
+  }
+
+  Future<void> rejectIncoming(
+    Room room, {
+    OrexCallInstance? instance,
+    bool fromSystem = false,
+  }) async {
+    final callInstance = instance ?? _instanceForRoom(room.id);
+    _adoptTrustedExactInstance(callInstance);
     matrix.audio.stopIncomingRingtone();
-    await matrix.push.notifyCallEnded(room.id);
-    if (fromSystem) matrix.voip?.dismissIncomingFromSystem(room.id);
+    await matrix.push.notifyCallEnded(
+      room.id,
+      ringEventId: callInstance.ringEventId,
+    );
+    if (fromSystem) matrix.voip?.dismissIncomingFromSystem(callInstance);
     final dispositionSync = Future.wait<void>([
-      _markIncomingHandled(room.id),
-      _notifyIncomingRejected(room.id),
+      _markIncomingHandled(callInstance),
+      _notifyIncomingRejected(callInstance),
     ]);
     final systemEnded =
-        fromSystem || await _rejectPreparedSystemCall(room.id);
-    if (systemEnded && _systemCallId == room.id) _clearSystemCallState();
+        fromSystem || await _rejectPreparedSystemCall(callInstance);
+    if (systemEnded && _sameCallInstance(_systemCallInstance, callInstance)) {
+      _clearSystemCallState();
+    }
     await dispositionSync;
   }
 
-  bool _ownsSystemCall(String callId) =>
-      _systemCallId == callId || roomId == callId;
+  OrexCallInstance _instanceFromSystemAction(OrexSystemCallAction action) =>
+      OrexCallInstance(roomId: action.callId, ringEventId: action.ringEventId);
+
+  bool _ownsSystemCall(OrexCallInstance instance) =>
+      _sameCallInstance(_systemCallInstance, instance) ||
+      _isCurrentControllerInstance(instance);
 
   /// Возвращаем native-layer подтверждение только после локальной обработки
   /// команды. Для hold/mute дожидаемся фактического изменения медиа. Долгие
@@ -491,42 +936,54 @@ class CallController extends ChangeNotifier {
   /// перевода локального состояния, чтобы уложиться в Telecom callback timeout.
   Future<bool> _onSystemCallAction(OrexSystemCallAction action) async {
     try {
+      final instance = _instanceFromSystemAction(action);
+      _adoptTrustedExactInstance(instance);
       switch (action.type) {
         case OrexSystemCallActionType.answer:
           return _acceptIncomingFromSystem(action);
         case OrexSystemCallActionType.reject:
-          return _terminateFromSystem(action.callId, rejected: true);
+          return _terminateFromSystem(action, rejected: true);
         case OrexSystemCallActionType.disconnect:
-          return _terminateFromSystem(action.callId, rejected: false);
+          return _terminateFromSystem(action, rejected: false);
         case OrexSystemCallActionType.setActive:
-          if (!_ownsSystemCall(action.callId)) return false;
+          if (!_ownsSystemCall(instance)) return false;
           _systemActiveByTelecom = true;
-          final session = roomId == action.callId ? _session : null;
+          final session = _isCurrentControllerInstance(instance)
+              ? _session
+              : null;
           if (session != null) await session.setSystemActive(true);
           return true;
         case OrexSystemCallActionType.setInactive:
-          if (!_ownsSystemCall(action.callId)) return false;
+          if (!_ownsSystemCall(instance)) return false;
           _systemActiveByTelecom = false;
-          final session = roomId == action.callId ? _session : null;
+          final session = _isCurrentControllerInstance(instance)
+              ? _session
+              : null;
           if (session != null) await session.setSystemActive(false);
           return true;
         case OrexSystemCallActionType.muteChanged:
           final muted = action.muted;
-          if (muted == null || !_ownsSystemCall(action.callId)) return false;
+          if (muted == null || !_ownsSystemCall(instance)) return false;
           _systemMutedByTelecom = muted;
-          final session = roomId == action.callId ? _session : null;
+          final session = _isCurrentControllerInstance(instance)
+              ? _session
+              : null;
           if (session != null) await session.setSystemMuted(muted);
           return true;
         case OrexSystemCallActionType.toggleMic:
-          if (!_ownsSystemCall(action.callId)) return false;
-          final session = roomId == action.callId ? _session : null;
+          if (!_ownsSystemCall(instance)) return false;
+          final session = _isCurrentControllerInstance(instance)
+              ? _session
+              : null;
           if (session == null) return false;
           await session.toggleMic();
           await _syncSystemCallControls();
           return true;
         case OrexSystemCallActionType.toggleAudio:
-          if (!_ownsSystemCall(action.callId)) return false;
-          final session = roomId == action.callId ? _session : null;
+          if (!_ownsSystemCall(instance)) return false;
+          final session = _isCurrentControllerInstance(instance)
+              ? _session
+              : null;
           if (session == null) return false;
           await session.toggleSpeakerMute();
           await _syncSystemCallControls();
@@ -543,102 +1000,185 @@ class CallController extends ChangeNotifier {
   }
 
   bool _acceptIncomingFromSystem(OrexSystemCallAction action) {
-    if (isActive && roomId == action.callId) return true;
+    final instance = _instanceFromSystemAction(action);
+    if (isActive && _isCurrentControllerInstance(instance)) return true;
     final room = matrix.client.getRoomById(action.callId);
     if (room == null || !_isSystemCallEligible(room)) return false;
-    if (_systemActionInProgressCallId == action.callId) return true;
-    _systemActionInProgressCallId = action.callId;
-    unawaited(_runSystemAnswer(room, action));
+    if (!_ownsSystemCall(instance) &&
+        !(matrix.voip?.isCurrentCallInstance(instance) ?? false)) {
+      return false;
+    }
+    if (_sameCallInstance(_systemTerminationInProgress, instance)) return true;
+    if (_sameCallInstance(_systemAnswerInProgress, instance)) return true;
+    _systemAnswerInProgress = instance;
+    unawaited(_runSystemAnswer(room, action, instance));
     return true;
   }
 
   Future<void> _runSystemAnswer(
     Room room,
     OrexSystemCallAction action,
+    OrexCallInstance instance,
   ) async {
     try {
-      await acceptIncoming(room, video: action.video ?? false, fromSystem: true);
+      await acceptIncoming(
+        room,
+        video: action.video ?? false,
+        instance: instance,
+        fromSystem: true,
+      );
     } catch (e) {
       OrexLog.d('Call', 'system answer failed call=${action.callId}', e);
-      if (_ownsSystemCall(action.callId)) {
-        await _systemCalls.endCall(action.callId, reason: 'error');
-        if (_systemCallId == action.callId) _clearSystemCallState();
+      if (_ownsSystemCall(instance)) {
+        await _systemCalls.endCall(
+          action.callId,
+          ringEventId: instance.ringEventId,
+          reason: 'error',
+        );
+        if (_sameCallInstance(_systemCallInstance, instance)) {
+          _clearSystemCallState();
+        }
       }
     } finally {
-      if (_systemActionInProgressCallId == action.callId) {
-        _systemActionInProgressCallId = null;
+      if (_sameCallInstance(_systemAnswerInProgress, instance)) {
+        _systemAnswerInProgress = null;
       }
     }
   }
 
-  bool _terminateFromSystem(String callId, {required bool rejected}) {
-    if (!_ownsSystemCall(callId) && matrix.client.getRoomById(callId) == null) {
+  bool _terminateFromSystem(
+    OrexSystemCallAction action, {
+    required bool rejected,
+  }) {
+    final instance = _instanceFromSystemAction(action);
+    if (!_ownsSystemCall(instance) &&
+        !(matrix.voip?.isCurrentCallInstance(instance) ?? false)) {
       return false;
     }
-    if (_systemActionInProgressCallId == callId) return true;
-    _systemActionInProgressCallId = callId;
-    unawaited(_runSystemTermination(callId, rejected: rejected));
+    if (_sameCallInstance(_systemTerminationInProgress, instance)) return true;
+    // Cancellation is latched synchronously, before the Telecom callback is
+    // acknowledged. The async answer path checks this generation after every
+    // native/network await and therefore cannot resurrect media afterwards.
+    final acceptedInProgress = _sameCallInstance(
+      _incomingAcceptInstance,
+      instance,
+    );
+    if (acceptedInProgress) {
+      _incomingAcceptGeneration++;
+      _lifecycleGeneration++;
+      _startCancellationGeneration++;
+    }
+    matrix.audio.stopIncomingRingtone();
+    _systemTerminationInProgress = instance;
+    unawaited(
+      _runSystemTermination(
+        instance,
+        rejected: rejected,
+        acceptedInProgress: acceptedInProgress,
+      ),
+    );
     return true;
   }
 
   Future<void> _runSystemTermination(
-    String callId, {
+    OrexCallInstance instance, {
     required bool rejected,
+    required bool acceptedInProgress,
   }) async {
+    final callId = instance.roomId;
     try {
-      if (isActive && roomId == callId) {
+      if (_isCurrentControllerInstance(instance)) {
         await hangUp(fromSystem: true);
         return;
       }
       final room = matrix.client.getRoomById(callId);
       if (room != null) {
         if (rejected) {
-          await rejectIncoming(room, fromSystem: true);
+          await rejectIncoming(room, instance: instance, fromSystem: true);
         } else {
           matrix.audio.stopIncomingRingtone();
-          matrix.voip?.dismissIncomingFromSystem(callId);
-          if (_systemCallId == callId) _clearSystemCallState();
-          await _markIncomingHandled(callId);
+          matrix.voip?.dismissIncomingFromSystem(instance);
+          if (_sameCallInstance(_systemCallInstance, instance)) {
+            _clearSystemCallState();
+          }
+          await _markIncomingHandled(instance);
+          if (orexShouldNotifyEndedForSystemTermination(
+            rejected: rejected,
+            acceptedInProgress: acceptedInProgress,
+          )) {
+            await matrix.voip?.notifyEnded(instance);
+          }
         }
-      } else if (_systemCallId == callId) {
+      } else if (_sameCallInstance(_systemCallInstance, instance)) {
         _clearSystemCallState();
       }
     } catch (e) {
       OrexLog.d('Call', 'system termination failed call=$callId', e);
     } finally {
-      if (_systemActionInProgressCallId == callId) {
-        _systemActionInProgressCallId = null;
+      if (_sameCallInstance(_systemTerminationInProgress, instance)) {
+        _systemTerminationInProgress = null;
       }
     }
   }
 
-  Future<void> _markIncomingHandled(String callId) async {
+  Future<void> _markIncomingHandled(OrexCallInstance instance) async {
     try {
-      await matrix.voip?.markCallHandled(callId, callId);
+      await matrix.voip?.markCallHandled(instance);
     } catch (e) {
-      OrexLog.d('Call', 'failed to sync handled state call=$callId', e);
+      OrexLog.d(
+        'Call',
+        'failed to sync handled state call=${instance.roomId}',
+        e,
+      );
     }
   }
 
-  Future<void> _notifyIncomingAccepted(String callId) async {
+  Future<void> _notifyIncomingAccepted(OrexCallInstance instance) async {
     try {
-      await matrix.voip?.notifyAccepted(callId);
+      await matrix.voip?.notifyAccepted(instance);
     } catch (e) {
-      OrexLog.d('Call', 'failed to sync accepted state call=$callId', e);
+      OrexLog.d(
+        'Call',
+        'failed to sync accepted state call=${instance.roomId}',
+        e,
+      );
     }
   }
 
-  Future<void> _notifyIncomingRejected(String callId) async {
+  Future<void> _notifyIncomingRejected(OrexCallInstance instance) async {
     try {
-      await matrix.voip?.notifyRejected(callId);
+      await matrix.voip?.notifyRejected(instance);
     } catch (e) {
-      OrexLog.d('Call', 'failed to sync rejected state call=$callId', e);
+      OrexLog.d(
+        'Call',
+        'failed to sync rejected state call=${instance.roomId}',
+        e,
+      );
     }
   }
 
-  void _onIncomingDismissed(String callId) {
-    if (_systemActionInProgressCallId == callId ||
-        (isActive && roomId == callId)) {
+  void _cancelPendingIncomingAccept(OrexCallInstance instance) {
+    if (!_sameCallInstance(_incomingAcceptInstance, instance)) return;
+    _incomingAcceptGeneration++;
+    _lifecycleGeneration++;
+    _startCancellationGeneration++;
+    if (_sameCallInstance(_pendingAcceptedIncomingCallUi, instance)) {
+      _pendingAcceptedIncomingCallUi = null;
+    }
+  }
+
+  void _onIncomingDismissed(OrexIncomingCallDismissal dismissal) {
+    final instance = OrexCallInstance(
+      roomId: dismissal.roomId,
+      ringEventId: dismissal.ringEventId,
+    );
+    _adoptTrustedExactInstance(instance);
+    if (dismissal.cancelsPendingAccept) {
+      _cancelPendingIncomingAccept(instance);
+    }
+    if (_sameCallInstance(_systemAnswerInProgress, instance) ||
+        _sameCallInstance(_systemTerminationInProgress, instance) ||
+        (isActive && _isCurrentControllerInstance(instance))) {
       return;
     }
 
@@ -646,28 +1186,45 @@ class CallController extends ChangeNotifier {
     // call. `handled` from another device still has to cancel that native
     // notification/activity, otherwise the tablet keeps ringing forever even
     // though Flutter already removed its incoming route.
-    unawaited(matrix.push.notifyCallEnded(callId));
+    unawaited(
+      matrix.push.notifyCallEnded(
+        instance.roomId,
+        ringEventId: instance.ringEventId,
+      ),
+    );
 
-    if (_systemCallId != callId) return;
+    if (!_sameCallInstance(_systemCallInstance, instance)) return;
     _clearSystemCallState();
-    unawaited(_systemCalls.endCall(callId, reason: 'remote'));
+    unawaited(
+      _systemCalls.endCall(
+        instance.roomId,
+        ringEventId: instance.ringEventId,
+        reason: 'remote',
+      ),
+    );
   }
 
-  void _onRemoteCallAccepted(String callId) {
-    if (_initiator && isActive && roomId == callId) {
+  void _onRemoteCallAccepted(OrexRemoteCallAccepted accepted) {
+    if (_initiator && isActive && _isCurrentControllerInstance(accepted)) {
       _cancelUnansweredTimeout();
       // The accepting device already stopped itself locally. Send an exact
       // cancellation from the original caller so the same account's killed
       // tablet/secondary phone also stops ringing via FCM.
-      unawaited(matrix.voip?.cancelOutstandingRing(callId));
+      unawaited(matrix.voip?.cancelOutstandingRing(accepted));
     }
   }
 
   void _onRemoteCallTermination(OrexRemoteCallTermination termination) {
-    if (_initiator && roomId == termination.roomId) {
-      unawaited(matrix.voip?.cancelOutstandingRing(termination.roomId));
+    final instance = OrexCallInstance(
+      roomId: termination.roomId,
+      ringEventId: termination.ringEventId,
+    );
+    _adoptTrustedExactInstance(instance);
+    _cancelPendingIncomingAccept(instance);
+    if (_initiator && _isCurrentControllerInstance(instance)) {
+      unawaited(matrix.voip?.cancelOutstandingRing(instance));
     }
-    if (isActive && roomId == termination.roomId) {
+    if (isActive && _isCurrentControllerInstance(instance)) {
       final currentSession = _session;
       if (!orexShouldEndEstablishedCallForRemoteDisposition(
         reason: termination.reason,
@@ -683,9 +1240,15 @@ class CallController extends ChangeNotifier {
       unawaited(hangUp(fromRemote: true));
       return;
     }
-    if (_systemCallId == termination.roomId) {
+    if (_sameCallInstance(_systemCallInstance, instance)) {
       _clearSystemCallState();
-      unawaited(_systemCalls.endCall(termination.roomId, reason: 'remote'));
+      unawaited(
+        _systemCalls.endCall(
+          termination.roomId,
+          ringEventId: termination.ringEventId,
+          reason: 'remote',
+        ),
+      );
     }
   }
 
@@ -717,9 +1280,7 @@ class CallController extends ChangeNotifier {
     // that local leave into a remote `ended` for the whole personal call.
     if (session?.sawRemote == true) return false;
 
-    return !matrix
-        .callMemberIds(room)
-        .any((id) => id != matrix.client.userID);
+    return !matrix.callMemberIds(room).any((id) => id != matrix.client.userID);
   }
 
   Future<void> recoverPendingCall() {
@@ -735,9 +1296,26 @@ class CallController extends ChangeNotifier {
     return operation;
   }
 
-  Future<void> discardRecoverableCall(String callId) async {
-    _recoveryResolved = true;
-    await _systemCalls.clearRecoverableCall(callId);
+  Future<bool> discardRecoverableCall(
+    String callId, {
+    String? ringEventId,
+  }) async {
+    final cleared = await _systemCalls.clearRecoverableCall(
+      callId,
+      ringEventId: ringEventId,
+    );
+    if (cleared) _recoveryResolved = true;
+    return cleared;
+  }
+
+  Future<void> _discardKnownRecoverableCall(
+    OrexRecoverableSystemCall recoverable,
+  ) async {
+    final cleared = await _systemCalls.clearRecoverableCall(
+      recoverable.callId,
+      ringEventId: recoverable.ringEventId,
+    );
+    if (cleared) _recoveryResolved = true;
   }
 
   Future<void> _recoverPendingCall() async {
@@ -748,22 +1326,19 @@ class CallController extends ChangeNotifier {
       return;
     }
     if (!recoverable.answered) {
-      _recoveryResolved = true;
-      await _systemCalls.clearRecoverableCall(recoverable.callId);
+      await _discardKnownRecoverableCall(recoverable);
       return;
     }
 
     final age = DateTime.now().difference(recoverable.updatedAt);
     if (age > const Duration(hours: 4)) {
-      _recoveryResolved = true;
-      await _systemCalls.clearRecoverableCall(recoverable.callId);
+      await _discardKnownRecoverableCall(recoverable);
       return;
     }
 
     final room = matrix.client.getRoomById(recoverable.callId);
     if (room == null || !matrix.roomHasActiveCall(room)) {
-      _recoveryResolved = true;
-      await _systemCalls.clearRecoverableCall(recoverable.callId);
+      await _discardKnownRecoverableCall(recoverable);
       return;
     }
 
@@ -781,14 +1356,25 @@ class CallController extends ChangeNotifier {
       // media reconnects successfully.
       systemIncoming: false,
       recovering: true,
+      initialAnswered: true,
+      ringEventId: recoverable.ringEventId,
     );
-    if (isActive && roomId == recoverable.callId) _recoveryResolved = true;
+    if (isActive &&
+        _isCurrentControllerInstance(
+          OrexCallInstance(
+            roomId: recoverable.callId,
+            ringEventId: recoverable.ringEventId,
+          ),
+        )) {
+      _recoveryResolved = true;
+    }
   }
 
   /// Начать/присоединиться к звонку в комнате.
   Future<void> start(
     String roomId, {
     required bool video,
+    String? ringEventId,
     bool? initialMicOn,
     bool? initialCameraOn,
     bool? initialAudioEnabled,
@@ -796,15 +1382,93 @@ class CallController extends ChangeNotifier {
     bool systemIncoming = false,
     bool? systemCallPrepared,
     bool recovering = false,
+    bool initialAnswered = false,
+    void Function()? onSessionCreated,
+  }) {
+    if (_disposed) return Future<void>.value();
+    final startCancellationGeneration = _startCancellationGeneration;
+    final previousStart = _startOperation;
+    late final Future<void> operation;
+    operation =
+        (() async {
+          if (previousStart != null) {
+            try {
+              await previousStart;
+            } catch (_) {
+              // The preceding start reports its own failure. A successor still
+              // waits for all of its scoped cleanup before taking native ownership.
+            }
+          }
+          if (orexIsCallStartRequestCancelled(
+            disposed: _disposed,
+            capturedGeneration: startCancellationGeneration,
+            currentGeneration: _startCancellationGeneration,
+          )) {
+            return;
+          }
+          final promotedIncomingRingEventId =
+              systemIncoming &&
+                  ringEventId == null &&
+                  _incomingAcceptInstance?.roomId == roomId
+              ? _incomingAcceptInstance?.ringEventId
+              : ringEventId;
+          await _startInternal(
+            roomId,
+            startCancellationGeneration: startCancellationGeneration,
+            video: video,
+            ringEventId: promotedIncomingRingEventId,
+            initialMicOn: initialMicOn,
+            initialCameraOn: initialCameraOn,
+            initialAudioEnabled: initialAudioEnabled,
+            recoveredStartedAt: recoveredStartedAt,
+            systemIncoming: systemIncoming,
+            systemCallPrepared: systemCallPrepared,
+            recovering: recovering,
+            initialAnswered: initialAnswered,
+            onSessionCreated: onSessionCreated,
+          );
+        })().whenComplete(() {
+          if (identical(_startOperation, operation)) _startOperation = null;
+        });
+    _startOperation = operation;
+    return operation;
+  }
+
+  Future<void> _startInternal(
+    String roomId, {
+    required int startCancellationGeneration,
+    required bool video,
+    required String? ringEventId,
+    bool? initialMicOn,
+    bool? initialCameraOn,
+    bool? initialAudioEnabled,
+    DateTime? recoveredStartedAt,
+    bool systemIncoming = false,
+    bool? systemCallPrepared,
+    bool recovering = false,
+    bool initialAnswered = false,
+    void Function()? onSessionCreated,
   }) async {
+    bool wasCancelled() => orexIsCallStartRequestCancelled(
+      disposed: _disposed,
+      capturedGeneration: startCancellationGeneration,
+      currentGeneration: _startCancellationGeneration,
+    );
+    if (wasCancelled()) return;
+    while (_hangUpOperation != null) {
+      await _hangUpOperation;
+      if (wasCancelled()) return;
+    }
     if (_session != null) {
       if (this.roomId == roomId) return;
-      await hangUp();
+      await hangUp(cancelPendingStarts: false);
+      if (wasCancelled()) return;
     }
     _cancelUnansweredTimeout();
     final generation = ++_lifecycleGeneration;
     lastError = null;
     this.roomId = roomId;
+    _currentRingEventId = ringEventId;
     this.video = video;
     minimized = false;
     // Инициатор = в комнате ещё не было активного звонка до нас.
@@ -812,6 +1476,7 @@ class CallController extends ChangeNotifier {
     final kind = room != null ? matrix.roomKind(room) : OrexRoomKind.group;
     if (room != null && kind == OrexRoomKind.channel) {
       await matrix.voicePermissions.ensureParticipantStatePowerLevels(room);
+      if (wasCancelled() || generation != _lifecycleGeneration) return;
     }
     final canSpeak = _canUseMicNowFor(roomId);
     listenOnly = !canSpeak;
@@ -826,8 +1491,15 @@ class CallController extends ChangeNotifier {
       roomHasActiveCall: room != null && matrix.roomHasActiveCall(room),
     );
     _start = recoveredStartedAt ?? DateTime.now();
+    _callAnswered = orexNextAnsweredState(
+      alreadyAnswered: false,
+      answerAccepted: initialAnswered,
+      mediaConnected: false,
+    );
     final cameraInitiallyOn = initialCameraOn ?? video;
     final audioInitiallyEnabled = initialAudioEnabled ?? true;
+    final mediaKeyProvider = matrix.voip?.e2eeKeyProvider;
+    final mediaKeySession = mediaKeyProvider?.prepareSession();
     final s = CallSession(
       client: matrix.client,
       matrixRoomId: roomId,
@@ -846,18 +1518,22 @@ class CallController extends ChangeNotifier {
           matrix.audio.speakingThresholdEnabled,
       callMicPreferenceSink: (enabled) =>
           matrix.audio.setCallMicEnabled(enabled),
-      e2eeKeyProvider: matrix.voip?.e2eeKeyProvider.liveKit,
-      refreshE2eeKeys: (expectedRemoteParticipants) async {
-        await matrix.voip?.ensureActiveCallEncryptionKeys(
-          expectedRemoteParticipants: expectedRemoteParticipants,
-          // A temporary Matrix /sync or DNS outage must not hold a working
-          // LiveKit transport in the initial CONNECTING state for many seconds.
-          // CallSession retries this best-effort; encrypted frames remain
-          // blocked by the key provider until the keys are actually present.
-          timeout: const Duration(milliseconds: 1200),
-          maxAttempts: 1,
-        );
-      },
+      e2eeKeyProvider: mediaKeySession,
+      attachE2eeRoom: mediaKeyProvider?.attachLiveKitRoom,
+      detachE2eeRoom: mediaKeyProvider?.detachLiveKitRoom,
+      refreshE2eeKeys:
+          (expectedRemoteParticipants, forceRemoteParticipantIds) async {
+            await matrix.voip?.ensureActiveCallEncryptionKeys(
+              expectedRemoteParticipants: expectedRemoteParticipants,
+              forceRemoteParticipantIds: forceRemoteParticipantIds,
+              // A temporary Matrix /sync or DNS outage must not hold a working
+              // LiveKit transport in the initial CONNECTING state for many seconds.
+              // CallSession retries this best-effort; encrypted frames remain
+              // blocked by the key provider until the keys are actually present.
+              timeout: const Duration(milliseconds: 1200),
+              maxAttempts: 1,
+            );
+          },
       adaptiveStream: !_isPersonalCall(room),
       remoteReactionCue: matrix.audio.playReaction,
     );
@@ -865,6 +1541,7 @@ class CallController extends ChangeNotifier {
     _session = s;
     s.addListener(_onSessionChanged);
     notifyListeners();
+    onSessionCreated?.call();
 
     // Claim foreground execution before signaling/Telecom/network waits. A
     // user may background the app while the call is still connecting; delaying
@@ -872,8 +1549,13 @@ class CallController extends ChangeNotifier {
     // Android's background-start exemptions. Any start failure below rolls this
     // owner back through _failStart().
     await _syncForegroundCall(force: true);
-    if (generation != _lifecycleGeneration || _session != s) {
-      await _stopForegroundCall(roomId);
+    if (wasCancelled() || generation != _lifecycleGeneration || _session != s) {
+      await _stopForegroundCall(
+        OrexCallInstance(roomId: roomId, ringEventId: _currentRingEventId),
+      );
+      await s.hangUp();
+      s.dispose();
+      mediaKeyProvider?.discardPreparedSession(mediaKeySession);
       return;
     }
 
@@ -883,6 +1565,7 @@ class CallController extends ChangeNotifier {
     final voip = matrix.voip;
     if (voip == null) {
       OrexLog.d('Call', 'signaling unavailable room=$roomId');
+      mediaKeyProvider?.discardPreparedSession(mediaKeySession);
       await _failStart(
         s,
         'Звонки сейчас недоступны: MatrixRTC signaling не запущен',
@@ -890,15 +1573,34 @@ class CallController extends ChangeNotifier {
       return;
     }
     try {
-      await voip.enterCall(roomId, ring: _initiator, video: video);
+      await voip.enterCall(
+        roomId,
+        owner: s,
+        ring: _initiator,
+        video: video,
+        expectedRingEventId: ringEventId,
+      );
+      _currentRingEventId = voip.activeRingEventId(roomId) ?? ringEventId;
+      // The first explicit Matrix ring id may only become known after enter().
+      // Promote the native foreground descriptor to the strong identity before
+      // any further asynchronous work can observe it as a second call.
+      await _syncForegroundCall(force: true);
     } catch (e) {
+      mediaKeyProvider?.discardPreparedSession(mediaKeySession);
+      if (wasCancelled() ||
+          generation != _lifecycleGeneration ||
+          _session != s) {
+        return;
+      }
       OrexLog.d('Call', 'signaling failed room=$roomId', e);
       await _failStart(s, 'Не удалось запустить сигналинг звонка');
       return;
     }
-    if (generation != _lifecycleGeneration || _session != s) {
-      await _stopForegroundCall(roomId);
-      await voip.leaveCurrent();
+    if (wasCancelled() || generation != _lifecycleGeneration || _session != s) {
+      await _stopForegroundCall(
+        OrexCallInstance(roomId: roomId, ringEventId: _currentRingEventId),
+      );
+      await _tearDownStaleStart(voip, s);
       return;
     }
     if (_initiator && room != null && _isSystemCallEligible(room)) {
@@ -906,10 +1608,15 @@ class CallController extends ChangeNotifier {
     }
 
     var systemRegistered = systemCallPrepared == true;
+    final systemInstance = OrexCallInstance(
+      roomId: roomId,
+      ringEventId: _currentRingEventId,
+    );
     if (_isSystemCallEligible(room) && systemCallPrepared != false) {
+      _systemCallVideo = video;
       if (!systemRegistered) {
-        if (_systemCallId != roomId) {
-          _systemCallId = roomId;
+        if (!_sameCallInstance(_systemCallInstance, systemInstance)) {
+          _systemCallInstance = systemInstance;
           _systemMutedByTelecom = false;
           _systemActiveByTelecom = true;
           _lastSystemMicEnabled = null;
@@ -919,6 +1626,7 @@ class CallController extends ChangeNotifier {
         systemRegistered = systemIncoming
             ? await _systemCalls.reportIncomingCall(
                 callId: roomId,
+                ringEventId: systemInstance.ringEventId,
                 displayName: room!.getLocalizedDisplayname(),
                 video: video,
                 avatarCacheKey: _conversationAvatarCacheKey(room),
@@ -929,6 +1637,7 @@ class CallController extends ChangeNotifier {
               )
             : await _systemCalls.reportOutgoingCall(
                 callId: roomId,
+                ringEventId: systemInstance.ringEventId,
                 displayName: room!.getLocalizedDisplayname(),
                 video: video,
                 avatarCacheKey: _conversationAvatarCacheKey(room),
@@ -937,14 +1646,16 @@ class CallController extends ChangeNotifier {
                 audioEnabled: audioInitiallyEnabled,
                 cameraEnabled: cameraInitiallyOn,
               );
-        if (!systemRegistered && _systemCallId == roomId) {
+        if (!systemRegistered &&
+            _sameCallInstance(_systemCallInstance, systemInstance)) {
           _clearSystemCallState();
         }
       }
       if (systemRegistered) {
-        _systemCallId = roomId;
+        _systemCallInstance = systemInstance;
         _refreshSystemCallAvatar(
           room!,
+          instance: systemInstance,
           video: video,
           incoming: systemIncoming,
         );
@@ -954,13 +1665,17 @@ class CallController extends ChangeNotifier {
     // Регистрация в Android Telecom может занять несколько секунд. За это
     // время пользователь уже мог завершить звонок или открыть другой — тогда
     // запрещаем запоздалой операции оживлять старую медиа-сессию.
-    if (generation != _lifecycleGeneration || _session != s) {
-      if (systemRegistered && _systemCallId == roomId) {
-        await _systemCalls.endCall(roomId);
+    if (wasCancelled() || generation != _lifecycleGeneration || _session != s) {
+      if (systemRegistered &&
+          _sameCallInstance(_systemCallInstance, systemInstance)) {
+        await _systemCalls.endCall(
+          roomId,
+          ringEventId: systemInstance.ringEventId,
+        );
         _clearSystemCallState();
       }
-      await _stopForegroundCall(roomId);
-      await voip.leaveCurrent();
+      await _stopForegroundCall(systemInstance);
+      await _tearDownStaleStart(voip, s);
       return;
     }
 
@@ -970,22 +1685,27 @@ class CallController extends ChangeNotifier {
     // requestEndpointChange() and can immediately undo earpiece selection.
     if (systemRegistered) {
       await _setAndroidTelecomAudioPolicy(true);
-      if (generation != _lifecycleGeneration || _session != s) {
-        if (_systemCallId == roomId) {
-          await _systemCalls.endCall(roomId);
+      if (wasCancelled() ||
+          generation != _lifecycleGeneration ||
+          _session != s) {
+        if (_sameCallInstance(_systemCallInstance, systemInstance)) {
+          await _systemCalls.endCall(
+            roomId,
+            ringEventId: systemInstance.ringEventId,
+          );
           _clearSystemCallState();
         }
         await _setAndroidTelecomAudioPolicy(false);
-        await _stopForegroundCall(roomId);
-        await voip.leaveCurrent();
+        await _stopForegroundCall(systemInstance);
+        await _tearDownStaleStart(voip, s);
         return;
       }
     }
 
     await s.connect(video: cameraInitiallyOn, deferReady: true);
-    if (generation != _lifecycleGeneration || _session != s) {
-      await _stopForegroundCall(roomId);
-      await voip.leaveCurrent();
+    if (wasCancelled() || generation != _lifecycleGeneration || _session != s) {
+      await _stopForegroundCall(systemInstance);
+      await _tearDownStaleStart(voip, s);
       return;
     }
     if (s.status == CallStatus.failed || !s.mediaTransportConnected) {
@@ -1000,10 +1720,16 @@ class CallController extends ChangeNotifier {
       return;
     }
 
-    if (systemRegistered && _systemCallId == roomId) {
+    if (systemRegistered &&
+        _sameCallInstance(_systemCallInstance, systemInstance)) {
       await s.setSystemMuted(_systemMutedByTelecom);
       await s.setSystemActive(_systemActiveByTelecom);
-      if (_systemActiveByTelecom) await _systemCalls.setActive(roomId);
+      if (_systemActiveByTelecom) {
+        await _systemCalls.setActive(
+          roomId,
+          ringEventId: systemInstance.ringEventId,
+        );
+      }
       await _syncSystemCallControls();
     } else {
       // Do not start a second Android media player after Telecom activation:
@@ -1012,11 +1738,16 @@ class CallController extends ChangeNotifier {
       await matrix.audio.playVoiceJoin();
     }
 
-    if (generation != _lifecycleGeneration || _session != s) {
-      await voip.leaveCurrent();
+    if (wasCancelled() || generation != _lifecycleGeneration || _session != s) {
+      await _tearDownStaleStart(voip, s);
       return;
     }
-    if (!await s.markReady()) {
+    final mediaReady = await s.markReady();
+    if (wasCancelled() || generation != _lifecycleGeneration || _session != s) {
+      await _tearDownStaleStart(voip, s);
+      return;
+    }
+    if (!mediaReady) {
       await _failStart(
         s,
         'Не удалось завершить подключение к медиа звонка',
@@ -1024,8 +1755,32 @@ class CallController extends ChangeNotifier {
       );
       return;
     }
+    final deferredRecovery = _deferredInitialMediaRecovery;
+    _deferredInitialMediaRecovery = null;
+    if (deferredRecovery != null && identical(_session, s)) {
+      await s.recoverAfterBackground(deferredRecovery);
+    }
     if ((systemIncoming || recovering) && cameraInitiallyOn) {
       await s.recoverCameraAfterColdAnswer();
+    }
+  }
+
+  Future<void> _tearDownStaleStart(
+    VoipService voip,
+    CallSession session,
+  ) async {
+    final mediaTeardown = session.hangUp();
+    try {
+      await Future.wait<void>([
+        mediaTeardown,
+        voip.leaveCurrent(
+          owner: session,
+          preparedKeyProvider: session.e2eeKeyProvider,
+          mediaOperationsDrained: session.mediaOperationsFullyDrained,
+        ),
+      ]);
+    } finally {
+      session.dispose();
     }
   }
 
@@ -1034,67 +1789,126 @@ class CallController extends ChangeNotifier {
     String message, {
     bool leaveSignaling = false,
   }) async {
+    if (!identical(_session, session)) {
+      final voip = matrix.voip;
+      if (voip != null) {
+        await _tearDownStaleStart(voip, session);
+      } else {
+        await session.hangUp();
+        session.dispose();
+      }
+      return;
+    }
     _cancelUnansweredTimeout();
     lastError = message;
+    final failedInstance = OrexCallInstance(
+      roomId: session.matrixRoomId,
+      ringEventId: _currentRingEventId,
+    );
     // Store the exact ring tombstone before native cleanup. This makes late FCM
     // retries idempotent even if Telecom tears its session down immediately.
-    await matrix.push.notifyCallEnded(session.matrixRoomId);
+    session.removeListener(_onSessionChanged);
+    final mediaTeardown = session.hangUp();
+    final signalingTeardown = leaveSignaling
+        ? matrix.voip?.leaveCurrent(
+            owner: session,
+            preparedKeyProvider: session.e2eeKeyProvider,
+            mediaOperationsDrained: session.mediaOperationsFullyDrained,
+          )
+        : null;
+    try {
+      await matrix.push.notifyCallEnded(
+        session.matrixRoomId,
+        ringEventId: failedInstance.ringEventId,
+      );
+    } catch (e) {
+      OrexLog.d('Call', 'failed to persist start rollback', e);
+    }
     final failedRoom = matrix.client.getRoomById(session.matrixRoomId);
     if (failedRoom != null && _shouldSendEndedSignal(failedRoom, session)) {
-      unawaited(matrix.voip?.notifyEnded(session.matrixRoomId));
+      unawaited(matrix.voip?.notifyEnded(failedInstance));
     }
-    session.removeListener(_onSessionChanged);
-    await session.hangUp();
-    session.dispose();
-    if (leaveSignaling) {
-      try {
-        await matrix.voip?.leaveCurrent();
-      } catch (e) {
-        OrexLog.d('Call', 'leave failed after start rollback', e);
-      }
+    try {
+      await Future.wait<void>([mediaTeardown, ?signalingTeardown]);
+    } catch (e) {
+      OrexLog.d('Call', 'leave failed after start rollback', e);
+    } finally {
+      session.dispose();
     }
-    final failedSystemCallId = _systemCallId;
+    final failedSystemCall = _systemCallInstance;
     if (_session == session) {
       _session = null;
       minimized = false;
       roomId = null;
+      _currentRingEventId = null;
       video = false;
       listenOnly = false;
       _initiator = false;
       _start = null;
+      _callAnswered = false;
+      _deferredInitialMediaRecovery = null;
+      if (_sameCallInstance(_pendingAcceptedIncomingCallUi, failedInstance)) {
+        _pendingAcceptedIncomingCallUi = null;
+      }
       focusedParticipantIdentity = null;
       _clearSystemCallState();
       _lifecycleGeneration++;
     }
-    await _stopForegroundCall(session.matrixRoomId);
-    if (failedSystemCallId != null) {
-      await _systemCalls.endCall(failedSystemCallId, reason: 'error');
+    await _stopForegroundCall(failedInstance);
+    if (failedSystemCall != null) {
+      await _systemCalls.endCall(
+        failedSystemCall.roomId,
+        ringEventId: failedSystemCall.ringEventId,
+        reason: 'error',
+      );
     }
     await _setAndroidTelecomAudioPolicy(false);
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   void minimize() {
+    if (_disposed) return;
     if (_session == null) return;
     minimized = true;
     notifyListeners();
   }
 
   void expand() {
+    if (_disposed) return;
     minimized = false;
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   Future<void> hangUp({
     bool fromSystem = false,
     bool fromRemote = false,
+    bool cancelPendingStarts = true,
+  }) {
+    if (cancelPendingStarts) _startCancellationGeneration++;
+    final pending = _hangUpOperation;
+    if (pending != null) return pending;
+    late final Future<void> operation;
+    operation = _hangUpInternal(fromSystem: fromSystem, fromRemote: fromRemote)
+        .whenComplete(() {
+          if (identical(_hangUpOperation, operation)) _hangUpOperation = null;
+        });
+    _hangUpOperation = operation;
+    return operation;
+  }
+
+  Future<void> _hangUpInternal({
+    required bool fromSystem,
+    required bool fromRemote,
   }) async {
     _lifecycleGeneration++;
     _cancelUnansweredTimeout();
     final s = _session;
     final rid = roomId;
+    final callInstance = rid == null
+        ? null
+        : OrexCallInstance(roomId: rid, ringEventId: _currentRingEventId);
     final room = rid == null ? null : matrix.client.getRoomById(rid);
-    final systemCallId = _systemCallId;
+    final systemCallInstance = _systemCallInstance;
     final initiator = _initiator;
     final start = _start;
     final sawRemote = s?.sawRemote ?? false;
@@ -1103,35 +1917,81 @@ class CallController extends ChangeNotifier {
     final shouldPostSummary =
         initiator && rid != null && (fromRemote || shouldSendEndedSignal);
     Future<void>? remoteEndSync;
-    if (shouldSendEndedSignal && rid != null) {
+    if (shouldSendEndedSignal && callInstance != null) {
       remoteEndSync = matrix.voip
-          ?.notifyEnded(rid)
+          ?.notifyEnded(callInstance)
           .timeout(const Duration(seconds: 4), onTimeout: () {});
     }
     _session = null;
     minimized = false;
     roomId = null;
+    _currentRingEventId = null;
     video = false;
     listenOnly = false;
     _initiator = false;
     _start = null;
+    _callAnswered = false;
+    _deferredInitialMediaRecovery = null;
+    if (_sameCallInstance(_pendingAcceptedIncomingCallUi, callInstance)) {
+      _pendingAcceptedIncomingCallUi = null;
+    }
     focusedParticipantIdentity = null;
     _clearSystemCallState();
-    if (rid != null) await matrix.push.notifyCallEnded(rid);
-    notifyListeners();
-    if (s != null) {
-      s.removeListener(_onSessionChanged);
-      await s.hangUp();
-      s.dispose();
+    s?.removeListener(_onSessionChanged);
+    // Start native Room teardown before the first network await below. Any
+    // stale start continuation then observes the same idempotent barrier and
+    // cannot release the E2EE provider while LiveKit still uses it.
+    final mediaTeardown = s?.hangUp();
+    final leaveSignaling = s == null
+        ? null
+        : matrix.voip?.leaveCurrent(
+            owner: s,
+            preparedKeyProvider: s.e2eeKeyProvider,
+            mediaOperationsDrained: s.mediaOperationsFullyDrained,
+          );
+    if (rid != null) {
+      try {
+        await matrix.push.notifyCallEnded(
+          rid,
+          ringEventId: callInstance?.ringEventId,
+        );
+      } catch (e) {
+        OrexLog.d('Call', 'failed to persist call hangup', e);
+      }
     }
-    await matrix.voip?.leaveCurrent();
-    if (remoteEndSync != null) await remoteEndSync;
-    if (!fromSystem && systemCallId != null) {
-      await _systemCalls.endCall(systemCallId);
+    if (!_disposed) notifyListeners();
+    if (s != null && mediaTeardown != null) {
+      try {
+        await Future.wait<void>([mediaTeardown, ?leaveSignaling]);
+      } catch (e) {
+        OrexLog.d('Call', 'call teardown failed', e);
+      } finally {
+        s.dispose();
+      }
+    } else if (leaveSignaling != null) {
+      await leaveSignaling;
     }
-    await _stopForegroundCall(rid);
+    if (remoteEndSync != null) {
+      try {
+        await remoteEndSync;
+      } catch (e) {
+        OrexLog.d('Call', 'remote ended sync failed', e);
+      }
+    }
+    if (!fromSystem && systemCallInstance != null) {
+      await _systemCalls.endCall(
+        systemCallInstance.roomId,
+        ringEventId: systemCallInstance.ringEventId,
+      );
+    }
+    await _stopForegroundCall(callInstance);
     await _setAndroidTelecomAudioPolicy(false);
-    if (rid != null) await _systemCalls.clearRecoverableCall(rid);
+    if (callInstance != null) {
+      await _systemCalls.clearRecoverableCall(
+        callInstance.roomId,
+        ringEventId: callInstance.ringEventId,
+      );
+    }
     // Итоговое сообщение о звонке постит ТОЛЬКО инициатор — без дублей.
     // Если пользователь лишь временно вышел из уже подключённого личного
     // звонка, summary не публикуем: в комнате всё ещё может ждать собеседник.
@@ -1141,7 +2001,8 @@ class CallController extends ChangeNotifier {
   }
 
   void _clearSystemCallState() {
-    _systemCallId = null;
+    _systemCallInstance = null;
+    _systemCallVideo = false;
     _systemMutedByTelecom = false;
     _systemActiveByTelecom = true;
     _lastSystemMicEnabled = null;
@@ -1195,22 +2056,58 @@ class CallController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _lifecycleGeneration++;
+    _incomingAcceptGeneration++;
+    _startCancellationGeneration++;
     _cancelUnansweredTimeout();
     matrix.audio.removeListener(_onAudioSettingsChanged);
-    final systemCallId = _systemCallId;
-    if (systemCallId != null) {
-      unawaited(_systemCalls.endCall(systemCallId, reason: 'local'));
+    final systemCallInstance = _systemCallInstance;
+    if (systemCallInstance != null) {
+      unawaited(
+        _systemCalls.endCall(
+          systemCallInstance.roomId,
+          ringEventId: systemCallInstance.ringEventId,
+          reason: 'local',
+        ),
+      );
     }
-    unawaited(_stopForegroundCall(roomId));
+    unawaited(_stopForegroundCall(currentCallInstance));
     unawaited(_setAndroidTelecomAudioPolicy(false));
     _clearSystemCallState();
     _systemCalls.clearActionHandler(this);
     _incomingDismissSub?.cancel();
     _remoteAcceptedSub?.cancel();
     _remoteTerminationSub?.cancel();
+    _instancePromotionSub?.cancel();
     _systemIncomingAccepted.close();
-    _session?.removeListener(_onSessionChanged);
-    _session?.dispose();
+    _systemAnswerInProgress = null;
+    _systemTerminationInProgress = null;
+    final session = _session;
+    _session = null;
+    roomId = null;
+    session?.removeListener(_onSessionChanged);
+    final mediaTeardown = session?.hangUp();
+    final signalingTeardown = session == null
+        ? null
+        : matrix.voip?.leaveCurrent(
+            owner: session,
+            preparedKeyProvider: session.e2eeKeyProvider,
+            mediaOperationsDrained: session.mediaOperationsFullyDrained,
+          );
+    final teardown = <Future<void>>[
+      ?_startOperation,
+      ?_hangUpOperation,
+      ?mediaTeardown,
+      ?signalingTeardown,
+    ];
+    _shutdownComplete = Future.wait<void>(
+      teardown.map(
+        (operation) => operation.catchError((Object error, StackTrace _) {
+          OrexLog.d('Call', 'controller shutdown cleanup failed', error);
+        }),
+      ),
+    ).whenComplete(() => session?.dispose());
     super.dispose();
   }
 }

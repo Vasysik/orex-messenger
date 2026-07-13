@@ -31,6 +31,7 @@ class OrexCallActionActivity : Activity() {
 
     private fun handle(source: Intent) {
         val callId = source.getStringExtra(EXTRA_CALL_ID)?.trim().orEmpty()
+        val ringEventId = normalizeRingEventId(source.getStringExtra(EXTRA_RING_EVENT_ID))
         val action = source.getStringExtra(EXTRA_ACTION)?.trim().orEmpty()
         if (callId.isEmpty() || action.isEmpty()) return
 
@@ -44,7 +45,12 @@ class OrexCallActionActivity : Activity() {
         when (action) {
             ACTION_ANSWER, ACTION_ANSWER_VIDEO -> {
                 val useVideo = action == ACTION_ANSWER_VIDEO || video
-                OrexCallPresentationState.markAnswering(applicationContext, callId)
+                if (!OrexCallPresentationState.markAnswering(
+                        applicationContext,
+                        callId,
+                        ringEventId,
+                    )
+                ) return
                 OrexNotificationCenter.cancelCallNotification(applicationContext)
                 val launched = if (systemManaged) {
                     // Publish the explicit user choice before MainActivity can
@@ -53,6 +59,7 @@ class OrexCallActionActivity : Activity() {
                     OrexPushBridge.queueIncomingCallAction(
                         context = this,
                         callId = callId,
+                        ringEventId = ringEventId,
                         displayName = displayName,
                         video = useVideo,
                         action = ACTION_ANSWER,
@@ -62,6 +69,9 @@ class OrexCallActionActivity : Activity() {
                         Intent().apply {
                             this.action = OrexAndroidTelecomManager.ACTION_ANSWER
                             putExtra(OrexAndroidTelecomManager.EXTRA_CALL_ID, callId)
+                            ringEventId?.let {
+                                putExtra(OrexAndroidTelecomManager.EXTRA_RING_EVENT_ID, it)
+                            }
                         },
                     )
                     OrexPushBridge.bringAppToFront(this)
@@ -69,6 +79,7 @@ class OrexCallActionActivity : Activity() {
                     OrexPushBridge.launchIncomingCallAction(
                         context = this,
                         callId = callId,
+                        ringEventId = ringEventId,
                         displayName = displayName,
                         video = useVideo,
                         action = "answer",
@@ -78,24 +89,37 @@ class OrexCallActionActivity : Activity() {
                 }
                 if (!launched) {
                     Log.e(TAG, "Failed to launch answered call $callId")
-                    OrexCallPresentationState.markEnded(applicationContext, callId)
+                    OrexCallPresentationState.markEnded(
+                        applicationContext,
+                        callId,
+                        ringEventId,
+                    )
                 }
             }
 
             ACTION_REJECT -> {
+                if (!OrexCallPresentationState.markEnded(
+                        applicationContext,
+                        callId,
+                        ringEventId,
+                    )
+                ) return
                 OrexNotificationCenter.cancelCallNotification(applicationContext)
-                OrexCallPresentationState.markEnded(applicationContext, callId)
                 if (systemManaged) {
                     OrexAndroidTelecomManager.handleNotificationAction(
                         Intent().apply {
                             this.action = OrexAndroidTelecomManager.ACTION_DECLINE
                             putExtra(OrexAndroidTelecomManager.EXTRA_CALL_ID, callId)
+                            ringEventId?.let {
+                                putExtra(OrexAndroidTelecomManager.EXTRA_RING_EVENT_ID, it)
+                            }
                         },
                     )
                 } else {
                     OrexPushBridge.launchIncomingCallAction(
                         context = this,
                         callId = callId,
+                        ringEventId = ringEventId,
                         displayName = displayName,
                         video = video,
                         action = "reject",
@@ -110,6 +134,7 @@ class OrexCallActionActivity : Activity() {
     companion object {
         private const val TAG = "OrexCallAction"
         private const val EXTRA_CALL_ID = "orex_call_id"
+        private const val EXTRA_RING_EVENT_ID = "orex_ring_event_id"
         private const val EXTRA_DISPLAY_NAME = "orex_display_name"
         private const val EXTRA_VIDEO = "orex_video"
         private const val EXTRA_ACTION = "orex_action"
@@ -121,12 +146,14 @@ class OrexCallActionActivity : Activity() {
         fun createIntent(
             context: Context,
             callId: String,
+            ringEventId: String? = null,
             displayName: String,
             video: Boolean,
             action: String,
             systemManaged: Boolean,
         ): Intent = Intent(context, OrexCallActionActivity::class.java).apply {
             putExtra(EXTRA_CALL_ID, callId)
+            normalizeRingEventId(ringEventId)?.let { putExtra(EXTRA_RING_EVENT_ID, it) }
             putExtra(EXTRA_DISPLAY_NAME, displayName)
             putExtra(EXTRA_VIDEO, video)
             putExtra(EXTRA_ACTION, action)

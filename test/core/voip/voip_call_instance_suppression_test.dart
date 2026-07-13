@@ -70,10 +70,7 @@ void main() {
         ),
         isFalse,
       );
-      expect(
-        orexIsFreshRingAfterLeave(ringAt: null, leftAt: leftAt),
-        isFalse,
-      );
+      expect(orexIsFreshRingAfterLeave(ringAt: null, leftAt: leftAt), isFalse);
     });
   });
 
@@ -100,6 +97,176 @@ void main() {
         orexShouldMarkStartupCallAsSeen(
           existedAtStartup: true,
           hasFreshExplicitRing: true,
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('exact call-attempt promotion', () {
+    test('promotes only a current tokenless attempt', () {
+      expect(
+        orexShouldPromoteLegacyCallInstance(
+          hasCurrentCall: true,
+          expectedRingEventId: null,
+          receivedRingEventId: r'$ring-A',
+        ),
+        isTrue,
+      );
+      expect(
+        orexShouldPromoteLegacyCallInstance(
+          hasCurrentCall: false,
+          expectedRingEventId: null,
+          receivedRingEventId: r'$ring-A',
+        ),
+        isFalse,
+      );
+      expect(
+        orexShouldPromoteLegacyCallInstance(
+          hasCurrentCall: true,
+          expectedRingEventId: r'$ring-A',
+          receivedRingEventId: r'$ring-B',
+        ),
+        isFalse,
+      );
+    });
+
+    test('accepts first strong disposition but rejects stale exact ids', () {
+      expect(
+        orexShouldApplyCallDisposition(
+          hasCurrentCall: true,
+          expectedRingEventId: null,
+          receivedRingEventId: r'$ring-A',
+        ),
+        isTrue,
+      );
+      expect(
+        orexShouldApplyCallDisposition(
+          hasCurrentCall: true,
+          expectedRingEventId: r'$ring-A',
+          receivedRingEventId: r'$ring-B',
+        ),
+        isFalse,
+      );
+      expect(
+        orexShouldApplyCallDisposition(
+          hasCurrentCall: true,
+          expectedRingEventId: r'$ring-A',
+          receivedRingEventId: null,
+        ),
+        isFalse,
+      );
+      expect(
+        orexShouldApplyCallDisposition(
+          hasCurrentCall: false,
+          expectedRingEventId: null,
+          receivedRingEventId: r'$ring-A',
+        ),
+        isTrue,
+      );
+    });
+
+    test('stored legacy tombstone uses event ordering', () {
+      final handledAt = DateTime.utc(2026, 7, 13, 10);
+      expect(
+        orexShouldPromoteStoredLegacyCallInstance(
+          exactAttemptAt: handledAt,
+          legacyDispositionAt: handledAt,
+        ),
+        isTrue,
+      );
+      expect(
+        orexShouldPromoteStoredLegacyCallInstance(
+          exactAttemptAt: handledAt.subtract(const Duration(seconds: 1)),
+          legacyDispositionAt: handledAt,
+        ),
+        isTrue,
+      );
+      expect(
+        orexShouldPromoteStoredLegacyCallInstance(
+          exactAttemptAt: handledAt.add(const Duration(milliseconds: 1)),
+          legacyDispositionAt: handledAt,
+        ),
+        isFalse,
+      );
+      expect(
+        orexShouldPromoteStoredLegacyCallInstance(
+          exactAttemptAt: null,
+          legacyDispositionAt: handledAt,
+        ),
+        isFalse,
+      );
+      expect(
+        orexShouldPromoteStoredLegacyCallInstance(
+          exactAttemptAt: handledAt,
+          legacyDispositionAt: null,
+        ),
+        isFalse,
+      );
+    });
+
+    test('out-of-order exact control tombstones only the future attempt', () {
+      expect(
+        orexShouldRecordOutOfOrderExactTombstone(
+          currentRingEventId: r'$ring-A',
+          receivedRingEventId: r'$ring-B',
+        ),
+        isTrue,
+      );
+      expect(
+        orexShouldRecordOutOfOrderExactTombstone(
+          currentRingEventId: r'$ring-A',
+          receivedRingEventId: r'$ring-A',
+        ),
+        isFalse,
+      );
+      expect(
+        orexShouldRecordOutOfOrderExactTombstone(
+          currentRingEventId: null,
+          receivedRingEventId: r'$ring-B',
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('shown incoming ordering', () {
+    final shownAt = DateTime.utc(2026, 7, 13, 10);
+
+    test('only a newer different exact ring supersedes the current UI', () {
+      expect(
+        orexShouldSupersedeShownIncomingCall(
+          shownRingEventId: r'$ring-A',
+          shownAt: shownAt,
+          candidateRingEventId: r'$ring-B',
+          candidateAt: shownAt.add(const Duration(milliseconds: 1)),
+        ),
+        isTrue,
+      );
+      expect(
+        orexShouldSupersedeShownIncomingCall(
+          shownRingEventId: r'$ring-A',
+          shownAt: shownAt,
+          candidateRingEventId: r'$ring-B',
+          candidateAt: shownAt,
+        ),
+        isFalse,
+      );
+      expect(
+        orexShouldSupersedeShownIncomingCall(
+          shownRingEventId: r'$ring-A',
+          shownAt: shownAt,
+          candidateRingEventId: r'$ring-A',
+          candidateAt: shownAt.add(const Duration(seconds: 1)),
+        ),
+        isFalse,
+      );
+      expect(
+        orexShouldSupersedeShownIncomingCall(
+          shownRingEventId: null,
+          shownAt: shownAt,
+          candidateRingEventId: r'$ring-A',
+          candidateAt: shownAt.add(const Duration(seconds: 1)),
         ),
         isFalse,
       );

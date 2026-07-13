@@ -58,9 +58,10 @@ object OrexNotificationCenter {
                     callId,
                     ringEventId,
                 )
+                OrexAndroidTelecomManager.cancelRingingAttempt(callId, ringEventId)
                 if (cancelled) {
                     cancelCallNotification(context)
-                    OrexIncomingCallActivity.finishForCall(callId)
+                    OrexIncomingCallActivity.finishForCall(callId, ringEventId)
                     Log.i(TAG, "Incoming ring cancelled by exact control payload call=$callId")
                 }
                 // Exact cancellation also stores a tombstone for cancel-before-ring.
@@ -69,6 +70,7 @@ object OrexNotificationCenter {
                 return
             }
             if (callId != null && isCallEndPayload(payload)) {
+                OrexAndroidTelecomManager.cancelRingingAttempt(callId, null)
                 cancelCall(context, callId)
                 Log.i(TAG, "Incoming call cancelled by tokenless remote end call=$callId")
             }
@@ -246,7 +248,9 @@ object OrexNotificationCenter {
         startedAt: Long,
         micEnabled: Boolean,
         audioEnabled: Boolean,
+        ringEventId: String? = null,
         avatarCacheKey: String? = null,
+        presentationDecision: OrexCallPresentationState.IncomingDecision? = null,
     ): Notification? {
         if (!canPostNotifications(context)) return null
         ensureChannels(context)
@@ -256,13 +260,19 @@ object OrexNotificationCenter {
             roomId = callId,
         )
         val isRinging = incoming && !answered
-        val decision = if (isRinging) {
-            OrexCallPresentationState.claimTelecomRing(context, callId)
+        val decision = presentationDecision ?: if (isRinging) {
+            OrexCallPresentationState.claimTelecomRing(context, callId, ringEventId)
         } else {
-            OrexCallPresentationState.markActive(context, callId)
-            OrexCallPresentationState.IncomingDecision.SILENT_REFRESH
+            if (OrexCallPresentationState.markActive(context, callId, ringEventId)) {
+                OrexCallPresentationState.IncomingDecision.SILENT_REFRESH
+            } else {
+                OrexCallPresentationState.IncomingDecision.SUPPRESS
+            }
         }
         if (decision == OrexCallPresentationState.IncomingDecision.SUPPRESS) return null
+        if (isRinging) {
+            OrexIncomingCallActivity.promoteAttemptForCall(callId, ringEventId)
+        }
         val alert = decision == OrexCallPresentationState.IncomingDecision.FIRST_ALERT
 
         val openApp = if (isRinging) {
@@ -273,6 +283,7 @@ object OrexNotificationCenter {
                 video = video,
                 timeoutAfterMs = DEFAULT_CALL_LIFETIME_MS,
                 requestCode = 7000,
+                ringEventId = ringEventId,
                 avatarCacheKey = resolvedAvatarCacheKey,
             )
         } else {
@@ -283,6 +294,7 @@ object OrexNotificationCenter {
                 video = video,
                 action = null,
                 requestCode = 7000,
+                ringEventId = ringEventId,
                 avatarCacheKey = resolvedAvatarCacheKey,
             )
         }
@@ -295,6 +307,7 @@ object OrexNotificationCenter {
                 action = "answer",
                 requestCode = 7001,
                 systemManaged = true,
+                ringEventId = ringEventId,
             )
         } else {
             answer
@@ -308,6 +321,7 @@ object OrexNotificationCenter {
                 action = "reject",
                 requestCode = 7002,
                 systemManaged = true,
+                ringEventId = ringEventId,
             )
         } else {
             decline
@@ -417,23 +431,33 @@ object OrexNotificationCenter {
         notificationManager(context).cancel(ONGOING_CALL_NOTIFICATION_ID)
     }
 
-    fun cancelIncomingCall(context: Context, callId: String? = null) {
+    fun cancelIncomingCall(
+        context: Context,
+        callId: String? = null,
+        ringEventId: String? = null,
+    ) {
+        val matched = OrexCallPresentationState.markEnded(context, callId, ringEventId)
+        if (!matched) return
         cancelCallNotification(context)
-        OrexCallPresentationState.markEnded(context, callId)
         if (callId == null) OrexIncomingCallActivity.finishActive()
-        else OrexIncomingCallActivity.finishForCall(callId)
+        else OrexIncomingCallActivity.finishForCall(callId, ringEventId)
     }
 
-    fun cancelCall(context: Context, callId: String? = null) {
+    fun cancelCall(
+        context: Context,
+        callId: String? = null,
+        ringEventId: String? = null,
+    ) {
         val canCancel = callId == null ||
-            OrexCallPresentationState.canCancelPresentation(context, callId)
+            OrexCallPresentationState.canCancelPresentation(context, callId, ringEventId)
         if (canCancel) cancelCallNotification(context)
         // Ongoing notification ownership belongs exclusively to
         // OrexCallForegroundService. Ring/handled/end push cleanup must never
         // remove the active media call card behind the service's back.
-        OrexCallPresentationState.markEnded(context, callId)
+        val matched = OrexCallPresentationState.markEnded(context, callId, ringEventId)
+        if (!matched) return
         if (callId == null) OrexIncomingCallActivity.finishActive()
-        else OrexIncomingCallActivity.finishForCall(callId)
+        else OrexIncomingCallActivity.finishForCall(callId, ringEventId)
     }
 
     private fun showIncomingCall(
@@ -452,18 +476,9 @@ object OrexNotificationCenter {
             roomId = callId,
             userId = senderId,
         )
-        if (avatarCacheKey != null) {
-            OrexIncomingCallActivity.updateAvatarForCall(callId, avatarCacheKey)
-        }
         val video = isVideoCall(payload)
         val timeoutAfterMs = remainingCallLifetimeMs(payload)
-        val ringToken = firstValue(
-            payload,
-            "event_id",
-            "content_sender_ts",
-            "content.sender_ts",
-            "sender_ts",
-        )
+        val ringToken = firstValue(payload, "event_id")
         val decision = claimIncomingPresentation(
             context = context,
             payload = payload,
@@ -475,6 +490,14 @@ object OrexNotificationCenter {
             Log.i(TAG, "Duplicate/handled incoming call push suppressed call=$callId")
             return
         }
+        OrexIncomingCallActivity.promoteAttemptForCall(callId, ringToken)
+        if (avatarCacheKey != null) {
+            OrexIncomingCallActivity.updateAvatarForCall(
+                callId,
+                ringToken,
+                avatarCacheKey,
+            )
+        }
         val alert = decision == OrexCallPresentationState.IncomingDecision.FIRST_ALERT
 
         val openApp = OrexPushBridge.incomingCallScreenPendingIntent(
@@ -484,6 +507,7 @@ object OrexNotificationCenter {
             video = video,
             timeoutAfterMs = timeoutAfterMs,
             requestCode = 6100,
+            ringEventId = ringToken,
             avatarCacheKey = avatarCacheKey,
         )
         val answer = OrexPushBridge.incomingCallActionPendingIntent(
@@ -493,6 +517,7 @@ object OrexNotificationCenter {
             video = video,
             action = "answer",
             requestCode = 6101,
+            ringEventId = ringToken,
         )
         val decline = OrexPushBridge.incomingCallActionPendingIntent(
             context = context,
@@ -501,6 +526,7 @@ object OrexNotificationCenter {
             video = video,
             action = "reject",
             requestCode = 6102,
+            ringEventId = ringToken,
         )
         postCall(
             context = context,
@@ -522,18 +548,12 @@ object OrexNotificationCenter {
         context: Context,
         payload: Map<String, String>,
         callId: String = firstValue(payload, "room_id", "call_id", "event_id").orEmpty(),
-        ringToken: String? = firstValue(
-            payload,
-            "event_id",
-            "content_sender_ts",
-            "content.sender_ts",
-            "sender_ts",
-        ),
+        ringToken: String? = firstValue(payload, "event_id"),
         timeoutAfterMs: Long = remainingCallLifetimeMs(payload),
     ): OrexCallPresentationState.IncomingDecision {
         if (callId.isBlank()) return OrexCallPresentationState.IncomingDecision.SUPPRESS
-        if (OrexCallForegroundService.ownsCall(context, callId)) {
-            OrexCallPresentationState.markActive(context, callId)
+        if (OrexCallForegroundService.ownsCall(context, callId, ringToken)) {
+            OrexCallPresentationState.markActive(context, callId, ringToken)
             OrexCallPresentationState.rememberSuppressedRing(
                 context = context,
                 callId = callId,
@@ -665,6 +685,9 @@ object OrexNotificationCenter {
                 .setOngoing(true)
                 .setAutoCancel(false)
                 .setOnlyAlertOnce(true)
+                // A notification-channel ringtone still fires on a refresh
+                // unless the notification itself is explicitly silent.
+                .setSilent(!alert)
                 .addPerson(person)
             if (avatar != null) builder.setLargeIcon(avatar)
 
@@ -1025,6 +1048,8 @@ object OrexNotificationCenter {
     private fun incomingSentAt(payload: Map<String, String>): Long? {
         return firstLong(
             payload,
+            "origin_server_ts",
+            "event_ts",
             "content_sender_ts",
             "content.sender_ts",
             "sender_ts",

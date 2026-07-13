@@ -41,6 +41,7 @@ class OrexIncomingCallActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private var ringTimeout: Runnable? = null
     private var callId: String = ""
+    private var ringEventId: String? = null
     private var displayName: String = "Orex"
     private var avatarCacheKey: String? = null
     private var incomingVideo: Boolean = false
@@ -97,8 +98,22 @@ class OrexIncomingCallActivity : Activity() {
 
     private fun render(source: Intent) {
         val nextCallId = source.getStringExtra(EXTRA_CALL_ID)?.trim().orEmpty()
-        if (nextCallId != callId) handoffStarted = false
+        val nextRingEventId = normalizeRingEventId(source.getStringExtra(EXTRA_RING_EVENT_ID))
+        if (nextCallId.isEmpty() ||
+            !OrexCallPresentationState.canPresentCallAttempt(
+                applicationContext,
+                nextCallId,
+                nextRingEventId,
+            )
+        ) {
+            if (callId.isEmpty()) finishAndRemoveTask()
+            return
+        }
+        if (!sameCallAttempt(callId, ringEventId, nextCallId, nextRingEventId)) {
+            handoffStarted = false
+        }
         callId = nextCallId
+        ringEventId = nextRingEventId
         displayName = source.getStringExtra(EXTRA_DISPLAY_NAME)?.trim().orEmpty().ifEmpty { "Orex" }
         avatarCacheKey = source.getStringExtra(EXTRA_AVATAR_CACHE_KEY)?.trim()?.ifEmpty { null }
         incomingVideo = source.getBooleanExtra(EXTRA_VIDEO, false)
@@ -124,7 +139,7 @@ class OrexIncomingCallActivity : Activity() {
         setContentView(buildContent())
         ringTimeout?.let(handler::removeCallbacks)
         ringTimeout = Runnable {
-            OrexNotificationCenter.cancelCall(applicationContext, callId)
+            OrexNotificationCenter.cancelCall(applicationContext, callId, ringEventId)
             finishAndRemoveTask()
         }.also { handler.postDelayed(it, timeoutMs) }
     }
@@ -310,7 +325,10 @@ class OrexIncomingCallActivity : Activity() {
         ringTimeout?.let(handler::removeCallbacks)
         ringTimeout = null
 
-        OrexCallPresentationState.markAnswering(applicationContext, callId)
+        if (!OrexCallPresentationState.markAnswering(applicationContext, callId, ringEventId)) {
+            finishAndRemoveTask()
+            return
+        }
         OrexNotificationCenter.cancelCallNotification(applicationContext)
         statusText?.text = "Открываем звонок…"
         progress?.visibility = View.VISIBLE
@@ -320,6 +338,7 @@ class OrexIncomingCallActivity : Activity() {
             OrexPushBridge.queueIncomingCallAction(
                 context = this,
                 callId = callId,
+                ringEventId = ringEventId,
                 displayName = displayName,
                 video = useVideo,
                 action = ACTION_ANSWER,
@@ -329,6 +348,9 @@ class OrexIncomingCallActivity : Activity() {
                 Intent().apply {
                     action = OrexAndroidTelecomManager.ACTION_ANSWER
                     putExtra(OrexAndroidTelecomManager.EXTRA_CALL_ID, callId)
+                    ringEventId?.let {
+                        putExtra(OrexAndroidTelecomManager.EXTRA_RING_EVENT_ID, it)
+                    }
                 },
             )
             OrexPushBridge.bringAppToFront(this)
@@ -336,6 +358,7 @@ class OrexIncomingCallActivity : Activity() {
             OrexPushBridge.launchIncomingCallAction(
                 context = this,
                 callId = callId,
+                ringEventId = ringEventId,
                 displayName = displayName,
                 video = useVideo,
                 action = "answer",
@@ -376,19 +399,26 @@ class OrexIncomingCallActivity : Activity() {
 
     private fun declineCall() {
         if (callId.isEmpty()) return
+        if (!OrexCallPresentationState.markEnded(applicationContext, callId, ringEventId)) {
+            finishAndRemoveTask()
+            return
+        }
         OrexNotificationCenter.cancelCallNotification(applicationContext)
-        OrexCallPresentationState.markEnded(applicationContext, callId)
         if (systemManaged) {
             OrexAndroidTelecomManager.handleNotificationAction(
                 Intent().apply {
                     action = OrexAndroidTelecomManager.ACTION_DECLINE
                     putExtra(OrexAndroidTelecomManager.EXTRA_CALL_ID, callId)
+                    ringEventId?.let {
+                        putExtra(OrexAndroidTelecomManager.EXTRA_RING_EVENT_ID, it)
+                    }
                 },
             )
         } else {
             OrexPushBridge.launchIncomingCallAction(
                 context = this,
                 callId = callId,
+                ringEventId = ringEventId,
                 displayName = displayName,
                 video = incomingVideo,
                 action = "reject",
@@ -400,7 +430,7 @@ class OrexIncomingCallActivity : Activity() {
     }
 
     private fun restoreAfterFailedHandoff(message: String) {
-        OrexCallPresentationState.markEnded(applicationContext, callId)
+        OrexCallPresentationState.markEnded(applicationContext, callId, ringEventId)
         handoffStarted = false
         statusText?.text = message
         progress?.visibility = View.GONE
@@ -442,6 +472,7 @@ class OrexIncomingCallActivity : Activity() {
 
     companion object {
         private const val EXTRA_CALL_ID = "orex_call_id"
+        private const val EXTRA_RING_EVENT_ID = "orex_ring_event_id"
         private const val EXTRA_DISPLAY_NAME = "orex_display_name"
         private const val EXTRA_AVATAR_CACHE_KEY = "orex_avatar_cache_key"
         private const val EXTRA_VIDEO = "orex_video"
@@ -472,6 +503,7 @@ class OrexIncomingCallActivity : Activity() {
         fun createIntent(
             context: Context,
             callId: String,
+            ringEventId: String? = null,
             displayName: String,
             video: Boolean,
             timeoutAfterMs: Long,
@@ -483,6 +515,7 @@ class OrexIncomingCallActivity : Activity() {
                 Intent.FLAG_ACTIVITY_SINGLE_TOP or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_CALL_ID, callId)
+            normalizeRingEventId(ringEventId)?.let { putExtra(EXTRA_RING_EVENT_ID, it) }
             putExtra(EXTRA_DISPLAY_NAME, displayName)
             if (!avatarCacheKey.isNullOrBlank()) putExtra(EXTRA_AVATAR_CACHE_KEY, avatarCacheKey)
             putExtra(EXTRA_VIDEO, video)
@@ -498,20 +531,50 @@ class OrexIncomingCallActivity : Activity() {
             }
         }
 
-        fun updateAvatarForCall(callId: String, avatarCacheKey: String) {
+        fun updateAvatarForCall(
+            callId: String,
+            ringEventId: String?,
+            avatarCacheKey: String,
+        ) {
             val activity = current?.get() ?: return
-            if (activity.callId != callId) return
+            val sameAttempt = sameCallAttempt(
+                    activity.callId,
+                    activity.ringEventId,
+                    callId,
+                    ringEventId,
+                )
+            val canPromoteAttempt = activity.callId == callId &&
+                canPromoteRingAttempt(activity.ringEventId, ringEventId)
+            if (!sameAttempt && !canPromoteAttempt) return
+            if (canPromoteAttempt) activity.ringEventId = normalizeRingEventId(ringEventId)
             activity.runOnUiThread {
                 if (!activity.isFinishing) activity.refreshAvatar(avatarCacheKey)
             }
         }
 
-        fun finishForCall(callId: String) {
+        fun finishForCall(callId: String, ringEventId: String? = null) {
             val activity = current?.get() ?: return
-            if (activity.callId != callId) return
+            val sameAttempt = sameCallAttempt(
+                    activity.callId,
+                    activity.ringEventId,
+                    callId,
+                    ringEventId,
+                )
+            val canPromoteAttempt = activity.callId == callId &&
+                canPromoteRingAttempt(activity.ringEventId, ringEventId)
+            if (!sameAttempt && !canPromoteAttempt) return
+            if (canPromoteAttempt) activity.ringEventId = normalizeRingEventId(ringEventId)
             activity.runOnUiThread {
                 if (!activity.isFinishing) activity.finishAndRemoveTask()
             }
+        }
+
+        fun promoteAttemptForCall(callId: String, ringEventId: String?) {
+            val activity = current?.get() ?: return
+            if (activity.callId != callId ||
+                !canPromoteRingAttempt(activity.ringEventId, ringEventId)
+            ) return
+            activity.ringEventId = normalizeRingEventId(ringEventId)
         }
     }
 }

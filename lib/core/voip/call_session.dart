@@ -21,8 +21,10 @@ enum CallStatus { connecting, connected, failed, ended }
 @visibleForTesting
 bool orexShouldReconnectCallAfterBackground({
   required lk.ConnectionState? connectionState,
+  required bool hasReachedMediaReady,
 }) {
-  return connectionState != lk.ConnectionState.connected;
+  return hasReachedMediaReady &&
+      connectionState != lk.ConnectionState.connected;
 }
 
 @visibleForTesting
@@ -56,6 +58,20 @@ Duration orexEncryptionKeyRetryDelay(int attempt) {
   ];
   final safeAttempt = attempt < 0 ? 0 : attempt;
   return delays[safeAttempt < delays.length ? safeAttempt : delays.length - 1];
+}
+
+@visibleForTesting
+Future<void> orexWaitForMediaProviderRelease({
+  required Future<void> mediaTeardown,
+  required Future<void> Function() waitForPendingMediaOperations,
+}) async {
+  try {
+    await mediaTeardown;
+  } finally {
+    // UI teardown is intentionally bounded, but a native key provider must
+    // outlive every stale Room/connect operation that captured it.
+    await waitForPendingMediaOperations();
+  }
 }
 
 @visibleForTesting
@@ -100,6 +116,8 @@ class CallSession extends ChangeNotifier {
     this.callMicPreferenceSink,
     this.e2eeKeyProvider,
     this.refreshE2eeKeys,
+    this.attachE2eeRoom,
+    this.detachE2eeRoom,
     this.adaptiveStream = true,
     this.remoteReactionCue,
     OrexLiveKitCredentialsClient? credentialsClient,
@@ -137,7 +155,13 @@ class CallSession extends ChangeNotifier {
   final bool Function()? speakingThresholdEnabledProvider;
   final FutureOr<void> Function(bool enabled)? callMicPreferenceSink;
   final Future<lk.BaseKeyProvider>? e2eeKeyProvider;
-  final Future<void> Function(int expectedRemoteParticipants)? refreshE2eeKeys;
+  final Future<void> Function(
+    int expectedRemoteParticipants,
+    Set<String> forceRemoteParticipantIds,
+  )?
+  refreshE2eeKeys;
+  final Future<void> Function(lk.Room room)? attachE2eeRoom;
+  final void Function(lk.Room room)? detachE2eeRoom;
   final bool adaptiveStream;
   final FutureOr<void> Function()? remoteReactionCue;
   final OrexLiveKitCredentialsClient _credentialsClient;
@@ -169,6 +193,11 @@ class CallSession extends ChangeNotifier {
   Timer? _mediaRecoveryTimer;
   Timer? _reconnectTimer;
   Future<void>? _reconnectInFlight;
+  final Set<Future<void>> _mediaConnectOperations = <Future<void>>{};
+  final Set<Future<void>> _mediaRestoreOperations = <Future<void>>{};
+  Future<void>? _hangUpOperation;
+  Future<void>? _mediaOperationsDrainBarrier;
+  int _connectGeneration = 0;
   Future<void>? _keyRefreshInFlight;
   Timer? _keyRefreshRetryTimer;
   int _keyRefreshRetryAttempt = 0;
@@ -186,9 +215,11 @@ class CallSession extends ChangeNotifier {
   bool _systemInactive = false;
   bool _proximityEnabled = false;
   bool _readinessDeferred = false;
+  bool _hasReachedMediaReady = false;
   int _lastRemoteParticipantCount = 0;
   int _remoteReactionBaselineMs = 0;
   final Map<String, int?> _lastRemoteReactionTs = <String, int?>{};
+  final Map<String, Set<String>> _failedE2eeTracks = <String, Set<String>>{};
 
   VoiceParticipantState voiceStateForUser(String userId) {
     return _voiceStates.stateForUser(userId);
@@ -207,16 +238,26 @@ class CallSession extends ChangeNotifier {
   bool get canPublishMedia => canUseMic && !listenOnly;
   bool get mediaTransportConnected =>
       _room?.connectionState == lk.ConnectionState.connected;
+  bool get hasReachedMediaReady => _hasReachedMediaReady;
+
+  /// Once hang-up starts this is the full native Room teardown barrier, not
+  /// merely a snapshot of connection futures. MatrixRTC must retain its E2EE
+  /// provider until this future settles.
+  Future<void> get mediaOperationsFullyDrained {
+    final mediaTeardown = _hangUpOperation;
+    if (mediaTeardown == null) return _waitForMediaOperationsToDrain();
+    return _mediaOperationsDrainBarrier ??= orexWaitForMediaProviderRelease(
+      mediaTeardown: mediaTeardown,
+      waitForPendingMediaOperations: _waitForMediaOperationsToDrain,
+    );
+  }
 
   List<lk.Participant> get participants => [
     if (_room?.localParticipant != null) _room!.localParticipant!,
     ...?_room?.remoteParticipants.values,
   ];
 
-  Future<void> connect({
-    required bool video,
-    bool deferReady = false,
-  }) async {
+  Future<void> connect({required bool video, bool deferReady = false}) async {
     _cameraRequestedOn = video;
     _readinessDeferred = deferReady;
     _cancelReconnect();
@@ -224,7 +265,7 @@ class CallSession extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      await _connectFreshRoom(completeReadiness: !deferReady);
+      await _startFreshRoomConnection(completeReadiness: !deferReady);
     } catch (e) {
       if (_disposed || status == CallStatus.ended) return;
       OrexLog.d('Call', 'secure media connect failed room=$matrixRoomId', e);
@@ -235,13 +276,34 @@ class CallSession extends ChangeNotifier {
     }
   }
 
-  Future<void> _connectFreshRoom({bool completeReadiness = true}) async {
+  bool _isCurrentConnection(int generation) =>
+      !_disposed &&
+      status != CallStatus.ended &&
+      generation == _connectGeneration;
+
+  Future<void> _startFreshRoomConnection({bool completeReadiness = true}) {
+    final generation = ++_connectGeneration;
+    late final Future<void> operation;
+    operation = _connectFreshRoom(
+      generation: generation,
+      completeReadiness: completeReadiness,
+    ).whenComplete(() => _mediaConnectOperations.remove(operation));
+    _mediaConnectOperations.add(operation);
+    return operation;
+  }
+
+  Future<void> _connectFreshRoom({
+    required int generation,
+    bool completeReadiness = true,
+  }) async {
     final creds = await _fetchCredentials();
+    if (!_isCurrentConnection(generation)) return;
     final providerFuture = e2eeKeyProvider;
     if (providerFuture == null) {
       throw StateError('Media E2EE key provider is unavailable');
     }
     final provider = await providerFuture;
+    if (!_isCurrentConnection(generation)) return;
     final candidate = lk.Room(
       roomOptions: lk.RoomOptions(
         adaptiveStream: adaptiveStream,
@@ -252,22 +314,30 @@ class CallSession extends ChangeNotifier {
 
     try {
       await candidate.prepareConnection(creds.url, creds.jwt);
+      if (!_isCurrentConnection(generation)) {
+        await _disposeRoom(candidate);
+        return;
+      }
       await candidate.connect(creds.url, creds.jwt);
-      if (_disposed || status == CallStatus.ended) {
+      if (!_isCurrentConnection(generation)) {
         await _disposeRoom(candidate);
         return;
       }
 
-      await _adoptRoom(candidate);
+      if (!await _adoptRoom(candidate, generation: generation)) return;
       // Matrix key delivery is a second, eventually-consistent control plane.
       // A temporary /sync/DNS failure must not destroy a LiveKit transport that
       // is already connected. The key provider still drops encrypted frames
       // until the matching keys arrive, so this is fail-closed, not plaintext.
       await _refreshRemoteEncryptionKeysBestEffort();
-      await _restoreMediaState();
-      if (_disposed ||
-          status == CallStatus.ended ||
-          !identical(_room, candidate)) {
+      if (!_isCurrentConnection(generation) || !identical(_room, candidate)) {
+        return;
+      }
+      await _restoreMediaState(
+        expectedRoom: candidate,
+        connectGeneration: generation,
+      );
+      if (!_isCurrentConnection(generation) || !identical(_room, candidate)) {
         return;
       }
 
@@ -290,27 +360,48 @@ class CallSession extends ChangeNotifier {
     }
   }
 
-  Future<void> _adoptRoom(lk.Room room) async {
+  Future<bool> _adoptRoom(lk.Room room, {required int generation}) async {
+    if (!_isCurrentConnection(generation)) {
+      await _disposeRoom(room);
+      return false;
+    }
     final previous = _room;
-    if (identical(previous, room)) return;
+    if (identical(previous, room)) return true;
 
     if (previous != null) {
+      detachE2eeRoom?.call(previous);
       previous.removeListener(_onRoom);
       await _disposeRoomEvents();
       await _voiceGate.stop(resetTrack: true);
+      if (!_isCurrentConnection(generation)) {
+        await _disposeRoom(room);
+        return false;
+      }
     }
 
     _room = room;
+    _failedE2eeTracks.clear();
+    _cancelEncryptionKeyRefreshRetry();
     _remoteReactionBaselineMs = DateTime.now().millisecondsSinceEpoch;
     _lastRemoteReactionTs.clear();
     _lastRemoteParticipantCount = room.remoteParticipants.length;
     if (_lastRemoteParticipantCount > 0) sawRemote = true;
     room.addListener(_onRoom);
     _bindRoomEvents(room);
-
-    if (previous != null) {
-      await _disposeRoom(previous);
+    try {
+      await attachE2eeRoom?.call(room);
+    } finally {
+      // Even an E2EE-provider attachment failure must not leak the replaced
+      // PeerConnection. The outer connect rollback will dispose [room].
+      if (previous != null) await _disposeRoom(previous);
     }
+    if (!_isCurrentConnection(generation) || !identical(_room, room)) {
+      if (identical(_room, room)) {
+        await _detachAndDisposeCurrentRoom(room);
+      }
+      return false;
+    }
+    return true;
   }
 
   void _bindRoomEvents(lk.Room room) {
@@ -326,6 +417,10 @@ class CallSession extends ChangeNotifier {
       ..on<lk.RoomDisconnectedEvent>((_) {
         if (_disposed || !identical(_room, room)) return;
         _handleTerminalRoomDisconnect(room);
+      })
+      ..on<lk.TrackE2EEStateEvent>((event) {
+        if (_disposed || !identical(_room, room)) return;
+        _handleTrackE2eeState(event);
       });
     _roomEvents = listener;
   }
@@ -344,7 +439,7 @@ class CallSession extends ChangeNotifier {
     }
     try {
       await _refreshRemoteEncryptionKeysBestEffort();
-      await _restoreMediaState();
+      await _restoreMediaState(expectedRoom: room);
       if (_disposed || !identical(_room, room)) return;
       _cancelReconnect();
       error = null;
@@ -399,16 +494,24 @@ class CallSession extends ChangeNotifier {
     if (_disposed || status == CallStatus.ended) return Future<void>.value();
 
     late final Future<void> operation;
-    operation = _connectFreshRoom().catchError((Object error, StackTrace stack) {
-      if (_disposed || status == CallStatus.ended) return;
-      OrexLog.d('Call', 'full media reconnect failed room=$matrixRoomId', error);
-      status = CallStatus.connecting;
-      this.error = 'Восстанавливаем соединение…';
-      notifyListeners();
-      _scheduleFullReconnect();
-    }).whenComplete(() {
-      if (identical(_reconnectInFlight, operation)) _reconnectInFlight = null;
-    });
+    operation = _startFreshRoomConnection()
+        .catchError((Object error, StackTrace stack) {
+          if (_disposed || status == CallStatus.ended) return;
+          OrexLog.d(
+            'Call',
+            'full media reconnect failed room=$matrixRoomId',
+            error,
+          );
+          status = CallStatus.connecting;
+          this.error = 'Восстанавливаем соединение…';
+          notifyListeners();
+          _scheduleFullReconnect();
+        })
+        .whenComplete(() {
+          if (identical(_reconnectInFlight, operation)) {
+            _reconnectInFlight = null;
+          }
+        });
     _reconnectInFlight = operation;
     return operation;
   }
@@ -419,6 +522,7 @@ class CallSession extends ChangeNotifier {
     final connectionState = _room?.connectionState;
     if (orexShouldReconnectCallAfterBackground(
       connectionState: connectionState,
+      hasReachedMediaReady: _hasReachedMediaReady,
     )) {
       OrexLog.d(
         'Call',
@@ -448,54 +552,63 @@ class CallSession extends ChangeNotifier {
     if (inFlight != null) return inFlight;
 
     late final Future<void> operation;
-    operation = (() async {
-      OrexLog.d(
-        'Call',
-        'rebuilding published media after background room=$matrixRoomId '
-            'duration=${backgroundDuration.inSeconds}s',
-      );
-      await _refreshRemoteEncryptionKeysBestEffort();
-      if (_disposed || status == CallStatus.ended || !mediaTransportConnected) {
-        return;
-      }
-      await applyAudioOutput();
-      await _restartMicIfInputChanged(force: true);
-      final participant = _room?.localParticipant;
-      if (participant != null &&
-          canPublishMedia &&
-          orexShouldEnsureCameraAfterBackground(
-            cameraRequestedOn: _cameraRequestedOn,
-            cameraEnabled: participant.isCameraEnabled(),
-          )) {
-        // A lifecycle resume may leave a requested camera disabled, but an
-        // already-enabled publication must be left untouched. Rebuilding it on
-        // every resume/room event causes the camera-open/camera-close loop seen
-        // on Android and replaceTrack() against a closed peer on web.
-        try {
-          await participant.setCameraEnabled(
-            true,
-            cameraCaptureOptions: _camera.captureOptions(),
-          );
-          cameraError = null;
-        } catch (e) {
-          OrexLog.d('Call', 'camera resume failed room=$matrixRoomId', e);
-          cameraError = 'Камера недоступна';
-        }
-      }
-      await _voiceGate.sync();
-      _applySpeakerMute();
-      if (!_disposed) notifyListeners();
-    })().catchError((Object error, StackTrace stackTrace) {
-      OrexLog.d(
-        'Call',
-        'published media recovery after background failed room=$matrixRoomId',
-        error,
-      );
-    }).whenComplete(() {
-      if (identical(_backgroundRecoveryInFlight, operation)) {
-        _backgroundRecoveryInFlight = null;
-      }
-    });
+    operation =
+        (() async {
+              OrexLog.d(
+                'Call',
+                'rebuilding published media after background room=$matrixRoomId '
+                    'duration=${backgroundDuration.inSeconds}s',
+              );
+              await _refreshRemoteEncryptionKeysBestEffort();
+              if (_disposed ||
+                  status == CallStatus.ended ||
+                  !mediaTransportConnected) {
+                return;
+              }
+              await applyAudioOutput();
+              await _restartMicIfInputChanged(force: true);
+              final participant = _room?.localParticipant;
+              if (participant != null &&
+                  canPublishMedia &&
+                  orexShouldEnsureCameraAfterBackground(
+                    cameraRequestedOn: _cameraRequestedOn,
+                    cameraEnabled: participant.isCameraEnabled(),
+                  )) {
+                // A lifecycle resume may leave a requested camera disabled, but an
+                // already-enabled publication must be left untouched. Rebuilding it on
+                // every resume/room event causes the camera-open/camera-close loop seen
+                // on Android and replaceTrack() against a closed peer on web.
+                try {
+                  await participant.setCameraEnabled(
+                    true,
+                    cameraCaptureOptions: _camera.captureOptions(),
+                  );
+                  cameraError = null;
+                } catch (e) {
+                  OrexLog.d(
+                    'Call',
+                    'camera resume failed room=$matrixRoomId',
+                    e,
+                  );
+                  cameraError = 'Камера недоступна';
+                }
+              }
+              await _voiceGate.sync();
+              _applySpeakerMute();
+              if (!_disposed) notifyListeners();
+            })()
+            .catchError((Object error, StackTrace stackTrace) {
+              OrexLog.d(
+                'Call',
+                'published media recovery after background failed room=$matrixRoomId',
+                error,
+              );
+            })
+            .whenComplete(() {
+              if (identical(_backgroundRecoveryInFlight, operation)) {
+                _backgroundRecoveryInFlight = null;
+              }
+            });
     _backgroundRecoveryInFlight = operation;
     return operation;
   }
@@ -516,48 +629,74 @@ class CallSession extends ChangeNotifier {
     if (inFlight != null) return inFlight;
 
     late final Future<void> operation;
-    operation = (() async {
-      try {
-        await _refreshRemoteEncryptionKeysBestEffort();
-        await Future<void>.delayed(const Duration(milliseconds: 350));
-        if (_disposed ||
-            status == CallStatus.ended ||
-            !mediaTransportConnected ||
-            !_cameraRequestedOn) {
-          return;
-        }
-        final result = await _camera.recoverCapture(
-          participant: _room?.localParticipant,
-          canPublishMedia: canPublishMedia,
-        );
-        _applyCameraResult(result);
-        if (result.error == null) _coldAnswerCameraRecoveryDone = true;
-        if (!_disposed) notifyListeners();
-      } catch (e) {
-        OrexLog.d(
-          'Call',
-          'cold-answer camera recovery failed room=$matrixRoomId',
-          e,
-        );
-        cameraError = 'Камера недоступна';
-        if (!_disposed) notifyListeners();
-      }
-    })().whenComplete(() {
-      if (identical(_coldAnswerCameraRecoveryInFlight, operation)) {
-        _coldAnswerCameraRecoveryInFlight = null;
-      }
-    });
+    operation =
+        (() async {
+          try {
+            await _refreshRemoteEncryptionKeysBestEffort();
+            await Future<void>.delayed(const Duration(milliseconds: 350));
+            if (_disposed ||
+                status == CallStatus.ended ||
+                !mediaTransportConnected ||
+                !_cameraRequestedOn) {
+              return;
+            }
+            final result = await _camera.recoverCapture(
+              participant: _room?.localParticipant,
+              canPublishMedia: canPublishMedia,
+            );
+            _applyCameraResult(result);
+            if (result.error == null) _coldAnswerCameraRecoveryDone = true;
+            if (!_disposed) notifyListeners();
+          } catch (e) {
+            OrexLog.d(
+              'Call',
+              'cold-answer camera recovery failed room=$matrixRoomId',
+              e,
+            );
+            cameraError = 'Камера недоступна';
+            if (!_disposed) notifyListeners();
+          }
+        })().whenComplete(() {
+          if (identical(_coldAnswerCameraRecoveryInFlight, operation)) {
+            _coldAnswerCameraRecoveryInFlight = null;
+          }
+        });
     _coldAnswerCameraRecoveryInFlight = operation;
     return operation;
   }
 
-  Future<void> _restoreMediaState() async {
-    final room = _room;
+  Future<void> _restoreMediaState({
+    lk.Room? expectedRoom,
+    int? connectGeneration,
+  }) {
+    late final Future<void> operation;
+    operation = _restoreMediaStateInternal(
+      expectedRoom: expectedRoom,
+      connectGeneration: connectGeneration,
+    ).whenComplete(() => _mediaRestoreOperations.remove(operation));
+    _mediaRestoreOperations.add(operation);
+    return operation;
+  }
+
+  Future<void> _restoreMediaStateInternal({
+    lk.Room? expectedRoom,
+    int? connectGeneration,
+  }) async {
+    final room = expectedRoom ?? _room;
     if (room == null) return;
+    bool isCurrent() =>
+        !_disposed &&
+        status != CallStatus.ended &&
+        identical(_room, room) &&
+        (connectGeneration == null || connectGeneration == _connectGeneration);
+    if (!isCurrent()) return;
     _applySpeakerMute();
     await applyAudioOutput();
+    if (!isCurrent()) return;
     await _applyMicrophonePolicy(forceCaptureOptions: true);
+    if (!isCurrent()) return;
     await _voiceGate.sync();
+    if (!isCurrent()) return;
 
     if (_cameraRequestedOn && canPublishMedia) {
       try {
@@ -571,6 +710,7 @@ class CallSession extends ChangeNotifier {
         cameraError = 'Камера недоступна';
       }
     }
+    if (!isCurrent()) return;
     _applySpeakerMute();
   }
 
@@ -600,6 +740,7 @@ class CallSession extends ChangeNotifier {
 
   Future<void> _detachAndDisposeCurrentRoom(lk.Room room) async {
     if (!identical(_room, room)) return;
+    detachE2eeRoom?.call(room);
     room.removeListener(_onRoom);
     await _disposeRoomEvents();
     _room = null;
@@ -612,6 +753,33 @@ class CallSession extends ChangeNotifier {
     _reconnectAttempt = 0;
   }
 
+  Future<void> _drainMediaOperations() async {
+    try {
+      await _waitForMediaOperationsToDrain().timeout(
+        const Duration(seconds: 5),
+      );
+    } on TimeoutException {
+      // Generation checks still own eventual candidate cleanup. Never hold the
+      // user's hang-up UI indefinitely on a stuck network/plugin future.
+      OrexLog.d('Call', 'timed out draining media connection operations');
+    }
+  }
+
+  Future<void> _waitForMediaOperationsToDrain() async {
+    while (true) {
+      final operations = <Future<void>>{
+        ..._mediaConnectOperations,
+        ..._mediaRestoreOperations,
+      };
+      if (operations.isEmpty) return;
+      await Future.wait<void>(
+        operations.map(
+          (operation) => operation.catchError((Object _, StackTrace _) {}),
+        ),
+      );
+    }
+  }
+
   void _onRoom() {
     // Livekit при teardown комнаты шлёт события уже после dispose() — иначе
     // получаем «CallSession used after being disposed».
@@ -621,12 +789,43 @@ class CallSession extends ChangeNotifier {
     final remoteCountChanged = remoteCount != previousRemoteCount;
     _lastRemoteParticipantCount = remoteCount;
     if (remoteCount > 0) sawRemote = true;
-    if (remoteCountChanged && remoteCount > previousRemoteCount) {
+    // Joins need the existing sender key; leaves may rotate it for every
+    // remaining device. Reconcile both transitions against key revision.
+    if (remoteCountChanged) {
       _queueRemoteEncryptionKeyRefresh();
     }
     _applySpeakerMute();
     _scheduleMediaRecovery();
     notifyListeners();
+  }
+
+  void _handleTrackE2eeState(lk.TrackE2EEStateEvent event) {
+    if (event.participant is lk.LocalParticipant) return;
+    final participantId = event.participant.identity;
+    final trackId = event.publication.sid;
+    switch (event.state) {
+      case lk.E2EEState.kMissingKey:
+      case lk.E2EEState.kDecryptionFailed:
+        final added = (_failedE2eeTracks[participantId] ??= <String>{}).add(
+          trackId,
+        );
+        if (added) _keyRefreshRetryAttempt = 0;
+        if (_keyRefreshInFlight == null && _keyRefreshRetryTimer == null) {
+          _queueRemoteEncryptionKeyRefresh();
+        }
+        break;
+      case lk.E2EEState.kOk:
+      case lk.E2EEState.kKeyRatcheted:
+        final tracks = _failedE2eeTracks[participantId];
+        tracks?.remove(trackId);
+        if (tracks?.isEmpty ?? false) _failedE2eeTracks.remove(participantId);
+        if (_failedE2eeTracks.isEmpty) _cancelEncryptionKeyRefreshRetry();
+        break;
+      case lk.E2EEState.kNew:
+      case lk.E2EEState.kEncryptionFailed:
+      case lk.E2EEState.kInternalError:
+        break;
+    }
   }
 
   void _scheduleMediaRecovery() {
@@ -654,25 +853,33 @@ class CallSession extends ChangeNotifier {
       return Future<void>.value();
     }
 
-    final expectedRemoteParticipants = _room?.remoteParticipants.length ?? 0;
     final previous = _keyRefreshInFlight;
     late final Future<void> operation;
-    operation = (() async {
-      if (previous != null) {
-        try {
-          await previous;
-        } catch (_) {
-          // A later participant-count request must still run after an earlier
-          // failed request; each caller observes the failure of its own refresh.
-        }
-      }
-      if (_disposed || status == CallStatus.ended) return;
-      await refresh(expectedRemoteParticipants);
-    })().whenComplete(() {
-      if (identical(_keyRefreshInFlight, operation)) {
-        _keyRefreshInFlight = null;
-      }
-    });
+    operation =
+        (() async {
+          if (previous != null) {
+            try {
+              await previous;
+            } catch (_) {
+              // A later participant-count request must still run after an earlier
+              // failed request; each caller observes the failure of its own refresh.
+            }
+          }
+          if (_disposed || status == CallStatus.ended) return;
+          final activeRemoteIds =
+              _room?.remoteParticipants.values
+                  .map((participant) => participant.identity)
+                  .toSet() ??
+              const <String>{};
+          _failedE2eeTracks.removeWhere(
+            (participantId, _) => !activeRemoteIds.contains(participantId),
+          );
+          await refresh(activeRemoteIds.length, _failedE2eeTracks.keys.toSet());
+        })().whenComplete(() {
+          if (identical(_keyRefreshInFlight, operation)) {
+            _keyRefreshInFlight = null;
+          }
+        });
     _keyRefreshInFlight = operation;
     return operation;
   }
@@ -682,7 +889,13 @@ class CallSession extends ChangeNotifier {
   }) async {
     try {
       await _refreshRemoteEncryptionKeys();
-      _cancelEncryptionKeyRefreshRetry();
+      if (_failedE2eeTracks.isEmpty) {
+        _cancelEncryptionKeyRefreshRetry();
+      } else {
+        // A successful key request is not the terminal signal. Keep a bounded
+        // backoff running until LiveKit reports kOk for every failed track.
+        _scheduleEncryptionKeyRefreshRetry();
+      }
       return true;
     } catch (error) {
       OrexLog.d(
@@ -702,7 +915,8 @@ class CallSession extends ChangeNotifier {
   void _scheduleEncryptionKeyRefreshRetry() {
     if (_disposed ||
         status == CallStatus.ended ||
-        _keyRefreshRetryTimer != null) {
+        _keyRefreshRetryTimer != null ||
+        _keyRefreshRetryAttempt >= 6) {
       return;
     }
     final delay = orexEncryptionKeyRetryDelay(_keyRefreshRetryAttempt);
@@ -729,6 +943,7 @@ class CallSession extends ChangeNotifier {
     _readinessDeferred = false;
     error = null;
     status = CallStatus.connected;
+    _hasReachedMediaReady = true;
     await _syncProximitySensor();
     notifyListeners();
     return true;
@@ -886,7 +1101,9 @@ class CallSession extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  Future<void> _applyMicrophonePolicy({bool forceCaptureOptions = false}) async {
+  Future<void> _applyMicrophonePolicy({
+    bool forceCaptureOptions = false,
+  }) async {
     final lp = _room?.localParticipant;
     if (lp == null) return;
     final shouldPublish =
@@ -1001,15 +1218,17 @@ class CallSession extends ChangeNotifier {
   Future<void> _syncProximitySensor({bool forceOff = false}) async {
     if (!orexIsAndroidNativePlatform) return;
     final outputId = audioOutputDeviceIdProvider?.call()?.trim();
-    final shouldEnable = !forceOff &&
+    final shouldEnable =
+        !forceOff &&
         !_disposed &&
         status == CallStatus.connected &&
         !camOn &&
         orexIsAndroidEarpieceOutputDeviceId(outputId);
     if (!forceOff && shouldEnable == _proximityEnabled) return;
 
-    final applied =
-        await OrexNativeAudioDevices.setProximityEnabled(shouldEnable);
+    final applied = await OrexNativeAudioDevices.setProximityEnabled(
+      shouldEnable,
+    );
     _proximityEnabled = shouldEnable && applied;
   }
 
@@ -1107,38 +1326,39 @@ class CallSession extends ChangeNotifier {
     if (current != null) return current;
 
     late final Future<void> operation;
-    operation = (() async {
-      final lp = _room?.localParticipant;
-      if (lp == null || _disposed || status == CallStatus.ended) return;
-      if (!canPublishMedia) {
-        cameraError = 'В режиме просмотра камера недоступна';
-        if (!_disposed) notifyListeners();
-        return;
-      }
-      final previousRequested = _cameraRequestedOn;
-      final next = !lp.isCameraEnabled();
-      // Publish intent before awaiting WebRTC so lifecycle/room callbacks cannot
-      // infer the opposite state while replaceTrack is still in flight.
-      _cameraRequestedOn = next;
-      try {
-        await lp.setCameraEnabled(
-          next,
-          cameraCaptureOptions: next ? _camera.captureOptions() : null,
-        );
-        cameraError = null;
-        if (next) _coldAnswerCameraRecoveryDone = true;
-      } catch (e) {
-        _cameraRequestedOn = previousRequested;
-        OrexLog.d('Call', 'camera toggle failed room=$matrixRoomId', e);
-        cameraError = 'Камера недоступна';
-      }
-      await _syncProximitySensor();
-      if (!_disposed) notifyListeners();
-    })().whenComplete(() {
-      if (identical(_cameraToggleInFlight, operation)) {
-        _cameraToggleInFlight = null;
-      }
-    });
+    operation =
+        (() async {
+          final lp = _room?.localParticipant;
+          if (lp == null || _disposed || status == CallStatus.ended) return;
+          if (!canPublishMedia) {
+            cameraError = 'В режиме просмотра камера недоступна';
+            if (!_disposed) notifyListeners();
+            return;
+          }
+          final previousRequested = _cameraRequestedOn;
+          final next = !lp.isCameraEnabled();
+          // Publish intent before awaiting WebRTC so lifecycle/room callbacks cannot
+          // infer the opposite state while replaceTrack is still in flight.
+          _cameraRequestedOn = next;
+          try {
+            await lp.setCameraEnabled(
+              next,
+              cameraCaptureOptions: next ? _camera.captureOptions() : null,
+            );
+            cameraError = null;
+            if (next) _coldAnswerCameraRecoveryDone = true;
+          } catch (e) {
+            _cameraRequestedOn = previousRequested;
+            OrexLog.d('Call', 'camera toggle failed room=$matrixRoomId', e);
+            cameraError = 'Камера недоступна';
+          }
+          await _syncProximitySensor();
+          if (!_disposed) notifyListeners();
+        })().whenComplete(() {
+          if (identical(_cameraToggleInFlight, operation)) {
+            _cameraToggleInFlight = null;
+          }
+        });
     _cameraToggleInFlight = operation;
     return operation;
   }
@@ -1211,22 +1431,36 @@ class CallSession extends ChangeNotifier {
     }
   }
 
-  Future<void> hangUp() async {
+  Future<void> hangUp() => _hangUpOperation ??= _hangUpInternal();
+
+  Future<void> _hangUpInternal() async {
     status = CallStatus.ended;
-    await _clearLocalVoiceUiState();
+    _connectGeneration++;
     _cancelReconnect();
+    await _drainMediaOperations();
+    try {
+      await _clearLocalVoiceUiState();
+    } catch (e) {
+      OrexLog.d('Call', 'hangup voice state cleanup failed', e);
+    }
     _cancelEncryptionKeyRefreshRetry();
+    _failedE2eeTracks.clear();
     _voiceStateRefreshTimer?.cancel();
     _voiceStateRefreshTimer = null;
     _mediaRecoveryTimer?.cancel();
     _mediaRecoveryTimer = null;
-    await _voiceGate.stop(resetTrack: true);
+    try {
+      await _voiceGate.stop(resetTrack: true);
+    } catch (e) {
+      OrexLog.d('Call', 'hangup voice gate cleanup failed', e);
+    }
     final room = _room;
     _room = null;
     if (room != null) {
       // Снимаем listeners ДО teardown, чтобы clientInitiated disconnect не
       // запускал reconnect уже завершённого звонка.
       room.removeListener(_onRoom);
+      detachE2eeRoom?.call(room);
       await _disposeRoomEvents();
       try {
         if (screenShareOn) {
@@ -1260,15 +1494,19 @@ class CallSession extends ChangeNotifier {
 
   @override
   void dispose() {
+    if (_disposed) return;
     _disposed = true;
+    _connectGeneration++;
     _reactionClearTimer?.cancel();
     _cancelReconnect();
     _cancelEncryptionKeyRefreshRetry();
+    _failedE2eeTracks.clear();
     _voiceStateRefreshTimer?.cancel();
     _mediaRecoveryTimer?.cancel();
     _voiceGate.dispose();
     unawaited(_screenShare.cleanupLocals());
     final room = _room;
+    if (room != null) detachE2eeRoom?.call(room);
     room?.removeListener(_onRoom);
     unawaited(_disposeRoomEvents());
     if (room != null) unawaited(_disposeRoom(room));

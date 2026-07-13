@@ -33,12 +33,27 @@ void main() {
       final action = OrexSystemCallAction.fromNative('systemCallAction', {
         'action': 'answer',
         'callId': '!room:example.org',
+        'ringEventId': r'$ring-event',
         'video': true,
       });
 
       expect(action, isNotNull);
-      expect(action!.video, isTrue);
+      expect(action!.ringEventId, r'$ring-event');
+      expect(action.video, isTrue);
       expect(action.muted, isNull);
+    });
+
+    test('keeps legacy and blank attempt ids nullable', () {
+      for (final ringEventId in <Object?>[null, '', '   ']) {
+        final action = OrexSystemCallAction.fromNative('systemCallAction', {
+          'action': 'answer',
+          'callId': '!room:example.org',
+          'ringEventId': ringEventId,
+        });
+
+        expect(action, isNotNull);
+        expect(action!.ringEventId, isNull);
+      }
     });
 
     test('preserves both mute states from Android', () {
@@ -89,6 +104,7 @@ void main() {
     test('parses persisted active call metadata', () {
       final call = OrexRecoverableSystemCall.fromNative({
         'callId': '!room:example.org',
+        'ringEventId': r'$ring-event',
         'displayName': 'Alice',
         'incoming': true,
         'video': false,
@@ -102,6 +118,7 @@ void main() {
 
       expect(call, isNotNull);
       expect(call!.callId, '!room:example.org');
+      expect(call.ringEventId, r'$ring-event');
       expect(call.displayName, 'Alice');
       expect(call.incoming, isTrue);
       expect(call.answered, isTrue);
@@ -122,7 +139,8 @@ void main() {
       });
 
       expect(call, isNotNull);
-      expect(call!.startedAt, call.updatedAt);
+      expect(call!.ringEventId, isNull);
+      expect(call.startedAt, call.updatedAt);
       expect(call.micEnabled, isTrue);
       expect(call.audioEnabled, isTrue);
       expect(call.cameraEnabled, isTrue);

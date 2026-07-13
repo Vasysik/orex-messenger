@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matrix/matrix.dart';
 import 'package:orex_messenger/core/push/orex_push_service.dart';
@@ -7,17 +9,17 @@ import 'package:orex_messenger/core/push/push_platform_bridge.dart';
 import 'package:orex_messenger/core/push/push_registration_service.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('Android app id matches the production Sygnal contract', () {
-    expect(
-      OrexNativePushPlatform.androidAppId,
-      'ru.vasys.orex_messenger',
-    );
+    expect(OrexNativePushPlatform.androidAppId, 'ru.vasys.orex_messenger');
   });
 
   test('incoming call open preserves action source and video flag', () {
     const open = OrexPushOpen(<String, String>{
       'orex_kind': 'incoming_call',
       'room_id': '!call:example.org',
+      'event_id': r'$ring-event',
       'orex_action': 'answer',
       'orex_from_system': 'true',
       'orex_video': 'true',
@@ -25,9 +27,62 @@ void main() {
 
     expect(open.kind, 'incoming_call');
     expect(open.roomId, '!call:example.org');
+    expect(open.ringEventId, r'$ring-event');
     expect(open.action, 'answer');
     expect(open.fromSystem, isTrue);
     expect(open.video, isTrue);
+  });
+
+  test('legacy incoming call open keeps attempt id nullable', () {
+    const open = OrexPushOpen(<String, String>{
+      'orex_kind': 'incoming_call',
+      'room_id': '!call:example.org',
+    });
+
+    expect(open.ringEventId, isNull);
+  });
+
+  test('Android call lifecycle bridge forwards the exact attempt id', () async {
+    const channel = MethodChannel('orex/test_push_attempt');
+    final calls = <MethodCall>[];
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return true;
+        });
+    final platform = OrexNativePushPlatform(channel: channel);
+    addTearDown(() {
+      platform.dispose();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    await platform.notifyCallAnswering(
+      '!call:example.org',
+      ringEventId: r'$ring-event',
+    );
+    await platform.notifyCallUiReady(
+      '!call:example.org',
+      ringEventId: r'$ring-event',
+    );
+    await platform.notifyCallEnded(
+      '!call:example.org',
+      ringEventId: r'$ring-event',
+    );
+
+    expect(calls.map((call) => call.method), [
+      'callUiAnswering',
+      'callUiReady',
+      'callUiEnded',
+    ]);
+    for (final call in calls) {
+      expect(call.arguments, {
+        'callId': '!call:example.org',
+        'ringEventId': r'$ring-event',
+      });
+    }
   });
 
   test('cold-start open is held until a UI listener receives it', () async {
@@ -154,10 +209,10 @@ class _FakePushPlatform implements OrexPushPlatform {
 
   @override
   OrexPushPlatformIdentity get identity => const OrexPushPlatformIdentity(
-        appId: 'ru.vasys.orex_messenger',
-        platform: 'android',
-        deviceLabel: 'Android',
-      );
+    appId: 'ru.vasys.orex_messenger',
+    platform: 'android',
+    deviceLabel: 'Android',
+  );
   final StreamController<String> _tokens = StreamController<String>.broadcast();
   final StreamController<OrexPushOpen> _opens =
       StreamController<OrexPushOpen>.broadcast();
@@ -195,21 +250,22 @@ class _FakePushPlatform implements OrexPushPlatform {
   Stream<OrexPushOpen> get notificationOpens => _opens.stream;
 
   @override
-  Future<void> notifyCallAnswering(String callId) async {}
+  Future<void> notifyCallAnswering(
+    String callId, {
+    String? ringEventId,
+  }) async {}
 
   @override
-  Future<void> notifyCallUiReady(String callId) async {}
+  Future<void> notifyCallUiReady(String callId, {String? ringEventId}) async {}
 
   @override
-  Future<void> notifyCallEnded(String callId) async {}
+  Future<void> notifyCallEnded(String callId, {String? ringEventId}) async {}
 
   @override
   Future<void> notifyCallUiHidden() async {}
 
   @override
-  Future<void> showLocalMatrixNotification(
-    Map<String, String> payload,
-  ) async {
+  Future<void> showLocalMatrixNotification(Map<String, String> payload) async {
     localNotifications.add(Map<String, String>.of(payload));
   }
 

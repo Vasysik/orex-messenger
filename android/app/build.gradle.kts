@@ -97,6 +97,8 @@ android {
 
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+
     // Keep Android system-call integration isolated in OrexAndroidTelecomManager
     // so future Core-Telecom upgrades remain native-only. 1.0.1 is the stable
     // bug-fix release for audio routing and endpoint handling.

@@ -74,14 +74,27 @@ class OrexCallForegroundService : Service() {
             // Flutter/Telecom callbacks race. As soon as answer/start reaches
             // this service, suppress and close every stale incoming surface for
             // the same Matrix room.
-            if (descriptor.answered) {
-                OrexCallPresentationState.markActive(this, descriptor.callId)
+            val presentationMatched = if (descriptor.answered) {
+                OrexCallPresentationState.markActive(
+                    this,
+                    descriptor.callId,
+                    descriptor.ringEventId,
+                )
             } else if (descriptor.incoming) {
-                OrexCallPresentationState.markAnswering(this, descriptor.callId)
+                OrexCallPresentationState.markAnswering(
+                    this,
+                    descriptor.callId,
+                    descriptor.ringEventId,
+                )
+            } else {
+                true
             }
-            if (descriptor.answered || descriptor.incoming) {
+            if (presentationMatched && (descriptor.answered || descriptor.incoming)) {
                 OrexNotificationCenter.cancelCallNotification(this)
-                OrexIncomingCallActivity.finishForCall(descriptor.callId)
+                OrexIncomingCallActivity.finishForCall(
+                    descriptor.callId,
+                    descriptor.ringEventId,
+                )
             }
             Log.i(
                 TAG,
@@ -131,6 +144,7 @@ class OrexCallForegroundService : Service() {
         val openApp = OrexPushBridge.incomingCallPendingIntent(
             context = this,
             callId = descriptor.callId,
+            ringEventId = descriptor.ringEventId,
             displayName = descriptor.displayName,
             video = descriptor.video,
             action = "resume",
@@ -139,6 +153,7 @@ class OrexCallForegroundService : Service() {
         val toggleMic = OrexPushBridge.callActionPendingIntent(
             context = this,
             callId = descriptor.callId,
+            ringEventId = descriptor.ringEventId,
             displayName = descriptor.displayName,
             video = descriptor.video,
             action = "toggle_mic",
@@ -147,6 +162,7 @@ class OrexCallForegroundService : Service() {
         val toggleAudio = OrexPushBridge.callActionPendingIntent(
             context = this,
             callId = descriptor.callId,
+            ringEventId = descriptor.ringEventId,
             displayName = descriptor.displayName,
             video = descriptor.video,
             action = "toggle_audio",
@@ -155,6 +171,7 @@ class OrexCallForegroundService : Service() {
         val hangUp = OrexPushBridge.callActionPendingIntent(
             context = this,
             callId = descriptor.callId,
+            ringEventId = descriptor.ringEventId,
             displayName = descriptor.displayName,
             video = descriptor.video,
             action = "hangup",
@@ -226,9 +243,11 @@ class OrexCallForegroundService : Service() {
         val audioEnabled: Boolean,
         val cameraEnabled: Boolean,
         val updatedAt: Long,
+        val ringEventId: String? = null,
     ) {
         fun toMap(): Map<String, Any?> = mapOf(
             "callId" to callId,
+            "ringEventId" to ringEventId,
             "displayName" to displayName,
             "incoming" to incoming,
             "video" to video,
@@ -246,6 +265,7 @@ class OrexCallForegroundService : Service() {
         private const val ACTION_START = "ru.orex.messenger.action.START_CALL_SERVICE"
         private const val PREFS = "orex_active_call_v1"
         private const val KEY_CALL_ID = "call_id"
+        private const val KEY_RING_EVENT_ID = "ring_event_id"
         private const val KEY_DISPLAY_NAME = "display_name"
         private const val KEY_INCOMING = "incoming"
         private const val KEY_VIDEO = "video"
@@ -266,6 +286,21 @@ class OrexCallForegroundService : Service() {
             descriptor: Descriptor,
             notification: Notification?,
         ): Boolean {
+            val current = readDescriptor(context)
+            if (current != null && current.callId == descriptor.callId &&
+                !sameCallAttempt(
+                    current.callId,
+                    current.ringEventId,
+                    descriptor.callId,
+                    descriptor.ringEventId,
+                )
+            ) {
+                val isOneWayAttemptUpgrade = canPromoteRingAttempt(
+                    current.ringEventId,
+                    descriptor.ringEventId,
+                )
+                if (!isOneWayAttemptUpgrade) return false
+            }
             persistDescriptor(context, descriptor)
             pendingNotification = notification
             val intent = Intent(context, OrexCallForegroundService::class.java).apply {
@@ -280,34 +315,97 @@ class OrexCallForegroundService : Service() {
             }
         }
 
-        fun stop(context: Context, callId: String?) {
+        fun stop(
+            context: Context,
+            callId: String?,
+            ringEventId: String? = null,
+        ): Boolean {
             val current = readDescriptor(context)
-            if (callId != null && current != null && current.callId != callId) return
+            if (callId != null && current != null &&
+                !sameCallAttempt(
+                    current.callId,
+                    current.ringEventId,
+                    callId,
+                    ringEventId,
+                )
+            ) {
+                val canPromoteAttempt = current.callId == callId &&
+                    canPromoteRingAttempt(current.ringEventId, ringEventId)
+                if (!canPromoteAttempt) return false
+            }
             val endedCallId = current?.callId ?: callId
+            val endedRingEventId = normalizeRingEventId(ringEventId) ?: current?.ringEventId
+            var presentationMatched = false
             if (!endedCallId.isNullOrBlank()) {
-                OrexCallPresentationState.markEnded(
+                presentationMatched = OrexCallPresentationState.markEnded(
                     context = context,
                     callId = endedCallId,
+                    ringEventId = endedRingEventId,
                     endedAt = System.currentTimeMillis(),
                 )
             }
+            if (!shouldApplyForegroundStop(
+                    descriptorMatched = current != null,
+                    presentationMatched = presentationMatched,
+                )
+            ) return false
             clearDescriptor(context)
             pendingNotification = null
             context.stopService(Intent(context, OrexCallForegroundService::class.java))
             OrexNotificationCenter.cancelOngoingCallNotification(context)
+            return true
         }
 
-        fun ownsCall(context: Context, callId: String): Boolean {
-            val descriptor = readDescriptor(context) ?: return false
-            if (descriptor.callId != callId) return false
+        fun ownsCall(
+            context: Context,
+            callId: String,
+            ringEventId: String? = null,
+        ): Boolean {
+            var descriptor = readDescriptor(context) ?: return false
+            if (!sameCallAttempt(
+                    descriptor.callId,
+                    descriptor.ringEventId,
+                    callId,
+                    ringEventId,
+                )
+            ) {
+                val canPromoteAttempt = descriptor.callId == callId &&
+                    canPromoteRingAttempt(descriptor.ringEventId, ringEventId)
+                if (!canPromoteAttempt) return false
+                descriptor = descriptor.copy(ringEventId = normalizeRingEventId(ringEventId))
+                persistDescriptor(context, descriptor)
+            }
             return System.currentTimeMillis() - descriptor.updatedAt <= DESCRIPTOR_STALE_MS
         }
 
         fun readRecovery(context: Context): Map<String, Any?>? =
             readDescriptor(context)?.toMap()
 
-        fun clearRecovery(context: Context, callId: String?) {
-            stop(context, callId)
+        fun clearRecovery(
+            context: Context,
+            callId: String?,
+            ringEventId: String? = null,
+        ): Boolean {
+            val current = readDescriptor(context) ?: return false
+            val normalizedCallId = callId?.trim()?.ifEmpty { null } ?: return false
+            if (!sameCallAttempt(
+                    current.callId,
+                    current.ringEventId,
+                    normalizedCallId,
+                    ringEventId,
+                )
+            ) {
+                val canPromoteAttempt = current.callId == normalizedCallId &&
+                    canPromoteRingAttempt(current.ringEventId, ringEventId)
+                if (!canPromoteAttempt) return false
+            }
+            return stop(context, callId, ringEventId)
+        }
+
+        fun ringEventIdForCall(context: Context, callId: String): String? {
+            val descriptor = readDescriptor(context) ?: return null
+            if (descriptor.callId != callId) return null
+            return descriptor.ringEventId
         }
 
         private fun takePendingNotification(): Notification? =
@@ -317,6 +415,11 @@ class OrexCallForegroundService : Service() {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
                 .putString(KEY_CALL_ID, descriptor.callId)
+                .apply {
+                    val ringEventId = normalizeRingEventId(descriptor.ringEventId)
+                    if (ringEventId == null) remove(KEY_RING_EVENT_ID)
+                    else putString(KEY_RING_EVENT_ID, ringEventId)
+                }
                 .putString(KEY_DISPLAY_NAME, descriptor.displayName)
                 .putBoolean(KEY_INCOMING, descriptor.incoming)
                 .putBoolean(KEY_VIDEO, descriptor.video)
@@ -337,6 +440,9 @@ class OrexCallForegroundService : Service() {
             if (callId.isEmpty() || displayName.isEmpty() || updatedAt <= 0L) return null
             return Descriptor(
                 callId = callId,
+                ringEventId = normalizeRingEventId(
+                    prefs.getString(KEY_RING_EVENT_ID, null),
+                ),
                 displayName = displayName,
                 incoming = prefs.getBoolean(KEY_INCOMING, false),
                 video = prefs.getBoolean(KEY_VIDEO, false),

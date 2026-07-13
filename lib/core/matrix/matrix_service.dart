@@ -281,8 +281,8 @@ class MatrixService extends ChangeNotifier {
       if (_notificationSnapshotReady &&
           count > previous &&
           room.id != _foregroundRoomId) {
-        final rtcNotification =
-            room.lastEvent?.tryParseRtcNotificationContent();
+        final rtcNotification = room.lastEvent
+            ?.tryParseRtcNotificationContent();
         if (rtcNotification?.notificationType != RtcNotificationType.ring) {
           increasedRooms.add(room);
         }
@@ -344,8 +344,14 @@ class MatrixService extends ChangeNotifier {
   void _log(String area, String message, [Object? error]) =>
       OrexLog.d(area, message, error);
 
-  Future<void> _disposeNetworkResources() async {
+  Future<void> _disposeNetworkResources(VoipService? voipService) async {
     try {
+      // Keep Matrix and native E2EE resources alive until CallController's
+      // synchronous dispose hook has finished its asynchronous Room teardown.
+      await call.shutdownComplete;
+      voipService?.dispose();
+      final voipShutdown = voipService?.shutdownComplete;
+      if (voipShutdown != null) await voipShutdown;
       // Push lifecycle may still have an in-flight pusher mutation that uses
       // the Matrix client. Keep the client alive until that queue is drained.
       await push.dispose();
@@ -364,10 +370,10 @@ class MatrixService extends ChangeNotifier {
     _syncSub?.cancel();
     _loginStateSub?.cancel();
     _userProfileSub?.cancel();
+    final voipService = voip;
     call.dispose();
-    voip?.dispose();
     audio.dispose();
-    unawaited(_disposeNetworkResources());
+    unawaited(_disposeNetworkResources(voipService));
     super.dispose();
   }
 }

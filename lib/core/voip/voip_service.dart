@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
+import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:matrix/matrix.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 // Типы делегата (MediaDevices/RTCPeerConnection) берём из webrtc_interface —
@@ -14,8 +15,123 @@ import '../config/orex_config.dart';
 import '../logging/orex_logger.dart';
 import 'call_ring_targets.dart';
 import 'livekit_e2ee_key_provider.dart';
+import 'orex_livekit_backend.dart';
 
 enum OrexRemoteCallTerminationReason { ended, rejected, busy }
+
+/// Stable identity of one personal-call attempt inside a Matrix room.
+///
+/// A room can be called repeatedly, so [roomId] alone is never sufficient for
+/// delayed accepted/rejected/ended signals.  For wakeable MatrixRTC calls the
+/// ring event id is the canonical attempt id.  `null` is retained only for
+/// membership-only/legacy calls that never produced an explicit ring event.
+@immutable
+class OrexCallInstance {
+  const OrexCallInstance({required this.roomId, this.ringEventId});
+
+  final String roomId;
+  final String? ringEventId;
+
+  String get routeKey => '$roomId\u001f${ringEventId ?? 'legacy'}';
+}
+
+/// Announces that one already-present legacy call gained its canonical Matrix
+/// ring event id. Consumers must migrate the existing UI/session identity
+/// instead of presenting a second incoming call.
+@immutable
+class OrexCallInstancePromotion {
+  const OrexCallInstancePromotion({
+    required this.previous,
+    required this.current,
+  });
+
+  final OrexCallInstance previous;
+  final OrexCallInstance current;
+}
+
+bool orexCallInstanceIdsMatch(String? expected, String? received) =>
+    expected == received;
+
+/// Applies a disposition only to the attempt that is current at receipt time.
+///
+/// A tokenless legacy disposition is deliberately ignored once the current
+/// call has a strong id: accepting it would let a delayed old hangup terminate
+/// a same-room redial.  If there is no current call, an exact disposition is
+/// still recorded as a tombstone so its ring cannot surface afterwards.
+@visibleForTesting
+bool orexShouldApplyCallDisposition({
+  required bool hasCurrentCall,
+  required String? expectedRingEventId,
+  required String? receivedRingEventId,
+}) {
+  if (expectedRingEventId != null) {
+    return expectedRingEventId == receivedRingEventId;
+  }
+  if (!hasCurrentCall) return true;
+  if (receivedRingEventId == null) return true;
+  return orexShouldPromoteLegacyCallInstance(
+    hasCurrentCall: hasCurrentCall,
+    expectedRingEventId: expectedRingEventId,
+    receivedRingEventId: receivedRingEventId,
+  );
+}
+
+/// The first exact ring id upgrades a tokenless live attempt; it does not
+/// represent a same-room redial and must not trigger a second presentation.
+@visibleForTesting
+bool orexShouldPromoteLegacyCallInstance({
+  required bool hasCurrentCall,
+  required String? expectedRingEventId,
+  required String? receivedRingEventId,
+}) =>
+    hasCurrentCall &&
+    expectedRingEventId == null &&
+    receivedRingEventId != null &&
+    receivedRingEventId.isNotEmpty;
+
+@visibleForTesting
+bool orexShouldPromoteStoredLegacyCallInstance({
+  required DateTime? exactAttemptAt,
+  required DateTime? legacyDispositionAt,
+}) =>
+    legacyDispositionAt != null &&
+    exactAttemptAt != null &&
+    !exactAttemptAt.isAfter(legacyDispositionAt);
+
+@visibleForTesting
+bool orexShouldRecordOutOfOrderExactTombstone({
+  required String? currentRingEventId,
+  required String? receivedRingEventId,
+}) =>
+    currentRingEventId != null &&
+    receivedRingEventId != null &&
+    currentRingEventId != receivedRingEventId;
+
+@visibleForTesting
+bool orexIsDifferentExactCallAttempt({
+  required String? previousRingEventId,
+  required String? nextRingEventId,
+}) =>
+    previousRingEventId != null &&
+    nextRingEventId != null &&
+    previousRingEventId != nextRingEventId;
+
+@visibleForTesting
+bool orexShouldSupersedeShownIncomingCall({
+  required String? shownRingEventId,
+  required DateTime? shownAt,
+  required String? candidateRingEventId,
+  required DateTime? candidateAt,
+}) {
+  if (!orexIsDifferentExactCallAttempt(
+    previousRingEventId: shownRingEventId,
+    nextRingEventId: candidateRingEventId,
+  )) {
+    return false;
+  }
+  if (candidateAt == null) return false;
+  return shownAt == null || candidateAt.isAfter(shownAt);
+}
 
 @visibleForTesting
 bool orexShouldMarkStartupCallAsSeen({
@@ -42,21 +158,138 @@ bool orexIsFreshRingAfterLeave({
   required DateTime leftAt,
 }) => ringAt != null && ringAt.isAfter(leftAt);
 
+@visibleForTesting
+Set<String> orexPendingMediaKeyShareTargets({
+  required Iterable<String> remoteParticipantIds,
+  required Set<String> sharedParticipantIds,
+  int sharedLocalKeyRevision = 0,
+  int currentLocalKeyRevision = 0,
+}) {
+  final remoteIds = remoteParticipantIds.toSet();
+  return sharedLocalKeyRevision == currentLocalKeyRevision
+      ? remoteIds.difference(sharedParticipantIds)
+      : remoteIds;
+}
+
 class _PendingIncomingRing {
-  const _PendingIncomingRing(this.room, this.occurredAt);
+  const _PendingIncomingRing(this.room, this.occurredAt, this.ringEventId);
 
   final Room room;
   final DateTime occurredAt;
+  final String ringEventId;
+}
+
+class _FreshIncomingRing {
+  const _FreshIncomingRing(this.occurredAt, this.ringEventId);
+
+  final DateTime occurredAt;
+  final String ringEventId;
+}
+
+class _ShownIncomingRing {
+  const _ShownIncomingRing(this.ringEventId, this.occurredAt);
+
+  final String? ringEventId;
+  final DateTime? occurredAt;
+}
+
+class _ValidatedDisposition {
+  const _ValidatedDisposition(this.roomId, this.ringEventId);
+
+  final String roomId;
+  final String? ringEventId;
+}
+
+class _DeferredRemoteDisposition {
+  const _DeferredRemoteDisposition({
+    required this.type,
+    required this.roomId,
+    required this.sender,
+    required this.ringEventId,
+    required this.occurredAt,
+  });
+
+  final String type;
+  final String roomId;
+  final String sender;
+  final String? ringEventId;
+  final DateTime? occurredAt;
+}
+
+class _OutgoingRing {
+  const _OutgoingRing(this.eventId);
+
+  final String eventId;
+}
+
+class OrexIncomingCall {
+  const OrexIncomingCall({required this.room, this.ringEventId});
+
+  final Room room;
+  final String? ringEventId;
+
+  OrexCallInstance get instance =>
+      OrexCallInstance(roomId: room.id, ringEventId: ringEventId);
+}
+
+class OrexIncomingCallDismissal extends OrexCallInstance {
+  const OrexIncomingCallDismissal({
+    required super.roomId,
+    super.ringEventId,
+    this.cancelsPendingAccept = true,
+  });
+
+  final bool cancelsPendingAccept;
+}
+
+class OrexRemoteCallAccepted extends OrexCallInstance {
+  const OrexRemoteCallAccepted({required super.roomId, super.ringEventId});
+}
+
+class _CallKeyShareState {
+  _CallKeyShareState(this.groupCall, this.owner);
+
+  final GroupCallSession groupCall;
+  final Object owner;
+  final Set<String> sharedParticipantIds = <String>{};
+  int sharedLocalKeyRevision = -1;
+  Future<lk.BaseKeyProvider>? keyProviderLease;
+  Future<void>? mediaOperationsDrained;
+  Future<void> _tail = Future<void>.value();
+  bool active = true;
+
+  Future<void> run(Future<void> Function() operation) {
+    final previous = _tail;
+    late final Future<void> next;
+    next = (() async {
+      try {
+        await previous;
+      } catch (_) {
+        // Each reconciliation attempt reports its own error.
+      }
+      if (!active) return;
+      await operation();
+    })();
+    _tail = next;
+    return next;
+  }
+
+  void invalidate() {
+    active = false;
+    sharedParticipantIds.clear();
+  }
 }
 
 class OrexRemoteCallTermination {
   const OrexRemoteCallTermination({
     required this.roomId,
     required this.reason,
+    this.ringEventId,
   });
 
   final String roomId;
   final OrexRemoteCallTerminationReason reason;
+  final String? ringEventId;
 }
 
 /// MatrixRTC-сигналинг звонков (стек Element Call).
@@ -95,68 +328,12 @@ class VoipService extends ChangeNotifier {
     _suppressionRestore = _restorePersistedLeftCalls();
     _syncSub = client.onSync.stream.listen((_) {
       if (_suppressionRestored) _scan();
-    });
-    _toDeviceSub = client.onToDeviceEvent.stream.listen((ev) {
-      // «Обработано на другом моём устройстве» (принят/отклонён) → закрыть входящий.
-      if (ev.type == _handledEventType && ev.sender == client.userID) {
-        final originDeviceId = ev.content['origin_device_id']
-            ?.toString()
-            .trim();
-        final currentDeviceId = client.deviceID?.trim();
-        if (originDeviceId != null &&
-            originDeviceId.isNotEmpty &&
-            currentDeviceId != null &&
-            currentDeviceId.isNotEmpty &&
-            originDeviceId == currentDeviceId) {
-          return;
-        }
-        final roomId = ev.content['room_id']?.toString().trim();
-        if (roomId != null && roomId.isNotEmpty) {
-          _recordCallDisposition(
-            roomId,
-            occurredAt: _eventTimestamp(ev.content['handled_at_ms']),
-          );
-          _cancelRoomCallEnded(roomId);
-          _suppress.add(roomId);
-          _shown.remove(roomId);
-          _dismiss.add(roomId);
-        }
-      }
-      // Явные remote-disposition события закрывают звонок немедленно. Нельзя
-      // ждать, пока MatrixRTC membership протухнет или stale lastEvent fallback
-      // перестанет выглядеть активным.
-      if (ev.type == _acceptedEventType ||
-          ev.type == _rejectedEventType ||
-          ev.type == _busyEventType ||
-          ev.type == _endedEventType) {
-        final roomId = _validatedRemoteDispositionRoomId(ev);
-        if (roomId == null) return;
-        final dispositionAt = _eventTimestamp(ev.content['disposition_at_ms']);
-        if (ev.type == _acceptedEventType) {
-          _remoteAccepted.add(roomId);
-        } else if (ev.type == _rejectedEventType) {
-          _recordRejected(roomId);
-          _handleRemoteTermination(
-            roomId,
-            OrexRemoteCallTerminationReason.rejected,
-            occurredAt: dispositionAt,
-          );
-        } else if (ev.type == _busyEventType) {
-          _recordBusy(roomId);
-          _handleRemoteTermination(
-            roomId,
-            OrexRemoteCallTerminationReason.busy,
-            occurredAt: dispositionAt,
-          );
-        } else {
-          _handleRemoteTermination(
-            roomId,
-            OrexRemoteCallTerminationReason.ended,
-            occurredAt: dispositionAt,
-          );
-        }
-      }
-    });
+    }); // sync scanner
+    _toDeviceSub = client.onToDeviceEvent.stream.listen(_handleToDeviceEvent);
+    // «Обработано на другом моём устройстве» (принят/отклонён) → закрыть входящий.
+    // Явные remote-disposition события закрывают звонок немедленно. Нельзя
+    // ждать, пока MatrixRTC membership протухнет или stale lastEvent fallback
+    // перестанет выглядеть активным.
     // Первичный scan запускается после восстановления persisted suppress.
     // Иначе продолжающийся звонок, из которого пользователь уже вышел до
     // process restart, успевает снова превратиться во "входящий".
@@ -192,29 +369,246 @@ class VoipService extends ChangeNotifier {
   static const _busyEventType = 'com.orex.call.busy';
   static const _endedEventType = 'com.orex.call.ended';
 
-  String? _validatedRemoteDispositionRoomId(ToDeviceEvent event) {
+  String? _ringEventIdFromContent(Map<String, dynamic> content) {
+    for (final key in const <String>['orex_ring_event_id', 'ring_event_id']) {
+      final value = content[key]?.toString().trim();
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return null;
+  }
+
+  void _handleToDeviceEvent(ToDeviceEvent event) {
+    if (_disposed) return;
+    if (event.type == _handledEventType && event.sender == client.userID) {
+      _handleOwnDeviceHandled(event);
+      return;
+    }
+    if (event.type != _acceptedEventType &&
+        event.type != _rejectedEventType &&
+        event.type != _busyEventType &&
+        event.type != _endedEventType) {
+      return;
+    }
+
     final roomId = event.content['room_id']?.toString().trim();
     final sender = event.sender.trim();
-    if (roomId == null || roomId.isEmpty || sender.isEmpty) return null;
-    final room = client.getRoomById(roomId);
-    if (room == null || !isPersonalCallRoom(room) || sender == client.userID) {
+    if (roomId == null || roomId.isEmpty || sender.isEmpty) return;
+    final disposition = _DeferredRemoteDisposition(
+      type: event.type,
+      roomId: roomId,
+      sender: sender,
+      ringEventId: _ringEventIdFromContent(event.content),
+      occurredAt: _eventTimestamp(event.content['disposition_at_ms']),
+    );
+    if (_outgoingRingPendingRooms.contains(roomId) &&
+        active?.room.id == roomId &&
+        _activeRingEventId == null) {
+      (_deferredRemoteDispositions[roomId] ??= <_DeferredRemoteDisposition>[])
+          .add(disposition);
+      return;
+    }
+    _applyRemoteDisposition(disposition);
+  }
+
+  void _drainDeferredRemoteDispositions(String roomId) {
+    final pending = _deferredRemoteDispositions.remove(roomId);
+    if (pending == null) return;
+    for (final disposition in pending) {
+      _applyRemoteDisposition(disposition);
+    }
+  }
+
+  void _tombstoneAndDismissCallAttempt(
+    OrexCallInstance instance, {
+    DateTime? occurredAt,
+  }) {
+    _recordCallDisposition(
+      instance.roomId,
+      occurredAt: occurredAt,
+      ringEventId: instance.ringEventId,
+    );
+    _cancelRoomCallEnded(instance.roomId);
+    _suppressCall(instance.roomId, instance.ringEventId);
+    _removeShownAttempt(instance);
+    _dismiss.add(
+      OrexIncomingCallDismissal(
+        roomId: instance.roomId,
+        ringEventId: instance.ringEventId,
+      ),
+    );
+  }
+
+  void _handleOwnDeviceHandled(ToDeviceEvent event) {
+    final originDeviceId = event.content['origin_device_id']?.toString().trim();
+    final currentDeviceId = client.deviceID?.trim();
+    if (originDeviceId != null &&
+        originDeviceId.isNotEmpty &&
+        currentDeviceId != null &&
+        currentDeviceId.isNotEmpty &&
+        originDeviceId == currentDeviceId) {
+      return;
+    }
+    final roomId = event.content['room_id']?.toString().trim();
+    if (roomId == null || roomId.isEmpty) return;
+    final ringEventId = _ringEventIdFromContent(event.content);
+    if (ringEventId != null) {
+      _promoteLegacyCallInstance(
+        roomId,
+        ringEventId,
+        occurredAt: _eventTimestamp(event.content['handled_at_ms']),
+      );
+    }
+    final hasCurrentCall = _hasCurrentCallInstance(roomId);
+    final expectedRingEventId = _currentRingEventId(roomId);
+    if (!orexShouldApplyCallDisposition(
+      hasCurrentCall: hasCurrentCall,
+      expectedRingEventId: expectedRingEventId,
+      receivedRingEventId: ringEventId,
+    )) {
+      if (orexShouldRecordOutOfOrderExactTombstone(
+        currentRingEventId: expectedRingEventId,
+        receivedRingEventId: ringEventId,
+      )) {
+        _recordCallDisposition(
+          roomId,
+          occurredAt: _eventTimestamp(event.content['handled_at_ms']),
+          ringEventId: ringEventId!,
+        );
+      }
       OrexLog.d(
         'Voip',
-        'ignored remote disposition type=${event.type} room=$roomId sender=$sender',
+        'ignored stale handled room=$roomId ring=$ringEventId '
+            'expected=$expectedRingEventId',
+      );
+      return;
+    }
+    _tombstoneAndDismissCallAttempt(
+      OrexCallInstance(roomId: roomId, ringEventId: ringEventId),
+      occurredAt: _eventTimestamp(event.content['handled_at_ms']),
+    );
+  }
+
+  _ValidatedDisposition? _validatedRemoteDisposition(
+    _DeferredRemoteDisposition disposition,
+  ) {
+    final room = client.getRoomById(disposition.roomId);
+    if (room == null ||
+        !isPersonalCallRoom(room) ||
+        disposition.sender == client.userID) {
+      OrexLog.d(
+        'Voip',
+        'ignored remote disposition type=${disposition.type} '
+            'room=${disposition.roomId} sender=${disposition.sender}',
       );
       return null;
     }
     final joinedPeer = room
         .getParticipants([Membership.join])
-        .any((user) => user.id == sender);
-    if (!joinedPeer && room.directChatMatrixID != sender) {
+        .any((user) => user.id == disposition.sender);
+    if (!joinedPeer && room.directChatMatrixID != disposition.sender) {
       OrexLog.d(
         'Voip',
-        'ignored non-peer disposition type=${event.type} room=$roomId sender=$sender',
+        'ignored non-peer disposition type=${disposition.type} '
+            'room=${disposition.roomId} sender=${disposition.sender}',
       );
       return null;
     }
-    return roomId;
+
+    if (disposition.ringEventId != null) {
+      _promoteLegacyCallInstance(
+        disposition.roomId,
+        disposition.ringEventId!,
+        occurredAt: disposition.occurredAt,
+      );
+    }
+    final hasCurrentCall = _hasCurrentCallInstance(disposition.roomId);
+    final expectedRingEventId = _currentRingEventId(disposition.roomId);
+    if (!orexShouldApplyCallDisposition(
+      hasCurrentCall: hasCurrentCall,
+      expectedRingEventId: expectedRingEventId,
+      receivedRingEventId: disposition.ringEventId,
+    )) {
+      final ringEventId = disposition.ringEventId;
+      if (orexShouldRecordOutOfOrderExactTombstone(
+        currentRingEventId: expectedRingEventId,
+        receivedRingEventId: ringEventId,
+      )) {
+        // A cancellation for a same-room redial can legitimately overtake its
+        // ring. Preserve the current A, but tombstone exact B so B cannot
+        // surface when its timeline event arrives later.
+        _recordCallDisposition(
+          disposition.roomId,
+          occurredAt: disposition.occurredAt,
+          ringEventId: ringEventId!,
+        );
+      }
+      OrexLog.d(
+        'Voip',
+        'ignored stale disposition type=${disposition.type} '
+            'room=${disposition.roomId} ring=${disposition.ringEventId} '
+            'expected=$expectedRingEventId',
+      );
+      return null;
+    }
+    return _ValidatedDisposition(disposition.roomId, disposition.ringEventId);
+  }
+
+  void _applyRemoteDisposition(_DeferredRemoteDisposition disposition) {
+    if (_disposed) return;
+    final validated = _validatedRemoteDisposition(disposition);
+    if (validated == null) return;
+    final instance = OrexCallInstance(
+      roomId: validated.roomId,
+      ringEventId: validated.ringEventId,
+    );
+    if (disposition.type == _handledEventType) {
+      _tombstoneAndDismissCallAttempt(
+        instance,
+        occurredAt: disposition.occurredAt,
+      );
+      return;
+    }
+    if (disposition.type == _acceptedEventType) {
+      if (validated.ringEventId != null) {
+        _tombstoneAndDismissCallAttempt(
+          instance,
+          occurredAt: disposition.occurredAt,
+        );
+      }
+      _remoteAccepted.add(
+        OrexRemoteCallAccepted(
+          roomId: validated.roomId,
+          ringEventId: validated.ringEventId,
+        ),
+      );
+      return;
+    }
+    if (disposition.type == _rejectedEventType) {
+      _recordRejected(validated.roomId);
+      _handleRemoteTermination(
+        validated.roomId,
+        OrexRemoteCallTerminationReason.rejected,
+        occurredAt: disposition.occurredAt,
+        ringEventId: validated.ringEventId,
+      );
+      return;
+    }
+    if (disposition.type == _busyEventType) {
+      _recordBusy(validated.roomId);
+      _handleRemoteTermination(
+        validated.roomId,
+        OrexRemoteCallTerminationReason.busy,
+        occurredAt: disposition.occurredAt,
+        ringEventId: validated.ringEventId,
+      );
+      return;
+    }
+    _handleRemoteTermination(
+      validated.roomId,
+      OrexRemoteCallTerminationReason.ended,
+      occurredAt: disposition.occurredAt,
+      ringEventId: validated.ringEventId,
+    );
   }
 
   /// roomId → когда собеседник отклонил звонок (для текста итогового сообщения).
@@ -224,15 +618,25 @@ class VoipService extends ChangeNotifier {
   final Map<String, Timer> _busyCleanupTimers = <String, Timer>{};
   final Map<String, DateTime> _callDispositionAt = <String, DateTime>{};
   final Map<String, Timer> _callDispositionCleanupTimers = <String, Timer>{};
+  final Map<String, DateTime> _exactCallDispositionAt = <String, DateTime>{};
+  final Map<String, Timer> _exactCallDispositionCleanupTimers =
+      <String, Timer>{};
   final Map<String, DateTime> _persistedLeftAt = <String, DateTime>{};
   final Map<String, Set<String>> _persistedLeftMemberships =
       <String, Set<String>>{};
+  final Map<String, String?> _persistedLeftRingEventIds = <String, String?>{};
   Future<void>? _suppressionRestore;
   bool _suppressionRestored = false;
   bool _disposed = false;
-  final Map<String, String> _ringEventIds = <String, String>{};
+  final Map<String, _OutgoingRing> _ringEventIds = <String, _OutgoingRing>{};
+  final Map<String, String?> _incomingRingEventIds = <String, String?>{};
+  final Set<String> _outgoingRingPendingRooms = <String>{};
+  final Map<String, List<_DeferredRemoteDisposition>>
+  _deferredRemoteDispositions = <String, List<_DeferredRemoteDisposition>>{};
+  String? _activeRingEventId;
   final Set<String> _seenIncomingRingEventIds = <String>{};
   static const int _maxRememberedIncomingRingEvents = 256;
+  static const int _maxRememberedExactCallAttempts = 256;
   final Set<String> _startupExistingCallRoomIds = <String>{};
   final Map<String, _PendingIncomingRing> _pendingFreshRingRooms =
       <String, _PendingIncomingRing>{};
@@ -264,9 +668,29 @@ class VoipService extends ChangeNotifier {
   void _recordCallDisposition(
     String roomId, {
     DateTime? occurredAt,
+    String? ringEventId,
     Duration? cleanupAfter = const Duration(minutes: 2),
   }) {
     final timestamp = occurredAt ?? DateTime.now();
+    if (ringEventId != null) {
+      final key = _exactAttemptKey(roomId, ringEventId);
+      _exactCallDispositionAt.remove(key);
+      _exactCallDispositionAt[key] = timestamp;
+      _exactCallDispositionCleanupTimers.remove(key)?.cancel();
+      if (cleanupAfter != null) {
+        _exactCallDispositionCleanupTimers[key] = Timer(cleanupAfter, () {
+          _exactCallDispositionCleanupTimers.remove(key);
+          _exactCallDispositionAt.remove(key);
+        });
+      }
+      while (_exactCallDispositionAt.length > _maxRememberedExactCallAttempts) {
+        final oldest = _exactCallDispositionAt.keys.first;
+        _exactCallDispositionAt.remove(oldest);
+        _exactCallDispositionCleanupTimers.remove(oldest)?.cancel();
+      }
+      return;
+    }
+
     final current = _callDispositionAt[roomId];
     if (current != null && !timestamp.isAfter(current)) return;
 
@@ -319,14 +743,22 @@ class VoipService extends ChangeNotifier {
                 if (signature.isNotEmpty) memberships.add(signature);
               }
             }
+            final rawRingEventId = value is Map
+                ? value['orex_ring_event_id']?.toString().trim()
+                : null;
+            final ringEventId = rawRingEventId == null || rawRingEventId.isEmpty
+                ? null
+                : rawRingEventId;
             _persistedLeftAt[roomId] = leftAt;
             _persistedLeftMemberships[roomId] = memberships;
+            _persistedLeftRingEventIds[roomId] = ringEventId;
             _recordCallDisposition(
               roomId,
               occurredAt: leftAt,
+              ringEventId: ringEventId,
               cleanupAfter: null,
             );
-            _suppress.add(roomId);
+            _suppressCall(roomId, ringEventId);
           }
         }
       }
@@ -343,6 +775,7 @@ class VoipService extends ChangeNotifier {
           _presentFreshIncomingRing(
             pending.room,
             pending.occurredAt,
+            pending.ringEventId,
           );
         }
         _scan(markExistingAsSeen: true);
@@ -360,6 +793,8 @@ class VoipService extends ChangeNotifier {
             'memberships':
                 (_persistedLeftMemberships[entry.key] ?? const <String>{})
                     .toList(growable: false),
+            if (_persistedLeftRingEventIds[entry.key] != null)
+              'orex_ring_event_id': _persistedLeftRingEventIds[entry.key],
           },
       };
       if (payload.isEmpty) {
@@ -375,7 +810,12 @@ class VoipService extends ChangeNotifier {
   void _clearPersistedLeftCall(String roomId) {
     final removedAt = _persistedLeftAt.remove(roomId);
     final removedMemberships = _persistedLeftMemberships.remove(roomId);
-    if (removedAt == null && removedMemberships == null) return;
+    final removedRingEventId = _persistedLeftRingEventIds.remove(roomId);
+    if (removedAt == null &&
+        removedMemberships == null &&
+        removedRingEventId == null) {
+      return;
+    }
     unawaited(_persistLeftCalls());
   }
 
@@ -386,8 +826,7 @@ class VoipService extends ChangeNotifier {
         .values
         .expand((memberships) => memberships)
         .where(
-          (membership) =>
-              !membership.isExpired && membership.userId != myId,
+          (membership) => !membership.isExpired && membership.userId != myId,
         )
         .map(
           (membership) => <Object?>[
@@ -404,18 +843,22 @@ class VoipService extends ChangeNotifier {
     String roomId,
     OrexRemoteCallTerminationReason reason, {
     DateTime? occurredAt,
+    String? ringEventId,
   }) {
     // Keep the original ring event id until CallController has forwarded an
     // exact `handled` cancellation to the peer's sibling devices. Removing it
     // here made reject/busy lose the only token capable of stopping a killed
     // tablet/secondary phone. cancelOutstandingRing() consumes it single-flight.
-    _recordCallDisposition(roomId, occurredAt: occurredAt);
-    _cancelRoomCallEnded(roomId);
-    _suppress.add(roomId);
-    _shown.remove(roomId);
-    _dismiss.add(roomId);
+    _tombstoneAndDismissCallAttempt(
+      OrexCallInstance(roomId: roomId, ringEventId: ringEventId),
+      occurredAt: occurredAt,
+    );
     _remoteTerminations.add(
-      OrexRemoteCallTermination(roomId: roomId, reason: reason),
+      OrexRemoteCallTermination(
+        roomId: roomId,
+        reason: reason,
+        ringEventId: ringEventId,
+      ),
     );
   }
 
@@ -444,35 +887,43 @@ class VoipService extends ChangeNotifier {
   }
 
   /// Сообщить инициатору, что пользователь явно принял звонок.
-  Future<void> notifyAccepted(String roomId) =>
-      _notifyRemoteDisposition(roomId, _acceptedEventType);
+  Future<void> notifyAccepted(OrexCallInstance instance) =>
+      _notifyRemoteDisposition(instance, _acceptedEventType);
 
   /// Сообщить инициатору (другим участникам комнаты), что мы отклонили звонок.
-  Future<void> notifyRejected(String roomId) =>
-      _notifyRemoteDisposition(roomId, _rejectedEventType);
+  Future<void> notifyRejected(OrexCallInstance instance) =>
+      _notifyRemoteDisposition(instance, _rejectedEventType);
 
-  Future<void> notifyBusy(String roomId) =>
-      _notifyRemoteDisposition(roomId, _busyEventType);
+  Future<void> notifyBusy(OrexCallInstance instance) =>
+      _notifyRemoteDisposition(instance, _busyEventType);
 
   /// Явно завершить личный звонок на удалённых устройствах.
   ///
   /// MatrixRTC membership остаётся источником присутствия в звонке, но его
   /// удаление приходит через sync не мгновенно. Это событие — быстрый control
   /// plane, чтобы удалённая сторона сразу прекратила ringtone/UI.
-  Future<void> notifyEnded(String roomId) async {
+  Future<void> notifyEnded(OrexCallInstance instance) async {
+    final roomId = instance.roomId;
     final room = client.getRoomById(roomId);
     if (room == null || !isPersonalCallRoom(room)) return;
-    final ringEventId = _ringEventIds.remove(roomId);
+    final outgoingRing = _ringEventIds[roomId];
+    if (outgoingRing != null &&
+        orexCallInstanceIdsMatch(outgoingRing.eventId, instance.ringEventId)) {
+      _ringEventIds.remove(roomId);
+    }
     await Future.wait<void>([
-      _notifyRemoteDisposition(roomId, _endedEventType),
-      if (ringEventId != null)
+      _notifyRemoteDisposition(instance, _endedEventType),
+      if (outgoingRing != null &&
+          orexCallInstanceIdsMatch(outgoingRing.eventId, instance.ringEventId))
         _sendPersonalCallCancellation(
           room,
-          ringEventId: ringEventId,
+          ringEventId: outgoingRing.eventId,
           action: 'ended',
         ).then((sent) {
-          if (!sent && !_ringEventIds.containsKey(roomId)) {
-            _ringEventIds[roomId] = ringEventId;
+          if (!sent &&
+              !_ringEventIds.containsKey(roomId) &&
+              isCurrentCallInstance(instance)) {
+            _ringEventIds[roomId] = outgoingRing;
           }
         }),
     ]);
@@ -482,18 +933,25 @@ class VoipService extends ChangeNotifier {
   /// devices. The caller invokes this after one peer device accepted/rejected,
   /// so killed sibling devices receive an exact FCM cancellation from the
   /// original ring sender without ending the accepted media call.
-  Future<void> cancelOutstandingRing(String roomId) async {
+  Future<void> cancelOutstandingRing(OrexCallInstance instance) async {
+    final roomId = instance.roomId;
     final room = client.getRoomById(roomId);
     if (room == null || !isPersonalCallRoom(room)) return;
-    final ringEventId = _ringEventIds.remove(roomId);
-    if (ringEventId == null) return;
+    final outgoingRing = _ringEventIds[roomId];
+    if (outgoingRing == null ||
+        !orexCallInstanceIdsMatch(outgoingRing.eventId, instance.ringEventId)) {
+      return;
+    }
+    _ringEventIds.remove(roomId);
     final sent = await _sendPersonalCallCancellation(
       room,
-      ringEventId: ringEventId,
+      ringEventId: outgoingRing.eventId,
       action: 'handled',
     );
-    if (!sent && !_ringEventIds.containsKey(roomId)) {
-      _ringEventIds[roomId] = ringEventId;
+    if (!sent &&
+        !_ringEventIds.containsKey(roomId) &&
+        isCurrentCallInstance(instance)) {
+      _ringEventIds[roomId] = outgoingRing;
     }
   }
 
@@ -523,9 +981,7 @@ class VoipService extends ChangeNotifier {
           client.generateUniqueTransactionId(),
           <String, Object?>{
             ...notification.toJson(),
-            'm.mentions': {
-              'user_ids': targets.toList(growable: false),
-            },
+            'm.mentions': {'user_ids': targets.toList(growable: false)},
             'orex_call_action': action,
             'orex_ring_event_id': ringEventId,
           },
@@ -549,9 +1005,10 @@ class VoipService extends ChangeNotifier {
   }
 
   Future<void> _notifyRemoteDisposition(
-    String roomId,
+    OrexCallInstance instance,
     String eventType,
   ) async {
+    final roomId = instance.roomId;
     final room = client.getRoomById(roomId);
     if (room == null) return;
     final others = orexResolveCallRingTargets(
@@ -576,6 +1033,8 @@ class VoipService extends ChangeNotifier {
                   'room_id': roomId,
                   'call_id': roomId,
                   'disposition_at_ms': dispositionAtMs,
+                  if (instance.ringEventId != null)
+                    'orex_ring_event_id': instance.ringEventId,
                 },
               },
           },
@@ -601,13 +1060,16 @@ class VoipService extends ChangeNotifier {
   StreamSubscription? _syncSub;
   StreamSubscription<Event>? _timelineSub;
   StreamSubscription<ToDeviceEvent>? _toDeviceSub;
-  final StreamController<Room> _incoming = StreamController<Room>.broadcast();
-  final StreamController<String> _dismiss =
-      StreamController<String>.broadcast();
-  final StreamController<String> _remoteAccepted =
-      StreamController<String>.broadcast();
+  final StreamController<OrexIncomingCall> _incoming =
+      StreamController<OrexIncomingCall>.broadcast();
+  final StreamController<OrexIncomingCallDismissal> _dismiss =
+      StreamController<OrexIncomingCallDismissal>.broadcast();
+  final StreamController<OrexRemoteCallAccepted> _remoteAccepted =
+      StreamController<OrexRemoteCallAccepted>.broadcast();
   final StreamController<OrexRemoteCallTermination> _remoteTerminations =
       StreamController<OrexRemoteCallTermination>.broadcast();
+  final StreamController<OrexCallInstancePromotion> _instancePromotions =
+      StreamController<OrexCallInstancePromotion>.broadcast();
 
   // MatrixRTC membership can briefly disappear/reappear during sync while the
   // SDK rewrites `com.famedly.call.member`. Do not close an incoming dialog or
@@ -615,34 +1077,357 @@ class VoipService extends ChangeNotifier {
   // no-call state instead.
   static const Duration _endedDebounceDelay = Duration(milliseconds: 1800);
 
-  final Set<String> _shown =
-      <String>{}; // по этим комнатам сейчас показан входящий
-  final Set<String> _suppress =
-      <String>{}; // не звонить: вышли / было при старте / обработано
   final Map<String, Timer> _endedDebounceTimers = <String, Timer>{};
+  final Map<String, _ShownIncomingRing> _shownAttempts =
+      <String, _ShownIncomingRing>{};
+  final Set<String> _legacySuppressedRooms = <String>{};
+  final Set<String> _exactFallbackSuppressedRooms = <String>{};
+  final Map<String, DateTime> _suppressedExactAttempts = <String, DateTime>{};
+  final Set<String> _emittedPromotionAttempts = <String>{};
+  _CallKeyShareState? _keyShareState;
+  Completer<void>? _enterCompletion;
+  Object? _enterRequestOwner;
+  String? _enterRequestRoomId;
+  String? _enterRequestRingEventId;
+  int _enterGeneration = 0;
+  Future<void> _shutdownComplete = Future<void>.value();
 
   /// Входящие звонки: roomId комнаты, где идёт звонок, в который мы не вошли.
-  Stream<Room> get onIncomingCall => _incoming.stream;
+  Stream<OrexIncomingCall> get onIncomingCall => _incoming.stream;
+
+  Stream<OrexCallInstancePromotion> get onCallInstancePromotion =>
+      _instancePromotions.stream;
 
   /// Уже обнаруженные входящие, которые могли попасть в broadcast stream до
   /// готовности Navigator/UI. Main replays этот список после первого кадра,
   /// иначе звонок можно было потерять до открытия любого чата.
-  List<Room> visibleIncomingRooms() =>
-      _shown.map(client.getRoomById).whereType<Room>().toList(growable: false);
+  List<OrexIncomingCall> visibleIncomingCalls() => _shownAttempts.entries
+      .map((entry) {
+        final room = client.getRoomById(entry.key);
+        return room == null
+            ? null
+            : OrexIncomingCall(
+                room: room,
+                ringEventId: entry.value.ringEventId,
+              );
+      })
+      .whereType<OrexIncomingCall>()
+      .toList(growable: false);
+
+  List<Room> visibleIncomingRooms() => visibleIncomingCalls()
+      .map((incoming) => incoming.room)
+      .toList(growable: false);
 
   /// Комнаты, по которым надо ЗАКРЫТЬ открытый входящий (звонок кончился или
   /// обработан на другом устройстве).
-  Stream<String> get onDismissIncoming => _dismiss.stream;
+  Stream<OrexIncomingCallDismissal> get onDismissIncoming => _dismiss.stream;
 
-  Stream<String> get onRemoteCallAccepted => _remoteAccepted.stream;
+  Stream<OrexRemoteCallAccepted> get onRemoteCallAccepted =>
+      _remoteAccepted.stream;
 
   Stream<OrexRemoteCallTermination> get onRemoteCallTermination =>
       _remoteTerminations.stream;
 
   /// Текущий звонок, в который мы вошли (опубликовали своё членство).
   GroupCallSession? active;
+  Object? _activeOwner;
+
+  bool _hasCurrentCallInstance(String roomId) =>
+      active?.room.id == roomId ||
+      (_enterRequestOwner != null && _enterRequestRoomId == roomId) ||
+      _incomingRingEventIds.containsKey(roomId) ||
+      _shownAttempts.containsKey(roomId);
+
+  String? _currentRingEventId(String roomId) {
+    if (active?.room.id == roomId && _activeRingEventId != null) {
+      return _activeRingEventId;
+    }
+    if (_enterRequestOwner != null &&
+        _enterRequestRoomId == roomId &&
+        _enterRequestRingEventId != null) {
+      return _enterRequestRingEventId;
+    }
+    final incomingRingEventId = _incomingRingEventIds[roomId];
+    if (incomingRingEventId != null) return incomingRingEventId;
+    final shownRingEventId = _shownAttempts[roomId]?.ringEventId;
+    if (shownRingEventId != null) return shownRingEventId;
+    return null;
+  }
+
+  String? incomingRingEventId(String roomId) => _incomingRingEventIds[roomId];
+
+  String? activeRingEventId(String roomId) =>
+      active?.room.id == roomId ? _activeRingEventId : null;
+
+  bool isCurrentCallInstance(OrexCallInstance instance) =>
+      _hasCurrentCallInstance(instance.roomId) &&
+      orexCallInstanceIdsMatch(
+        _currentRingEventId(instance.roomId),
+        instance.ringEventId,
+      );
+
+  /// Whether this exact incoming attempt still owns a visible ringing route.
+  /// This is stricter than [isCurrentCallInstance]: handled attempts retain
+  /// their identity tombstone while their UI must stay closed.
+  bool isIncomingCallVisible(OrexCallInstance instance) {
+    final shown = _shownAttempts[instance.roomId];
+    return shown != null &&
+        orexCallInstanceIdsMatch(shown.ringEventId, instance.ringEventId);
+  }
+
+  /// Applies a trusted exact identity hint (for example, an Android push
+  /// action) to an already-current tokenless call. This is deliberately
+  /// one-way: an exact A can never be rewritten to B.
+  bool promoteCallInstance(OrexCallInstance instance) {
+    final ringEventId = instance.ringEventId;
+    if (ringEventId == null) return false;
+    return _promoteLegacyCallInstance(instance.roomId, ringEventId);
+  }
+
+  String _exactAttemptKey(String roomId, String ringEventId) =>
+      '$roomId\u001f$ringEventId';
+
+  void _trimExactAttemptMap(Map<String, DateTime> attempts) {
+    while (attempts.length > _maxRememberedExactCallAttempts) {
+      attempts.remove(attempts.keys.first);
+    }
+  }
+
+  bool _suppressCall(String roomId, String? ringEventId) {
+    if (ringEventId == null) {
+      _exactFallbackSuppressedRooms.remove(roomId);
+      return _legacySuppressedRooms.add(roomId);
+    }
+    // Membership-only scans do not carry the exact ring id. Keep a room-level
+    // fallback shield alongside the exact tombstone so the same handled call
+    // cannot be presented again as a legacy attempt.
+    _legacySuppressedRooms.add(roomId);
+    _exactFallbackSuppressedRooms.add(roomId);
+    final key = _exactAttemptKey(roomId, ringEventId);
+    if (_suppressedExactAttempts.containsKey(key)) return false;
+    _suppressedExactAttempts[key] = DateTime.now();
+    _trimExactAttemptMap(_suppressedExactAttempts);
+    return true;
+  }
+
+  bool _hasSuppressedCallInRoom(String roomId) {
+    if (_legacySuppressedRooms.contains(roomId)) return true;
+    final prefix = '$roomId\u001f';
+    return _suppressedExactAttempts.keys.any((key) => key.startsWith(prefix));
+  }
+
+  bool _hasExactCallDisposition(String roomId, String ringEventId) =>
+      _exactCallDispositionAt.containsKey(
+        _exactAttemptKey(roomId, ringEventId),
+      );
+
+  bool _hasExactCallSuppression(String roomId, String ringEventId) =>
+      _suppressedExactAttempts.containsKey(
+        _exactAttemptKey(roomId, ringEventId),
+      );
+
+  bool _isCallSuppressed(String roomId, String? ringEventId) {
+    if (ringEventId == null) return _legacySuppressedRooms.contains(roomId);
+    if (_hasExactCallSuppression(roomId, ringEventId)) return true;
+    return _legacySuppressedRooms.contains(roomId);
+  }
+
+  void _clearCallSuppression(String roomId) {
+    _legacySuppressedRooms.remove(roomId);
+    _exactFallbackSuppressedRooms.remove(roomId);
+  }
+
+  _ShownIncomingRing? _removeShownAttempt(OrexCallInstance instance) {
+    final shown = _shownAttempts[instance.roomId];
+    if (shown == null ||
+        !orexCallInstanceIdsMatch(shown.ringEventId, instance.ringEventId)) {
+      return null;
+    }
+    return _shownAttempts.remove(instance.roomId);
+  }
+
+  void _removeIncomingAttempt(OrexCallInstance instance) {
+    if (!_incomingRingEventIds.containsKey(instance.roomId) ||
+        !orexCallInstanceIdsMatch(
+          _incomingRingEventIds[instance.roomId],
+          instance.ringEventId,
+        )) {
+      return;
+    }
+    _incomingRingEventIds.remove(instance.roomId);
+  }
+
+  bool _promoteLegacyCallInstance(
+    String roomId,
+    String ringEventId, {
+    DateTime? occurredAt,
+  }) {
+    final exactRingEventId = ringEventId.trim();
+    if (exactRingEventId.isEmpty) return false;
+
+    final activeInRoom = active?.room.id == roomId;
+    final enterInRoom =
+        _enterRequestOwner != null && _enterRequestRoomId == roomId;
+    final hasIncoming = _incomingRingEventIds.containsKey(roomId);
+    final shown = _shownAttempts[roomId];
+    final strongCurrentIds = <String>[
+      if (activeInRoom && _activeRingEventId != null) _activeRingEventId!,
+      if (enterInRoom && _enterRequestRingEventId != null)
+        _enterRequestRingEventId!,
+      if (hasIncoming && _incomingRingEventIds[roomId] != null)
+        _incomingRingEventIds[roomId]!,
+      if (shown?.ringEventId != null) shown!.ringEventId!,
+    ];
+    if (strongCurrentIds.any((current) => current != exactRingEventId)) {
+      return false;
+    }
+
+    final promoteActive = activeInRoom && _activeRingEventId == null;
+    final promoteEnter = enterInRoom && _enterRequestRingEventId == null;
+    final promoteIncoming =
+        hasIncoming && _incomingRingEventIds[roomId] == null;
+    final promoteShown = shown != null && shown.ringEventId == null;
+    final hasRuntimePromotion =
+        promoteActive || promoteEnter || promoteIncoming || promoteShown;
+    final hasLegacySuppression =
+        _legacySuppressedRooms.contains(roomId) &&
+        !_exactFallbackSuppressedRooms.contains(roomId);
+    final legacyDispositionAt = _callDispositionAt[roomId];
+    final hasPersistedLegacyAttempt =
+        _persistedLeftAt.containsKey(roomId) &&
+        _persistedLeftRingEventIds[roomId] == null;
+    final storedAttemptBoundary =
+        legacyDispositionAt ?? _persistedLeftAt[roomId];
+    final storedAttemptMatches = orexShouldPromoteStoredLegacyCallInstance(
+      exactAttemptAt: occurredAt,
+      legacyDispositionAt: storedAttemptBoundary,
+    );
+    final hasStoredLegacyAttempt =
+        hasLegacySuppression ||
+        legacyDispositionAt != null ||
+        hasPersistedLegacyAttempt;
+    if (!hasRuntimePromotion &&
+        (!hasStoredLegacyAttempt || !storedAttemptMatches)) {
+      return false;
+    }
+
+    if (promoteActive) _activeRingEventId = exactRingEventId;
+    if (promoteEnter) _enterRequestRingEventId = exactRingEventId;
+    if (promoteIncoming) {
+      _incomingRingEventIds[roomId] = exactRingEventId;
+    }
+    if (promoteShown) {
+      _shownAttempts[roomId] = _ShownIncomingRing(
+        exactRingEventId,
+        occurredAt ?? shown.occurredAt,
+      );
+    }
+    if (_legacySuppressedRooms.remove(roomId)) {
+      _suppressCall(roomId, exactRingEventId);
+    }
+    if (legacyDispositionAt != null) {
+      _callDispositionCleanupTimers.remove(roomId)?.cancel();
+      _callDispositionAt.remove(roomId);
+      _recordCallDisposition(
+        roomId,
+        occurredAt: legacyDispositionAt,
+        ringEventId: exactRingEventId,
+        cleanupAfter: _persistedLeftAt.containsKey(roomId)
+            ? null
+            : const Duration(minutes: 2),
+      );
+    }
+    if (hasPersistedLegacyAttempt) {
+      _persistedLeftRingEventIds[roomId] = exactRingEventId;
+      unawaited(_persistLeftCalls());
+    }
+
+    if (hasRuntimePromotion) {
+      final exactKey = _exactAttemptKey(roomId, exactRingEventId);
+      if (_emittedPromotionAttempts.add(exactKey)) {
+        while (_emittedPromotionAttempts.length >
+            _maxRememberedExactCallAttempts) {
+          _emittedPromotionAttempts.remove(_emittedPromotionAttempts.first);
+        }
+        if (!_disposed) {
+          _instancePromotions.add(
+            OrexCallInstancePromotion(
+              previous: OrexCallInstance(roomId: roomId),
+              current: OrexCallInstance(
+                roomId: roomId,
+                ringEventId: exactRingEventId,
+              ),
+            ),
+          );
+          notifyListeners();
+        }
+      }
+    }
+    OrexLog.d(
+      'Voip',
+      'promoted legacy call attempt room=$roomId ring=$exactRingEventId',
+    );
+    return true;
+  }
 
   bool get inCall => active != null;
+
+  Future<void> get shutdownComplete => _shutdownComplete;
+
+  void _releaseKeyProviderLease(_CallKeyShareState state) {
+    final lease = state.keyProviderLease;
+    state.keyProviderLease = null;
+    if (lease == null) return;
+    final backend = state.groupCall.backend;
+    final barriers = <Future<void>>[];
+    if (backend is OrexLiveKitBackend) barriers.add(backend.fullyDrained);
+    final mediaDrain = state.mediaOperationsDrained;
+    if (mediaDrain != null) barriers.add(mediaDrain);
+    e2eeKeyProvider.releaseSession(lease, after: barriers);
+  }
+
+  Future<void> _shareLocalMediaKeyWithNewParticipants(
+    _CallKeyShareState state,
+    List<CallParticipant> remoteParticipants,
+  ) async {
+    final groupCall = state.groupCall;
+    final backend = groupCall.backend;
+    if (backend is! OrexLiveKitBackend) {
+      throw StateError('Unscoped MatrixRTC LiveKit backend is not allowed');
+    }
+    final remoteIds = remoteParticipants
+        .map((participant) => participant.id)
+        .toSet();
+    state.sharedParticipantIds.retainAll(remoteIds);
+    final keyRevision = backend.localKeyRevision;
+    final pendingIds = orexPendingMediaKeyShareTargets(
+      remoteParticipantIds: remoteIds,
+      sharedParticipantIds: state.sharedParticipantIds,
+      sharedLocalKeyRevision: state.sharedLocalKeyRevision,
+      currentLocalKeyRevision: keyRevision,
+    );
+    if (pendingIds.isEmpty) {
+      if (state.sharedLocalKeyRevision != keyRevision) {
+        state.sharedParticipantIds.clear();
+        state.sharedLocalKeyRevision = keyRevision;
+      }
+      return;
+    }
+    final pendingParticipants = remoteParticipants
+        .where((participant) => pendingIds.contains(participant.id))
+        .toList(growable: false);
+
+    await backend.shareCurrentKeyWith(groupCall, pendingParticipants);
+    if (state.active &&
+        identical(_keyShareState, state) &&
+        backend.localKeyRevision == keyRevision) {
+      if (state.sharedLocalKeyRevision != keyRevision) {
+        state.sharedParticipantIds.clear();
+        state.sharedLocalKeyRevision = keyRevision;
+      }
+      state.sharedParticipantIds.addAll(pendingIds);
+    }
+  }
 
   /// Resynchronise MatrixRTC media keys for participants that joined before
   /// the current LiveKit room became ready. MatrixRTC deliberately keeps key
@@ -650,71 +1435,113 @@ class VoipService extends ChangeNotifier {
   /// keys explicitly instead of restarting local audio/video publications.
   Future<void> ensureActiveCallEncryptionKeys({
     required int expectedRemoteParticipants,
+    Set<String> forceRemoteParticipantIds = const <String>{},
     Duration timeout = const Duration(seconds: 3),
     int maxAttempts = 4,
   }) async {
     final groupCall = active;
     if (groupCall == null) return;
+    final state = _keyShareState;
+    if (state == null || !identical(state.groupCall, groupCall)) return;
 
     Object? lastError;
     for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      var completed = false;
       try {
-        await groupCall.onMemberStateChanged();
-        if (!identical(active, groupCall)) return;
+        await state.run(() async {
+          await groupCall.onMemberStateChanged();
+          if (!state.active ||
+              !identical(_keyShareState, state) ||
+              !identical(active, groupCall)) {
+            return;
+          }
 
-        final participants = groupCall.participants.toList(growable: false);
-        final localParticipants = participants
-            .where((participant) => participant.isLocal)
-            .toList(growable: false);
-        final remoteParticipants = participants
-            .where((participant) => !participant.isLocal)
-            .toList(growable: false);
-        final knownRemoteMemberships = _callMembers(groupCall.room)
-            .where((userId) => userId != client.userID)
-            .length;
-        final minimumRemoteParticipants =
-            knownRemoteMemberships > expectedRemoteParticipants
-            ? knownRemoteMemberships
-            : expectedRemoteParticipants;
-        if (localParticipants.isEmpty) {
-          lastError = StateError(
-            'MatrixRTC local participant is not ready for media encryption',
+          final participants = groupCall.participants.toList(growable: false);
+          final localParticipants = participants
+              .where((participant) => participant.isLocal)
+              .toList(growable: false);
+          final remoteParticipants = participants
+              .where((participant) => !participant.isLocal)
+              .toList(growable: false);
+          await _shareLocalMediaKeyWithNewParticipants(
+            state,
+            remoteParticipants,
           );
-        } else if (remoteParticipants.length < minimumRemoteParticipants) {
-          lastError = StateError(
-            'MatrixRTC membership lag: expected $minimumRemoteParticipants '
-            'remote participant(s), saw ${remoteParticipants.length}',
+          if (!state.active || !identical(_keyShareState, state)) return;
+
+          final knownRemoteMemberships = _callMembers(
+            groupCall.room,
+          ).where((userId) => userId != client.userID).length;
+          final minimumRemoteParticipants =
+              knownRemoteMemberships > expectedRemoteParticipants
+              ? knownRemoteMemberships
+              : expectedRemoteParticipants;
+          if (localParticipants.isEmpty) {
+            throw StateError(
+              'MatrixRTC local participant is not ready for media encryption',
+            );
+          }
+          if (remoteParticipants.length < minimumRemoteParticipants) {
+            throw StateError(
+              'MatrixRTC membership lag: expected $minimumRemoteParticipants '
+              'remote participant(s), saw ${remoteParticipants.length}',
+            );
+          }
+
+          final activeRemoteIds = remoteParticipants
+              .map((participant) => participant.id)
+              .toSet();
+          final forcedIds = forceRemoteParticipantIds.intersection(
+            activeRemoteIds,
           );
-        } else {
           final missingLocal = localParticipants
               .where((participant) => !e2eeKeyProvider.hasKeyFor(participant))
               .toList(growable: false);
           final missingRemote = remoteParticipants
               .where((participant) => !e2eeKeyProvider.hasKeyFor(participant))
               .toList(growable: false);
-          final missing = <CallParticipant>[
-            ...missingLocal,
-            ...missingRemote,
-          ];
-          if (missing.isEmpty) return;
-
-          // Only another participant can resend its key. The local key is
-          // generated by MatrixRTC enter()/membership processing, so wait for
-          // that callback instead of asking the backend to echo our own key.
-          if (missingRemote.isNotEmpty) {
-            await groupCall.backend.requestEncrytionKey(
-              groupCall,
-              missingRemote,
-            );
-          }
-          if (await e2eeKeyProvider.waitForKeys(missing, timeout: timeout)) {
+          final forcedRemote = remoteParticipants
+              .where((participant) => forcedIds.contains(participant.id))
+              .toList(growable: false);
+          final forcedRevisions = <String, int>{
+            for (final participant in forcedRemote)
+              participant.id: e2eeKeyProvider.keyRevisionFor(participant.id),
+          };
+          final missing = <CallParticipant>[...missingLocal, ...missingRemote];
+          if (missing.isEmpty && forcedRemote.isEmpty) {
+            completed = true;
             return;
           }
-          lastError = StateError(
+
+          final requestParticipants = <CallParticipant>{
+            ...missingRemote,
+            ...forcedRemote,
+          }.toList(growable: false);
+          if (requestParticipants.isNotEmpty) {
+            await groupCall.backend.requestEncrytionKey(
+              groupCall,
+              requestParticipants,
+            );
+          }
+          final readiness = await Future.wait<bool>([
+            e2eeKeyProvider.waitForKeys(missing, timeout: timeout),
+            e2eeKeyProvider.waitForKeyUpdates(
+              forcedRevisions,
+              timeout: timeout,
+            ),
+          ]);
+          if (readiness.every((ready) => ready)) {
+            completed = true;
+            return;
+          }
+          throw StateError(
             'Timed out waiting for ${missingLocal.length} local and '
-            '${missingRemote.length} remote MatrixRTC media key(s)',
+            '${missingRemote.length} remote MatrixRTC media key(s); '
+            '${forcedRemote.length} forced refresh(es)',
           );
-        }
+        });
+        if (!state.active || !identical(_keyShareState, state)) return;
+        if (completed) return;
       } catch (error) {
         lastError = error;
       }
@@ -729,9 +1556,7 @@ class VoipService extends ChangeNotifier {
       'MatrixRTC media key refresh failed room=${groupCall.room.id}',
       lastError,
     );
-    throw StateError(
-      'Не удалось получить ключи защищённого медиапотока',
-    );
+    throw StateError('Не удалось получить ключи защищённого медиапотока');
   }
 
   bool _roomHasCall(Room room) {
@@ -829,15 +1654,16 @@ class VoipService extends ChangeNotifier {
   /// Сканируем все комнаты на активные звонки.
   void _scan({bool markExistingAsSeen = false}) {
     for (final room in client.rooms) {
-      final freshExplicitRingAt = _consumeFreshIncomingRing(room);
-      final hasFreshExplicitRing = freshExplicitRingAt != null;
+      final freshExplicitRing = _consumeFreshIncomingRing(room);
+      final hasFreshExplicitRing = freshExplicitRing != null;
       if (!_roomHasCall(room)) {
         if (hasFreshExplicitRing) {
           _cancelRoomCallEnded(room.id);
           _considerIncomingRoom(
             room,
             markExistingAsSeen: false,
-            freshExplicitRingAt: freshExplicitRingAt,
+            freshExplicitRingAt: freshExplicitRing.occurredAt,
+            freshExplicitRingEventId: freshExplicitRing.ringEventId,
           );
         } else {
           _scheduleRoomCallEnded(room.id);
@@ -853,7 +1679,8 @@ class VoipService extends ChangeNotifier {
           existedAtStartup: existedAtStartup,
           hasFreshExplicitRing: hasFreshExplicitRing,
         ),
-        freshExplicitRingAt: freshExplicitRingAt,
+        freshExplicitRingAt: freshExplicitRing?.occurredAt,
+        freshExplicitRingEventId: freshExplicitRing?.ringEventId,
       );
     }
   }
@@ -868,12 +1695,40 @@ class VoipService extends ChangeNotifier {
 
   void _handleTimelineEvent(Event event) {
     if (_disposed || event.senderId == client.userID) return;
-    if (event.tryParseRtcNotificationContent()?.notificationType !=
-        RtcNotificationType.ring) {
-      return;
-    }
+    final notificationType = event
+        .tryParseRtcNotificationContent()
+        ?.notificationType;
+    if (notificationType == null) return;
     final age = DateTime.now().difference(event.originServerTs);
     if (age > _timelineCallFallbackTtl) return;
+
+    if (notificationType == RtcNotificationType.notification) {
+      final action = event.content['orex_call_action']
+          ?.toString()
+          .trim()
+          .toLowerCase();
+      final dispositionType = switch (action) {
+        'handled' => _handledEventType,
+        'accepted' => _acceptedEventType,
+        'rejected' => _rejectedEventType,
+        'busy' => _busyEventType,
+        'ended' => _endedEventType,
+        _ => null,
+      };
+      final ringEventId = _ringEventIdFromContent(event.content);
+      if (dispositionType == null || ringEventId == null) return;
+      _applyRemoteDisposition(
+        _DeferredRemoteDisposition(
+          type: dispositionType,
+          roomId: event.room.id,
+          sender: event.senderId,
+          ringEventId: ringEventId,
+          occurredAt: event.originServerTs,
+        ),
+      );
+      return;
+    }
+    if (notificationType != RtcNotificationType.ring) return;
 
     final eventId = event.eventId.trim();
     if (eventId.isEmpty || !_rememberIncomingRingEventId(eventId)) return;
@@ -882,32 +1737,39 @@ class VoipService extends ChangeNotifier {
       _pendingFreshRingRooms[event.room.id] = _PendingIncomingRing(
         event.room,
         event.originServerTs,
+        eventId,
       );
       return;
     }
-    _presentFreshIncomingRing(event.room, event.originServerTs);
+    _presentFreshIncomingRing(event.room, event.originServerTs, eventId);
   }
 
-  void _presentFreshIncomingRing(Room room, DateTime occurredAt) {
+  void _presentFreshIncomingRing(
+    Room room,
+    DateTime occurredAt,
+    String ringEventId,
+  ) {
     _cancelRoomCallEnded(room.id);
     _considerIncomingRoom(
       room,
       markExistingAsSeen: false,
       freshExplicitRingAt: occurredAt,
+      freshExplicitRingEventId: ringEventId,
     );
   }
 
-  DateTime? _consumeFreshIncomingRing(Room room) {
+  _FreshIncomingRing? _consumeFreshIncomingRing(Room room) {
     final event = _freshIncomingRingEvent(room);
     if (event == null || !_rememberIncomingRingEventId(event.eventId)) {
       return null;
     }
-    return event.originServerTs;
+    return _FreshIncomingRing(event.originServerTs, event.eventId);
   }
 
   bool _rememberIncomingRingEventId(String eventId) {
     if (!_seenIncomingRingEventIds.add(eventId)) return false;
-    while (_seenIncomingRingEventIds.length > _maxRememberedIncomingRingEvents) {
+    while (_seenIncomingRingEventIds.length >
+        _maxRememberedIncomingRingEvents) {
       _seenIncomingRingEventIds.remove(_seenIncomingRingEventIds.first);
     }
     return true;
@@ -967,36 +1829,126 @@ class VoipService extends ChangeNotifier {
     Room room, {
     required bool markExistingAsSeen,
     DateTime? freshExplicitRingAt,
+    String? freshExplicitRingEventId,
   }) {
     final hasFreshExplicitRing = freshExplicitRingAt != null;
+    final ringEventId = freshExplicitRingEventId;
     final myId = client.userID;
+    if (ringEventId != null &&
+        (_hasExactCallDisposition(room.id, ringEventId) ||
+            _hasExactCallSuppression(room.id, ringEventId))) {
+      return;
+    }
+    if (ringEventId != null &&
+        _promoteLegacyCallInstance(
+          room.id,
+          ringEventId,
+          occurredAt: freshExplicitRingAt,
+        )) {
+      return;
+    }
+    final retainedIncomingRingEventId = _incomingRingEventIds[room.id];
+    if (ringEventId == null &&
+        retainedIncomingRingEventId != null &&
+        (_hasExactCallDisposition(room.id, retainedIncomingRingEventId) ||
+            _hasExactCallSuppression(room.id, retainedIncomingRingEventId))) {
+      return;
+    }
+    if (_enterRequestOwner != null && _enterRequestRoomId == room.id) {
+      if (orexIsDifferentExactCallAttempt(
+            previousRingEventId: _enterRequestRingEventId,
+            nextRingEventId: ringEventId,
+          ) &&
+          _suppressCall(room.id, ringEventId)) {
+        _recordCallDisposition(room.id, ringEventId: ringEventId);
+        unawaited(
+          notifyBusy(
+            OrexCallInstance(roomId: room.id, ringEventId: ringEventId),
+          ),
+        );
+      }
+      return;
+    }
     final currentCall = active;
     if (currentCall != null) {
-      if (currentCall.room.id == room.id) return;
+      if (currentCall.room.id == room.id) {
+        if (orexIsDifferentExactCallAttempt(
+              previousRingEventId: _activeRingEventId,
+              nextRingEventId: ringEventId,
+            ) &&
+            _suppressCall(room.id, ringEventId)) {
+          _recordCallDisposition(room.id, ringEventId: ringEventId);
+          unawaited(
+            notifyBusy(
+              OrexCallInstance(roomId: room.id, ringEventId: ringEventId),
+            ),
+          );
+        }
+        return;
+      }
       // Orex supports one personal media session at a time. Never stack a
       // second incoming UI on top of an active call; answer the second attempt
       // once with an explicit busy disposition instead.
-      if (_shouldRingForRoom(room) && _suppress.add(room.id)) {
+      if (_shouldRingForRoom(room) && _suppressCall(room.id, ringEventId)) {
         OrexLog.d(
           'Voip',
           'incoming call rejected as busy while another call is active room=${room.id}',
         );
-        unawaited(notifyBusy(room.id));
+        _recordCallDisposition(room.id, ringEventId: ringEventId);
+        unawaited(
+          notifyBusy(
+            OrexCallInstance(roomId: room.id, ringEventId: ringEventId),
+          ),
+        );
       }
       return;
     }
-    if (_shown.contains(room.id)) return;
-    if (_suppress.contains(room.id)) {
+    final shown = _shownAttempts[room.id];
+    if (shown != null) {
+      if (!orexShouldSupersedeShownIncomingCall(
+        shownRingEventId: shown.ringEventId,
+        shownAt: shown.occurredAt,
+        candidateRingEventId: ringEventId,
+        candidateAt: freshExplicitRingAt,
+      )) {
+        return;
+      }
+      final previous = OrexCallInstance(
+        roomId: room.id,
+        ringEventId: shown.ringEventId,
+      );
+      _shownAttempts[room.id] = _ShownIncomingRing(
+        ringEventId,
+        freshExplicitRingAt,
+      );
+      _incomingRingEventIds[room.id] = ringEventId;
+      _dismiss.add(
+        OrexIncomingCallDismissal(
+          roomId: previous.roomId,
+          ringEventId: previous.ringEventId,
+        ),
+      );
+      _incoming.add(OrexIncomingCall(room: room, ringEventId: ringEventId));
+      return;
+    }
+    if (_isCallSuppressed(room.id, ringEventId)) {
+      if (ringEventId != null &&
+          (_hasExactCallDisposition(room.id, ringEventId) ||
+              _hasExactCallSuppression(room.id, ringEventId))) {
+        return;
+      }
       final resumed = _resumeAfterNewRemoteCall(
         room,
         freshExplicitRingAt: freshExplicitRingAt,
+        freshExplicitRingEventId: ringEventId,
       );
       if (!resumed) {
-        final mayBypassStartupSuppress = hasFreshExplicitRing &&
+        final mayBypassStartupSuppress =
+            hasFreshExplicitRing &&
             !_persistedLeftAt.containsKey(room.id) &&
             !_callDispositionAt.containsKey(room.id);
         if (!mayBypassStartupSuppress) return;
-        _suppress.remove(room.id);
+        _clearCallSuppression(room.id);
       }
     }
     final others = _callMembers(room).where((id) => id != myId).toSet();
@@ -1007,12 +1959,13 @@ class VoipService extends ChangeNotifier {
       // В группах, каналах и чатах супергруппы звонок — это голосовой канал:
       // не показываем системный входящий вызов всем участникам. Комната всё
       // равно помечается активной, поэтому UI покажет «Идёт звонок · Войти».
-      _suppress.add(room.id);
+      _suppressCall(room.id, ringEventId);
       return;
     }
     if (markExistingAsSeen && !hasFreshExplicitRing) {
-      _suppress.add(
+      _suppressCall(
         room.id,
+        ringEventId,
       ); // активен на старте → не звоним (покажет панель «войти»)
       return;
     }
@@ -1021,15 +1974,33 @@ class VoipService extends ChangeNotifier {
       'incoming direct call room=${room.id} '
           'from=${others.isEmpty ? 'explicit-ring' : others.join(',')}',
     );
-    _shown.add(room.id);
-    _incoming.add(room);
+    _shownAttempts[room.id] = _ShownIncomingRing(
+      ringEventId,
+      freshExplicitRingAt,
+    );
+    _incomingRingEventIds[room.id] = ringEventId;
+    _incoming.add(OrexIncomingCall(room: room, ringEventId: ringEventId));
   }
 
   bool _resumeAfterNewRemoteCall(
     Room room, {
     DateTime? freshExplicitRingAt,
+    String? freshExplicitRingEventId,
   }) {
-    final terminatedAt = _callDispositionAt[room.id];
+    if (freshExplicitRingEventId != null) {
+      if (_hasExactCallDisposition(room.id, freshExplicitRingEventId) ||
+          _hasExactCallSuppression(room.id, freshExplicitRingEventId)) {
+        return false;
+      }
+      _callDispositionCleanupTimers.remove(room.id)?.cancel();
+      _callDispositionAt.remove(room.id);
+      _clearCallSuppression(room.id);
+      _clearPersistedLeftCall(room.id);
+      return true;
+    }
+
+    final terminatedAt =
+        _callDispositionAt[room.id] ?? _persistedLeftAt[room.id];
     if (terminatedAt == null) return false;
 
     final hasFreshRing = orexIsFreshRingAfterLeave(
@@ -1054,7 +2025,7 @@ class VoipService extends ChangeNotifier {
 
     _callDispositionCleanupTimers.remove(room.id)?.cancel();
     _callDispositionAt.remove(room.id);
-    _suppress.remove(room.id);
+    _clearCallSuppression(room.id);
     _clearPersistedLeftCall(room.id);
     return true;
   }
@@ -1064,7 +2035,10 @@ class VoipService extends ChangeNotifier {
   }
 
   void _scheduleRoomCallEnded(String roomId) {
-    if (!_shown.contains(roomId) && !_suppress.contains(roomId)) return;
+    if (!_shownAttempts.containsKey(roomId) &&
+        !_hasSuppressedCallInRoom(roomId)) {
+      return;
+    }
     if (_endedDebounceTimers.containsKey(roomId)) return;
     _endedDebounceTimers[roomId] = Timer(_endedDebounceDelay, () {
       _endedDebounceTimers.remove(roomId);
@@ -1075,14 +2049,34 @@ class VoipService extends ChangeNotifier {
   }
 
   void _finishRoomCallEnded(String roomId) {
-    final wasShown = _shown.remove(roomId);
-    if (wasShown) _dismiss.add(roomId);
+    final shown = _shownAttempts[roomId];
+    final removed = shown == null
+        ? null
+        : _removeShownAttempt(
+            OrexCallInstance(roomId: roomId, ringEventId: shown.ringEventId),
+          );
+    if (removed != null) {
+      _dismiss.add(
+        OrexIncomingCallDismissal(
+          roomId: roomId,
+          ringEventId: removed.ringEventId,
+        ),
+      );
+    }
+    if (_incomingRingEventIds.containsKey(roomId)) {
+      _removeIncomingAttempt(
+        OrexCallInstance(
+          roomId: roomId,
+          ringEventId: _incomingRingEventIds[roomId],
+        ),
+      );
+    }
     // Persisted leave-state suppresses one continuing MatrixRTC call instance.
     // A transient empty membership frame after our own leave must not erase the
     // tombstone. A new membership fingerprint or a genuinely fresh explicit
     // ring clears it in _resumeAfterNewRemoteCall().
     if (_persistedLeftAt.containsKey(roomId)) return;
-    _suppress.remove(roomId);
+    _clearCallSuppression(roomId);
     _callDispositionCleanupTimers.remove(roomId)?.cancel();
     _callDispositionAt.remove(roomId);
   }
@@ -1099,7 +2093,8 @@ class VoipService extends ChangeNotifier {
   }
 
   /// Я вышел из звонка — не «перезванивать» по тому же продолжающемуся звонку.
-  Future<void> markLeft(String roomId) async {
+  Future<void> markLeft(OrexCallInstance instance) async {
+    final roomId = instance.roomId;
     _cancelRoomCallEnded(roomId);
     final leftAt = DateTime.now();
     final room = client.getRoomById(roomId);
@@ -1107,33 +2102,66 @@ class VoipService extends ChangeNotifier {
     _persistedLeftMemberships[roomId] = room == null
         ? <String>{}
         : _remoteCallMembershipSignatures(room);
+    _persistedLeftRingEventIds[roomId] = instance.ringEventId;
     _recordCallDisposition(
       roomId,
       occurredAt: leftAt,
+      ringEventId: instance.ringEventId,
       cleanupAfter: null,
     );
-    _suppress.add(roomId);
-    if (_shown.remove(roomId)) _dismiss.add(roomId);
+    _suppressCall(roomId, instance.ringEventId);
+    final removed = _removeShownAttempt(instance);
+    if (removed != null) {
+      _dismiss.add(
+        OrexIncomingCallDismissal(
+          roomId: roomId,
+          ringEventId: removed.ringEventId,
+        ),
+      );
+    }
     await _persistLeftCalls();
   }
 
   /// Закрыть локальный экран входящего при действии из Android system UI.
   /// Обычный accept/decline из Flutter не использует этот метод, потому что его
   /// экран сам управляет навигацией после завершения асинхронного действия.
-  void dismissIncomingFromSystem(String roomId) {
-    _suppress.add(roomId);
-    if (_shown.remove(roomId)) _dismiss.add(roomId);
+  void dismissIncomingFromSystem(OrexCallInstance instance) {
+    promoteCallInstance(instance);
+    if (!isCurrentCallInstance(instance)) return;
+    final roomId = instance.roomId;
+    _suppressCall(roomId, instance.ringEventId);
+    final removed = _removeShownAttempt(instance);
+    if (removed != null) {
+      _dismiss.add(
+        OrexIncomingCallDismissal(
+          roomId: roomId,
+          ringEventId: removed.ringEventId,
+          cancelsPendingAccept: false,
+        ),
+      );
+    }
   }
 
   /// Пометить обработанным (принят/отклонён) и сообщить другим своим устройствам.
-  Future<void> markCallHandled(String roomId, String callId) async {
-    _suppress.add(roomId);
-    _shown.remove(roomId);
+  Future<void> markCallHandled(OrexCallInstance instance) async {
+    final roomId = instance.roomId;
+    promoteCallInstance(instance);
+    if (isCurrentCallInstance(instance)) {
+      _suppressCall(roomId, instance.ringEventId);
+      _removeShownAttempt(instance);
+      _recordCallDisposition(
+        roomId,
+        ringEventId: instance.ringEventId,
+        cleanupAfter: null,
+      );
+    }
     final handledAtMs = DateTime.now().millisecondsSinceEpoch;
     final handledContent = <String, dynamic>{
       'room_id': roomId,
-      'call_id': callId,
+      'call_id': roomId,
       'handled_at_ms': handledAtMs,
+      if (instance.ringEventId != null)
+        'orex_ring_event_id': instance.ringEventId,
     };
     final currentDeviceId = client.deviceID?.trim();
     if (currentDeviceId != null && currentDeviceId.isNotEmpty) {
@@ -1147,9 +2175,7 @@ class VoipService extends ChangeNotifier {
           _handledEventType,
           client.generateUniqueTransactionId(),
           {
-            client.userID!: {
-              '*': handledContent,
-            },
+            client.userID!: {'*': handledContent},
           },
         );
         return;
@@ -1162,7 +2188,7 @@ class VoipService extends ChangeNotifier {
     }
     OrexLog.d(
       'Voip',
-      'mark call handled failed room=$roomId call=$callId',
+      'mark call handled failed room=$roomId ring=${instance.ringEventId}',
       lastError,
     );
   }
@@ -1176,12 +2202,79 @@ class VoipService extends ChangeNotifier {
   /// собеседника даже когда его обычный `/sync` не запущен.
   Future<GroupCallSession> enterCall(
     String roomId, {
+    required Object owner,
     bool ring = false,
     bool video = false,
+    String? expectedRingEventId,
+  }) async {
+    if (!ring && expectedRingEventId != null) {
+      promoteCallInstance(
+        OrexCallInstance(roomId: roomId, ringEventId: expectedRingEventId),
+      );
+    }
+    final enterGeneration = ++_enterGeneration;
+    _enterRequestOwner = owner;
+    _enterRequestRoomId = roomId;
+    _enterRequestRingEventId = expectedRingEventId;
+    while (_enterCompletion != null) {
+      final previousEnter = _enterCompletion!;
+      await previousEnter.future;
+      if (enterGeneration != _enterGeneration ||
+          !identical(_enterRequestOwner, owner)) {
+        if (identical(_enterRequestOwner, owner)) _enterRequestOwner = null;
+        throw StateError('MatrixRTC call enter was cancelled');
+      }
+    }
+    if (enterGeneration != _enterGeneration ||
+        !identical(_enterRequestOwner, owner)) {
+      if (identical(_enterRequestOwner, owner)) _enterRequestOwner = null;
+      throw StateError('MatrixRTC call enter was cancelled');
+    }
+    final enterCompletion = Completer<void>();
+    _enterCompletion = enterCompletion;
+    try {
+      return await _enterCallSerialized(
+        roomId,
+        owner: owner,
+        ring: ring,
+        video: video,
+        expectedRingEventId: expectedRingEventId,
+        enterGeneration: enterGeneration,
+      );
+    } finally {
+      if (!enterCompletion.isCompleted) enterCompletion.complete();
+      if (identical(_enterCompletion, enterCompletion)) {
+        _enterCompletion = null;
+      }
+      if (identical(_enterRequestOwner, owner)) {
+        _enterRequestOwner = null;
+        _enterRequestRoomId = null;
+        _enterRequestRingEventId = null;
+      }
+    }
+  }
+
+  Future<GroupCallSession> _enterCallSerialized(
+    String roomId, {
+    required Object owner,
+    required bool ring,
+    required bool video,
+    required String? expectedRingEventId,
+    required int enterGeneration,
   }) async {
     final room = client.getRoomById(roomId);
     if (room == null) {
       throw StateError('Комната $roomId не найдена');
+    }
+
+    final incomingRingEventId = ring ? null : expectedRingEventId;
+    if (!ring &&
+        _incomingRingEventIds.containsKey(roomId) &&
+        !orexCallInstanceIdsMatch(
+          _incomingRingEventIds[roomId],
+          expectedRingEventId,
+        )) {
+      throw StateError('Incoming call attempt changed before MatrixRTC enter');
     }
 
     // Explicitly entering a room supersedes an old local-leave tombstone.
@@ -1190,34 +2283,75 @@ class VoipService extends ChangeNotifier {
     _clearPersistedLeftCall(roomId);
     _callDispositionCleanupTimers.remove(roomId)?.cancel();
     _callDispositionAt.remove(roomId);
-    _suppress.remove(roomId);
+    _clearCallSuppression(roomId);
 
-    final backend = LiveKitBackend(
+    // Matrix's membershipID is the call-instance cachebuster. Rotate it for
+    // every local join so delayed to-device keys from an older call in the same
+    // room cannot authenticate as keys for this one.
+    voip.currentSessionId = client.generateUniqueTransactionId();
+    final backend = OrexLiveKitBackend(
       livekitServiceUrl: OrexConfig.jwtServiceUri.toString(),
       livekitAlias: roomId,
+      membershipEpoch: voip.currentSessionId,
       // MatrixRTC distributes the same per-participant keys consumed by the
       // LiveKit BaseKeyProvider in CallSession.
       e2eeEnabled: true,
     );
 
-    final gc = await voip.fetchOrCreateGroupCall(
+    var gc = await voip.fetchOrCreateGroupCall(
       roomId,
       room,
       backend,
       'm.call',
       'm.room',
-      preShareKey: true,
+      preShareKey: false,
     );
 
-    // The provider is shared across the app process, while MatrixRTC media
-    // keys rotate across leave/rejoin cycles. Reset only readiness observations
-    // before entering; gc.enter() delivers/pre-shares the current keys through
-    // onSetEncryptionKey.
-    e2eeKeyProvider.resetObservedKeys();
+    // Sessions discovered from room state are created by Matrix's JSON factory
+    // with the base LiveKitBackend. Replace only an unentered session so every
+    // E2EE callback is routed through the cancellable Orex backend.
+    if (!identical(gc.backend, backend)) {
+      if (gc.state != GroupCallState.localCallFeedUninitialized &&
+          gc.state != GroupCallState.localCallFeedInitialized) {
+        throw StateError(
+          'Cannot replace an already-entered MatrixRTC backend for $roomId',
+        );
+      }
+      gc = GroupCallSession(
+        client: client,
+        voip: voip,
+        room: room,
+        backend: backend,
+        groupCallId: gc.groupCallId,
+        application: gc.application,
+        scope: gc.scope,
+      );
+      voip.setGroupCallById(gc);
+    }
+
+    if (enterGeneration != _enterGeneration) {
+      await backend.dispose(gc);
+      voip.groupCalls.removeWhere((_, value) => identical(value, gc));
+      throw StateError('MatrixRTC call enter was cancelled');
+    }
+
+    final keyState = _CallKeyShareState(gc, owner);
+    _keyShareState?.invalidate();
+    _keyShareState = keyState;
 
     try {
+      keyState.keyProviderLease = e2eeKeyProvider.activatePreparedSession();
+      await backend.prepareLocalKey(gc);
+      if (enterGeneration != _enterGeneration || !keyState.active) {
+        throw StateError('MatrixRTC call enter was cancelled');
+      }
       await gc.enter();
+      if (enterGeneration != _enterGeneration || !keyState.active) {
+        throw StateError('MatrixRTC call enter was cancelled');
+      }
     } catch (e) {
+      keyState.invalidate();
+      if (identical(_keyShareState, keyState)) _keyShareState = null;
       OrexLog.d(
         'Voip',
         'enter call failed room=$roomId call=${gc.groupCallId}',
@@ -1232,6 +2366,18 @@ class VoipService extends ChangeNotifier {
           leaveError,
         );
       }
+      // GroupCallSession.leave() can fail before it reaches backend.dispose().
+      // Always invalidate delayed key callbacks before releasing the native
+      // provider lease; OrexLiveKitBackend.dispose() is idempotent.
+      try {
+        await backend.dispose(gc);
+      } catch (disposeError) {
+        OrexLog.d(
+          'Voip',
+          'rollback backend cleanup failed room=$roomId call=${gc.groupCallId}',
+          disposeError,
+        );
+      }
       try {
         await room.removeFamedlyCallMemberEvent(gc.groupCallId, voip);
       } catch (removeError) {
@@ -1241,21 +2387,99 @@ class VoipService extends ChangeNotifier {
           removeError,
         );
       }
-      voip.groupCalls.removeWhere(
-        (k, v) => k.roomId == room.id && k.callId == gc.groupCallId,
-      );
+      voip.groupCalls.removeWhere((_, value) => identical(value, gc));
+      _releaseKeyProviderLease(keyState);
       rethrow;
     }
+    final resolvedIncomingRingEventId = ring
+        ? null
+        : identical(_enterRequestOwner, owner) && _enterRequestRoomId == roomId
+        ? _enterRequestRingEventId
+        : incomingRingEventId;
     active = gc;
+    _activeOwner = owner;
+    _activeRingEventId = resolvedIncomingRingEventId;
+    if (!ring) {
+      _removeIncomingAttempt(
+        OrexCallInstance(
+          roomId: roomId,
+          ringEventId: resolvedIncomingRingEventId,
+        ),
+      );
+    }
     notifyListeners();
+    try {
+      await keyState.run(() async {
+        await gc.onMemberStateChanged();
+        if (!keyState.active || !identical(active, gc)) return;
+        final remoteParticipants = gc.participants
+            .where((participant) => !participant.isLocal)
+            .toList(growable: false);
+        await _shareLocalMediaKeyWithNewParticipants(
+          keyState,
+          remoteParticipants,
+        );
+      });
+    } catch (error) {
+      // Device membership and Olm DeviceKeys may arrive one sync apart. Media
+      // stays fail-closed and CallSession's bounded reconciliation retries.
+      OrexLog.d('Voip', 'initial media-key share deferred room=$roomId', error);
+    }
+    if (enterGeneration != _enterGeneration ||
+        !keyState.active ||
+        !identical(active, gc)) {
+      throw StateError('MatrixRTC call enter was cancelled');
+    }
     if (ring) {
-      await _sendPersonalCallRing(room, video: video);
+      _outgoingRingPendingRooms.add(room.id);
+      final ringEventId = await _sendPersonalCallRing(room, video: video);
+      final stillCurrent =
+          enterGeneration == _enterGeneration &&
+          keyState.active &&
+          identical(active, gc);
+      if (ringEventId != null && stillCurrent) {
+        _promoteLegacyCallInstance(
+          room.id,
+          ringEventId,
+          occurredAt: DateTime.now(),
+        );
+        if (orexCallInstanceIdsMatch(_activeRingEventId, ringEventId)) {
+          _ringEventIds[room.id] = _OutgoingRing(ringEventId);
+        }
+      } else if (ringEventId != null) {
+        // The remote push may already be in flight. Publish both the exact
+        // ring-event cancellation and the fast to-device ended signal so a
+        // local hang-up during sendMessage cannot create a phantom call.
+        await Future.wait<void>([
+          _notifyRemoteDisposition(
+            OrexCallInstance(roomId: room.id, ringEventId: ringEventId),
+            _endedEventType,
+          ),
+          _sendPersonalCallCancellation(
+            room,
+            ringEventId: ringEventId,
+            action: 'ended',
+          ).then<void>((_) {}),
+        ]);
+      }
+      _outgoingRingPendingRooms.remove(room.id);
+      if (stillCurrent) {
+        _drainDeferredRemoteDispositions(room.id);
+      } else {
+        _deferredRemoteDispositions.remove(room.id);
+      }
+      if (!stillCurrent) {
+        throw StateError('MatrixRTC call enter was cancelled');
+      }
     }
     return gc;
   }
 
-  Future<void> _sendPersonalCallRing(Room room, {required bool video}) async {
-    if (!isPersonalCallRoom(room)) return;
+  Future<String?> _sendPersonalCallRing(
+    Room room, {
+    required bool video,
+  }) async {
+    if (!isPersonalCallRoom(room)) return null;
 
     final targets = orexResolveCallRingTargets(
       localUserId: client.userID,
@@ -1266,7 +2490,7 @@ class VoipService extends ChangeNotifier {
     );
     if (targets.isEmpty) {
       OrexLog.d('Voip', 'ring skipped: no remote target room=${room.id}');
-      return;
+      return null;
     }
 
     try {
@@ -1282,9 +2506,7 @@ class VoipService extends ChangeNotifier {
       );
       final content = <String, Object?>{
         ...notification.toJson(),
-        'm.mentions': {
-          'user_ids': targets.toList(growable: false),
-        },
+        'm.mentions': {'user_ids': targets.toList(growable: false)},
         'm.call.intent': video ? 'video' : 'audio',
       };
       final eventId = await client.sendMessage(
@@ -1293,31 +2515,81 @@ class VoipService extends ChangeNotifier {
         client.generateUniqueTransactionId(),
         content,
       );
-      _ringEventIds[room.id] = eventId;
       OrexLog.d(
         'Voip',
         'Wakeable RTC ring sent room=${room.id} targets=${targets.length}',
       );
+      return eventId;
     } catch (error) {
       // Ring delivery is an attention signal. The MatrixRTC membership above
       // remains the source of truth, so a transient push/ring failure must not
       // tear down a call that is otherwise already valid.
       OrexLog.d('Voip', 'RTC ring send failed room=${room.id}', error);
+      return null;
     }
   }
 
   /// Выйти из текущего звонка: убираем своё членство из state комнаты.
-  Future<void> leaveCurrent() async {
-    final gc = active;
-    active = null;
+  Future<void> leaveCurrent({
+    required Object owner,
+    Future<lk.BaseKeyProvider>? preparedKeyProvider,
+    Future<void>? mediaOperationsDrained,
+  }) async {
+    if (preparedKeyProvider != null) {
+      e2eeKeyProvider.discardPreparedSession(preparedKeyProvider);
+    }
+    final currentKeyState = _keyShareState;
+    final ownsPendingEnter = identical(_enterRequestOwner, owner);
+    final ownsActiveCall = identical(_activeOwner, owner);
+    final ownsKeyState = identical(currentKeyState?.owner, owner);
+    if (!ownsPendingEnter && !ownsActiveCall && !ownsKeyState) return;
+
+    _enterGeneration++;
+    final gc = ownsActiveCall ? active : null;
+    final activeInstance = gc == null
+        ? null
+        : OrexCallInstance(roomId: gc.room.id, ringEventId: _activeRingEventId);
+    if (ownsActiveCall) {
+      active = null;
+      _activeOwner = null;
+      _activeRingEventId = null;
+    }
+    final keyState = ownsKeyState ? currentKeyState : null;
+    if (ownsKeyState) _keyShareState = null;
+    if (keyState != null) {
+      keyState.mediaOperationsDrained = mediaOperationsDrained;
+      keyState.invalidate();
+      final backend = keyState.groupCall.backend;
+      if (backend is OrexLiveKitBackend) {
+        // Invalidate timers/callbacks synchronously, before the first Matrix
+        // membership await below. This also makes fullyDrained a stable barrier
+        // before the provider lease is handed to asynchronous cleanup.
+        unawaited(backend.dispose(keyState.groupCall));
+      }
+      _releaseKeyProviderLease(keyState);
+    }
     notifyListeners();
-    if (gc != null) {
+    if (gc == null) {
+      // enterCall may still be awaiting Matrix state publication. Invalidate its
+      // backend immediately; the serialized enter wrapper performs membership
+      // rollback when that await settles. Provider cleanup is already waiting
+      // on both the backend and media barriers above.
+      return;
+    }
+
+    try {
       // Не «перезванивать» по тому же продолжающемуся звонку комнаты.
-      await markLeft(gc.room.id);
+      try {
+        await markLeft(activeInstance!);
+      } catch (e) {
+        OrexLog.d('Voip', 'mark-left persistence failed', e);
+      }
       try {
         await gc.leave();
       } catch (e) {
         OrexLog.d('Voip', 'leave current failed', e);
+        final backend = gc.backend;
+        if (backend is OrexLiveKitBackend) await backend.dispose(gc);
       }
       // Подстраховка: гарантированно убираем своё членство (если leave() не
       // справился) — иначе остаёмся «фантомом» в звонке для остальных.
@@ -1332,9 +2604,9 @@ class VoipService extends ChangeNotifier {
       }
       // И чистим локальную карту, чтобы будущие звонки не глохли (VoipId не
       // экспортируется — фильтруем по полям ключа).
-      voip.groupCalls.removeWhere(
-        (k, v) => k.roomId == gc.room.id && k.callId == gc.groupCallId,
-      );
+      voip.groupCalls.removeWhere((_, value) => identical(value, gc));
+    } finally {
+      if (keyState != null) _releaseKeyProviderLease(keyState);
     }
   }
 
@@ -1358,7 +2630,22 @@ class VoipService extends ChangeNotifier {
     }
     _callDispositionCleanupTimers.clear();
     _callDispositionAt.clear();
+    for (final timer in _exactCallDispositionCleanupTimers.values) {
+      timer.cancel();
+    }
+    _exactCallDispositionCleanupTimers.clear();
+    _exactCallDispositionAt.clear();
+    _persistedLeftRingEventIds.clear();
     _ringEventIds.clear();
+    _incomingRingEventIds.clear();
+    _outgoingRingPendingRooms.clear();
+    _deferredRemoteDispositions.clear();
+    _shownAttempts.clear();
+    _legacySuppressedRooms.clear();
+    _exactFallbackSuppressedRooms.clear();
+    _suppressedExactAttempts.clear();
+    _emittedPromotionAttempts.clear();
+    _activeRingEventId = null;
     for (final timer in _endedDebounceTimers.values) {
       timer.cancel();
     }
@@ -1367,7 +2654,9 @@ class VoipService extends ChangeNotifier {
     _dismiss.close();
     _remoteAccepted.close();
     _remoteTerminations.close();
-    unawaited(e2eeKeyProvider.dispose());
+    _instancePromotions.close();
+    _shutdownComplete = e2eeKeyProvider.dispose();
+    unawaited(_shutdownComplete);
     super.dispose();
   }
 }

@@ -5,10 +5,10 @@ import 'package:matrix/matrix.dart';
 
 import '../../core/haptics/orex_haptics.dart';
 import '../../core/matrix/matrix_service.dart';
+import '../../core/voip/voip_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/mxc_avatar.dart';
-import 'call_screen.dart';
 
 /// Входящий звонок. На узком экране — на весь экран; на десктопе показывается
 /// компактным окном (`asDialog`). Сам закрывается, если звонок завершился или
@@ -17,12 +17,12 @@ class IncomingCallScreen extends StatefulWidget {
   const IncomingCallScreen({
     super.key,
     required this.matrix,
-    required this.room,
+    required this.incoming,
     this.asDialog = false,
   });
 
   final MatrixService matrix;
-  final Room room;
+  final OrexIncomingCall incoming;
   final bool asDialog;
 
   @override
@@ -30,28 +30,68 @@ class IncomingCallScreen extends StatefulWidget {
 }
 
 class _IncomingCallScreenState extends State<IncomingCallScreen> {
-  StreamSubscription<String>? _dismissSub;
+  StreamSubscription<OrexIncomingCallDismissal>? _dismissSub;
+  StreamSubscription<OrexCallInstancePromotion>? _promotionSub;
   Timer? _ringTimeout;
   bool _busy = false;
+  bool _dismissed = false;
   String? _status;
+  late OrexCallInstance _instance;
 
-  Room get room => widget.room;
-  String get _callId => widget.room.id;
+  Room get room => widget.incoming.room;
+
+  bool _isCurrentCallInstance() =>
+      widget.matrix.call.currentCallInstance?.routeKey == _instance.routeKey;
+
+  void _closeOwnRoute() {
+    if (!mounted || _dismissed) return;
+    _dismissed = true;
+    final route = ModalRoute.of(context);
+    if (route == null || !route.isActive) return;
+    Navigator.of(context, rootNavigator: true).removeRoute(route);
+  }
 
   @override
   void initState() {
     super.initState();
-    _dismissSub = widget.matrix.voip?.onDismissIncoming.listen((callId) {
-      if (callId == _callId && mounted && !_busy) {
-        Navigator.of(context).maybePop();
+    _instance = widget.incoming.instance;
+    final currentRingEventId = widget.matrix.voip?.incomingRingEventId(room.id);
+    if (_instance.ringEventId == null && currentRingEventId != null) {
+      _instance = OrexCallInstance(
+        roomId: room.id,
+        ringEventId: currentRingEventId,
+      );
+    }
+    _promotionSub = widget.matrix.voip?.onCallInstancePromotion.listen((
+      promotion,
+    ) {
+      if (promotion.previous.routeKey == _instance.routeKey) {
+        _instance = promotion.current;
+      }
+    });
+    _dismissSub = widget.matrix.voip?.onDismissIncoming.listen((dismissal) {
+      if (dismissal.routeKey == _instance.routeKey) {
+        _closeOwnRoute();
+        return;
+      }
+      if (dismissal.roomId == _instance.roomId &&
+          _instance.ringEventId == null &&
+          dismissal.ringEventId != null) {
+        // Promotion and dismissal use separate streams. Adopt the exact id
+        // here too so delivery order cannot leave the legacy route ringing.
+        _instance = OrexCallInstance(
+          roomId: dismissal.roomId,
+          ringEventId: dismissal.ringEventId,
+        );
+        _closeOwnRoute();
       }
     });
     widget.matrix.audio.startIncomingRingtone();
     _ringTimeout = Timer(const Duration(seconds: 45), () {
-      if (!mounted || _busy) return;
+      if (!mounted || _busy || _dismissed) return;
       widget.matrix.audio.stopIncomingRingtone();
-      widget.matrix.voip?.dismissIncomingFromSystem(_callId);
-      Navigator.of(context).maybePop();
+      widget.matrix.voip?.dismissIncomingFromSystem(_instance);
+      _closeOwnRoute();
     });
   }
 
@@ -60,6 +100,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     _ringTimeout?.cancel();
     widget.matrix.audio.stopIncomingRingtone();
     _dismissSub?.cancel();
+    _promotionSub?.cancel();
     super.dispose();
   }
 
@@ -72,10 +113,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     widget.matrix.audio.stopIncomingRingtone();
     unawaited(OrexHaptics.trigger(OrexHapticKind.destructive));
     try {
-      await widget.matrix.call.rejectIncoming(room);
-      if (mounted) Navigator.of(context).maybePop();
+      await widget.matrix.call.rejectIncoming(room, instance: _instance);
+      _closeOwnRoute();
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || _dismissed) return;
       setState(() {
         _busy = false;
         _status = 'Не удалось отклонить. Попробуйте ещё раз.';
@@ -85,8 +126,6 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
 
   Future<void> _accept({required bool video}) async {
     if (_busy) return;
-    final isWide = MediaQuery.sizeOf(context).width >= 900;
-    final navigator = Navigator.of(context, rootNavigator: true);
     setState(() {
       _busy = true;
       _status = video ? 'Подключаем видеозвонок…' : 'Подключаем звонок…';
@@ -94,34 +133,30 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     widget.matrix.audio.stopIncomingRingtone();
     unawaited(OrexHaptics.trigger(OrexHapticKind.confirm));
     try {
-      await widget.matrix.call.acceptIncoming(room, video: video);
+      await widget.matrix.call.acceptIncoming(
+        room,
+        video: video,
+        instance: _instance,
+        requestExpandedUi: true,
+      );
     } catch (_) {
       // CallController сохраняет подробную причину в lastError.
     }
-    if (!mounted) return;
-    if (!widget.matrix.call.isActive) {
+    if (!mounted || _dismissed) return;
+    if (!widget.matrix.call.isActive || !_isCurrentCallInstance()) {
+      if (widget.matrix.call.isActive) {
+        _closeOwnRoute();
+        return;
+      }
       setState(() {
         _busy = false;
         _status = widget.matrix.call.lastError ?? 'Не удалось принять звонок';
       });
       return;
     }
-    if (isWide) {
-      widget.matrix.call.minimize();
-      if (mounted) navigator.maybePop();
-    } else {
-      widget.matrix.call.expand();
-      if (widget.asDialog) {
-        if (mounted) await navigator.maybePop();
-        navigator.push(
-          MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
-        );
-      } else if (mounted) {
-        navigator.pushReplacement(
-          MaterialPageRoute(builder: (_) => CallScreen(matrix: widget.matrix)),
-        );
-      }
-    }
+    // The root listener opens the expanded route as soon as the media session
+    // exists. Remove this exact incoming route even if it is now underneath it.
+    _closeOwnRoute();
   }
 
   @override

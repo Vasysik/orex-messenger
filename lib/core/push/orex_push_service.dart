@@ -15,12 +15,13 @@ class OrexPushService {
     required this.gateway,
     OrexPushPlatform? platform,
     OrexPushTokenStore? tokenStore,
-  })  : _client = client,
-        _platform = platform ??
-            OrexNativePushPlatform(
-              resolvePush: (payload) => resolveOrexMatrixPush(client, payload),
-            ),
-        _tokenStore = tokenStore ?? const _SharedPreferencesPushTokenStore() {
+  }) : _client = client,
+       _platform =
+           platform ??
+           OrexNativePushPlatform(
+             resolvePush: (payload) => resolveOrexMatrixPush(client, payload),
+           ),
+       _tokenStore = tokenStore ?? const _SharedPreferencesPushTokenStore() {
     _openController = StreamController<OrexPushOpen>.broadcast(
       onListen: _flushPendingOpen,
       sync: true,
@@ -163,28 +164,28 @@ class OrexPushService {
     }
   }
 
-  Future<void> notifyCallAnswering(String callId) async {
+  Future<void> notifyCallAnswering(String callId, {String? ringEventId}) async {
     if (_disposed) return;
     try {
-      await _platform.notifyCallAnswering(callId);
+      await _platform.notifyCallAnswering(callId, ringEventId: ringEventId);
     } catch (error) {
       OrexLog.d('Push', 'native call answering acknowledgement failed', error);
     }
   }
 
-  Future<void> notifyCallUiReady(String callId) async {
+  Future<void> notifyCallUiReady(String callId, {String? ringEventId}) async {
     if (_disposed) return;
     try {
-      await _platform.notifyCallUiReady(callId);
+      await _platform.notifyCallUiReady(callId, ringEventId: ringEventId);
     } catch (error) {
       OrexLog.d('Push', 'native call handoff acknowledgement failed', error);
     }
   }
 
-  Future<void> notifyCallEnded(String callId) async {
+  Future<void> notifyCallEnded(String callId, {String? ringEventId}) async {
     if (_disposed) return;
     try {
-      await _platform.notifyCallEnded(callId);
+      await _platform.notifyCallEnded(callId, ringEventId: ringEventId);
     } catch (error) {
       OrexLog.d('Push', 'native call end acknowledgement failed', error);
     }
@@ -355,9 +356,7 @@ class _MatrixPushRegistrar implements OrexPushRegistrar {
           // Не используем event_id_only: Android должен получить достаточно
           // данных, чтобы мгновенно показать notification/call UI без запуска
           // FlutterEngine и сетевого Matrix-запроса внутри FCM callback.
-          additionalProperties: <String, Object?>{
-            'platform': config.platform,
-          },
+          additionalProperties: <String, Object?>{'platform': config.platform},
         ),
         deviceDisplayName: config.deviceDisplayName,
         kind: 'http',
@@ -372,7 +371,10 @@ class _MatrixPushRegistrar implements OrexPushRegistrar {
   }
 
   @override
-  Future<void> unregister({required String token, required String appId}) async {
+  Future<void> unregister({
+    required String token,
+    required String appId,
+  }) async {
     await client.deletePusher(PusherId(appId: appId, pushkey: token));
     OrexLog.d('Push', 'Matrix pusher removed app=$appId');
   }
