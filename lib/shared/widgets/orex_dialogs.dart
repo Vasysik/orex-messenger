@@ -94,57 +94,132 @@ Future<String?> showOrexTextInputDialog(
   bool trim = false,
   bool danger = false,
   bool barrierDismissible = true,
-}) async {
-  final controller = TextEditingController(text: initialValue ?? '');
-  try {
-    return showDialog<String>(
-      context: context,
-      barrierDismissible: barrierDismissible,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (message != null) ...[
-                Text(message),
-                const SizedBox(height: 12),
-              ],
-              TextField(
-                controller: controller,
-                autofocus: true,
-                obscureText: obscureText,
-                decoration: InputDecoration(
-                  hintText: hintText,
-                  labelText: labelText,
-                ),
-              ),
+}) {
+  return showDialog<String>(
+    context: context,
+    barrierDismissible: barrierDismissible,
+    builder: (ctx) => _OrexTextInputDialog(
+      title: title,
+      message: message,
+      initialValue: initialValue ?? '',
+      hintText: hintText,
+      labelText: labelText,
+      cancelLabel: cancelLabel,
+      confirmLabel: confirmLabel,
+      obscureText: obscureText,
+      trim: trim,
+      danger: danger,
+    ),
+  );
+}
+
+/// External controllers used by a generic dialog must outlive its reverse route
+/// animation. Dialog-specific controllers should instead be owned by the dialog
+/// State itself, as in [_OrexTextInputDialog].
+void disposeOrexDialogControllers(
+  Iterable<TextEditingController> controllers,
+) {
+  final owned = controllers.toList(growable: false);
+  Future<void>.delayed(
+    kThemeAnimationDuration + const Duration(milliseconds: 100),
+    () {
+      for (final controller in owned) {
+        controller.dispose();
+      }
+    },
+  );
+}
+
+class _OrexTextInputDialog extends StatefulWidget {
+  const _OrexTextInputDialog({
+    required this.title,
+    required this.message,
+    required this.initialValue,
+    required this.hintText,
+    required this.labelText,
+    required this.cancelLabel,
+    required this.confirmLabel,
+    required this.obscureText,
+    required this.trim,
+    required this.danger,
+  });
+
+  final String title;
+  final String? message;
+  final String initialValue;
+  final String? hintText;
+  final String? labelText;
+  final String cancelLabel;
+  final String confirmLabel;
+  final bool obscureText;
+  final bool trim;
+  final bool danger;
+
+  @override
+  State<_OrexTextInputDialog> createState() => _OrexTextInputDialogState();
+}
+
+class _OrexTextInputDialogState extends State<_OrexTextInputDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialValue);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (widget.message != null) ...[
+              Text(widget.message!),
+              const SizedBox(height: 12),
             ],
-          ),
+            TextField(
+              controller: _controller,
+              autofocus: true,
+              obscureText: widget.obscureText,
+              decoration: InputDecoration(
+                hintText: widget.hintText,
+                labelText: widget.labelText,
+              ),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text(cancelLabel),
-          ),
-          FilledButton(
-            style: danger
-                ? FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFFCF6679),
-                  )
-                : null,
-            onPressed: () {
-              final value = trim ? controller.text.trim() : controller.text;
-              Navigator.pop(ctx, value);
-            },
-            child: Text(confirmLabel),
-          ),
-        ],
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(widget.cancelLabel),
+        ),
+        FilledButton(
+          style: widget.danger
+              ? FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFCF6679),
+                )
+              : null,
+          onPressed: () {
+            final value = widget.trim
+                ? _controller.text.trim()
+                : _controller.text;
+            Navigator.pop(context, value);
+          },
+          child: Text(widget.confirmLabel),
+        ),
+      ],
     );
-  } finally {
-    controller.dispose();
   }
 }
 

@@ -9,12 +9,22 @@ import 'package:matrix/matrix.dart' hide CallSession;
 import '../audio/audio_device_utils.dart';
 import 'call_lifecycle_policy.dart';
 import 'call_session.dart';
+import 'call_start_watchdog.dart';
 import 'system_call_integration.dart';
 import 'voip_service.dart';
 import '../matrix/matrix_service.dart';
 import '../logging/orex_logger.dart';
 
 export 'call_lifecycle_policy.dart';
+
+enum OrexCallSetupPhase {
+  idle,
+  preparing,
+  signaling,
+  systemIntegration,
+  media,
+  ready,
+}
 
 /// Долгоживущий «активный звонок»: владеет медиа-сессией ([CallSession]) и
 /// сигналингом ([VoipService]), чтобы звонок переживал сворачивание экрана.
@@ -285,6 +295,22 @@ class CallController extends ChangeNotifier {
   int _lifecycleGeneration = 0;
   int _startCancellationGeneration = 0;
   bool _disposed = false;
+  OrexCallSetupPhase setupPhase = OrexCallSetupPhase.idle;
+
+  String get setupCaption => switch (setupPhase) {
+    OrexCallSetupPhase.idle => 'Подготавливаем звонок…',
+    OrexCallSetupPhase.preparing => 'Подготавливаем звонок…',
+    OrexCallSetupPhase.signaling => 'Подключаем защищённый канал…',
+    OrexCallSetupPhase.systemIntegration => 'Настраиваем системный звонок…',
+    OrexCallSetupPhase.media => 'Подключаем медиа…',
+    OrexCallSetupPhase.ready => 'Соединение…',
+  };
+
+  void _setSetupPhase(OrexCallSetupPhase value) {
+    if (_disposed || setupPhase == value) return;
+    setupPhase = value;
+    notifyListeners();
+  }
 
   OrexCallInstance _instanceForRoom(String roomId) => OrexCallInstance(
     roomId: roomId,
@@ -482,7 +508,8 @@ class CallController extends ChangeNotifier {
 
   /// A start request can wait behind teardown or Telecom before it creates the
   /// media session. Mobile presentation stays expanded during that interval.
-  bool get isStarting => _startOperation != null;
+  bool get isStarting =>
+      _startOperation != null && setupPhase != OrexCallSetupPhase.idle;
 
   bool _isPersonalCall(Room? room) =>
       room != null &&
@@ -671,14 +698,38 @@ class CallController extends ChangeNotifier {
     final acceptGeneration = ++_incomingAcceptGeneration;
     late final Future<void> operation;
     operation =
-        _acceptIncomingImpl(
-          room,
-          video: video,
-          fromSystem: fromSystem,
-          requestExpandedUi: requestExpandedUi,
-          acceptGeneration: acceptGeneration,
-          instance: callInstance,
-        ).whenComplete(() {
+        (() async {
+          try {
+            await orexRunCallStage<void>(
+              stage: 'incoming-accept',
+              timeout: const Duration(seconds: 55),
+              operation: () => _acceptIncomingImpl(
+                room,
+                video: video,
+                fromSystem: fromSystem,
+                requestExpandedUi: requestExpandedUi,
+                acceptGeneration: acceptGeneration,
+                instance: callInstance,
+              ),
+            );
+          } on OrexCallStageTimeout catch (e) {
+            if (_incomingAcceptGeneration == acceptGeneration) {
+              _incomingAcceptGeneration++;
+              lastError =
+                  'Подключение заняло слишком много времени. Проверьте сеть и повторите звонок.';
+              OrexLog.d('Call', 'incoming accept timed out room=${room.id}', e);
+              try {
+                await hangUp().timeout(const Duration(seconds: 10));
+              } on TimeoutException {
+                OrexLog.d(
+                  'Call',
+                  'incoming timeout cleanup continues asynchronously room=${room.id}',
+                );
+              }
+            }
+            rethrow;
+          }
+        })().whenComplete(() {
           if (identical(_incomingAcceptFuture, operation)) {
             _incomingAcceptInstance = null;
             _incomingAcceptFuture = null;
@@ -828,25 +879,34 @@ class CallController extends ChangeNotifier {
       systemCallPrepared: registered,
       initialAnswered: true,
       ringEventId: acceptedInstance.ringEventId,
-      onSessionCreated: shouldRequestExpandedUi
-          ? () {
-              final promoted = _currentIncomingAcceptInstance(
-                acceptedInstance,
-                acceptGeneration,
-              );
-              final uiInstance = promoted ?? currentCallInstance;
-              if (uiInstance != null &&
-                  uiInstance.roomId == acceptedInstance.roomId) {
-                _requestAcceptedIncomingCallUi(uiInstance);
-              }
-            }
-          : null,
       onSignalingReady: publishAccepted,
     );
     await mediaStart;
-    await handledSync;
+    if (shouldRequestExpandedUi) {
+      final session = _session;
+      final uiInstance = currentCallInstance;
+      if (session?.status == CallStatus.connected &&
+          uiInstance != null &&
+          uiInstance.roomId == acceptedInstance.roomId) {
+        _requestAcceptedIncomingCallUi(uiInstance);
+      }
+    }
+    try {
+      await handledSync.timeout(const Duration(seconds: 4));
+    } on TimeoutException {
+      OrexLog.d(
+        'Call',
+        'sibling-device handled sync deferred room=${room.id}',
+      );
+    }
     final remoteAcceptedSync = acceptedSync;
-    if (remoteAcceptedSync != null) await remoteAcceptedSync;
+    if (remoteAcceptedSync != null) {
+      try {
+        await remoteAcceptedSync.timeout(const Duration(seconds: 4));
+      } on TimeoutException {
+        OrexLog.d('Call', 'remote accepted sync deferred room=${room.id}');
+      }
+    }
   }
 
   OrexCallInstance? _currentIncomingAcceptInstance(
@@ -1406,7 +1466,10 @@ class CallController extends ChangeNotifier {
           }
         });
     _startOperation = operation;
-    if (_session == null) notifyListeners();
+    if (_session == null) {
+      setupPhase = OrexCallSetupPhase.preparing;
+      notifyListeners();
+    }
     return operation;
   }
 
@@ -1444,6 +1507,7 @@ class CallController extends ChangeNotifier {
     _cancelUnansweredTimeout();
     final generation = ++_lifecycleGeneration;
     lastError = null;
+    _setSetupPhase(OrexCallSetupPhase.preparing);
     this.roomId = roomId;
     _currentRingEventId = ringEventId;
     this.video = video;
@@ -1525,7 +1589,15 @@ class CallController extends ChangeNotifier {
     // the service until after MatrixRTC enter() would make that race depend on
     // Android's background-start exemptions. Any start failure below rolls this
     // owner back through _failStart().
-    await _syncForegroundCall(force: true);
+    try {
+      await orexRunCallStage<void>(
+        stage: 'foreground-owner',
+        timeout: const Duration(seconds: 8),
+        operation: () => _syncForegroundCall(force: true),
+      );
+    } on OrexCallStageTimeout catch (e) {
+      OrexLog.d('Call', 'foreground call owner timed out room=$roomId', e);
+    }
     if (wasCancelled() || generation != _lifecycleGeneration || _session != s) {
       await _stopForegroundCall(
         OrexCallInstance(roomId: roomId, ringEventId: _currentRingEventId),
@@ -1549,13 +1621,18 @@ class CallController extends ChangeNotifier {
       );
       return;
     }
+    _setSetupPhase(OrexCallSetupPhase.signaling);
     try {
-      await voip.enterCall(
+      await orexRunCallStage<GroupCallSession>(
+        stage: 'matrixrtc-signaling',
+        timeout: const Duration(seconds: 25),
+        operation: () => voip.enterCall(
         roomId,
         owner: s,
         ring: _initiator,
         video: video,
         expectedRingEventId: ringEventId,
+        ),
       );
       _currentRingEventId = voip.activeRingEventId(roomId) ?? ringEventId;
       final signalingInstance = OrexCallInstance(
@@ -1597,6 +1674,7 @@ class CallController extends ChangeNotifier {
       _scheduleUnansweredTimeout(s, roomId);
     }
 
+    _setSetupPhase(OrexCallSetupPhase.systemIntegration);
     var systemRegistered = systemCallPrepared == true;
     final systemInstance = OrexCallInstance(
       roomId: roomId,
@@ -1613,8 +1691,8 @@ class CallController extends ChangeNotifier {
           _lastSystemAudioEnabled = null;
           _lastSystemCameraEnabled = null;
         }
-        systemRegistered = systemIncoming
-            ? await _systemCalls.reportIncomingCall(
+        final systemRegistration = systemIncoming
+            ? _systemCalls.reportIncomingCall(
                 callId: roomId,
                 ringEventId: systemInstance.ringEventId,
                 displayName: room!.getLocalizedDisplayname(),
@@ -1625,7 +1703,7 @@ class CallController extends ChangeNotifier {
                 audioEnabled: audioInitiallyEnabled,
                 cameraEnabled: cameraInitiallyOn,
               )
-            : await _systemCalls.reportOutgoingCall(
+            : _systemCalls.reportOutgoingCall(
                 callId: roomId,
                 ringEventId: systemInstance.ringEventId,
                 displayName: room!.getLocalizedDisplayname(),
@@ -1636,6 +1714,35 @@ class CallController extends ChangeNotifier {
                 audioEnabled: audioInitiallyEnabled,
                 cameraEnabled: cameraInitiallyOn,
               );
+        try {
+          systemRegistered = await orexRunCallStage<bool>(
+            stage: 'system-call-registration',
+            timeout: const Duration(seconds: 12),
+            operation: () => systemRegistration,
+          );
+        } on OrexCallStageTimeout catch (e) {
+          OrexLog.d(
+            'Call',
+            'system call registration timed out room=$roomId',
+            e,
+          );
+          systemRegistered = false;
+          if (_sameCallInstance(_systemCallInstance, systemInstance)) {
+            _clearSystemCallState();
+          }
+          unawaited(
+            systemRegistration.then((registered) async {
+              if (registered &&
+                  !_sameCallInstance(_systemCallInstance, systemInstance)) {
+                await _systemCalls.endCall(
+                  roomId,
+                  ringEventId: systemInstance.ringEventId,
+                  reason: 'error',
+                );
+              }
+            }),
+          );
+        }
         if (!systemRegistered &&
             _sameCallInstance(_systemCallInstance, systemInstance)) {
           _clearSystemCallState();
@@ -1692,7 +1799,25 @@ class CallController extends ChangeNotifier {
       }
     }
 
-    await s.connect(video: cameraInitiallyOn, deferReady: true);
+    _setSetupPhase(OrexCallSetupPhase.media);
+    try {
+      await orexRunCallStage<void>(
+        stage: 'livekit-media',
+        timeout: const Duration(seconds: 30),
+        operation: () => s.connect(
+          video: cameraInitiallyOn,
+          deferReady: true,
+        ),
+      );
+    } on OrexCallStageTimeout catch (e) {
+      OrexLog.d('Call', 'media connect timed out room=$roomId', e);
+      await _failStart(
+        s,
+        'Не удалось подключить медиа за отведённое время',
+        leaveSignaling: true,
+      );
+      return;
+    }
     if (wasCancelled() || generation != _lifecycleGeneration || _session != s) {
       await _stopForegroundCall(systemInstance);
       await _tearDownStaleStart(voip, s);
@@ -1732,7 +1857,22 @@ class CallController extends ChangeNotifier {
       await _tearDownStaleStart(voip, s);
       return;
     }
-    final mediaReady = await s.markReady();
+    bool mediaReady;
+    try {
+      mediaReady = await orexRunCallStage<bool>(
+        stage: 'media-readiness',
+        timeout: const Duration(seconds: 12),
+        operation: s.markReady,
+      );
+    } on OrexCallStageTimeout catch (e) {
+      OrexLog.d('Call', 'media readiness timed out room=$roomId', e);
+      await _failStart(
+        s,
+        'Не удалось завершить защищённое подключение вовремя',
+        leaveSignaling: true,
+      );
+      return;
+    }
     if (wasCancelled() || generation != _lifecycleGeneration || _session != s) {
       await _tearDownStaleStart(voip, s);
       return;
@@ -1745,6 +1885,7 @@ class CallController extends ChangeNotifier {
       );
       return;
     }
+    _setSetupPhase(OrexCallSetupPhase.ready);
     final deferredRecovery = _deferredInitialMediaRecovery;
     _deferredInitialMediaRecovery = null;
     if (deferredRecovery != null && identical(_session, s)) {
@@ -1759,18 +1900,28 @@ class CallController extends ChangeNotifier {
     VoipService voip,
     CallSession session,
   ) async {
-    final mediaTeardown = session.hangUp();
+    final cleanup = (() async {
+      try {
+        await Future.wait<void>([
+          session.hangUp(),
+          voip.leaveCurrent(
+            owner: session,
+            preparedKeyProvider: session.e2eeKeyProvider,
+            mediaOperationsDrained: session.mediaOperationsFullyDrained,
+          ),
+        ]);
+      } finally {
+        session.dispose();
+      }
+    })();
     try {
-      await Future.wait<void>([
-        mediaTeardown,
-        voip.leaveCurrent(
-          owner: session,
-          preparedKeyProvider: session.e2eeKeyProvider,
-          mediaOperationsDrained: session.mediaOperationsFullyDrained,
-        ),
-      ]);
-    } finally {
-      session.dispose();
+      await cleanup.timeout(const Duration(seconds: 12));
+    } on TimeoutException {
+      OrexLog.d(
+        'Call',
+        'stale call cleanup continues asynchronously room=${session.matrixRoomId}',
+      );
+      unawaited(cleanup);
     }
   }
 
@@ -1795,9 +1946,45 @@ class CallController extends ChangeNotifier {
       roomId: session.matrixRoomId,
       ringEventId: _currentRingEventId,
     );
-    // Store the exact ring tombstone before native cleanup. This makes late FCM
-    // retries idempotent even if Telecom tears its session down immediately.
+    final failedSystemCall = _systemCallInstance;
+    final failedRoom = matrix.client.getRoomById(session.matrixRoomId);
+    final shouldNotifyEnded =
+        failedRoom != null && _shouldSendEndedSignal(failedRoom, session);
+
+    // Release presentation ownership before any network/native teardown. The
+    // cleanup may be delayed by an offline homeserver or plugin, but the user
+    // must never remain trapped on "Подключаем звонок...".
     session.removeListener(_onSessionChanged);
+    _session = null;
+    minimized = false;
+    roomId = null;
+    _currentRingEventId = null;
+    video = false;
+    listenOnly = false;
+    _initiator = false;
+    _start = null;
+    _callAnswered = false;
+    setupPhase = OrexCallSetupPhase.idle;
+    _deferredInitialMediaRecovery = null;
+    if (_sameCallInstance(_pendingAcceptedIncomingCallUi, failedInstance)) {
+      _pendingAcceptedIncomingCallUi = null;
+    }
+    focusedParticipantIdentity = null;
+    _clearSystemCallState();
+    _lifecycleGeneration++;
+    if (!_disposed) notifyListeners();
+
+    // Start native ownership release immediately; Matrix/media teardown may be
+    // slow or permanently stalled while the device is offline.
+    final foregroundStop = _stopForegroundCall(failedInstance);
+    final systemEnd = failedSystemCall == null
+        ? null
+        : _systemCalls.endCall(
+            failedSystemCall.roomId,
+            ringEventId: failedSystemCall.ringEventId,
+            reason: 'error',
+          );
+
     final mediaTeardown = session.hangUp();
     final signalingTeardown = leaveSignaling
         ? matrix.voip?.leaveCurrent(
@@ -1807,53 +1994,47 @@ class CallController extends ChangeNotifier {
           )
         : null;
     try {
-      await matrix.push.notifyCallEnded(
-        session.matrixRoomId,
-        ringEventId: failedInstance.ringEventId,
-      );
+      await matrix.push
+          .notifyCallEnded(
+            session.matrixRoomId,
+            ringEventId: failedInstance.ringEventId,
+          )
+          .timeout(const Duration(seconds: 4));
     } catch (e) {
       OrexLog.d('Call', 'failed to persist start rollback', e);
     }
-    final failedRoom = matrix.client.getRoomById(session.matrixRoomId);
-    if (failedRoom != null && _shouldSendEndedSignal(failedRoom, session)) {
+    if (shouldNotifyEnded) {
       unawaited(matrix.voip?.notifyEnded(failedInstance));
     }
-    try {
-      await Future.wait<void>([mediaTeardown, ?signalingTeardown]);
-    } catch (e) {
-      OrexLog.d('Call', 'leave failed after start rollback', e);
-    } finally {
-      session.dispose();
-    }
-    final failedSystemCall = _systemCallInstance;
-    if (_session == session) {
-      _session = null;
-      minimized = false;
-      roomId = null;
-      _currentRingEventId = null;
-      video = false;
-      listenOnly = false;
-      _initiator = false;
-      _start = null;
-      _callAnswered = false;
-      _deferredInitialMediaRecovery = null;
-      if (_sameCallInstance(_pendingAcceptedIncomingCallUi, failedInstance)) {
-        _pendingAcceptedIncomingCallUi = null;
+
+    final cleanup = (() async {
+      try {
+        await Future.wait<void>([mediaTeardown, ?signalingTeardown]);
+      } catch (error) {
+        OrexLog.d('Call', 'leave failed after start rollback', error);
       }
-      focusedParticipantIdentity = null;
-      _clearSystemCallState();
-      _lifecycleGeneration++;
+    })().whenComplete(session.dispose);
+    try {
+      await cleanup.timeout(const Duration(seconds: 12));
+    } on TimeoutException {
+      OrexLog.d(
+        'Call',
+        'start rollback continues in background room=${session.matrixRoomId}',
+      );
+      unawaited(cleanup);
     }
-    await _stopForegroundCall(failedInstance);
-    if (failedSystemCall != null) {
-      await _systemCalls.endCall(
-        failedSystemCall.roomId,
-        ringEventId: failedSystemCall.ringEventId,
-        reason: 'error',
+
+    await foregroundStop.timeout(
+      const Duration(seconds: 4),
+      onTimeout: () {},
+    );
+    if (systemEnd != null) {
+      await systemEnd.timeout(
+        const Duration(seconds: 4),
+        onTimeout: () => false,
       );
     }
     await _setAndroidTelecomAudioPolicy(false);
-    if (!_disposed) notifyListeners();
   }
 
   void minimize() {
@@ -1921,6 +2102,7 @@ class CallController extends ChangeNotifier {
     _initiator = false;
     _start = null;
     _callAnswered = false;
+    setupPhase = OrexCallSetupPhase.idle;
     _deferredInitialMediaRecovery = null;
     if (_sameCallInstance(_pendingAcceptedIncomingCallUi, callInstance)) {
       _pendingAcceptedIncomingCallUi = null;

@@ -202,9 +202,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               },
             )
             .whenComplete(() {
-              oldCtrl.dispose();
-              newCtrl.dispose();
-              confirmCtrl.dispose();
+              disposeOrexDialogControllers([oldCtrl, newCtrl, confirmCtrl]);
             });
 
     if (passwords == null) return;

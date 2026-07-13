@@ -76,11 +76,18 @@ class _CallScreenState extends State<CallScreen> {
               final s = _session;
               if (s == null) {
                 if (_call.isStarting) {
-                  return const Center(
-                    child: SquirrelMascot(
-                      size: 120,
-                      caption: 'Подготавливаем звонок…',
-                    ),
+                  return Column(
+                    children: [
+                      _topBar(null),
+                      Expanded(
+                        child: Center(
+                          child: SquirrelMascot(
+                            size: 120,
+                            caption: _call.setupCaption,
+                          ),
+                        ),
+                      ),
+                    ],
                   );
                 }
                 // Звонок завершён — закрываем экран.
@@ -105,7 +112,7 @@ class _CallScreenState extends State<CallScreen> {
     );
   }
 
-  Widget _topBar(CallSession session) => Padding(
+  Widget _topBar(CallSession? session) => Padding(
     padding: const EdgeInsets.all(12),
     child: Row(
       children: [
@@ -117,11 +124,15 @@ class _CallScreenState extends State<CallScreen> {
         const SizedBox(width: 4),
         Expanded(
           child: Text(
-            OrexCallPresentation.titleFor(listenOnly: session.listenOnly),
+            session == null
+                ? 'Звонок'
+                : OrexCallPresentation.titleFor(
+                    listenOnly: session.listenOnly,
+                  ),
             style: Theme.of(context).textTheme.titleMedium,
           ),
         ),
-        if (session.listenOnly)
+        if (session?.listenOnly == true)
           const Tooltip(
             message:
                 'В каналах обычные участники входят без микрофона. '
@@ -135,8 +146,8 @@ class _CallScreenState extends State<CallScreen> {
   Widget _body(CallSession session) {
     switch (session.status) {
       case CallStatus.connecting:
-        return const Center(
-          child: SquirrelMascot(size: 120, caption: 'Соединение…'),
+        return Center(
+          child: SquirrelMascot(size: 120, caption: _call.setupCaption),
         );
       case CallStatus.failed:
         return Center(

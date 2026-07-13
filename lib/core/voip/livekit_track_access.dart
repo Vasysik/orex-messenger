@@ -45,16 +45,19 @@ final class OrexLiveKitTrackAccess {
     return null;
   }
 
-  static void setParticipantAudioEnabled(
+  static Future<bool> setParticipantAudioEnabled(
     lk.Participant participant,
     bool enabled,
-  ) {
+  ) async {
+    var changed = false;
+    final seen = <Object>{};
     try {
       final dynamic dynamicParticipant = participant;
       for (final dynamic pub in dynamicValues(
         dynamicParticipant.audioTrackPublications,
       )) {
-        setMediaTrackEnabled(pub, enabled);
+        if (pub is Object && !seen.add(pub)) continue;
+        changed = await setRemotePublicationEnabled(pub, enabled) || changed;
       }
     } catch (_) {}
     try {
@@ -63,10 +66,30 @@ final class OrexLiveKitTrackAccess {
         dynamicParticipant.trackPublications,
       )) {
         if (readDynamic(pub, 'source') == lk.TrackSource.microphone) {
-          setMediaTrackEnabled(pub, enabled);
+          if (pub is Object && !seen.add(pub)) continue;
+          changed = await setRemotePublicationEnabled(pub, enabled) || changed;
         }
       }
     } catch (_) {}
+    return changed;
+  }
+
+  static Future<bool> setRemotePublicationEnabled(
+    dynamic publication,
+    bool enabled,
+  ) async {
+    if (publication == null) return false;
+    try {
+      final dynamic result = enabled
+          ? publication.enable()
+          : publication.disable();
+      if (result is Future) {
+        await result.timeout(const Duration(seconds: 4));
+      }
+      return true;
+    } catch (_) {
+      return setMediaTrackEnabled(publication, enabled);
+    }
   }
 
   static bool participantMicrophoneMuted(lk.Participant participant) {

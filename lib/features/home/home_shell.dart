@@ -273,8 +273,7 @@ class _HomeShellState extends State<HomeShell> {
           },
         )
         .whenComplete(() {
-          name.dispose();
-          alias.dispose();
+          disposeOrexDialogControllers([name, alias]);
         });
   }
 

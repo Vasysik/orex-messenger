@@ -106,6 +106,7 @@ final class OrexMatrixRequestGate {
     required OrexMatrixOperation<T> operation,
     String? coalesceKey,
     int maxAttempts = 3,
+    Duration? operationTimeout,
   }) {
     if (maxAttempts < 1) {
       throw ArgumentError.value(maxAttempts, 'maxAttempts', 'must be >= 1');
@@ -123,7 +124,10 @@ final class OrexMatrixRequestGate {
         await _waitBeforeNextRequest();
         _lastStartedAt = DateTime.now();
         try {
-          return await operation();
+          final pending = operation();
+          return operationTimeout == null
+              ? await pending
+              : await pending.timeout(operationTimeout);
         } catch (error, stack) {
           lastError = error;
           lastStack = stack;

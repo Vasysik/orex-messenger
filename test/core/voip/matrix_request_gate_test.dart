@@ -77,6 +77,29 @@ void main() {
       expect(calls, 2);
     });
 
+    test('a stuck cleanup write does not poison the serialized queue', () async {
+      final gate = OrexMatrixRequestGate(minimumSpacing: Duration.zero);
+      final stuck = Completer<void>();
+
+      await expectLater(
+        gate.run<void>(
+          operationName: 'stale-leave',
+          operationTimeout: const Duration(milliseconds: 10),
+          operation: () => stuck.future,
+        ),
+        throwsA(isA<TimeoutException>()),
+      );
+
+      final next = await gate.run<String>(
+        operationName: 'membership-cleanup',
+        operation: () async => 'released',
+      );
+      expect(next, 'released');
+
+      stuck.complete();
+      await stuck.future;
+    });
+
     test('does not replay an unknown write failure', () async {
       final gate = OrexMatrixRequestGate(minimumSpacing: Duration.zero);
       var calls = 0;

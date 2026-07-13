@@ -210,6 +210,7 @@ class CallSession extends ChangeNotifier {
   bool _cameraRequestedOn = false;
   String? _lastAppliedInputDeviceId;
   bool speakerMuted = false;
+  Future<void> _speakerMuteApplyTail = Future<void>.value();
   late bool _micRequestedOn;
   bool _systemMuted = false;
   bool _systemInactive = false;
@@ -594,7 +595,7 @@ class CallSession extends ChangeNotifier {
                 }
               }
               await _voiceGate.sync();
-              _applySpeakerMute();
+              await _applySpeakerMute();
               if (!_disposed) notifyListeners();
             })()
             .catchError((Object error, StackTrace stackTrace) {
@@ -690,7 +691,7 @@ class CallSession extends ChangeNotifier {
         identical(_room, room) &&
         (connectGeneration == null || connectGeneration == _connectGeneration);
     if (!isCurrent()) return;
-    _applySpeakerMute();
+    await _applySpeakerMute();
     await applyAudioOutput();
     if (!isCurrent()) return;
     await _applyMicrophonePolicy(forceCaptureOptions: true);
@@ -711,7 +712,7 @@ class CallSession extends ChangeNotifier {
       }
     }
     if (!isCurrent()) return;
-    _applySpeakerMute();
+    await _applySpeakerMute();
   }
 
   Future<void> _disposeRoomEvents() async {
@@ -794,7 +795,7 @@ class CallSession extends ChangeNotifier {
     if (remoteCountChanged) {
       _queueRemoteEncryptionKeyRefresh();
     }
-    _applySpeakerMute();
+    unawaited(_applySpeakerMute());
     _scheduleMediaRecovery();
     notifyListeners();
   }
@@ -840,7 +841,7 @@ class CallSession extends ChangeNotifier {
         // event -> restart. Device changes are handled only by explicit camera
         // selection/cycle actions and the one-shot cold-answer recovery.
         await _voiceGate.sync();
-        _applySpeakerMute();
+        await _applySpeakerMute();
       } catch (e) {
         OrexLog.d('Call', 'media recovery failed', e);
       }
@@ -1097,7 +1098,7 @@ class CallSession extends ChangeNotifier {
     if (_systemInactive == inactive) return;
     _systemInactive = inactive;
     await _applyMicrophonePolicy(forceCaptureOptions: active);
-    _applySpeakerMute();
+    await _applySpeakerMute();
     if (!_disposed) notifyListeners();
   }
 
@@ -1236,7 +1237,8 @@ class CallSession extends ChangeNotifier {
 
   Future<void> toggleSpeakerMute() async {
     speakerMuted = !speakerMuted;
-    _applySpeakerMute();
+    if (!_disposed) notifyListeners();
+    await _applySpeakerMute();
     await _publishSpeakerMuteState();
     if (!_disposed) notifyListeners();
   }
@@ -1250,13 +1252,28 @@ class CallSession extends ChangeNotifier {
     await _publishVoiceParticipantState();
   }
 
-  void _applySpeakerMute() {
-    final room = _room;
-    if (room == null) return;
-    final enabled = !speakerMuted && !_systemInactive;
-    for (final participant in room.remoteParticipants.values) {
-      OrexLiveKitTrackAccess.setParticipantAudioEnabled(participant, enabled);
-    }
+  Future<void> _applySpeakerMute() {
+    final previous = _speakerMuteApplyTail;
+    late final Future<void> operation;
+    operation = (() async {
+      try {
+        await previous;
+      } catch (_) {
+        // A later user/system audio decision must still be applied.
+      }
+      if (_disposed) return;
+      final room = _room;
+      if (room == null) return;
+      final enabled = !speakerMuted && !_systemInactive;
+      for (final participant in room.remoteParticipants.values) {
+        await OrexLiveKitTrackAccess.setParticipantAudioEnabled(
+          participant,
+          enabled,
+        );
+      }
+    })();
+    _speakerMuteApplyTail = operation;
+    return operation;
   }
 
   Future<void> toggleScreenShare({

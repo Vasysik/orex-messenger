@@ -421,6 +421,9 @@ object OrexNotificationCenter {
                 )
             }
             .build()
+            .apply {
+                flags = flags or Notification.FLAG_ONGOING_EVENT or Notification.FLAG_NO_CLEAR
+            }
     }
 
     fun cancelCallNotification(context: Context) {
@@ -767,6 +770,9 @@ object OrexNotificationCenter {
 
             return builder.build().apply {
                 if (incoming && alert) flags = flags or Notification.FLAG_INSISTENT
+                if (!incoming) {
+                    flags = flags or Notification.FLAG_ONGOING_EVENT or Notification.FLAG_NO_CLEAR
+                }
             }
         }
 

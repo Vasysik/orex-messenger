@@ -107,7 +107,12 @@ curl -I https://orex.vasys.ru/
 ```
 
 В ответе должны быть CSP, HSTS, `X-Content-Type-Options: nosniff`,
-`X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, Permissions Policy и
-`Cache-Control: no-cache`. Файл `web/_headers` остаётся декларацией тех же
+`X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, Permissions Policy,
+`Cross-Origin-Opener-Policy: same-origin`,
+`Cross-Origin-Embedder-Policy: require-corp`,
+`Cross-Origin-Resource-Policy: same-origin` и `Cache-Control: no-cache`. Эти
+COOP/COEP-заголовки нужны `SharedArrayBuffer`/flutter_rust_bridge; обычный
+`flutter run -d chrome` их не выставляет и потому может печатать предупреждение,
+даже когда production deployment настроен правильно. Файл `web/_headers` остаётся декларацией тех же
 требований для хостингов, которые умеют читать этот формат; при Traefik
 заголовки реально выставляет middleware из `docker-compose.web.yml`.

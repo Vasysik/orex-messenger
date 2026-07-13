@@ -14,6 +14,7 @@ import 'package:webrtc_interface/webrtc_interface.dart';
 import '../config/orex_config.dart';
 import '../logging/orex_logger.dart';
 import 'call_attempt.dart';
+import 'call_cleanup_coordinator.dart';
 import 'call_disposition_registry.dart';
 import 'call_lifecycle_policy.dart';
 import 'call_ring_policy.dart';
@@ -186,6 +187,7 @@ class VoipService extends ChangeNotifier {
     _suppressionRestore = _restorePersistedLeftCalls();
     _syncSub = client.onSync.stream.listen((_) {
       if (_suppressionRestored) _scan();
+      _scheduleStaleMembershipCleanup();
     }); // sync scanner
     _toDeviceSub = client.onToDeviceEvent.stream.listen(_handleToDeviceEvent);
     // «Обработано на другом моём устройстве» (принят/отклонён) → закрыть входящий.
@@ -200,28 +202,113 @@ class VoipService extends ChangeNotifier {
     // время звонка) — иначе другой аккаунт видит нас «в звонке» (фантом).
     _staleMembershipCleanupTimer = Timer(
       const Duration(seconds: 4),
-      _cleanupOwnStaleMemberships,
+      _scheduleStaleMembershipCleanup,
     );
+  }
+
+  /// Cleanup is serialized with call ownership. Removing Matrix state while a
+  /// cached SDK GroupCallSession is still entered makes Matrix immediately
+  /// force-join it again, producing the phantom loop seen in the logs.
+  void _scheduleStaleMembershipCleanup() {
+    if (_disposed || _staleMembershipCleanupInFlight != null) return;
+    late final Future<void> operation;
+    operation = _cleanupOwnStaleMemberships().whenComplete(() {
+      if (identical(_staleMembershipCleanupInFlight, operation)) {
+        _staleMembershipCleanupInFlight = null;
+      }
+    });
+    _staleMembershipCleanupInFlight = operation;
+    unawaited(operation);
   }
 
   /// Удаляем своё членство в звонках, в которых мы на самом деле не находимся.
   Future<void> _cleanupOwnStaleMemberships() async {
     final myId = client.userID;
-    for (final room in client.rooms) {
-      if (!_callMembers(room).contains(myId)) continue;
-      if (active != null && active!.room.id == room.id) {
-        continue; // реально в звонке
+    final roomIds = <String>{
+      ..._pendingMembershipCleanupRooms,
+      for (final room in client.rooms)
+        if (_callMembers(room).contains(myId)) room.id,
+    };
+    for (final roomId in roomIds) {
+      if (_disposed) return;
+      if (active?.room.id == roomId || _enterRequestRoomId == roomId) {
+        continue;
       }
-      try {
-        await OrexMatrixRequestGate.shared.run<void>(
-          operationName: 'startup-membership-cleanup',
-          coalesceKey: 'membership-cleanup:${room.id}:${room.id}',
-          operation: () => room.removeFamedlyCallMemberEvent(room.id, voip),
-        );
-        OrexLog.d('Voip', 'removed phantom call membership room=${room.id}');
-      } catch (e) {
-        OrexLog.d('Voip', 'cleanup stale membership failed', e);
-      }
+      final room = client.getRoomById(roomId);
+      if (room == null) continue;
+      await _cleanupStaleRoomState(room, operationName: 'startup');
+    }
+  }
+
+  Future<void> _cleanupStaleRoomState(
+    Room room, {
+    required String operationName,
+  }) async {
+    if (active?.room.id == room.id) return;
+    final hasOwnMembership = _callMembers(room).contains(client.userID);
+    final staleSessions = voip.groupCalls.values
+        .where(
+          (gc) =>
+              gc.room.id == room.id &&
+              !identical(gc, active) &&
+              (hasOwnMembership ||
+                  (gc.state != GroupCallState.localCallFeedUninitialized &&
+                      gc.state != GroupCallState.localCallFeedInitialized)),
+        )
+        .toList(growable: false);
+    if (!hasOwnMembership && staleSessions.isEmpty) return;
+
+    // Remove process-local ownership before Matrix emits the membership
+    // removal. This prevents Matrix SDK's state listener from force-entering
+    // the same stale GroupCallSession again.
+    for (final gc in staleSessions) {
+      voip.groupCalls.removeWhere((_, value) => identical(value, gc));
+    }
+    final membershipCallId = staleSessions.isEmpty
+        ? room.id
+        : staleSessions.first.groupCallId;
+    final result = await const OrexCallCleanupCoordinator().cleanup(
+      sessions: [
+        for (final gc in staleSessions)
+          OrexCallCleanupSession(
+            label: gc.groupCallId,
+            leave: () => OrexMatrixRequestGate.shared.run<void>(
+              operationName: '$operationName-stale-session-leave',
+              coalesceKey: 'matrixrtc-leave:${room.id}:${gc.groupCallId}',
+              maxAttempts: 1,
+              operationTimeout: const Duration(seconds: 10),
+              operation: gc.leave,
+            ),
+            disposeBackend: () async {
+              final backend = gc.backend;
+              if (backend is OrexLiveKitBackend) await backend.dispose(gc);
+            },
+          ),
+      ],
+      removeMembership: () => OrexMatrixRequestGate.shared.run<void>(
+        operationName: '$operationName-membership-cleanup',
+        coalesceKey: 'membership-cleanup:${room.id}:$membershipCallId',
+        maxAttempts: 1,
+        operationTimeout: const Duration(seconds: 10),
+        operation: () => room.removeFamedlyCallMemberEvent(
+          membershipCallId,
+          voip,
+        ),
+      ),
+    );
+    for (final failure in result.failures) {
+      OrexLog.d(
+        'Voip',
+        'stale cleanup step failed room=${room.id} step=${failure.step}',
+        failure.error,
+      );
+    }
+    if (result.membershipRemoved) {
+      _pendingMembershipCleanupRooms.remove(room.id);
+      OrexLog.d('Voip', 'removed phantom call membership room=${room.id}');
+    } else {
+      _pendingMembershipCleanupRooms.add(room.id);
+      OrexLog.d('Voip', 'cleanup stale membership deferred room=${room.id}');
     }
   }
 
@@ -549,6 +636,8 @@ class VoipService extends ChangeNotifier {
   final Map<String, _PendingIncomingRing> _pendingFreshRingRooms =
       <String, _PendingIncomingRing>{};
   Timer? _staleMembershipCleanupTimer;
+  Future<void>? _staleMembershipCleanupInFlight;
+  final Set<String> _pendingMembershipCleanupRooms = <String>{};
 
   static const _leftCallsPrefsKey = 'orex_voip_left_calls_v1';
   static const _maxPersistedLeftAge = Duration(days: 7);
@@ -1952,7 +2041,21 @@ class VoipService extends ChangeNotifier {
     _enterRequestRingEventId = expectedRingEventId;
     while (_enterCompletion != null) {
       final previousEnter = _enterCompletion!;
-      await previousEnter.future;
+      try {
+        await previousEnter.future.timeout(const Duration(seconds: 12));
+      } on TimeoutException {
+        // A transport/plugin Future may never settle after connectivity loss.
+        // The generation/owner checks make its eventual continuation stale, so
+        // release only the serialization slot and allow a fresh call attempt.
+        if (identical(_enterCompletion, previousEnter)) {
+          _enterCompletion = null;
+        }
+        if (!previousEnter.isCompleted) previousEnter.complete();
+        OrexLog.d(
+          'Voip',
+          'detached stuck previous MatrixRTC enter before room=$roomId',
+        );
+      }
       if (enterGeneration != _enterGeneration ||
           !identical(_enterRequestOwner, owner)) {
         if (identical(_enterRequestOwner, owner)) _enterRequestOwner = null;
@@ -2017,6 +2120,13 @@ class VoipService extends ChangeNotifier {
           expectedRingEventId,
         )) {
       throw StateError('Incoming call attempt changed before MatrixRTC enter');
+    }
+
+    // Tear down any process-local SDK owner left by an interrupted attempt
+    // before rotating keys and creating the replacement membership.
+    await _cleanupStaleRoomState(room, operationName: 'pre-enter');
+    if (enterGeneration != _enterGeneration) {
+      throw StateError('MatrixRTC call enter was cancelled');
     }
 
     // Explicitly entering a room supersedes an old local-leave tombstone.
@@ -2135,12 +2245,15 @@ class VoipService extends ChangeNotifier {
           operation: () =>
               room.removeFamedlyCallMemberEvent(gc.groupCallId, voip),
         );
+        _pendingMembershipCleanupRooms.remove(roomId);
       } catch (removeError) {
+        _pendingMembershipCleanupRooms.add(roomId);
         OrexLog.d(
           'Voip',
           'rollback membership cleanup failed room=$roomId call=${gc.groupCallId}',
           removeError,
         );
+        _scheduleStaleMembershipCleanup();
       }
       voip.groupCalls.removeWhere((_, value) => identical(value, gc));
       _releaseKeyProviderLease(keyState);
@@ -2295,46 +2408,59 @@ class VoipService extends ChangeNotifier {
       return;
     }
 
+    // Detach process-local ownership before any remote state write. If the
+    // homeserver or plugin stalls, Matrix SDK must not observe the membership
+    // removal while still owning an entered GroupCallSession and force-join it.
+    voip.groupCalls.removeWhere((_, value) => identical(value, gc));
+
     try {
-      // Не «перезванивать» по тому же продолжающемуся звонку комнаты.
       try {
         await markLeft(activeInstance!);
       } catch (e) {
         OrexLog.d('Voip', 'mark-left persistence failed', e);
       }
-      try {
-        await OrexMatrixRequestGate.shared.run<void>(
-          operationName: 'matrixrtc-leave',
-          coalesceKey: 'matrixrtc-leave:${gc.room.id}:${gc.groupCallId}',
-          operation: gc.leave,
-        );
-      } catch (e) {
-        OrexLog.d('Voip', 'leave current failed', e);
-        final backend = gc.backend;
-        if (backend is OrexLiveKitBackend) await backend.dispose(gc);
-      }
-      // Подстраховка: гарантированно убираем своё членство (если leave() не
-      // справился) — иначе остаёмся «фантомом» в звонке для остальных.
-      try {
-        await OrexMatrixRequestGate.shared.run<void>(
+      final result = await const OrexCallCleanupCoordinator().cleanup(
+        sessions: [
+          OrexCallCleanupSession(
+            label: gc.groupCallId,
+            leave: () => OrexMatrixRequestGate.shared.run<void>(
+              operationName: 'matrixrtc-leave',
+              coalesceKey: 'matrixrtc-leave:${gc.room.id}:${gc.groupCallId}',
+              maxAttempts: 1,
+              operationTimeout: const Duration(seconds: 10),
+              operation: gc.leave,
+            ),
+            disposeBackend: () async {
+              final backend = gc.backend;
+              if (backend is OrexLiveKitBackend) await backend.dispose(gc);
+            },
+          ),
+        ],
+        removeMembership: () => OrexMatrixRequestGate.shared.run<void>(
           operationName: 'matrixrtc-membership-cleanup',
           coalesceKey:
               'membership-cleanup:${gc.room.id}:${gc.groupCallId}',
+          maxAttempts: 1,
+          operationTimeout: const Duration(seconds: 10),
           operation: () => gc.room.removeFamedlyCallMemberEvent(
             gc.groupCallId,
             voip,
           ),
-        );
-      } catch (e) {
+        ),
+      );
+      for (final failure in result.failures) {
         OrexLog.d(
           'Voip',
-          'membership cleanup after leave failed room=${gc.room.id} call=${gc.groupCallId}',
-          e,
+          'leave cleanup step failed room=${gc.room.id} step=${failure.step}',
+          failure.error,
         );
       }
-      // И чистим локальную карту, чтобы будущие звонки не глохли (VoipId не
-      // экспортируется — фильтруем по полям ключа).
-      voip.groupCalls.removeWhere((_, value) => identical(value, gc));
+      if (result.membershipRemoved) {
+        _pendingMembershipCleanupRooms.remove(gc.room.id);
+      } else {
+        _pendingMembershipCleanupRooms.add(gc.room.id);
+        _scheduleStaleMembershipCleanup();
+      }
     } finally {
       if (keyState != null) _releaseKeyProviderLease(keyState);
     }
@@ -2347,6 +2473,7 @@ class VoipService extends ChangeNotifier {
     _timelineSub?.cancel();
     _toDeviceSub?.cancel();
     _staleMembershipCleanupTimer?.cancel();
+    _pendingMembershipCleanupRooms.clear();
     _dispositions.dispose();
     _persistedLeftRingEventIds.clear();
     _ringEventIds.clear();

@@ -680,6 +680,19 @@ final class OrexLiveKitBackend extends LiveKitBackend {
     });
   }
 
+  void _scrubKeyMaterial() {
+    for (final participantKeys in _keys.values) {
+      for (final key in participantKeys.values) {
+        key.fillRange(0, key.length, 0);
+      }
+    }
+    _keys.clear();
+    _latestLocalKeyIndex = 0;
+    _appliedLocalKeyRevision = -1;
+    _localKeyRevision = 0;
+    _lastNewKeyAt = DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
   @override
   Future<void> dispose(GroupCallSession groupCall) async {
     if (_disposed) {
@@ -701,25 +714,19 @@ final class OrexLiveKitBackend extends LiveKitBackend {
     _memberLeaveTimer?.cancel();
     _memberLeaveTimer = null;
     final drain = _operationTail.then<void>((_) {}, onError: (_, _) {});
-    late final Future<void> cleanup;
-    cleanup = drain.whenComplete(() {
-      for (final participantKeys in _keys.values) {
-        for (final key in participantKeys.values) {
-          key.fillRange(0, key.length, 0);
-        }
-      }
-      _keys.clear();
-      _latestLocalKeyIndex = 0;
-      _appliedLocalKeyRevision = -1;
-      _localKeyRevision = 0;
-      _lastNewKeyAt = DateTime.fromMillisecondsSinceEpoch(0);
-    });
-    _fullyDrained = cleanup;
-    try {
-      await cleanup.timeout(const Duration(seconds: 5));
-    } on TimeoutException {
-      OrexLog.d('VoipE2EE', 'timed out draining disposed key backend');
-    }
+    final cleanup = drain.whenComplete(_scrubKeyMaterial);
+    final boundedCleanup = cleanup.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () {
+        // A dead plugin/transport Future must not retain call keys or block the
+        // provider lease forever. The disposed epoch prevents new operations;
+        // scrub now and allow native provider release to continue.
+        _scrubKeyMaterial();
+        OrexLog.d('VoipE2EE', 'forced cleanup of stalled key backend');
+      },
+    );
+    _fullyDrained = boundedCleanup;
+    await boundedCleanup;
     await super.dispose(groupCall);
   }
 }

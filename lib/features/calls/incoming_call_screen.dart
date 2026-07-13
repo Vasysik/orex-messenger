@@ -154,8 +154,9 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
       });
       return;
     }
-    // The root listener opens the expanded route as soon as the media session
-    // exists. Remove this exact incoming route even if it is now underneath it.
+    // The root listener opens the expanded route only after transport, media
+    // keys and restored media state are ready. Remove this exact incoming route
+    // even if the expanded route is already above it.
     _closeOwnRoute();
   }
 

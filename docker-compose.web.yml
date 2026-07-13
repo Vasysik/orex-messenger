@@ -28,6 +28,9 @@ services:
       - "traefik.http.middlewares.orex-web-headers.headers.referrerpolicy=no-referrer"
       - "traefik.http.middlewares.orex-web-headers.headers.contentsecuritypolicy=default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; manifest-src 'self'; connect-src 'self' https://vasys.ru https://jwt.vasys.ru https://lk.vasys.ru wss://lk.vasys.ru"
       - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Permissions-Policy=camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=(), usb=()"
+      - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cross-Origin-Opener-Policy=same-origin"
+      - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cross-Origin-Embedder-Policy=require-corp"
+      - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cross-Origin-Resource-Policy=same-origin"
       - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cache-Control=no-cache"
       - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.X-Robots-Tag=noindex, nofollow, noarchive"
 

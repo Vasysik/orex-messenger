@@ -4,7 +4,7 @@
 сквозным шифрованием сообщений через **vodozemac** и нативными звонками Orex на
 стеке **MatrixRTC / LiveKit**. Единая кодовая база: **Web · Android · Windows**.
 
-Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+8**: это
+Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+9**: это
 исходный release candidate для dogfood с системными Android-звонками,
 killed-process push, MatrixRTC/LiveKit media E2EE и обязательным release quality
 gate. После обновления зависимостей сборки должны быть заново подтверждены на
@@ -403,16 +403,26 @@ runtime fail-closed check.
 точная идентичность попытки, anti-replay по ID/времени, encrypted call-control,
 Matrix request gate с `retry_after_ms`, fail-closed media E2EE и SQLCipher 4.10
 через совместимую ветку `sqlite3 2.x` на desktop без смены существующей базы
-или ключа.
+или ключа. В `0.4.2+9` добавлены конечные deadlines для MatrixRTC/LiveKit и
+incoming accept, немедленное освобождение UI при ошибке, отложенное открытие
+расширенного входящего звонка до реального media-ready, последовательный cleanup
+осиротевших SDK session/key-backend/membership с принудительным стиранием ключей
+и освобождением очереди при зависшем plugin Future, рабочее отключение входящего
+LiveKit-аудио через subscriber API, несмахиваемое ongoing-уведомление Android и
+исправление lifetime `TextEditingController` в Web-диалогах.
 
-**До выдачи пререлиза:** успешные `pub get`, `analyze`, `test`; smoke Android ↔
-Web ↔ Windows для accept/reject/redial/background/reconnect; проверка logout и
-soft logout после Matrix 8.x; release-сборки и проверка push на убитом Android-
-процессе. Переход на `sqlite3 3.x` отложен до снятия ограничения в Matrix SDK;
-он не должен форсироваться через `dependency_overrides`.
+**До выдачи пререлиза:** повторно выполнить `pub get`, `analyze`, `test` после
+изменений `+9`; smoke Android ↔ Web ↔ Windows для accept/reject/redial, потери
+сети, stage timeout, повторного входа после фантома, audio mute, background/lock
+screen и reconnect; проверить logout/soft logout после Matrix 8.x, release-сборки
+и push на убитом Android-процессе. Переход на `sqlite3 3.x` отложен до снятия
+ограничения в Matrix SDK; он не должен форсироваться через `dependency_overrides`.
 
-**Отложено:** режим «только подтверждённые cross-signed устройства», серверный
-enforcement LiveKit grants/voice permissions, переход на `sqlite3 3.x` после
+**Отложено:** миграция Android-проекта и зависимых Flutter-плагинов на
+Built-in Kotlin до того, как будущая версия Flutter удалит поддержку применения
+Kotlin Gradle Plugin из app/plugins; режим «только подтверждённые cross-signed
+устройства», серверный enforcement LiveKit grants/voice permissions, переход на
+`sqlite3 3.x` после
 совместимого Matrix SDK, миграция `flutter_secure_storage` на следующий major и
 дальнейшее дробление `VoipService` без подтверждённой runtime-проблемы.
 
@@ -450,7 +460,7 @@ enforcement LiveKit grants/voice permissions, переход на `sqlite3 3.x` 
    `fastSwitch`, не публикует второй camera track и не запускает permission-probe
    поверх активной камеры, а front/back metadata остаётся синхронизированной с
    renderer, поэтому задняя камера не должна зеркалиться как фронтальная.
-4. **🟡 Звонки в фоне и при заблокированном экране — существенно продвинуто.**
+4. **✅ Звонки в фоне и при заблокированном экране на Android — реализовано.**
    Реальная media-сессия через `CallController`, независимо от успеха Core-Telecom,
    владеет `START_STICKY` foreground service, partial wake lock и отдельным
    ongoing-уведомлением с хронометром. Service поднимается до MatrixRTC/Telecom/
@@ -466,10 +476,13 @@ enforcement LiveKit grants/voice permissions, переход на `sqlite3 3.x` 
    Room с восстановлением выбранных mic/camera/audio state. Late join audio/video
    дополнительно ждёт явного MatrixRTC key-resync, поэтому `connected` выставляется
    только после transport, remote media keys, восстановления локального media state
-   и системного call-state. После recreation процесса свежий Matrix sync проверяет
-   живой MatrixRTC call и восстанавливает сохранённое состояние без повторного
-   ring. Полностью headless media без FlutterEngine всё ещё остаётся отдельной
-   задачей.
+   и системного call-state. Ongoing-уведомление имеет Android-флаги
+   `ONGOING_EVENT | NO_CLEAR` и не должно смахиваться, пока foreground service
+   владеет звонком. После recreation процесса свежий Matrix sync проверяет живой
+   MatrixRTC call и восстанавливает сохранённое состояние без повторного ring.
+   Это закрывает обычное сворачивание и lock screen; hard process death остаётся
+   отдельной границей: системная карточка и recoverable descriptor сохраняются,
+   но само LiveKit-медиа требует восстановленного FlutterEngine.
 5. **✅ Слуховой режим и голосовая связь — реализовано.** Earpiece/speaker/wired/
    Bluetooth routing имеет одного владельца — Android Telecom; LiveKit получает
    фиксированную call-oriented audio session на время зарегистрированного вызова

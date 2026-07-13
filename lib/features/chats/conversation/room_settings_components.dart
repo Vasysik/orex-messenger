@@ -67,7 +67,7 @@ Future<({String name, String icon})?> _showChildRoomEditorDialog(
       onSubmit: () => (name: name.text.trim(), icon: iconKey),
     );
   } finally {
-    name.dispose();
+    disposeOrexDialogControllers([name]);
   }
 }
 
