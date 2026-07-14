@@ -100,6 +100,31 @@ void main() {
       await stuck.future;
     });
 
+    test('default operation timeout releases the queue', () async {
+      final gate = OrexMatrixRequestGate(
+        minimumSpacing: Duration.zero,
+        defaultOperationTimeout: const Duration(milliseconds: 10),
+      );
+      final stuck = Completer<void>();
+
+      await expectLater(
+        gate.run<void>(
+          operationName: 'compound-enter-write',
+          operation: () => stuck.future,
+        ),
+        throwsA(isA<TimeoutException>()),
+      );
+
+      expect(
+        await gate.run<String>(
+          operationName: 'replacement-membership',
+          operation: () async => 'started',
+        ),
+        'started',
+      );
+      stuck.complete();
+    });
+
     test('does not replay an unknown write failure', () async {
       final gate = OrexMatrixRequestGate(minimumSpacing: Duration.zero);
       var calls = 0;

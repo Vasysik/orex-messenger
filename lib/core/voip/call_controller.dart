@@ -2123,10 +2123,12 @@ class CallController extends ChangeNotifier {
           );
     if (rid != null) {
       try {
-        await matrix.push.notifyCallEnded(
-          rid,
-          ringEventId: callInstance?.ringEventId,
-        );
+        await matrix.push
+            .notifyCallEnded(
+              rid,
+              ringEventId: callInstance?.ringEventId,
+            )
+            .timeout(const Duration(seconds: 4));
       } catch (e) {
         OrexLog.d('Call', 'failed to persist call hangup', e);
       }
@@ -2134,14 +2136,19 @@ class CallController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
     if (s != null && mediaTeardown != null) {
       try {
-        await Future.wait<void>([mediaTeardown, ?leaveSignaling]);
+        await Future.wait<void>([mediaTeardown, ?leaveSignaling])
+            .timeout(const Duration(seconds: 15));
       } catch (e) {
         OrexLog.d('Call', 'call teardown failed', e);
       } finally {
         s.dispose();
       }
     } else if (leaveSignaling != null) {
-      await leaveSignaling;
+      try {
+        await leaveSignaling.timeout(const Duration(seconds: 12));
+      } catch (e) {
+        OrexLog.d('Call', 'signaling teardown continues asynchronously', e);
+      }
     }
     if (remoteEndSync != null) {
       try {

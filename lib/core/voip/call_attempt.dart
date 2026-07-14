@@ -166,3 +166,29 @@ bool orexIsPlausibleCallControlTimestamp(
   if (occurredAt.isAfter(reference.add(maxFutureSkew))) return false;
   return !occurredAt.isBefore(reference.subtract(maxAge));
 }
+
+/// Selects the MatrixRTC `call_id` for a local join.
+///
+/// New Orex direct calls use the exact ring event id as a generation id. An
+/// explicit ring is authoritative even while stale memberships from an older
+/// call are still visible. With no exact ring, an active remote membership is
+/// used for legacy room-scoped group calls, then [roomId] is the final fallback.
+String orexSelectMatrixRtcCallId({
+  required String roomId,
+  required String? expectedRingEventId,
+  required Iterable<String> remoteCallIds,
+}) {
+  final expected = expectedRingEventId?.trim();
+  if (expected != null && expected.isNotEmpty) {
+    // An explicit ring is the authoritative generation boundary. Never let a
+    // single stale membership from the previous call override it: that was the
+    // exact source of second-call joins getting attached to the first call.
+    return expected;
+  }
+  final remoteIds = remoteCallIds
+      .map((value) => value.trim())
+      .where((value) => value.isNotEmpty)
+      .toList(growable: false);
+  if (remoteIds.isNotEmpty) return remoteIds.first;
+  return roomId;
+}

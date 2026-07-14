@@ -4,7 +4,7 @@
 сквозным шифрованием сообщений через **vodozemac** и нативными звонками Orex на
 стеке **MatrixRTC / LiveKit**. Единая кодовая база: **Web · Android · Windows**.
 
-Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+9**: это
+Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+10**: это
 исходный release candidate для dogfood с системными Android-звонками,
 killed-process push, MatrixRTC/LiveKit media E2EE и обязательным release quality
 gate. После обновления зависимостей сборки должны быть заново подтверждены на
@@ -403,20 +403,29 @@ runtime fail-closed check.
 точная идентичность попытки, anti-replay по ID/времени, encrypted call-control,
 Matrix request gate с `retry_after_ms`, fail-closed media E2EE и SQLCipher 4.10
 через совместимую ветку `sqlite3 2.x` на desktop без смены существующей базы
-или ключа. В `0.4.2+9` добавлены конечные deadlines для MatrixRTC/LiveKit и
-incoming accept, немедленное освобождение UI при ошибке, отложенное открытие
-расширенного входящего звонка до реального media-ready, последовательный cleanup
-осиротевших SDK session/key-backend/membership с принудительным стиранием ключей
-и освобождением очереди при зависшем plugin Future, рабочее отключение входящего
-LiveKit-аудио через subscriber API, несмахиваемое ongoing-уведомление Android и
-исправление lifetime `TextEditingController` в Web-диалогах.
+или ключа. В `0.4.2+9` добавлены конечные deadlines для MatrixRTC/LiveKit,
+рабочее отключение входящего LiveKit-аудио, ongoing-уведомление Android и
+исправление lifetime Web-диалогов. В `0.4.2+10` каждый личный звонок получает
+отдельное MatrixRTC-поколение по точному ring event ID: поздний cleanup первого
+звонка больше не может удалить membership второго. Compound lifecycle
+`GroupCallSession.enter/leave` не удерживает глобальную очередь Matrix-записей;
+запоздалый `enter` получает compensating teardown, cleanup одной SDK-сессии
+сериализован, а любой Matrix write имеет обязательный hard timeout. Завершение
+звонка освобождает UI и локальный owner до сетевого cleanup и само ограничено
+по времени, поэтому повторный вызов не ждёт зависшую предыдущую операцию. Так
+как `call_id` личного звонка стал поколенческим, для smoke и dogfood все
+участники звонка должны одновременно использовать сборку `0.4.2+10` или новее.
 
 **До выдачи пререлиза:** повторно выполнить `pub get`, `analyze`, `test` после
-изменений `+9`; smoke Android ↔ Web ↔ Windows для accept/reject/redial, потери
+изменений `+10`; smoke двух последовательных звонков Android ↔ Web ↔ Windows для accept/reject/redial, потери
 сети, stage timeout, повторного входа после фантома, audio mute, background/lock
 screen и reconnect; проверить logout/soft logout после Matrix 8.x, release-сборки
-и push на убитом Android-процессе. Переход на `sqlite3 3.x` отложен до снятия
-ограничения в Matrix SDK; он не должен форсироваться через `dependency_overrides`.
+и push на убитом Android-процессе. Web smoke должен выполняться через
+production reverse proxy: Chrome может блокировать Matrix `/sync` с
+`http://localhost` на публичный homeserver по Private Network Access/CORS, и в
+таком режиме звонок закономерно не получает membership и медиаключи. Переход на
+`sqlite3 3.x` отложен до снятия ограничения в Matrix SDK; он не должен
+форсироваться через `dependency_overrides`.
 
 **Отложено:** миграция Android-проекта и зависимых Flutter-плагинов на
 Built-in Kotlin до того, как будущая версия Flutter удалит поддержку применения

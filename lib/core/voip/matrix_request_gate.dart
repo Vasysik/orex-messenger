@@ -89,12 +89,14 @@ final class OrexMatrixRequestGate {
   OrexMatrixRequestGate({
     this.minimumSpacing = const Duration(milliseconds: 90),
     this.maximumRetryDelay = const Duration(minutes: 2),
+    this.defaultOperationTimeout = const Duration(seconds: 15),
   });
 
   static final OrexMatrixRequestGate shared = OrexMatrixRequestGate();
 
   final Duration minimumSpacing;
   final Duration maximumRetryDelay;
+  final Duration defaultOperationTimeout;
 
   Future<void> _tail = Future<void>.value();
   final Map<String, Future<Object?>> _inFlight = <String, Future<Object?>>{};
@@ -125,9 +127,9 @@ final class OrexMatrixRequestGate {
         _lastStartedAt = DateTime.now();
         try {
           final pending = operation();
-          return operationTimeout == null
-              ? await pending
-              : await pending.timeout(operationTimeout);
+          return await pending.timeout(
+            operationTimeout ?? defaultOperationTimeout,
+          );
         } catch (error, stack) {
           lastError = error;
           lastStack = stack;

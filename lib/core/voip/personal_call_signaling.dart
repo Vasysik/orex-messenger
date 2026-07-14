@@ -46,7 +46,7 @@ final class PersonalCallSignaling {
     if (peers.isEmpty) return;
     final content = <String, dynamic>{
       'room_id': instance.roomId,
-      'call_id': instance.roomId,
+      'call_id': instance.ringEventId ?? instance.roomId,
       'disposition_at_ms': DateTime.now().millisecondsSinceEpoch,
       if (instance.ringEventId != null)
         'orex_ring_event_id': instance.ringEventId,
@@ -66,7 +66,7 @@ final class PersonalCallSignaling {
     if (userId == null || userId.isEmpty) return;
     final content = <String, dynamic>{
       'room_id': instance.roomId,
-      'call_id': instance.roomId,
+      'call_id': instance.ringEventId ?? instance.roomId,
       'handled_at_ms': DateTime.now().millisecondsSinceEpoch,
       if (instance.ringEventId != null)
         'orex_ring_event_id': instance.ringEventId,

@@ -231,9 +231,6 @@ class VoipService extends ChangeNotifier {
     };
     for (final roomId in roomIds) {
       if (_disposed) return;
-      if (active?.room.id == roomId || _enterRequestRoomId == roomId) {
-        continue;
-      }
       final room = client.getRoomById(roomId);
       if (room == null) continue;
       await _cleanupStaleRoomState(room, operationName: 'startup');
@@ -244,66 +241,99 @@ class VoipService extends ChangeNotifier {
     Room room, {
     required String operationName,
   }) async {
-    if (active?.room.id == room.id) return;
-    final hasOwnMembership = _callMembers(room).contains(client.userID);
+    final protectedCallIds = <String>{
+      if (active?.room.id == room.id) active!.groupCallId,
+      if (_keyShareState?.groupCall.room.id == room.id)
+        _keyShareState!.groupCall.groupCallId,
+      if (_enterRequestRoomId == room.id &&
+          _enterRequestRingEventId != null &&
+          _enterRequestRingEventId!.isNotEmpty)
+        _enterRequestRingEventId!,
+    };
+
+    final localMembershipCallIds = room
+        .getCallMembershipsForUser(
+          client.userID!,
+          client.deviceID!,
+          voip,
+        )
+        .where(
+          (membership) =>
+              !membership.isExpired &&
+              !protectedCallIds.contains(membership.callId),
+        )
+        .map((membership) => membership.callId)
+        .toSet();
     final staleSessions = voip.groupCalls.values
         .where(
           (gc) =>
               gc.room.id == room.id &&
               !identical(gc, active) &&
-              (hasOwnMembership ||
+              !identical(gc, _keyShareState?.groupCall) &&
+              !protectedCallIds.contains(gc.groupCallId) &&
+              (localMembershipCallIds.contains(gc.groupCallId) ||
                   (gc.state != GroupCallState.localCallFeedUninitialized &&
-                      gc.state != GroupCallState.localCallFeedInitialized)),
+                      gc.state != GroupCallState.localCallFeedInitialized &&
+                      gc.state != GroupCallState.ended)),
         )
         .toList(growable: false);
-    if (!hasOwnMembership && staleSessions.isEmpty) return;
+    final callIdsWithoutSession = <String>{...localMembershipCallIds}
+      ..removeAll(staleSessions.map((gc) => gc.groupCallId));
+    if (staleSessions.isEmpty && callIdsWithoutSession.isEmpty) return;
 
-    // Remove process-local ownership before Matrix emits the membership
-    // removal. This prevents Matrix SDK's state listener from force-entering
-    // the same stale GroupCallSession again.
+    var allRemoved = true;
     for (final gc in staleSessions) {
-      voip.groupCalls.removeWhere((_, value) => identical(value, gc));
-    }
-    final membershipCallId = staleSessions.isEmpty
-        ? room.id
-        : staleSessions.first.groupCallId;
-    final result = await const OrexCallCleanupCoordinator().cleanup(
-      sessions: [
-        for (final gc in staleSessions)
-          OrexCallCleanupSession(
-            label: gc.groupCallId,
-            leave: () => OrexMatrixRequestGate.shared.run<void>(
-              operationName: '$operationName-stale-session-leave',
-              coalesceKey: 'matrixrtc-leave:${room.id}:${gc.groupCallId}',
-              maxAttempts: 1,
-              operationTimeout: const Duration(seconds: 10),
-              operation: gc.leave,
-            ),
-            disposeBackend: () async {
-              final backend = gc.backend;
-              if (backend is OrexLiveKitBackend) await backend.dispose(gc);
-            },
-          ),
-      ],
-      removeMembership: () => OrexMatrixRequestGate.shared.run<void>(
-        operationName: '$operationName-membership-cleanup',
-        coalesceKey: 'membership-cleanup:${room.id}:$membershipCallId',
-        maxAttempts: 1,
-        operationTimeout: const Duration(seconds: 10),
-        operation: () => room.removeFamedlyCallMemberEvent(
-          membershipCallId,
-          voip,
-        ),
-      ),
-    );
-    for (final failure in result.failures) {
-      OrexLog.d(
-        'Voip',
-        'stale cleanup step failed room=${room.id} step=${failure.step}',
-        failure.error,
+      // All paths that touch the same SDK session share one cleanup tail. The
+      // first-call hangup and a second-call preflight can therefore never run
+      // two leave/dispose sequences against one GroupCallSession concurrently.
+      final cleanup = _queueGroupCallCleanup(
+        gc,
+        operationName: '$operationName-stale-session',
       );
+      try {
+        await cleanup.timeout(const Duration(seconds: 10));
+      } on TimeoutException catch (error) {
+        allRemoved = false;
+        OrexLog.d(
+          'Voip',
+          'stale SDK cleanup continues asynchronously room=${room.id} '
+              'call=${gc.groupCallId}',
+          error,
+        );
+      } catch (error) {
+        allRemoved = false;
+        OrexLog.d(
+          'Voip',
+          'stale SDK cleanup failed room=${room.id} call=${gc.groupCallId}',
+          error,
+        );
+      }
     }
-    if (result.membershipRemoved) {
+
+    // A process restart can leave a Matrix membership without a live SDK
+    // object. Remove only those exact generations; never use room.id as a
+    // wildcard because a replacement call may already be publishing its own
+    // generation in the same room.
+    for (final callId in callIdsWithoutSession) {
+      try {
+        await OrexMatrixRequestGate.shared.run<void>(
+          operationName: '$operationName-orphan-membership-cleanup',
+          coalesceKey: 'membership-cleanup:${room.id}:$callId',
+          maxAttempts: 1,
+          operationTimeout: const Duration(seconds: 8),
+          operation: () => room.removeFamedlyCallMemberEvent(callId, voip),
+        );
+      } catch (error) {
+        allRemoved = false;
+        OrexLog.d(
+          'Voip',
+          'orphan membership cleanup deferred room=${room.id} call=$callId',
+          error,
+        );
+      }
+    }
+
+    if (allRemoved) {
       _pendingMembershipCleanupRooms.remove(room.id);
       OrexLog.d('Voip', 'removed phantom call membership room=${room.id}');
     } else {
@@ -935,6 +965,8 @@ class VoipService extends ChangeNotifier {
   String? _enterRequestRingEventId;
   int _enterGeneration = 0;
   Future<void> _shutdownComplete = Future<void>.value();
+  final Map<GroupCallSession, Future<void>> _groupCallCleanupTails =
+      <GroupCallSession, Future<void>>{};
 
   /// Входящие звонки: roomId комнаты, где идёт звонок, в который мы не вошли.
   Stream<OrexIncomingCall> get onIncomingCall => _incoming.stream;
@@ -2016,6 +2048,164 @@ class VoipService extends ChangeNotifier {
     await _signaling.sendHandled(instance);
   }
 
+  List<CallMembership> _activeRemoteMemberships(Room room) {
+    final memberships = room
+        .getCallMembershipsFromRoom(voip)
+        .values
+        .expand((value) => value)
+        .where(
+          (membership) =>
+              !membership.isExpired && membership.userId != client.userID,
+        )
+        .toList(growable: false);
+    memberships.sort((a, b) => b.expiresTs.compareTo(a.expiresTs));
+    return memberships;
+  }
+
+  String _resolveMatrixRtcCallId(
+    Room room, {
+    required String? expectedRingEventId,
+  }) => orexSelectMatrixRtcCallId(
+    roomId: room.id,
+    expectedRingEventId: expectedRingEventId,
+    remoteCallIds: _activeRemoteMemberships(room).map(
+      (membership) => membership.callId,
+    ),
+  );
+
+  void _detachGroupCallSession(GroupCallSession groupCall) {
+    if (groupCall.state != GroupCallState.ended) {
+      groupCall.setState(GroupCallState.leaving);
+    }
+    voip.groupCalls.removeWhere((_, value) => identical(value, groupCall));
+    if (voip.currentGroupCID?.roomId == groupCall.room.id &&
+        voip.currentGroupCID?.callId == groupCall.groupCallId) {
+      voip.currentGroupCID = null;
+    }
+    final current = active;
+    if (voip.currentGroupCID == null &&
+        current != null &&
+        !identical(current, groupCall) &&
+        current.state == GroupCallState.entered) {
+      // A timed-out old enter may finish after the replacement and overwrite
+      // the SDK-global currentGroupCID with its stale generation. Restore the
+      // actual active owner after detaching the old session.
+      for (final entry in voip.groupCalls.entries) {
+        if (identical(entry.value, current)) {
+          voip.currentGroupCID = entry.key;
+          break;
+        }
+      }
+    }
+  }
+
+  Future<void> _queueGroupCallCleanup(
+    GroupCallSession groupCall, {
+    required String operationName,
+    bool repeatAfterExisting = false,
+  }) {
+    // State/registry ownership is released synchronously, even when an older
+    // cleanup for this session is still waiting on the network. This prevents
+    // Matrix SDK onMemberStateChanged() from force-rejoining the old call.
+    _detachGroupCallSession(groupCall);
+    final existing = _groupCallCleanupTails[groupCall];
+    if (existing != null && !repeatAfterExisting) return existing;
+    final previous = existing ?? Future<void>.value();
+    late final Future<void> next;
+    next = previous
+        .catchError((Object _, StackTrace _) {})
+        .then<void>((_) => _cleanupGroupCallSession(groupCall, operationName))
+        .whenComplete(() {
+          if (identical(_groupCallCleanupTails[groupCall], next)) {
+            _groupCallCleanupTails.remove(groupCall);
+          }
+        });
+    _groupCallCleanupTails[groupCall] = next;
+    return next;
+  }
+
+  Future<void> _cleanupGroupCallSession(
+    GroupCallSession groupCall,
+    String operationName,
+  ) async {
+    final room = groupCall.room;
+    final callId = groupCall.groupCallId;
+    _detachGroupCallSession(groupCall);
+
+    final result = await const OrexCallCleanupCoordinator().cleanup(
+      sessions: [
+        OrexCallCleanupSession(
+          label: callId,
+          // Cancels the SDK membership-renewal timer synchronously before the
+          // request is awaited. A timed-out gc.leave() cannot provide this
+          // guarantee and may continue mutating the session in the background.
+          leave: groupCall.removeMemberStateEvent,
+          disposeBackend: () async {
+            try {
+              final backend = groupCall.backend;
+              if (backend is OrexLiveKitBackend) {
+                await backend.dispose(groupCall);
+              }
+            } finally {
+              groupCall.setState(GroupCallState.ended);
+            }
+          },
+        ),
+      ],
+      removeMembership: () => OrexMatrixRequestGate.shared.run<void>(
+        operationName: '$operationName-membership-cleanup',
+        coalesceKey: 'membership-cleanup:${room.id}:$callId',
+        maxAttempts: 1,
+        operationTimeout: const Duration(seconds: 8),
+        operation: () => room.removeFamedlyCallMemberEvent(callId, voip),
+      ),
+      stepTimeout: const Duration(seconds: 8),
+    );
+    for (final failure in result.failures) {
+      OrexLog.d(
+        'Voip',
+        '$operationName cleanup step failed room=${room.id} '
+            'call=$callId step=${failure.step}',
+        failure.error,
+      );
+    }
+    if (result.membershipRemoved) {
+      _pendingMembershipCleanupRooms.remove(room.id);
+    } else {
+      _pendingMembershipCleanupRooms.add(room.id);
+      _scheduleStaleMembershipCleanup();
+    }
+  }
+
+  Future<void> _cancelSentRing(
+    Room room,
+    String ringEventId, {
+    required String action,
+  }) async {
+    final instance = OrexCallInstance(
+      roomId: room.id,
+      ringEventId: ringEventId,
+    );
+    try {
+      await Future.wait<void>([
+        _signaling.sendDisposition(instance, _endedEventType),
+        _signaling
+            .sendCancellation(
+              room,
+              ringEventId: ringEventId,
+              action: action,
+            )
+            .then<void>((_) {}),
+      ]).timeout(const Duration(seconds: 6));
+    } catch (error) {
+      OrexLog.d(
+        'Voip',
+        'failed to cancel sent ring room=${room.id} ring=$ringEventId',
+        error,
+      );
+    }
+  }
+
   /// Войти в звонок комнаты: публикуем своё членство (сигналинг) и возвращаем
   /// сессию. Медиа подключается отдельно (CallSession через livekit_client).
   ///
@@ -2122,230 +2312,277 @@ class VoipService extends ChangeNotifier {
       throw StateError('Incoming call attempt changed before MatrixRTC enter');
     }
 
-    // Tear down any process-local SDK owner left by an interrupted attempt
-    // before rotating keys and creating the replacement membership.
-    await _cleanupStaleRoomState(room, operationName: 'pre-enter');
+    // A previous call must be locally detached and have its renewal timer
+    // cancelled before a replacement call can publish membership.
+    final staleCleanup =
+        _cleanupStaleRoomState(room, operationName: 'pre-enter');
+    try {
+      await staleCleanup.timeout(const Duration(seconds: 4));
+    } on TimeoutException catch (error) {
+      // _cleanupStaleRoomState detaches SDK ownership synchronously before its
+      // remote writes. The old exact generation may finish deleting in the
+      // background without being able to touch the new generation.
+      OrexLog.d(
+        'Voip',
+        'pre-enter cleanup continues asynchronously room=$roomId',
+        error,
+      );
+    }
     if (enterGeneration != _enterGeneration) {
       throw StateError('MatrixRTC call enter was cancelled');
     }
 
-    // Explicitly entering a room supersedes an old local-leave tombstone.
-    // If the user leaves again, markLeft() records the current remote
-    // membership fingerprint as the baseline for the continuing call.
     _clearPersistedLeftCall(roomId);
     _dispositions.clearLegacy(roomId);
     _clearCallSuppression(roomId);
 
-    // Matrix's membershipID is the call-instance cachebuster. Rotate it for
-    // every local join so delayed to-device keys from an older call in the same
-    // room cannot authenticate as keys for this one.
+    String? outgoingRingEventId;
+    var outgoingRingPending = false;
+    if (ring && isPersonalCallRoom(room)) {
+      _outgoingRingPendingRooms.add(room.id);
+      outgoingRingPending = true;
+      outgoingRingEventId = await _sendPersonalCallRing(room, video: video);
+      if (outgoingRingEventId == null) {
+        _outgoingRingPendingRooms.remove(room.id);
+        throw StateError('Не удалось создать точную попытку звонка');
+      }
+      // The Matrix event id is the call generation. Sequential calls in one
+      // room no longer share room.id as call_id, so a delayed cleanup from the
+      // previous call cannot remove or renew the replacement membership.
+      _enterRequestRingEventId = outgoingRingEventId;
+      _promoteLegacyCallInstance(
+        room.id,
+        outgoingRingEventId,
+        occurredAt: DateTime.now(),
+      );
+      _ringEventIds[room.id] = _OutgoingRing(outgoingRingEventId);
+    }
+
+    final groupCallId = outgoingRingEventId ??
+        _resolveMatrixRtcCallId(
+          room,
+          expectedRingEventId: expectedRingEventId,
+        );
+    OrexLog.d(
+      'Voip',
+      'MatrixRTC generation selected room=$roomId call=$groupCallId '
+          'ring=${outgoingRingEventId ?? expectedRingEventId}',
+    );
+
     voip.currentSessionId = client.generateUniqueTransactionId();
     final backend = OrexLiveKitBackend(
       livekitServiceUrl: OrexConfig.jwtServiceUri.toString(),
       livekitAlias: roomId,
       membershipEpoch: voip.currentSessionId,
-      // MatrixRTC distributes the same per-participant keys consumed by the
-      // LiveKit BaseKeyProvider in CallSession.
       e2eeEnabled: true,
     );
 
-    var gc = await voip.fetchOrCreateGroupCall(
-      roomId,
-      room,
-      backend,
-      'm.call',
-      'm.room',
-      preShareKey: false,
-    );
+    late GroupCallSession gc;
+    try {
+      gc = await voip.fetchOrCreateGroupCall(
+        groupCallId,
+        room,
+        backend,
+        'm.call',
+        'm.room',
+        preShareKey: false,
+      );
 
-    // Sessions discovered from room state are created by Matrix's JSON factory
-    // with the base LiveKitBackend. Replace only an unentered session so every
-    // E2EE callback is routed through the cancellable Orex backend.
-    if (!identical(gc.backend, backend)) {
-      if (gc.state != GroupCallState.localCallFeedUninitialized &&
-          gc.state != GroupCallState.localCallFeedInitialized) {
-        throw StateError(
-          'Cannot replace an already-entered MatrixRTC backend for $roomId',
+      if (!identical(gc.backend, backend)) {
+        if (gc.state != GroupCallState.localCallFeedUninitialized &&
+            gc.state != GroupCallState.localCallFeedInitialized) {
+          throw StateError(
+            'Cannot replace an already-entered MatrixRTC backend for $roomId '
+            'call=$groupCallId',
+          );
+        }
+        gc = GroupCallSession(
+          client: client,
+          voip: voip,
+          room: room,
+          backend: backend,
+          groupCallId: groupCallId,
+          application: gc.application,
+          scope: gc.scope,
+        );
+        voip.setGroupCallById(gc);
+      }
+    } catch (_) {
+      // The backend has not been entered yet. There is no SDK session to
+      // dispose here; constructing a synthetic GroupCallSession only to call
+      // dispose can create a second, unrelated lifecycle. Cancel the exact
+      // ring and let the prepared key provider be discarded by the caller.
+      if (outgoingRingEventId != null) {
+        _ringEventIds.remove(room.id);
+        unawaited(
+          _cancelSentRing(room, outgoingRingEventId, action: 'ended'),
         );
       }
-      gc = GroupCallSession(
-        client: client,
-        voip: voip,
-        room: room,
-        backend: backend,
-        groupCallId: gc.groupCallId,
-        application: gc.application,
-        scope: gc.scope,
-      );
-      voip.setGroupCallById(gc);
+      if (outgoingRingPending) {
+        _outgoingRingPendingRooms.remove(room.id);
+        _deferredRemoteDispositions.remove(room.id);
+      }
+      rethrow;
     }
 
     if (enterGeneration != _enterGeneration) {
-      await backend.dispose(gc);
-      voip.groupCalls.removeWhere((_, value) => identical(value, gc));
+      _detachGroupCallSession(gc);
+      unawaited(
+        backend.dispose(gc).catchError((Object error, StackTrace _) {
+          OrexLog.d(
+            'Voip',
+            'cancelled pre-enter backend cleanup failed room=$roomId '
+                'call=${gc.groupCallId}',
+            error,
+          );
+        }),
+      );
+      if (outgoingRingEventId != null) {
+        _ringEventIds.remove(room.id);
+        unawaited(
+          _cancelSentRing(room, outgoingRingEventId, action: 'ended'),
+        );
+      }
+      if (outgoingRingPending) {
+        _outgoingRingPendingRooms.remove(room.id);
+        _deferredRemoteDispositions.remove(room.id);
+      }
       throw StateError('MatrixRTC call enter was cancelled');
     }
 
     final keyState = _CallKeyShareState(gc, owner);
     _keyShareState?.invalidate();
     _keyShareState = keyState;
+    var abandonedEnter = false;
 
     try {
       keyState.keyProviderLease = e2eeKeyProvider.activatePreparedSession();
-      await backend.prepareLocalKey(gc);
+      await backend.prepareLocalKey(gc).timeout(const Duration(seconds: 5));
       if (enterGeneration != _enterGeneration || !keyState.active) {
         throw StateError('MatrixRTC call enter was cancelled');
       }
-      await OrexMatrixRequestGate.shared.run<void>(
-        operationName: 'matrixrtc-enter',
-        coalesceKey: 'matrixrtc-enter:$roomId:${voip.currentSessionId}',
-        maxAttempts: 2,
-        operation: gc.enter,
+
+      // Do not put GroupCallSession.enter() into the global Matrix write gate.
+      // enter() is a compound SDK lifecycle Future (state write, participant
+      // reconciliation, delegate callbacks). In +9 a stalled enter permanently
+      // occupied the gate tail, so every later leave and membership cleanup was
+      // queued behind it and timed out without even starting.
+      final rawEnter = gc.enter();
+      unawaited(
+        rawEnter.then<void>(
+          (_) async {
+            if (abandonedEnter ||
+                enterGeneration != _enterGeneration ||
+                !keyState.active) {
+              await _queueGroupCallCleanup(
+                gc,
+                operationName: 'late-matrixrtc-enter',
+                repeatAfterExisting: true,
+              );
+            }
+          },
+          onError: (Object _, StackTrace _) {},
+        ),
       );
+      await rawEnter.timeout(const Duration(seconds: 18));
       if (enterGeneration != _enterGeneration || !keyState.active) {
         throw StateError('MatrixRTC call enter was cancelled');
       }
-    } catch (e) {
+    } catch (error) {
+      abandonedEnter = true;
       keyState.invalidate();
       if (identical(_keyShareState, keyState)) _keyShareState = null;
       OrexLog.d(
         'Voip',
         'enter call failed room=$roomId call=${gc.groupCallId}',
-        e,
+        error,
       );
-      try {
-        await OrexMatrixRequestGate.shared.run<void>(
-          operationName: 'matrixrtc-rollback-leave',
-          coalesceKey: 'matrixrtc-leave:$roomId:${gc.groupCallId}',
-          operation: gc.leave,
-        );
-      } catch (leaveError) {
-        OrexLog.d(
-          'Voip',
-          'rollback leave failed room=$roomId call=${gc.groupCallId}',
-          leaveError,
-        );
-      }
-      // GroupCallSession.leave() can fail before it reaches backend.dispose().
-      // Always invalidate delayed key callbacks before releasing the native
-      // provider lease; OrexLiveKitBackend.dispose() is idempotent.
-      try {
-        await backend.dispose(gc);
-      } catch (disposeError) {
-        OrexLog.d(
-          'Voip',
-          'rollback backend cleanup failed room=$roomId call=${gc.groupCallId}',
-          disposeError,
-        );
-      }
-      try {
-        await OrexMatrixRequestGate.shared.run<void>(
-          operationName: 'matrixrtc-rollback-membership-cleanup',
-          coalesceKey: 'membership-cleanup:$roomId:${gc.groupCallId}',
-          operation: () =>
-              room.removeFamedlyCallMemberEvent(gc.groupCallId, voip),
-        );
-        _pendingMembershipCleanupRooms.remove(roomId);
-      } catch (removeError) {
-        _pendingMembershipCleanupRooms.add(roomId);
-        OrexLog.d(
-          'Voip',
-          'rollback membership cleanup failed room=$roomId call=${gc.groupCallId}',
-          removeError,
-        );
-        _scheduleStaleMembershipCleanup();
-      }
-      voip.groupCalls.removeWhere((_, value) => identical(value, gc));
+      unawaited(
+        _queueGroupCallCleanup(
+          gc,
+          operationName: 'matrixrtc-enter-rollback',
+        ).catchError((Object cleanupError, StackTrace _) {
+          OrexLog.d(
+            'Voip',
+            'enter rollback failed room=$roomId call=${gc.groupCallId}',
+            cleanupError,
+          );
+        }),
+      );
       _releaseKeyProviderLease(keyState);
+      if (outgoingRingEventId != null) {
+        _ringEventIds.remove(room.id);
+        unawaited(
+          _cancelSentRing(room, outgoingRingEventId, action: 'ended'),
+        );
+      }
+      if (outgoingRingPending) {
+        _outgoingRingPendingRooms.remove(room.id);
+        _deferredRemoteDispositions.remove(room.id);
+      }
       rethrow;
     }
-    final resolvedIncomingRingEventId = ring
-        ? null
-        : identical(_enterRequestOwner, owner) && _enterRequestRoomId == roomId
-        ? _enterRequestRingEventId
-        : incomingRingEventId;
+
+    final resolvedRingEventId = outgoingRingEventId ??
+        (identical(_enterRequestOwner, owner) && _enterRequestRoomId == roomId
+            ? _enterRequestRingEventId
+            : incomingRingEventId);
     active = gc;
     _activeOwner = owner;
-    _activeRingEventId = resolvedIncomingRingEventId;
+    OrexLog.d(
+      'Voip',
+      'MatrixRTC generation entered room=$roomId call=${gc.groupCallId}',
+    );
+    _activeRingEventId = resolvedRingEventId;
     if (!ring) {
       _removeIncomingAttempt(
         OrexCallInstance(
           roomId: roomId,
-          ringEventId: resolvedIncomingRingEventId,
+          ringEventId: resolvedRingEventId,
         ),
       );
     }
     notifyListeners();
+
     try {
-      await keyState.run(() async {
-        await gc.onMemberStateChanged();
-        if (!keyState.active || !identical(active, gc)) return;
-        final remoteParticipants = gc.participants
-            .where((participant) => !participant.isLocal)
-            .toList(growable: false);
-        await _shareLocalMediaKeyWithNewParticipants(
-          keyState,
-          remoteParticipants,
-        );
-      });
-    } catch (error) {
-      // Device membership and Olm DeviceKeys may arrive one sync apart. Media
-      // stays fail-closed and CallSession's bounded reconciliation retries.
-      OrexLog.d('Voip', 'initial media-key share deferred room=$roomId', error);
-    }
-    if (enterGeneration != _enterGeneration ||
-        !keyState.active ||
-        !identical(active, gc)) {
-      throw StateError('MatrixRTC call enter was cancelled');
-    }
-    if (ring) {
-      _outgoingRingPendingRooms.add(room.id);
-      var ringCompleted = false;
       try {
-        final ringEventId = await _sendPersonalCallRing(room, video: video);
-        final stillCurrent =
-            enterGeneration == _enterGeneration &&
-            keyState.active &&
-            identical(active, gc);
-        if (ringEventId != null && stillCurrent) {
-          _promoteLegacyCallInstance(
-            room.id,
-            ringEventId,
-            occurredAt: DateTime.now(),
-          );
-          if (orexCallInstanceIdsMatch(_activeRingEventId, ringEventId)) {
-            _ringEventIds[room.id] = _OutgoingRing(ringEventId);
-          }
-        } else if (ringEventId != null) {
-          // The remote push may already be in flight. Publish both the exact
-          // ring-event cancellation and the encrypted ended signal so a local
-          // hang-up during sendMessage cannot create a phantom call.
-          await Future.wait<void>([
-            _signaling.sendDisposition(
-              OrexCallInstance(roomId: room.id, ringEventId: ringEventId),
-              _endedEventType,
-            ),
-            _signaling.sendCancellation(
-              room,
-              ringEventId: ringEventId,
-              action: 'ended',
-            ).then<void>((_) {}),
-          ]);
-        }
-        ringCompleted = stillCurrent;
-        if (!stillCurrent) {
-          throw StateError('MatrixRTC call enter was cancelled');
-        }
-      } finally {
+        await keyState
+            .run(() async {
+              await gc.onMemberStateChanged();
+              if (!keyState.active || !identical(active, gc)) return;
+              final remoteParticipants = gc.participants
+                  .where((participant) => !participant.isLocal)
+                  .toList(growable: false);
+              await _shareLocalMediaKeyWithNewParticipants(
+                keyState,
+                remoteParticipants,
+              );
+            })
+            .timeout(const Duration(seconds: 4));
+      } catch (error) {
+        OrexLog.d(
+          'Voip',
+          'initial media-key share deferred room=$roomId',
+          error,
+        );
+      }
+
+      if (enterGeneration != _enterGeneration ||
+          !keyState.active ||
+          !identical(active, gc)) {
+        throw StateError('MatrixRTC call enter was cancelled');
+      }
+      return gc;
+    } finally {
+      if (outgoingRingPending) {
         _outgoingRingPendingRooms.remove(room.id);
-        if (ringCompleted) {
+        if (identical(active, gc) && keyState.active) {
           _drainDeferredRemoteDispositions(room.id);
         } else {
           _deferredRemoteDispositions.remove(room.id);
         }
       }
     }
-    return gc;
   }
 
   Future<String?> _sendPersonalCallRing(
@@ -2376,10 +2613,23 @@ class VoipService extends ChangeNotifier {
     if (!ownsPendingEnter && !ownsActiveCall && !ownsKeyState) return;
 
     _enterGeneration++;
-    final gc = ownsActiveCall ? active : null;
-    final activeInstance = gc == null
+    final groupCall = ownsActiveCall
+        ? active
+        : ownsKeyState
+        ? currentKeyState?.groupCall
+        : null;
+    final ringEventId = ownsActiveCall
+        ? _activeRingEventId
+        : ownsPendingEnter
+        ? _enterRequestRingEventId
+        : null;
+    final instance = groupCall == null
         ? null
-        : OrexCallInstance(roomId: gc.room.id, ringEventId: _activeRingEventId);
+        : OrexCallInstance(
+            roomId: groupCall.room.id,
+            ringEventId: ringEventId,
+          );
+
     if (ownsActiveCall) {
       active = null;
       _activeOwner = null;
@@ -2390,79 +2640,31 @@ class VoipService extends ChangeNotifier {
     if (keyState != null) {
       keyState.mediaOperationsDrained = mediaOperationsDrained;
       keyState.invalidate();
-      final backend = keyState.groupCall.backend;
-      if (backend is OrexLiveKitBackend) {
-        // Invalidate timers/callbacks synchronously, before the first Matrix
-        // membership await below. This also makes fullyDrained a stable barrier
-        // before the provider lease is handed to asynchronous cleanup.
-        unawaited(backend.dispose(keyState.groupCall));
-      }
       _releaseKeyProviderLease(keyState);
     }
     notifyListeners();
-    if (gc == null) {
-      // enterCall may still be awaiting Matrix state publication. Invalidate its
-      // backend immediately; the serialized enter wrapper performs membership
-      // rollback when that await settles. Provider cleanup is already waiting
-      // on both the backend and media barriers above.
-      return;
-    }
 
-    // Detach process-local ownership before any remote state write. If the
-    // homeserver or plugin stalls, Matrix SDK must not observe the membership
-    // removal while still owning an entered GroupCallSession and force-join it.
-    voip.groupCalls.removeWhere((_, value) => identical(value, gc));
+    if (instance != null) {
+      try {
+        await markLeft(instance).timeout(const Duration(seconds: 4));
+      } catch (error) {
+        OrexLog.d('Voip', 'mark-left persistence failed', error);
+      }
+    }
+    if (groupCall == null) return;
 
     try {
-      try {
-        await markLeft(activeInstance!);
-      } catch (e) {
-        OrexLog.d('Voip', 'mark-left persistence failed', e);
-      }
-      final result = await const OrexCallCleanupCoordinator().cleanup(
-        sessions: [
-          OrexCallCleanupSession(
-            label: gc.groupCallId,
-            leave: () => OrexMatrixRequestGate.shared.run<void>(
-              operationName: 'matrixrtc-leave',
-              coalesceKey: 'matrixrtc-leave:${gc.room.id}:${gc.groupCallId}',
-              maxAttempts: 1,
-              operationTimeout: const Duration(seconds: 10),
-              operation: gc.leave,
-            ),
-            disposeBackend: () async {
-              final backend = gc.backend;
-              if (backend is OrexLiveKitBackend) await backend.dispose(gc);
-            },
-          ),
-        ],
-        removeMembership: () => OrexMatrixRequestGate.shared.run<void>(
-          operationName: 'matrixrtc-membership-cleanup',
-          coalesceKey:
-              'membership-cleanup:${gc.room.id}:${gc.groupCallId}',
-          maxAttempts: 1,
-          operationTimeout: const Duration(seconds: 10),
-          operation: () => gc.room.removeFamedlyCallMemberEvent(
-            gc.groupCallId,
-            voip,
-          ),
-        ),
+      await _queueGroupCallCleanup(
+        groupCall,
+        operationName: 'matrixrtc-leave',
+      ).timeout(const Duration(seconds: 12));
+    } on TimeoutException catch (error) {
+      OrexLog.d(
+        'Voip',
+        'MatrixRTC leave continues asynchronously '
+            'room=${groupCall.room.id} call=${groupCall.groupCallId}',
+        error,
       );
-      for (final failure in result.failures) {
-        OrexLog.d(
-          'Voip',
-          'leave cleanup step failed room=${gc.room.id} step=${failure.step}',
-          failure.error,
-        );
-      }
-      if (result.membershipRemoved) {
-        _pendingMembershipCleanupRooms.remove(gc.room.id);
-      } else {
-        _pendingMembershipCleanupRooms.add(gc.room.id);
-        _scheduleStaleMembershipCleanup();
-      }
-    } finally {
-      if (keyState != null) _releaseKeyProviderLease(keyState);
     }
   }
 

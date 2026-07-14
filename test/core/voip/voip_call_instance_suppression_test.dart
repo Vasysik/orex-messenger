@@ -48,6 +48,55 @@ void main() {
     });
   });
 
+  group('MatrixRTC call generation', () {
+    test('exact incoming ring always wins over a stale previous membership', () {
+      expect(
+        orexSelectMatrixRtcCallId(
+          roomId: '!room:example.org',
+          expectedRingEventId: r'$new-ring',
+          remoteCallIds: const ['!room:example.org'],
+        ),
+        r'$new-ring',
+      );
+    });
+
+    test('sequential rings produce isolated MatrixRTC generations', () {
+      final first = orexSelectMatrixRtcCallId(
+        roomId: '!room:example.org',
+        expectedRingEventId: r'$ring-1',
+        remoteCallIds: const <String>[],
+      );
+      final second = orexSelectMatrixRtcCallId(
+        roomId: '!room:example.org',
+        expectedRingEventId: r'$ring-2',
+        remoteCallIds: [first],
+      );
+
+      expect(first, r'$ring-1');
+      expect(second, r'$ring-2');
+      expect(second, isNot(first));
+    });
+
+    test('legacy membership remains fallback only without an exact ring', () {
+      expect(
+        orexSelectMatrixRtcCallId(
+          roomId: '!room:example.org',
+          expectedRingEventId: null,
+          remoteCallIds: const ['legacy-call-id'],
+        ),
+        'legacy-call-id',
+      );
+      expect(
+        orexSelectMatrixRtcCallId(
+          roomId: '!room:example.org',
+          expectedRingEventId: null,
+          remoteCallIds: const <String>[],
+        ),
+        '!room:example.org',
+      );
+    });
+  });
+
   group('orexIsFreshRingAfterLeave', () {
     final leftAt = DateTime.utc(2026, 7, 10, 12);
 
