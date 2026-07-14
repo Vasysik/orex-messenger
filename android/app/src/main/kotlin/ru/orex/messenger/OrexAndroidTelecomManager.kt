@@ -872,13 +872,23 @@ object OrexAndroidTelecomManager {
     ): Boolean {
         if (action == "answer") {
             val context = appContext ?: return false
+            OrexCallForegroundService.startAnswering(
+                context = context,
+                callId = managed.callId,
+                ringEventId = managed.ringEventId,
+                displayName = managed.displayName,
+                video = extras["video"] as? Boolean ?: managed.video,
+            )
             val launched = OrexPushBridge.bringCallHandoffToFront(
                 context = context,
                 callId = managed.callId,
                 ringEventId = managed.ringEventId,
                 displayName = managed.displayName,
             )
-            if (!launched) return false
+            if (!launched) {
+                OrexCallForegroundService.stop(context, managed.callId, managed.ringEventId)
+                return false
+            }
             val overlayReady = withTimeoutOrNull(1_800L) {
                 while (!OrexPushBridge.isCallHandoffOverlayReady(
                         managed.callId,
@@ -891,6 +901,7 @@ object OrexAndroidTelecomManager {
             } == true
             if (!overlayReady) {
                 Log.e(TAG, "Timed out waiting for native call handoff cover")
+                OrexCallForegroundService.stop(context, managed.callId, managed.ringEventId)
                 return false
             }
         }

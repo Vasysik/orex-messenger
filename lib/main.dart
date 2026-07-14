@@ -438,6 +438,13 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     if (open.kind == 'incoming_call') {
       if (room == null) {
         OrexLog.d('Push', 'incoming call room unavailable room=$roomId');
+        if (open.action == 'answer' || open.action == 'answer_video') {
+          widget.matrix.push.consumePendingIncomingAnswer(open);
+          await widget.matrix.push.notifyCallEnded(
+            roomId,
+            ringEventId: open.ringEventId,
+          );
+        }
         return;
       }
       final call = widget.matrix.call;
@@ -450,14 +457,19 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       }
       switch (open.action) {
         case 'answer':
+        case 'answer_video':
           widget.matrix.voip?.dismissIncomingFromSystem(instance);
-          await call.acceptIncoming(
-            room,
-            video: open.video,
-            instance: instance,
-            fromSystem: open.fromSystem,
-            requestExpandedUi: true,
-          );
+          try {
+            await call.acceptIncoming(
+              room,
+              video: open.video,
+              instance: instance,
+              fromSystem: open.fromSystem,
+              requestExpandedUi: true,
+            );
+          } finally {
+            widget.matrix.push.consumePendingIncomingAnswer(open);
+          }
           if (!mounted) return;
           if (!call.isActive || !_isCurrentCall(instance)) {
             OrexLog.d(
@@ -545,6 +557,12 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
 
     final call = widget.matrix.call;
     if (call.isActive) return;
+    if (widget.matrix.push.hasPendingIncomingAnswer(
+      room.id,
+      ringEventId: currentInstance().ringEventId,
+    )) {
+      return;
+    }
     if (!isVisible()) return;
     if (call.isAcceptingIncomingInstance(currentInstance())) return;
     if (_attemptMapContains(_pendingCallActionAttempts, sourceInstance)) return;
@@ -593,6 +611,10 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       final call = widget.matrix.call;
       if (!_isForeground ||
           !isVisible() ||
+          widget.matrix.push.hasPendingIncomingAnswer(
+            room.id,
+            ringEventId: currentInstance().ringEventId,
+          ) ||
           _attemptMapContains(_pendingCallActionAttempts, sourceInstance) ||
           call.isAcceptingIncomingInstance(currentInstance()) ||
           call.isActive) {

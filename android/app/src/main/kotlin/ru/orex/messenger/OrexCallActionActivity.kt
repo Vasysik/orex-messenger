@@ -51,6 +51,13 @@ class OrexCallActionActivity : Activity() {
                         ringEventId,
                     )
                 ) return
+                OrexCallForegroundService.startAnswering(
+                    context = applicationContext,
+                    callId = callId,
+                    ringEventId = ringEventId,
+                    displayName = displayName,
+                    video = useVideo,
+                )
                 OrexNotificationCenter.cancelCallNotification(applicationContext)
                 val launched = if (systemManaged) {
                     // Publish the explicit user choice before MainActivity can
@@ -99,6 +106,7 @@ class OrexCallActionActivity : Activity() {
                         callId,
                         ringEventId,
                     )
+                    OrexCallForegroundService.stop(applicationContext, callId, ringEventId)
                 }
             }
 

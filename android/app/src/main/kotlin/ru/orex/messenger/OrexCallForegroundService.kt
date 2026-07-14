@@ -35,10 +35,9 @@ class OrexCallForegroundService : Service() {
                 heartbeatHandler.removeCallbacks(this)
                 return
             }
-            persistDescriptor(
-                this@OrexCallForegroundService,
-                descriptor.copy(updatedAt = System.currentTimeMillis()),
-            )
+            val refreshed = descriptor.copy(updatedAt = System.currentTimeMillis())
+            persistDescriptor(this@OrexCallForegroundService, refreshed)
+            ensureForegroundNotificationVisible(refreshed)
             heartbeatHandler.postDelayed(this, HEARTBEAT_INTERVAL_MS)
         }
     }
@@ -106,6 +105,16 @@ class OrexCallForegroundService : Service() {
                     "answered=${descriptor.answered} mic=${descriptor.micEnabled} " +
                     "audio=${descriptor.audioEnabled}",
             )
+            if (descriptor.answered && !OrexFlutterEngineOwner.isRunning()) {
+                heartbeatHandler.post {
+                    try {
+                        OrexFlutterEngineOwner.getOrCreate(applicationContext)
+                        Log.i(TAG, "Restarted headless Flutter call runtime")
+                    } catch (error: Throwable) {
+                        Log.e(TAG, "Failed to restart Flutter call runtime", error)
+                    }
+                }
+            }
         } catch (error: Throwable) {
             Log.e(TAG, "Failed to enter call foreground state", error)
             stopSelf()
@@ -122,18 +131,61 @@ class OrexCallForegroundService : Service() {
         // separately classifies the resources that must keep working after
         // the activity is backgrounded. Declare only capabilities whose
         // runtime permissions are actually granted.
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-            PackageManager.PERMISSION_GRANTED
+        if (descriptor.answered && descriptor.micEnabled &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
         ) {
             type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         }
-        if (descriptor.cameraEnabled &&
+        if (descriptor.answered && descriptor.cameraEnabled &&
             checkSelfPermission(Manifest.permission.CAMERA) ==
                 PackageManager.PERMISSION_GRANTED
         ) {
             type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
         }
         return type
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        val descriptor = readDescriptor(this)
+        if (descriptor != null) {
+            val refreshed = descriptor.copy(updatedAt = System.currentTimeMillis())
+            persistDescriptor(this, refreshed)
+            ensureForegroundNotificationVisible(refreshed)
+            Log.i(TAG, "Call task removed; foreground media runtime retained call=${descriptor.callId}")
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
+    private fun ensureForegroundNotificationVisible(descriptor: Descriptor) {
+        val manager = getSystemService(android.app.NotificationManager::class.java)
+        val visible = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                manager.activeNotifications.any {
+                    it.id == OrexNotificationCenter.ONGOING_CALL_NOTIFICATION_ID
+                }
+            } catch (_: Throwable) {
+                false
+            }
+        } else {
+            false
+        }
+        if (visible) return
+        try {
+            val notification = rebuildNotification(descriptor)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    OrexNotificationCenter.ONGOING_CALL_NOTIFICATION_ID,
+                    notification,
+                    foregroundServiceType(descriptor),
+                )
+            } else {
+                startForeground(OrexNotificationCenter.ONGOING_CALL_NOTIFICATION_ID, notification)
+            }
+            Log.i(TAG, "Reposted missing ongoing call notification call=${descriptor.callId}")
+        } catch (error: Throwable) {
+            Log.w(TAG, "Failed to restore ongoing call notification", error)
+        }
     }
 
     override fun onDestroy() {
@@ -289,13 +341,49 @@ class OrexCallForegroundService : Service() {
         @Volatile
         private var serviceRunning: Boolean = false
 
+        fun startAnswering(
+            context: Context,
+            callId: String,
+            ringEventId: String?,
+            displayName: String,
+            video: Boolean,
+        ): Boolean {
+            val now = System.currentTimeMillis()
+            return update(
+                context = context,
+                descriptor = Descriptor(
+                    callId = callId,
+                    ringEventId = normalizeRingEventId(ringEventId),
+                    displayName = displayName,
+                    incoming = true,
+                    video = video,
+                    answered = false,
+                    startedAt = now,
+                    micEnabled = false,
+                    audioEnabled = true,
+                    cameraEnabled = false,
+                    updatedAt = now,
+                ),
+                notification = null,
+            )
+        }
+
+        fun republish(context: Context): Boolean {
+            val descriptor = readDescriptor(context) ?: return false
+            return update(
+                context,
+                descriptor.copy(updatedAt = System.currentTimeMillis()),
+                notification = null,
+            )
+        }
+
         fun update(
             context: Context,
             descriptor: Descriptor,
             notification: Notification?,
         ): Boolean {
             val current = readDescriptor(context)
-            if (current != null && current.callId == descriptor.callId &&
+            if (current != null &&
                 !sameCallAttempt(
                     current.callId,
                     current.ringEventId,
@@ -303,11 +391,29 @@ class OrexCallForegroundService : Service() {
                     descriptor.ringEventId,
                 )
             ) {
-                val isOneWayAttemptUpgrade = canPromoteRingAttempt(
-                    current.ringEventId,
-                    descriptor.ringEventId,
+                val isOneWayAttemptUpgrade = current.callId == descriptor.callId &&
+                    canPromoteRingAttempt(
+                        current.ringEventId,
+                        descriptor.ringEventId,
+                    )
+                val currentHasLiveOwner = serviceRunning &&
+                    System.currentTimeMillis() - current.updatedAt <= DESCRIPTOR_STALE_MS
+                val mayReplace = shouldReplaceForegroundDescriptor(
+                    currentCallId = current.callId,
+                    currentRingEventId = current.ringEventId,
+                    requestedCallId = descriptor.callId,
+                    requestedRingEventId = descriptor.ringEventId,
+                    hasLiveOwner = currentHasLiveOwner,
                 )
-                if (!isOneWayAttemptUpgrade) return false
+                if (!isOneWayAttemptUpgrade && !mayReplace) return false
+                if (mayReplace) {
+                    Log.i(
+                        TAG,
+                        "Replacing stale foreground descriptor for fresh call attempt " +
+                            "call=${descriptor.callId}",
+                    )
+                    clearDescriptor(context)
+                }
             }
             persistDescriptor(context, descriptor)
             pendingNotification = notification

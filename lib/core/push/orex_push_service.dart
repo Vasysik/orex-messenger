@@ -52,6 +52,7 @@ class OrexPushService {
   Future<void>? _syncInFlight;
   DateTime? _lastSyncAttempt;
   OrexPushOpen? _pendingOpen;
+  OrexPushOpen? _pendingIncomingAnswer;
   String? _lastPublishedDeliveryId;
   bool _started = false;
   bool _disposed = false;
@@ -64,6 +65,39 @@ class OrexPushService {
   /// зарегистрировала remote Matrix pusher и сама владеет background delivery.
   bool get ownsBackgroundNotifications =>
       isConfigured && _platform.identity != null;
+
+  bool hasPendingIncomingAnswer(
+    String roomId, {
+    String? ringEventId,
+  }) {
+    final pending = _pendingIncomingAnswer;
+    if (pending == null ||
+        pending.kind != 'incoming_call' ||
+        (pending.action != 'answer' && pending.action != 'answer_video') ||
+        pending.roomId != roomId.trim()) {
+      return false;
+    }
+    final pendingRing = pending.ringEventId;
+    final candidateRing = ringEventId?.trim();
+    if (pendingRing == null || pendingRing.isEmpty) return true;
+    if (candidateRing == null || candidateRing.isEmpty) return true;
+    return pendingRing == candidateRing;
+  }
+
+  void consumePendingIncomingAnswer(OrexPushOpen open) {
+    final pending = _pendingIncomingAnswer;
+    if (pending == null ||
+        (open.action != 'answer' && open.action != 'answer_video')) {
+      return;
+    }
+    if (pending.roomId != open.roomId) return;
+    final pendingRing = pending.ringEventId;
+    final openRing = open.ringEventId;
+    if (pendingRing != null && openRing != null && pendingRing != openRing) {
+      return;
+    }
+    _pendingIncomingAnswer = null;
+  }
 
   /// Поднимает только локальный bridge и подписки. Сетевой pusher sync не
   /// блокирует bootstrap: он запускается отдельно и имеет собственный error
@@ -259,6 +293,10 @@ class OrexPushService {
       unawaited(_acknowledgeOpen(open));
       return;
     }
+    if (open.kind == 'incoming_call' &&
+        (open.action == 'answer' || open.action == 'answer_video')) {
+      _pendingIncomingAnswer = open;
+    }
     if (_openController.hasListener) {
       _lastPublishedDeliveryId = deliveryId;
       _openController.add(open);
@@ -329,6 +367,7 @@ class OrexPushService {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _pendingIncomingAnswer = null;
     await _openSub?.cancel();
     await _registration.dispose();
     _platform.dispose();

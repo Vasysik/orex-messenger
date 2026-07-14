@@ -117,3 +117,28 @@ internal fun callAttemptRequestCode(
     callId: String,
     ringEventId: String?,
 ): Int = base xor callId.hashCode() xor (normalizeRingEventId(ringEventId)?.hashCode() ?: 0)
+
+/**
+ * A persisted foreground descriptor may be replaced only after its process
+ * owner disappeared or its heartbeat expired. A live call is never stolen by
+ * a new room or a new exact ring generation.
+ */
+internal fun shouldReplaceForegroundDescriptor(
+    currentCallId: String,
+    currentRingEventId: String?,
+    requestedCallId: String,
+    requestedRingEventId: String?,
+    hasLiveOwner: Boolean,
+): Boolean {
+    if (sameCallAttempt(
+            currentCallId,
+            currentRingEventId,
+            requestedCallId,
+            requestedRingEventId,
+        )
+    ) return false
+    if (currentCallId == requestedCallId &&
+        canPromoteRingAttempt(currentRingEventId, requestedRingEventId)
+    ) return false
+    return !hasLiveOwner
+}

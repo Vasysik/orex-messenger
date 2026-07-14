@@ -121,6 +121,58 @@ void main() {
     await client.dispose(closeDatabase: false);
   });
 
+  test('delivered native answer suppresses duplicate ringing until consumed', () async {
+    final platform = _FakePushPlatform();
+    final client = Client(
+      'OrexPushPendingAnswerTest',
+      database: MatrixSdkDatabase.buildWithoutOpen('OrexPushPendingAnswerTest'),
+    );
+    final service = OrexPushService(
+      client: client,
+      gateway: null,
+      platform: platform,
+      tokenStore: _MemoryTokenStore(),
+    );
+    await service.start();
+
+    const answer = OrexPushOpen(<String, String>{
+      'orex_kind': 'incoming_call',
+      'room_id': '!call:example.org',
+      'event_id': r'$ring-answer',
+      'orex_action': 'answer',
+      'orex_delivery_id': 'answer-delivery',
+    });
+    platform.emitOpen(answer);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      service.hasPendingIncomingAnswer(
+        '!call:example.org',
+        ringEventId: r'$ring-answer',
+      ),
+      isTrue,
+    );
+    expect(
+      service.hasPendingIncomingAnswer(
+        '!call:example.org',
+        ringEventId: r'$other-ring',
+      ),
+      isFalse,
+    );
+
+    service.consumePendingIncomingAnswer(answer);
+    expect(
+      service.hasPendingIncomingAnswer(
+        '!call:example.org',
+        ringEventId: r'$ring-answer',
+      ),
+      isFalse,
+    );
+
+    await service.dispose();
+    await client.dispose(closeDatabase: false);
+  });
+
   test('does not surface local sync notifications while logged out', () async {
     final platform = _FakePushPlatform();
     final client = Client(

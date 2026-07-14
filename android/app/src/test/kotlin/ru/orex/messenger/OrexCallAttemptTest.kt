@@ -212,4 +212,44 @@ class OrexCallAttemptTest {
         )
     }
 
+    @Test
+    fun staleForegroundDescriptorCanBeReplacedButLiveCallCannotBeStolen() {
+        assertTrue(
+            shouldReplaceForegroundDescriptor(
+                currentCallId = "!room:orex",
+                currentRingEventId = "event-old",
+                requestedCallId = "!room:orex",
+                requestedRingEventId = "event-new",
+                hasLiveOwner = false,
+            ),
+        )
+        assertTrue(
+            shouldReplaceForegroundDescriptor(
+                currentCallId = "!old:orex",
+                currentRingEventId = "event-old",
+                requestedCallId = "!new:orex",
+                requestedRingEventId = "event-new",
+                hasLiveOwner = false,
+            ),
+        )
+        assertFalse(
+            shouldReplaceForegroundDescriptor(
+                currentCallId = "!room:orex",
+                currentRingEventId = "event-old",
+                requestedCallId = "!room:orex",
+                requestedRingEventId = "event-new",
+                hasLiveOwner = true,
+            ),
+        )
+        assertFalse(
+            shouldReplaceForegroundDescriptor(
+                currentCallId = "!old:orex",
+                currentRingEventId = "event-old",
+                requestedCallId = "!new:orex",
+                requestedRingEventId = "event-new",
+                hasLiveOwner = true,
+            ),
+        )
+    }
+
 }

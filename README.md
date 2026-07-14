@@ -4,7 +4,7 @@
 сквозным шифрованием сообщений через **vodozemac** и нативными звонками Orex на
 стеке **MatrixRTC / LiveKit**. Единая кодовая база: **Web · Android · Windows**.
 
-Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+12**: это
+Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+14**: это
 исходный release candidate для dogfood с системными Android-звонками,
 killed-process push, MatrixRTC/LiveKit media E2EE и обязательным release quality
 gate. После обновления зависимостей сборки должны быть заново подтверждены на
@@ -432,10 +432,23 @@ Kotlin/JUnit-тесты Orex проверяются отдельно от тес
 Flutter navigator под нативным cover, затем мобильный `CallScreen` открывается
 развёрнутым со статусом «Соединение…». Нативный cover снимается только после
 post-frame подтверждения расширенного route; foreground service и Core-Telecom
-больше не могут преждевременно закрыть connecting shell.
+больше не могут преждевременно закрыть connecting shell. В `0.4.2+14` неудачные UI-изменения `+13` точечно откатены: у нативного
+экрана «Подключаем к звонку…» снова нет отдельной кнопки отмены или failure-
+режима, а ongoing-карточка снова использует прежние явные кнопки микрофона,
+звука и завершения вместо `CallStyle`, скрывавшего пользовательские действия.
+Cold-start handoff больше не отправляет Answer в ещё не готовый Dart
+`MethodChannel`: native bridge ждёт первого реального вызова из Dart, после чего
+доставляет сохранённый Answer; persisted open остаётся резервным путём. Это
+устраняет зависший connecting-cover и повторный Flutter-рингтон без добавления
+кнопок в экран подключения. Полезная часть `+13` сохранена: process-owned
+FlutterEngine, foreground phone-call service, wake lock, `START_STICKY`,
+удержание runtime при удалении задачи и восстановление пропавшей ongoing-
+карточки. Обычное сворачивание или смахивание Orex из recent apps не должно
+завершать активный разговор.
+
 
 **До выдачи пререлиза:** повторно выполнить `pub get`, `analyze`, `test` после
-изменений `+12`; smoke двух последовательных звонков Android ↔ Web ↔ Windows для accept/reject/redial, потери
+изменений `+14`; smoke двух последовательных звонков Android ↔ Web ↔ Windows для accept/reject/redial, потери
 сети, stage timeout, повторного входа после фантома, audio mute, background/lock
 screen и reconnect; проверить logout/soft logout после Matrix 8.x, release-сборки
 и push на убитом Android-процессе. Web smoke должен выполняться через
@@ -443,7 +456,14 @@ production reverse proxy: Chrome может блокировать Matrix `/sync
 `http://localhost` на публичный homeserver по Private Network Access/CORS, и в
 таком режиме звонок закономерно не получает membership и медиаключи. Переход на
 `sqlite3 3.x` отложен до снятия ограничения в Matrix SDK; он не должен
-форсироваться через `dependency_overrides`.
+форсироваться через `dependency_overrides`. Для Android отдельно проверить
+Answer при выключенном экране, смахивание задачи во время активного разговора,
+возврат по ongoing-уведомлению и отказ в `POST_NOTIFICATIONS`: без системного
+разрешения Android оставляет foreground service в Task Manager, но приложение
+не может принудительно показать карточку в notification drawer. Force stop из
+настроек Android остаётся жёсткой системной границей и прекращает любой call
+runtime; обычное закрытие UI/смахивание задачи теперь не должно завершать
+звонок.
 
 **Отложено:** миграция Android-проекта и зависимых Flutter-плагинов на
 Built-in Kotlin до того, как будущая версия Flutter удалит поддержку применения
@@ -504,12 +524,17 @@ Kotlin Gradle Plugin из app/plugins; режим «только подтвер�
    дополнительно ждёт явного MatrixRTC key-resync, поэтому `connected` выставляется
    только после transport, remote media keys, восстановления локального media state
    и системного call-state. Ongoing-уведомление имеет Android-флаги
-   `ONGOING_EVENT | NO_CLEAR` и не должно смахиваться, пока foreground service
-   владеет звонком. После recreation процесса свежий Matrix sync проверяет живой
-   MatrixRTC call и восстанавливает сохранённое состояние без повторного ring.
-   Это закрывает обычное сворачивание и lock screen; hard process death остаётся
-   отдельной границей: системная карточка и recoverable descriptor сохраняются,
-   но само LiveKit-медиа требует восстановленного FlutterEngine.
+   `ONGOING_EVENT | NO_CLEAR`, а на Android 14+ дополнительно использует
+   non-dismissible ongoing `CallStyle`. На системах, где foreground-card можно
+   смахнуть, `deleteIntent` немедленно восстанавливает её из живого descriptor.
+   FlutterEngine принадлежит процессу, а не MainActivity: удаление задачи из
+   недавних приложений отсоединяет UI, но не останавливает Matrix/LiveKit, а
+   возврат по карточке присоединяет интерфейс к тому же runtime. После process
+   recreation `START_STICKY` service поднимает headless Flutter runtime, и свежий
+   Matrix sync выполняет reconnect без повторного ring. Обычное сворачивание,
+   lock screen и удаление задачи закрыты; hard process death всё ещё означает
+   короткий разрыв медиа до reconnect, а Android Force stop полностью прекращает
+   service и не может быть обойдён приложением.
 5. **✅ Слуховой режим и голосовая связь — реализовано.** Earpiece/speaker/wired/
    Bluetooth routing имеет одного владельца — Android Telecom; LiveKit получает
    фиксированную call-oriented audio session на время зарегистрированного вызова
@@ -530,10 +555,9 @@ Kotlin Gradle Plugin из app/plugins; режим «только подтвер�
 
 #### Что сейчас реально мешает закрыть 0.4.0
 
-- полностью headless media после hard process death ещё не закрыто: foreground
-  call service сохраняет активный системный вызов, точное состояние mic/audio/
-  camera и recovery после свежего Matrix sync, но сама LiveKit media-сессия
-  по-прежнему требует восстановленного FlutterEngine;
+- непрерывное media без единого обрыва после настоящего убийства процесса не
+  гарантируется: service теперь поднимает headless FlutterEngine и reconnect,
+  но Android Force stop и OEM hard kill остаются системной границей;
 - Android screen share требует полноценного MediaProjection lifecycle, а не
   ещё одного fallback вокруг desktop-контроллера;
 - killed-process push/call flow нуждается в воспроизводимом device smoke matrix

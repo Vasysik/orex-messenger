@@ -374,6 +374,9 @@ object OrexNotificationCenter {
                 else "Подключение к звонку…",
             )
             .setContentIntent(openApp)
+            .setDeleteIntent(
+                OrexPushBridge.restoreOngoingCallNotificationPendingIntent(context),
+            )
             .addPerson(person)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -405,6 +408,9 @@ object OrexNotificationCenter {
                 hangUp,
             )
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setForegroundServiceBehavior(
+                NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE,
+            )
             .also { builder ->
                 applyOngoingCallCustomControls(
                     context = context,

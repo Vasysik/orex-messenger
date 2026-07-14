@@ -14,6 +14,11 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    override fun provideFlutterEngine(context: Context): FlutterEngine =
+        OrexFlutterEngineOwner.getOrCreate(context)
+
+    override fun shouldDestroyEngineWithHost(): Boolean = false
+
     private var callHandoffOverlay: OrexCallHandoffOverlay? = null
     private var callHandoffCallId: String? = null
     private var callHandoffRingEventId: String? = null
@@ -54,9 +59,12 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
-        clearCallHandoffOverlay(clearBridgeState = !isChangingConfigurations)
+        val keepCallRuntime = OrexCallForegroundService.hasLiveCall(applicationContext)
+        clearCallHandoffOverlay(
+            clearBridgeState = !isChangingConfigurations && !keepCallRuntime,
+        )
         setProximityEnabled(false)
-        OrexPushBridge.detach(this)
+        OrexPushBridge.detach(this, keepChannel = keepCallRuntime)
         super.onDestroy()
     }
 

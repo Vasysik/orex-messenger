@@ -340,6 +340,13 @@ class OrexIncomingCallActivity : Activity() {
             finishAndRemoveTask()
             return
         }
+        OrexCallForegroundService.startAnswering(
+            context = applicationContext,
+            callId = callId,
+            ringEventId = ringEventId,
+            displayName = displayName,
+            video = useVideo,
+        )
         OrexNotificationCenter.cancelCallNotification(applicationContext)
         statusText?.text = "Подключаем к звонку…"
         progress?.visibility = View.VISIBLE
@@ -378,6 +385,7 @@ class OrexIncomingCallActivity : Activity() {
         )
         if (!launched) {
             OrexPushBridge.clearCallHandoffOverlayReady(callId, ringEventId)
+            OrexCallForegroundService.stop(applicationContext, callId, ringEventId)
             restoreAfterFailedHandoff("Не удалось открыть звонок")
         }
     }

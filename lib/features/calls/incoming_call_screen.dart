@@ -35,6 +35,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   Timer? _ringTimeout;
   bool _busy = false;
   bool _dismissed = false;
+  bool _ringtoneStarted = false;
   String? _status;
   late OrexCallInstance _instance;
 
@@ -86,10 +87,18 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
         _closeOwnRoute();
       }
     });
+    if (widget.matrix.push.hasPendingIncomingAnswer(
+      room.id,
+      ringEventId: _instance.ringEventId,
+    )) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _closeOwnRoute());
+      return;
+    }
+    _ringtoneStarted = true;
     widget.matrix.audio.startIncomingRingtone();
     _ringTimeout = Timer(const Duration(seconds: 45), () {
       if (!mounted || _busy || _dismissed) return;
-      widget.matrix.audio.stopIncomingRingtone();
+      if (_ringtoneStarted) widget.matrix.audio.stopIncomingRingtone();
       widget.matrix.voip?.dismissIncomingFromSystem(_instance);
       _closeOwnRoute();
     });

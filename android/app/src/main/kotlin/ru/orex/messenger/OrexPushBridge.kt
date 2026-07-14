@@ -40,6 +40,8 @@ object OrexPushBridge {
     private const val DELIVERY_ID_KEY = "orex_delivery_id"
     private const val PERMISSION_REQUEST_CODE = 46041
     private const val ACTION_CALL_NOTIFICATION = "ru.orex.messenger.action.PUSH_CALL"
+    const val ACTION_RESTORE_ONGOING_CALL_NOTIFICATION =
+        "ru.orex.messenger.action.RESTORE_ONGOING_CALL_NOTIFICATION"
     private const val UI_RESOLVE_TIMEOUT_MS = 40_000L
 
     private const val MAX_PAYLOAD_ENTRIES = 48
@@ -114,25 +116,36 @@ object OrexPushBridge {
     @Volatile
     private var activityResumed = false
 
-    fun attach(activity: Activity, messenger: BinaryMessenger) {
-        this.activity = activity
-        applicationContext = activity.applicationContext
+    @Volatile
+    private var dartBridgeReady = false
+
+    fun attachEngine(context: Context, messenger: BinaryMessenger) {
+        applicationContext = context.applicationContext
+        dartBridgeReady = false
         channel?.setMethodCallHandler(null)
         channel = MethodChannel(messenger, CHANNEL_NAME).also { methodChannel ->
             methodChannel.setMethodCallHandler(::handleMethodCall)
         }
-        flushDeferredCallHandoffOpen()
     }
 
-    fun detach(activity: Activity) {
+    fun attach(activity: Activity, messenger: BinaryMessenger) {
+        this.activity = activity
+        applicationContext = activity.applicationContext
+        if (channel == null) attachEngine(activity.applicationContext, messenger)
+    }
+
+    fun detach(activity: Activity, keepChannel: Boolean = false) {
         if (this.activity !== activity) return
         this.activity = null
         activityResumed = false
         pendingPermissionResult = null
-        channel?.setMethodCallHandler(null)
-        channel = null
-        synchronized(callHandoffLock) {
-            deferredCallHandoffOpen?.dispatched = false
+        if (!keepChannel) {
+            dartBridgeReady = false
+            channel?.setMethodCallHandler(null)
+            channel = null
+            synchronized(callHandoffLock) {
+                deferredCallHandoffOpen?.dispatched = false
+            }
         }
     }
 
@@ -392,6 +405,18 @@ object OrexPushBridge {
         )
     }
 
+    fun restoreOngoingCallNotificationPendingIntent(context: Context): PendingIntent {
+        val intent = Intent(context, OrexNotificationActionReceiver::class.java).apply {
+            action = ACTION_RESTORE_ONGOING_CALL_NOTIFICATION
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            7299,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
     fun callActionPendingIntent(
         context: Context,
         callId: String,
@@ -424,6 +449,10 @@ object OrexPushBridge {
     }
 
     fun handleCallNotificationAction(context: Context, intent: Intent) {
+        if (intent.action == ACTION_RESTORE_ONGOING_CALL_NOTIFICATION) {
+            OrexCallForegroundService.republish(context.applicationContext)
+            return
+        }
         if (intent.action == OrexAndroidTelecomManager.ACTION_ANSWER ||
             intent.action == OrexAndroidTelecomManager.ACTION_DECLINE ||
             intent.action == OrexAndroidTelecomManager.ACTION_HANG_UP ||
@@ -596,6 +625,10 @@ object OrexPushBridge {
     }
 
     private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        if (!dartBridgeReady) {
+            dartBridgeReady = true
+            flushDeferredCallHandoffOpen()
+        }
         when (call.method) {
             "isSupported" -> result.success(isFirebaseConfigured())
             "getToken" -> getToken(result)
@@ -661,6 +694,7 @@ object OrexPushBridge {
                     (activity as? MainActivity)?.cancelCallHandoff(callId, ringEventId) == true
                 val ended = presentationMatched || overlayMatched
                 if (ended && context != null) {
+                    OrexCallForegroundService.stop(context, callId, ringEventId)
                     OrexNotificationCenter.cancelCallNotification(context)
                     OrexIncomingCallActivity.finishForCall(callId, ringEventId)
                 }
@@ -839,11 +873,26 @@ object OrexPushBridge {
 
                     override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
                         Log.w(TAG, "Flutter rejected notification open: $errorCode $errorMessage")
+                        dartBridgeReady = false
+                        rearmDeferredCallHandoff(normalized)
                     }
 
-                    override fun notImplemented() = Unit
+                    override fun notImplemented() {
+                        Log.i(TAG, "Flutter call handoff bridge is not ready yet; deferring answer")
+                        dartBridgeReady = false
+                        rearmDeferredCallHandoff(normalized)
+                    }
                 },
             )
+        }
+    }
+
+    private fun rearmDeferredCallHandoff(payload: Map<String, String>) {
+        val deliveryId = payload[DELIVERY_ID_KEY]
+        synchronized(callHandoffLock) {
+            deferredCallHandoffOpen?.takeIf {
+                it.payload[DELIVERY_ID_KEY] == deliveryId
+            }?.dispatched = false
         }
     }
 
@@ -924,6 +973,7 @@ object OrexPushBridge {
         val payload = synchronized(callHandoffLock) {
             val deferred = deferredCallHandoffOpen
             if (deferred == null || deferred.dispatched || channel == null ||
+                !dartBridgeReady ||
                 !callHandoffAttemptMatches(
                     callHandoffReadyCallId,
                     callHandoffReadyRingEventId,
