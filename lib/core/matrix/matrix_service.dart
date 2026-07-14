@@ -158,11 +158,23 @@ class MatrixService extends ChangeNotifier {
     await client.init(
       waitForFirstSync: false, // покажем кэш сразу, не ждём сеть
     );
+
+    // Build signaling before any sync/login callback can lazily construct the
+    // CallController. Previously an early desktop sync could create CallController
+    // while matrix.voip was still null, permanently missing all incoming/remote
+    // call stream subscriptions until another call path warmed the runtime.
+    try {
+      voip = VoipService(client);
+    } catch (e) {
+      _log('Voip', 'init failed, calls disabled', e);
+    }
+    final callController = call;
+
     _syncSub = client.onSync.stream.listen((_) {
       _playNotificationCueIfNeeded();
       push.handleMatrixSync();
       _scheduleAvatarCacheWarmup();
-      if (client.isLogged()) unawaited(call.recoverPendingCall());
+      if (client.isLogged()) unawaited(callController.recoverPendingCall());
       // Проверяем версию бэкапа только один раз после логина,
       // и только если пользователь не выключал его вручную в этой сессии.
       if (!_checkedServerBackup &&
@@ -185,6 +197,8 @@ class MatrixService extends ChangeNotifier {
       push.handleLoginStateChanged();
       if (client.isLogged()) {
         _scheduleAvatarCacheWarmup(force: true);
+        voip?.refreshIncomingCalls();
+        unawaited(callController.recoverPendingCall());
       }
       notifyListeners();
     });
@@ -195,12 +209,6 @@ class MatrixService extends ChangeNotifier {
       _scheduleAvatarCacheWarmup(force: true);
       notifyListeners();
     });
-    // VoIP-сигналинг (звонки). Изолируем сбой, чтобы он не ронял запуск.
-    try {
-      voip = VoipService(client);
-    } catch (e) {
-      _log('Voip', 'init failed, calls disabled', e);
-    }
     _scheduleAvatarCacheWarmup(force: true);
 
     await _loadBackupPrefs();

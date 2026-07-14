@@ -499,7 +499,7 @@ class OrexCallForegroundService : Service() {
         private const val KEY_UPDATED_AT = "updated_at"
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
         private const val DESCRIPTOR_STALE_MS = 3 * HEARTBEAT_INTERVAL_MS
-        const val ANSWERING_TIMEOUT_MS = 35_000L
+        const val ANSWERING_TIMEOUT_MS = 70_000L
 
         @Volatile
         private var pendingNotification: Notification? = null

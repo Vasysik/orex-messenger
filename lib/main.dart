@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:ui' show PointerDeviceKind;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
+import 'package:matrix/matrix.dart' show Room;
 
 import 'core/config/orex_config.dart';
 import 'core/config/app_version.dart';
@@ -251,6 +253,14 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
 
   bool get _isForeground => _lifecycleState == AppLifecycleState.resumed;
 
+  bool get _isDesktopHost =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.linux ||
+          defaultTargetPlatform == TargetPlatform.macOS);
+
+  bool get _canPresentIncomingCallUi => _isForeground || _isDesktopHost;
+
   bool _isCurrentCall(OrexCallInstance instance) {
     final expected = _canonicalCallInstance(instance);
     return widget.matrix.call.currentCallInstance?.routeKey ==
@@ -450,18 +460,42 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     );
   }
 
+  Future<Room?> _resolveColdIncomingCallRoom(String roomId) async {
+    const totalBudget = Duration(seconds: 12);
+    const syncTimeout = Duration(seconds: 2);
+    final deadline = DateTime.now().add(totalBudget);
+    Object? lastError;
+
+    while (mounted && DateTime.now().isBefore(deadline)) {
+      final cached = widget.matrix.client.getRoomById(roomId);
+      if (cached != null) return cached;
+      try {
+        // The normal client sync may already be active. oneShotSync is only a
+        // bounded nudge; failures are tolerated while we keep polling the cache.
+        await widget.matrix.client
+            .oneShotSync(timeout: syncTimeout)
+            .timeout(const Duration(seconds: 4));
+      } catch (error) {
+        lastError = error;
+      }
+      final synced = widget.matrix.client.getRoomById(roomId);
+      if (synced != null) return synced;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+
+    if (lastError != null) {
+      OrexLog.d('Push', 'cold call room sync exhausted room=$roomId', lastError);
+    }
+    return widget.matrix.client.getRoomById(roomId);
+  }
+
   Future<void> _handlePushNotificationOpen(OrexPushOpen open) async {
     final roomId = open.roomId;
     if (!mounted || roomId == null) return;
 
     var room = widget.matrix.client.getRoomById(roomId);
     if (open.kind == 'incoming_call' && room == null) {
-      try {
-        await widget.matrix.client.oneShotSync(timeout: Duration.zero);
-      } catch (e) {
-        OrexLog.d('Push', 'cold call room sync failed room=$roomId', e);
-      }
-      room = widget.matrix.client.getRoomById(roomId);
+      room = await _resolveColdIncomingCallRoom(roomId);
     }
 
     if (!mounted) return;
@@ -592,11 +626,17 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     if (!isVisible()) return;
     if (call.isAcceptingIncomingInstance(currentInstance())) return;
     if (_attemptMapContains(_pendingCallActionAttempts, sourceInstance)) return;
-    if (!_isForeground) {
+    if (!_canPresentIncomingCallUi) {
       if (!call.isActive) {
         unawaited(call.prepareIncoming(room, instance: currentInstance()));
       }
       return;
+    }
+    if (_isDesktopHost && !_isForeground) {
+      // Desktop lifecycle can be inactive merely because the window is minimized
+      // or another application owns focus. Restore the host and still enqueue the
+      // Answer/Decline surface; do not require an outgoing call to warm it first.
+      unawaited(widget.matrix.push.activateIncomingCallWindow());
     }
     final routeOwner = _claimAttempt(_incomingCallDialogs, sourceInstance);
     if (routeOwner == null) return;
@@ -635,7 +675,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
         return;
       }
       final call = widget.matrix.call;
-      if (!_isForeground ||
+      if (!_canPresentIncomingCallUi ||
           !isVisible() ||
           _isIncomingPresentationSuppressedForAcceptedFlow(currentInstance()) ||
           _attemptMapContains(_pendingCallActionAttempts, sourceInstance) ||

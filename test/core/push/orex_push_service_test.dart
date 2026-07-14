@@ -85,6 +85,28 @@ void main() {
     }
   });
 
+  test('Windows incoming call activation restores the native host', () async {
+    const channel = MethodChannel('orex/test_windows_push_activation');
+    final calls = <MethodCall>[];
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return true;
+        });
+    final platform = OrexNativePushPlatform(channel: channel);
+    addTearDown(() {
+      platform.dispose();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    await platform.activateIncomingCallWindow();
+
+    expect(calls.map((call) => call.method), ['activateIncomingCallWindow']);
+  });
+
   test('cold-start open is held until a UI listener receives it', () async {
     const open = OrexPushOpen(<String, String>{
       'room_id': '!room:example.org',
@@ -325,6 +347,9 @@ class _FakePushPlatform implements OrexPushPlatform {
   Future<void> dismissRoomNotifications(String roomId) async {
     dismissedRooms.add(roomId);
   }
+
+  @override
+  Future<void> activateIncomingCallWindow() async {}
 
   @override
   Future<OrexPushPermissionStatus> requestPermission() async =>

@@ -24,6 +24,9 @@ object OrexFlutterEngineOwner {
     fun getOrCreate(context: Context): FlutterEngine {
         engine?.let { return it }
         val appContext = context.applicationContext
+        // Exactly one Flutter runtime may own the Matrix database/plugins during
+        // cold Answer. Message resolution can retry after the process engine boots.
+        OrexPushBackgroundResolver.yieldToProcessRuntime()
         val loader = FlutterInjector.instance().flutterLoader()
         loader.startInitialization(appContext)
         loader.ensureInitializationComplete(appContext, null)

@@ -90,6 +90,9 @@ class OrexPushService {
     return pendingRing == candidateRing;
   }
 
+  Future<void> activateIncomingCallWindow() =>
+      _platform.activateIncomingCallWindow();
+
   void consumePendingIncomingAnswer(OrexPushOpen open) {
     final pending = _pendingIncomingAnswer;
     if (pending == null ||

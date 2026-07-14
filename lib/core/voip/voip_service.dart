@@ -1550,6 +1550,13 @@ class VoipService extends ChangeNotifier {
     return null;
   }
 
+  /// Explicitly re-checks incoming calls after login/runtime activation.
+  /// Desktop lifecycle delivery must not depend on making an outgoing call first.
+  void refreshIncomingCalls() {
+    if (_disposed || !_suppressionRestored) return;
+    _scan();
+  }
+
   /// Сканируем все комнаты на активные звонки.
   void _scan({bool markExistingAsSeen = false}) {
     for (final room in client.rooms) {

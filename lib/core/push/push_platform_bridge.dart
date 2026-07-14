@@ -94,6 +94,9 @@ abstract interface class OrexPushPlatform {
   /// conversation notifications и активный звонок.
   Future<void> dismissRoomNotifications(String roomId);
 
+  /// Restores and focuses the desktop host before presenting incoming-call UI.
+  Future<void> activateIncomingCallWindow();
+
   Future<OrexPushPermissionStatus> requestPermission();
 
   void dispose();
@@ -336,6 +339,19 @@ class OrexNativePushPlatform implements OrexPushPlatform {
         'dismissRoomNotifications',
         <String, Object?>{'roomId': normalizedRoomId},
       );
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  @override
+  Future<void> activateIncomingCallWindow() async {
+    if (!_isWindows) return;
+    await initialize();
+    try {
+      await _channel.invokeMethod<void>('activateIncomingCallWindow');
     } on MissingPluginException {
       return;
     } on PlatformException {

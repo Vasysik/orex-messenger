@@ -196,6 +196,11 @@ bool FlutterWindow::OnCreate() {
           result->Success(flutter::EncodableValue(true));
           return;
         }
+        if (call.method_name() == "activateIncomingCallWindow") {
+          ActivateWindow();
+          result->Success(flutter::EncodableValue(true));
+          return;
+        }
         result->NotImplemented();
       });
 
@@ -272,11 +277,15 @@ void FlutterWindow::DismissWindowsNotification(const std::string& room_id) {
   notification_room_id_.clear();
 }
 
-void FlutterWindow::ActivateNotification() {
+void FlutterWindow::ActivateWindow() {
   if (GetHandle() != nullptr) {
     ShowWindow(GetHandle(), SW_RESTORE);
     SetForegroundWindow(GetHandle());
   }
+}
+
+void FlutterWindow::ActivateNotification() {
+  ActivateWindow();
   if (push_channel_ && !notification_payload_.empty()) {
     push_channel_->InvokeMethod(
         "onNotificationOpened",

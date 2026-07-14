@@ -7,7 +7,7 @@ import android.os.Bundle
 import android.util.Log
 
 /**
- * Invisible trampoline for notification call actions.
+ * Direct notification action entry point.
  *
  * Content taps open [OrexIncomingCallActivity]. Answer/Reject do not: the user
  * has already chosen an action, so showing the incoming panel again is both

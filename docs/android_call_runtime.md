@@ -51,13 +51,15 @@ Notification/Core-Telecom Answer
 
 ## Инварианты
 
-1. До Matrix signaling/media Android обязан подтвердить успешный `startForeground()` для точной попытки звонка.
-2. `MethodChannel` принадлежит FlutterEngine и не снимается в `Activity.onDestroy()`.
-3. Любая команда идентифицируется парой `(roomId, ringEventId)`; допускается только однонаправленное повышение legacy `null -> exact ringEventId`.
-4. UI никогда не является lock/ack для Answer.
-5. Каждый bootstrap имеет конечный timeout и полный cleanup.
-6. Swipe из recent apps или закрытие Activity не уничтожает engine и не останавливает Service.
-7. Force stop и системная кнопка остановки активного приложения считаются безусловным завершением процесса; приложение не пытается обходить Android.
+1. Первый источник, получивший `FIRST_ALERT`, единолично владеет входящим notification и рингтоном; `SILENT_REFRESH` никогда не перепубликует тот же notification ID.
+2. Notification Answer/Reject запускают `OrexCallActionActivity` прямым activity `PendingIntent`, без BroadcastReceiver/Service trampoline.
+3. До Matrix signaling/media Android обязан подтвердить успешный `startForeground()` для точной попытки звонка.
+4. `MethodChannel` принадлежит FlutterEngine и не снимается в `Activity.onDestroy()`.
+5. Любая команда идентифицируется парой `(roomId, ringEventId)`; допускается только однонаправленное повышение legacy `null -> exact ringEventId`.
+6. UI никогда не является lock/ack для Answer.
+7. Каждый bootstrap имеет конечный timeout и полный cleanup.
+8. Swipe из recent apps или закрытие Activity не уничтожает engine и не останавливает Service.
+9. Force stop и системная кнопка остановки активного приложения считаются безусловным завершением процесса; приложение не пытается обходить Android.
 
 ## Обязательная проверка перед релизом
 

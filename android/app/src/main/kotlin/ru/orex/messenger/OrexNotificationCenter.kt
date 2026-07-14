@@ -219,20 +219,6 @@ object OrexNotificationCenter {
         return firstValue(payload, "room_id") != null && firstValue(payload, "event_id") != null
     }
 
-    fun needsCallAvatarResolution(context: Context, payload: Map<String, String>): Boolean {
-        if (!isIncomingCallPayload(payload)) return false
-        val roomId = firstValue(payload, "room_id", "call_id") ?: return false
-        if (firstValue(payload, "event_id") == null) return false
-        val senderId = firstValue(payload, "sender")
-        val key = OrexAvatarCache.resolveConversationKey(
-            context = context,
-            explicitKey = firstValue(payload, "sender_avatar_key", "avatar_cache_key"),
-            roomId = roomId,
-            userId = senderId,
-        )
-        return OrexAvatarCache.load(context, key) == null
-    }
-
     fun showTelecomCall(
         context: Context,
         callId: String,
@@ -272,6 +258,15 @@ object OrexNotificationCenter {
         if (decision == OrexCallPresentationState.IncomingDecision.SUPPRESS) return null
         if (isRinging) {
             OrexIncomingCallActivity.promoteAttemptForCall(callId, ringEventId)
+            if (decision == OrexCallPresentationState.IncomingDecision.SILENT_REFRESH) {
+                // The first ringing owner already posted the notification. Reposting
+                // the same notification ID as silent removes FLAG_INSISTENT on MIUI
+                // and several other OEM builds, stopping the ringtone while leaving
+                // a stale "Incoming call" card visible. Telecom only adopts state;
+                // it must not replace the active ringing presentation.
+                Log.i(TAG, "Telecom adopted existing incoming notification call=$callId")
+                return null
+            }
         }
         val alert = decision == OrexCallPresentationState.IncomingDecision.FIRST_ALERT
 
@@ -506,6 +501,13 @@ object OrexNotificationCenter {
                 ringToken,
                 avatarCacheKey,
             )
+        }
+        if (decision == OrexCallPresentationState.IncomingDecision.SILENT_REFRESH) {
+            // Refresh metadata in the native full-screen surface, but keep the
+            // original notification object untouched so its ongoing ringtone and
+            // full-screen ownership cannot be downgraded by a duplicate FCM event.
+            Log.i(TAG, "Incoming call refresh kept existing notification call=$callId")
+            return
         }
         val alert = decision == OrexCallPresentationState.IncomingDecision.FIRST_ALERT
 

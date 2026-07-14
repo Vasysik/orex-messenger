@@ -29,6 +29,7 @@ class FlutterWindow : public Win32Window {
  private:
   void ShowWindowsNotification(const flutter::EncodableMap& payload);
   void DismissWindowsNotification(const std::string& room_id);
+  void ActivateWindow();
   void ActivateNotification();
 
   // The project to run.

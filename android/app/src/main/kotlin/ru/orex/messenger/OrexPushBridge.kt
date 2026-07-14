@@ -197,12 +197,10 @@ object OrexPushBridge {
         val incomingCall = OrexNotificationCenter.isIncomingCallPayload(normalized)
         if (incomingCall || OrexNotificationCenter.isRtcNotificationPayload(normalized)) {
             OrexNotificationCenter.showPush(appContext, normalized, activityResumed)
-            if (incomingCall &&
-                !activityResumed &&
-                OrexNotificationCenter.needsCallAvatarResolution(appContext, normalized)
-            ) {
-                OrexPushResolveWorker.enqueue(appContext, normalized)
-            }
+            // A call envelope is complete enough for native presentation. Never
+            // start the headless Matrix Flutter engine merely to resolve an avatar:
+            // it can overlap the process-owned call engine during cold Answer and
+            // contend for the same encrypted Matrix database/plugins.
             return
         }
 
@@ -231,14 +229,14 @@ object OrexPushBridge {
         }
         val uiChannel = channel
         if (uiChannel == null) {
-            OrexPushBackgroundResolver.resolve(context, normalized, callback)
+            resolveWithAvailableRuntime(context, normalized, callback)
             return
         }
 
         val handler = Handler(Looper.getMainLooper())
         handler.post {
             if (channel !== uiChannel) {
-                OrexPushBackgroundResolver.resolve(context, normalized, callback)
+                resolveWithAvailableRuntime(context, normalized, callback)
                 return@post
             }
 
@@ -261,7 +259,7 @@ object OrexPushBridge {
                         handler.removeCallbacks(fallback)
                         val resolved = stringMap(result)
                         if (resolved.isEmpty()) {
-                            OrexPushBackgroundResolver.resolve(context, normalized, callback)
+                            resolveWithAvailableRuntime(context, normalized, callback)
                         } else {
                             callback(resolved)
                         }
@@ -276,18 +274,33 @@ object OrexPushBridge {
                         finished = true
                         handler.removeCallbacks(fallback)
                         Log.w(TAG, "Live Flutter resolver failed: $errorCode $errorMessage")
-                        OrexPushBackgroundResolver.resolve(context, normalized, callback)
+                        resolveWithAvailableRuntime(context, normalized, callback)
                     }
 
                     override fun notImplemented() {
                         if (finished) return
                         finished = true
                         handler.removeCallbacks(fallback)
-                        OrexPushBackgroundResolver.resolve(context, normalized, callback)
+                        resolveWithAvailableRuntime(context, normalized, callback)
                     }
                 },
             )
         }
+    }
+
+    private fun resolveWithAvailableRuntime(
+        context: Context,
+        payload: Map<String, String>,
+        callback: (Map<String, String>?) -> Unit,
+    ) {
+        if (OrexFlutterEngineOwner.isRunning()) {
+            // The process isolate exists but its Dart channel is still booting or
+            // temporarily unavailable. Returning null makes WorkManager retry and
+            // preserves the single-engine database ownership invariant.
+            callback(null)
+            return
+        }
+        OrexPushBackgroundResolver.resolve(context, payload, callback)
     }
 
     fun handleResolvedPush(context: Context, resolved: Map<String, String>) {
@@ -386,21 +399,21 @@ object OrexPushBridge {
         systemManaged: Boolean = false,
         ringEventId: String? = null,
     ): PendingIntent {
-        val payload = incomingCallPayload(
+        // Android 12+ blocks notification trampolines: a notification action
+        // must launch an Activity directly instead of entering a receiver which
+        // then calls startActivity(). This invisible Activity persists Answer,
+        // starts the foreground call runtime and opens MainActivity. Because it
+        // is not showWhenLocked, Android requests the normal device unlock first.
+        val intent = OrexCallActionActivity.createIntent(
+            context = context,
             callId = callId,
             ringEventId = ringEventId,
             displayName = displayName,
             video = video,
-            fromSystem = systemManaged,
+            action = action,
+            systemManaged = systemManaged,
         )
-        val intent = Intent(context, OrexNotificationActionReceiver::class.java).apply {
-            this.action = ACTION_CALL_NOTIFICATION
-            putExtra(EXTRA_OPEN, true)
-            for ((key, value) in openPayload(payload, action)) {
-                putExtra("$EXTRA_PREFIX$key", value)
-            }
-        }
-        return PendingIntent.getBroadcast(
+        return PendingIntent.getActivity(
             context,
             callAttemptRequestCode(requestCode, callId, ringEventId),
             intent,
@@ -611,10 +624,11 @@ object OrexPushBridge {
     ): Boolean = startMainActivity(
         context,
         Intent(context, MainActivity::class.java).apply {
-            // Do not install a second native connecting cover in MainActivity.
-            // After Answer the foreground activity is only a Flutter host; the
-            // single visible call surface is CallScreen. The accepted command is
-            // already persisted above and will be drained through MethodChannel.
+            // The accepted command is persisted before this Activity launch. A
+            // small native cover is nevertheless required during a cold Flutter
+            // bootstrap, otherwise the launcher/splash can surface a generic
+            // startup error while Matrix and the call route are still restoring.
+            putExtra(MainActivity.EXTRA_CALL_HANDOFF, true)
             putExtra("orex_call_host_open", true)
             putExtra(MainActivity.EXTRA_CALL_ID, callId)
             normalizeRingEventId(ringEventId)?.let {
