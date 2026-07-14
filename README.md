@@ -385,6 +385,9 @@ flutter clean
 flutter pub get
 flutter analyze --no-pub
 flutter test --no-pub
+Push-Location android
+.\gradlew.bat :app:testDebugUnitTest --no-daemon
+Pop-Location
 flutter build web --release --no-web-resources-cdn
 flutter build apk --release --split-per-abi
 flutter build windows --release
@@ -419,7 +422,9 @@ Matrix request gate с `retry_after_ms`, fail-closed media E2EE и SQLCipher 4.1
 звонка и оставшееся после остановленного процесса состояние `answering/active`.
 Свежий точный ring больше не подавляется старым SharedPreferences-состоянием и
 не записывается ошибочно в cancellation tombstone; это восстанавливает
-уведомление и full-screen incoming UI в фоне и при cold start.
+уведомление и full-screen incoming UI в фоне и при cold start. GitHub CI также
+запускает точную Gradle-задачу `:app:testDebugUnitTest`, поэтому native
+Kotlin/JUnit-тесты Orex проверяются отдельно от тестов Flutter-плагинов.
 
 **До выдачи пререлиза:** повторно выполнить `pub get`, `analyze`, `test` после
 изменений `+11`; smoke двух последовательных звонков Android ↔ Web ↔ Windows для accept/reject/redial, потери

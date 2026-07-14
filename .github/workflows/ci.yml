@@ -42,6 +42,13 @@ jobs:
       - name: Test
         run: flutter test --no-pub
 
+      # Run only Orex app tests. The unqualified Gradle task also executes
+      # unit tests shipped by every Flutter plugin subproject, which are not
+      # part of the Orex test contract and may depend on runner-specific I/O.
+      - name: Android app unit tests (Kotlin/JUnit)
+        working-directory: android
+        run: .\gradlew.bat :app:testDebugUnitTest --no-daemon --stacktrace
+
       - name: Build LiveKit E2EE worker
         shell: bash
         run: |
