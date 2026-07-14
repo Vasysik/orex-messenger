@@ -45,72 +45,17 @@ class OrexCallActionActivity : Activity() {
         when (action) {
             ACTION_ANSWER, ACTION_ANSWER_VIDEO -> {
                 val useVideo = action == ACTION_ANSWER_VIDEO || video
-                if (!OrexCallPresentationState.markAnswering(
-                        applicationContext,
-                        callId,
-                        ringEventId,
-                    )
-                ) return
-                val foregroundStarted = OrexCallForegroundService.startAnswering(
-                    context = applicationContext,
+                val launched = OrexPushBridge.acceptIncomingCallFromNativeAction(
+                    context = this,
                     callId = callId,
                     ringEventId = ringEventId,
                     displayName = displayName,
                     video = useVideo,
+                    fromSystem = systemManaged,
+                    bringUiToFront = true,
                 )
-                if (!foregroundStarted) {
-                    OrexCallPresentationState.markEnded(
-                        applicationContext,
-                        callId,
-                        ringEventId,
-                    )
-                    return
-                }
-                OrexNotificationCenter.cancelCallNotification(applicationContext)
-                val launched = if (systemManaged) {
-                    // Publish the explicit user choice before MainActivity can
-                    // resume. Flutter then suppresses any stale incoming route
-                    // while Core-Telecom completes the same idempotent answer.
-                    OrexPushBridge.queueIncomingCallAction(
-                        context = this,
-                        callId = callId,
-                        ringEventId = ringEventId,
-                        displayName = displayName,
-                        video = useVideo,
-                        action = ACTION_ANSWER,
-                        fromSystem = true,
-                    )
-                    OrexAndroidTelecomManager.handleNotificationAction(
-                        Intent().apply {
-                            this.action = OrexAndroidTelecomManager.ACTION_ANSWER
-                            putExtra(OrexAndroidTelecomManager.EXTRA_CALL_ID, callId)
-                            ringEventId?.let {
-                                putExtra(OrexAndroidTelecomManager.EXTRA_RING_EVENT_ID, it)
-                            }
-                        },
-                    )
-                    OrexPushBridge.bringCallHandoffToFront(
-                        context = this,
-                        callId = callId,
-                        ringEventId = ringEventId,
-                        displayName = displayName,
-                    )
-                } else {
-                    OrexPushBridge.launchIncomingCallAction(
-                        context = this,
-                        callId = callId,
-                        ringEventId = ringEventId,
-                        displayName = displayName,
-                        video = useVideo,
-                        action = "answer",
-                        fromSystem = false,
-                        bringUiToFront = true,
-                    )
-                }
                 if (!launched) {
-                    // Call execution is already queued in the process runtime;
-                    // expanded UI is best-effort only.
-                    Log.w(TAG, "Accepted call queued without expanded UI $callId")
+                    Log.w(TAG, "Accepted call action was not claimed $callId")
                 }
             }
 

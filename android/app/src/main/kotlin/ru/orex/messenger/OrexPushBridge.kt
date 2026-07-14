@@ -386,18 +386,24 @@ object OrexPushBridge {
         systemManaged: Boolean = false,
         ringEventId: String? = null,
     ): PendingIntent {
-        return PendingIntent.getActivity(
+        val payload = incomingCallPayload(
+            callId = callId,
+            ringEventId = ringEventId,
+            displayName = displayName,
+            video = video,
+            fromSystem = systemManaged,
+        )
+        val intent = Intent(context, OrexNotificationActionReceiver::class.java).apply {
+            this.action = ACTION_CALL_NOTIFICATION
+            putExtra(EXTRA_OPEN, true)
+            for ((key, value) in openPayload(payload, action)) {
+                putExtra("$EXTRA_PREFIX$key", value)
+            }
+        }
+        return PendingIntent.getBroadcast(
             context,
             callAttemptRequestCode(requestCode, callId, ringEventId),
-            OrexCallActionActivity.createIntent(
-                context = context,
-                callId = callId,
-                ringEventId = ringEventId,
-                displayName = displayName,
-                video = video,
-                action = action,
-                systemManaged = systemManaged,
-            ),
+            intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
     }
@@ -511,39 +517,89 @@ object OrexPushBridge {
         bringUiToFront: Boolean = action == "answer",
         ringEventId: String? = null,
     ): Boolean {
-        val payload = incomingCallPayload(
-            callId = callId,
-            ringEventId = ringEventId,
-            displayName = displayName,
-            video = video,
-            fromSystem = fromSystem,
-        )
-        // Answer is persisted immediately and belongs to the process runtime.
-        // MainActivity is best-effort presentation and never gates execution.
-        val open = openPayload(payload, action)
-        if (action == "answer") {
-            deferNotificationOpenForCallHandoff(context.applicationContext, open)
-        } else {
-            deliverNotificationOpen(context.applicationContext, open)
-        }
-
-        if (!bringUiToFront && channel != null) return true
-        val launched = if (action == "answer") {
-            bringCallHandoffToFront(
+        return when (action) {
+            "answer", "answer_video" -> acceptIncomingCallFromNativeAction(
                 context = context,
                 callId = callId,
                 ringEventId = ringEventId,
                 displayName = displayName,
-                avatarCacheKey = null,
+                video = action == "answer_video" || video,
+                fromSystem = fromSystem,
+                bringUiToFront = bringUiToFront,
             )
-        } else {
-            bringAppToFront(context)
+            else -> {
+                val payload = incomingCallPayload(
+                    callId = callId,
+                    ringEventId = ringEventId,
+                    displayName = displayName,
+                    video = video,
+                    fromSystem = fromSystem,
+                )
+                deliverNotificationOpen(context.applicationContext, openPayload(payload, action))
+                if (!bringUiToFront && channel != null) true else bringAppToFront(context)
+            }
         }
-        if (!launched && action == "answer") {
+    }
+
+    fun acceptIncomingCallFromNativeAction(
+        context: Context,
+        callId: String,
+        ringEventId: String?,
+        displayName: String,
+        video: Boolean,
+        fromSystem: Boolean,
+        bringUiToFront: Boolean,
+    ): Boolean {
+        val appContext = context.applicationContext
+        if (!OrexCallPresentationState.markAnswering(appContext, callId, ringEventId)) {
+            Log.i(TAG, "Ignoring accepted call action for non-presentable attempt call=$callId")
+            return false
+        }
+        val foregroundStarted = OrexCallForegroundService.startAnswering(
+            context = appContext,
+            callId = callId,
+            ringEventId = ringEventId,
+            displayName = displayName,
+            video = video,
+        )
+        if (!foregroundStarted) {
+            OrexCallPresentationState.markEnded(appContext, callId, ringEventId)
+            return false
+        }
+        OrexNotificationCenter.cancelCallNotification(appContext)
+        OrexIncomingCallActivity.finishForCall(callId, ringEventId)
+        queueIncomingCallAction(
+            context = appContext,
+            callId = callId,
+            ringEventId = ringEventId,
+            displayName = displayName,
+            video = video,
+            action = "answer",
+            fromSystem = fromSystem,
+        )
+        if (fromSystem) {
+            OrexAndroidTelecomManager.handleNotificationAction(
+                Intent().apply {
+                    action = OrexAndroidTelecomManager.ACTION_ANSWER
+                    putExtra(OrexAndroidTelecomManager.EXTRA_CALL_ID, callId)
+                    normalizeRingEventId(ringEventId)?.let {
+                        putExtra(OrexAndroidTelecomManager.EXTRA_RING_EVENT_ID, it)
+                    }
+                },
+            )
+        }
+        if (!bringUiToFront) return true
+        val launched = bringCallHandoffToFront(
+            context = appContext,
+            callId = callId,
+            ringEventId = ringEventId,
+            displayName = displayName,
+            avatarCacheKey = null,
+        )
+        if (!launched) {
             Log.w(TAG, "Accepted call queued without expanded Activity call=$callId")
-            return true
         }
-        return launched
+        return true
     }
 
     fun bringCallHandoffToFront(
