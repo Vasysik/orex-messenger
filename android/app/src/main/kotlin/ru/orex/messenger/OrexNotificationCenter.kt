@@ -557,14 +557,16 @@ object OrexNotificationCenter {
         if (callId.isBlank()) return OrexCallPresentationState.IncomingDecision.SUPPRESS
         if (OrexCallForegroundService.ownsCall(context, callId, ringToken)) {
             OrexCallPresentationState.markActive(context, callId, ringToken)
-            OrexCallPresentationState.rememberSuppressedRing(
-                context = context,
-                callId = callId,
-                ringToken = ringToken,
-            )
             Log.i(TAG, "Incoming push suppressed by active foreground call call=$callId")
             return OrexCallPresentationState.IncomingDecision.SUPPRESS
         }
+        OrexCallPresentationState.replaceUnownedNonRingingAttempt(
+            context = context,
+            callId = callId,
+            ringEventId = ringToken,
+            hasLiveOwner = OrexCallForegroundService.hasLiveCall(context) ||
+                OrexAndroidTelecomManager.hasLiveCall(),
+        )
         return OrexCallPresentationState.claimPushRing(
             context = context,
             callId = callId,

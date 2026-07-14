@@ -93,6 +93,11 @@ object OrexAndroidTelecomManager {
 
     fun ownsCallRouting(): Boolean = current != null
 
+    fun hasLiveCall(): Boolean {
+        val managed = current
+        return managed != null && !managed.terminating
+    }
+
     fun cancelRingingAttempt(callId: String, ringEventId: String?) {
         val normalizedCallId = callId.trim()
         val normalizedRingEventId = normalizeRingEventId(ringEventId)
@@ -565,6 +570,16 @@ object OrexAndroidTelecomManager {
         }
 
         val manager = callsManager ?: return false
+        if (incoming) {
+            val context = appContext ?: return false
+            OrexCallPresentationState.replaceUnownedNonRingingAttempt(
+                context = context,
+                callId = callId,
+                ringEventId = ringEventId,
+                hasLiveOwner = hasLiveCall() ||
+                    OrexCallForegroundService.hasLiveCall(context),
+            )
+        }
         val managed = ManagedCall(
             callId = callId,
             ringEventId = normalizeRingEventId(ringEventId),

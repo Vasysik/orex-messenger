@@ -4,7 +4,7 @@
 сквозным шифрованием сообщений через **vodozemac** и нативными звонками Orex на
 стеке **MatrixRTC / LiveKit**. Единая кодовая база: **Web · Android · Windows**.
 
-Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+10**: это
+Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+11**: это
 исходный release candidate для dogfood с системными Android-звонками,
 killed-process push, MatrixRTC/LiveKit media E2EE и обязательным release quality
 gate. После обновления зависимостей сборки должны быть заново подтверждены на
@@ -415,9 +415,14 @@ Matrix request gate с `retry_after_ms`, fail-closed media E2EE и SQLCipher 4.1
 по времени, поэтому повторный вызов не ждёт зависшую предыдущую операцию. Так
 как `call_id` личного звонка стал поколенческим, для smoke и dogfood все
 участники звонка должны одновременно использовать сборку `0.4.2+10` или новее.
+В `0.4.2+11` Android-представление входящего вызова различает живого владельца
+звонка и оставшееся после остановленного процесса состояние `answering/active`.
+Свежий точный ring больше не подавляется старым SharedPreferences-состоянием и
+не записывается ошибочно в cancellation tombstone; это восстанавливает
+уведомление и full-screen incoming UI в фоне и при cold start.
 
 **До выдачи пререлиза:** повторно выполнить `pub get`, `analyze`, `test` после
-изменений `+10`; smoke двух последовательных звонков Android ↔ Web ↔ Windows для accept/reject/redial, потери
+изменений `+11`; smoke двух последовательных звонков Android ↔ Web ↔ Windows для accept/reject/redial, потери
 сети, stage timeout, повторного входа после фантома, audio mute, background/lock
 screen и reconnect; проверить logout/soft logout после Matrix 8.x, release-сборки
 и push на убитом Android-процессе. Web smoke должен выполняться через

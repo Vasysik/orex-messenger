@@ -43,6 +43,11 @@ class OrexCallForegroundService : Service() {
         }
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        serviceRunning = true
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -133,6 +138,7 @@ class OrexCallForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        serviceRunning = false
         pendingNotification = null
         heartbeatHandler.removeCallbacks(heartbeat)
         releaseCallWakeLock()
@@ -281,6 +287,9 @@ class OrexCallForegroundService : Service() {
         @Volatile
         private var pendingNotification: Notification? = null
 
+        @Volatile
+        private var serviceRunning: Boolean = false
+
         fun update(
             context: Context,
             descriptor: Descriptor,
@@ -356,11 +365,18 @@ class OrexCallForegroundService : Service() {
             return true
         }
 
+        fun hasLiveCall(context: Context): Boolean {
+            if (!serviceRunning) return false
+            val descriptor = readDescriptor(context) ?: return false
+            return System.currentTimeMillis() - descriptor.updatedAt <= DESCRIPTOR_STALE_MS
+        }
+
         fun ownsCall(
             context: Context,
             callId: String,
             ringEventId: String? = null,
         ): Boolean {
+            if (!serviceRunning) return false
             var descriptor = readDescriptor(context) ?: return false
             if (!sameCallAttempt(
                     descriptor.callId,

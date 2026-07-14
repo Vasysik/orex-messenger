@@ -51,6 +51,41 @@ object OrexCallPresentationState {
 
     private val lock = Any()
 
+    /**
+     * Drops persisted answering/active state from a dead process before a fresh
+     * exact ring is claimed.
+     *
+     * The previous strong token is tombstoned so a delayed duplicate cannot
+     * resurrect it. The new token is never tombstoned merely because stale
+     * presentation state existed.
+     */
+    fun replaceUnownedNonRingingAttempt(
+        context: Context,
+        callId: String,
+        ringEventId: String?,
+        hasLiveOwner: Boolean,
+    ): Boolean = synchronized(lock) {
+        val now = System.currentTimeMillis()
+        val state = readLiveState(context, now) ?: return@synchronized false
+        val currentRingEventId = currentRingToken(context)
+        if (!shouldReplaceUnownedNonRingingAttempt(
+                currentCallId = state.callId,
+                currentRingEventId = currentRingEventId,
+                currentIsRinging = state.phase == PHASE_RINGING,
+                requestedCallId = callId,
+                requestedRingEventId = ringEventId,
+                hasLiveOwner = hasLiveOwner,
+            )
+        ) return@synchronized false
+
+        if (currentRingEventId != null) {
+            rememberCancelledRing(context, state.callId, currentRingEventId, now)
+        }
+        prefs(context).edit().clear().commit()
+        Log.i(TAG, "Cleared unowned stale call presentation before fresh ring")
+        true
+    }
+
     fun claimPushRing(
         context: Context,
         callId: String,
@@ -145,7 +180,10 @@ object OrexCallPresentationState {
                     }
                     return@synchronized IncomingDecision.SUPPRESS
                 }
-                rememberSuppressedRingLocked(context, callId, ringToken, now)
+                // An answering/active presentation suppresses duplicate UI, but
+                // suppression alone is not a cancellation. Tombstoning the
+                // candidate here poisoned a later cold-start delivery when the
+                // persisted state belonged to a dead process.
                 return@synchronized IncomingDecision.SUPPRESS
             } else {
                 Log.i(TAG, "Incoming call suppressed while another call is ${state.phase}")

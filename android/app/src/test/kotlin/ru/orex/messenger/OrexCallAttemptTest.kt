@@ -98,4 +98,82 @@ class OrexCallAttemptTest {
             ),
         )
     }
+
+    @Test
+    fun freshExactRingReplacesUnownedAnsweredState() {
+        assertTrue(
+            shouldReplaceUnownedNonRingingAttempt(
+                currentCallId = "!room:orex",
+                currentRingEventId = "event-old",
+                currentIsRinging = false,
+                requestedCallId = "!room:orex",
+                requestedRingEventId = "event-new",
+                hasLiveOwner = false,
+            ),
+        )
+    }
+
+    @Test
+    fun freshRingNeverStealsAProcessOwnedCall() {
+        assertFalse(
+            shouldReplaceUnownedNonRingingAttempt(
+                currentCallId = "!room:orex",
+                currentRingEventId = "event-old",
+                currentIsRinging = false,
+                requestedCallId = "!room:orex",
+                requestedRingEventId = "event-new",
+                hasLiveOwner = true,
+            ),
+        )
+        assertFalse(
+            shouldReplaceUnownedNonRingingAttempt(
+                currentCallId = "!room:orex",
+                currentRingEventId = "event-old",
+                currentIsRinging = true,
+                requestedCallId = "!room:orex",
+                requestedRingEventId = "event-new",
+                hasLiveOwner = false,
+            ),
+        )
+    }
+
+    @Test
+    fun tokenlessCandidateCannotClearPersistedState() {
+        assertFalse(
+            shouldReplaceUnownedNonRingingAttempt(
+                currentCallId = "!room:orex",
+                currentRingEventId = "event-old",
+                currentIsRinging = false,
+                requestedCallId = "!room:orex",
+                requestedRingEventId = null,
+                hasLiveOwner = false,
+            ),
+        )
+    }
+
+
+    @Test
+    fun freshExactRingReplacesUnownedStateFromAnotherRoomOrLegacyAttempt() {
+        assertTrue(
+            shouldReplaceUnownedNonRingingAttempt(
+                currentCallId = "!old:orex",
+                currentRingEventId = "event-old",
+                currentIsRinging = false,
+                requestedCallId = "!new:orex",
+                requestedRingEventId = "event-new",
+                hasLiveOwner = false,
+            ),
+        )
+        assertTrue(
+            shouldReplaceUnownedNonRingingAttempt(
+                currentCallId = "!room:orex",
+                currentRingEventId = null,
+                currentIsRinging = false,
+                requestedCallId = "!room:orex",
+                requestedRingEventId = "event-new",
+                hasLiveOwner = false,
+            ),
+        )
+    }
+
 }

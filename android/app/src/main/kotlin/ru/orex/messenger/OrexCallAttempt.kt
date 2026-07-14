@@ -18,6 +18,29 @@ internal fun sameRingAttempt(current: String?, requested: String?): Boolean =
 internal fun canPromoteRingAttempt(current: String?, requested: String?): Boolean =
     normalizeRingEventId(current) == null && normalizeRingEventId(requested) != null
 
+
+/**
+ * A strong ring may replace persisted answering/active presentation state only
+ * when no process-local owner still backs that state.
+ *
+ * This is intentionally narrower than ordinary ring replacement: ringing state
+ * already has timestamp ordering, while answering/active state must not survive
+ * a killed Flutter process and poison the next exact call generation.
+ */
+internal fun shouldReplaceUnownedNonRingingAttempt(
+    currentCallId: String,
+    currentRingEventId: String?,
+    currentIsRinging: Boolean,
+    requestedCallId: String,
+    requestedRingEventId: String?,
+    hasLiveOwner: Boolean,
+): Boolean {
+    if (hasLiveOwner || currentIsRinging) return false
+    val requested = normalizeRingEventId(requestedRingEventId) ?: return false
+    if (currentCallId != requestedCallId) return true
+    return normalizeRingEventId(currentRingEventId) != requested
+}
+
 internal fun sameCallAttempt(
     currentCallId: String,
     currentRingEventId: String?,
