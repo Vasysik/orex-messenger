@@ -49,6 +49,26 @@ internal fun sameCallAttempt(
 ): Boolean = currentCallId == requestedCallId &&
     sameRingAttempt(currentRingEventId, requestedRingEventId)
 
+
+/** Exact identity, plus the one safe legacy -> exact promotion used by UI handoff. */
+internal fun sameOrPromotableCallAttempt(
+    currentCallId: String?,
+    currentRingEventId: String?,
+    requestedCallId: String,
+    requestedRingEventId: String?,
+): Boolean {
+    val normalizedCurrentCallId = currentCallId?.trim().orEmpty()
+    if (normalizedCurrentCallId.isEmpty() || normalizedCurrentCallId != requestedCallId) {
+        return false
+    }
+    return sameCallAttempt(
+        normalizedCurrentCallId,
+        currentRingEventId,
+        requestedCallId,
+        requestedRingEventId,
+    ) || canPromoteRingAttempt(currentRingEventId, requestedRingEventId)
+}
+
 /**
  * Whether an exact remote ring cancellation may close the fallback incoming UI.
  *

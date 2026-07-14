@@ -22,6 +22,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -833,10 +834,9 @@ object OrexAndroidTelecomManager {
         if (managed.answered) {
             // Core-Telecom can finish its coroutine while LiveKit remains active
             // (for example during replacement/re-registration). Do not mark the
-            // accepted call as ended or reopen ringing state; Flutter owns the
-            // ongoing foreground notification from this point.
+            // accepted call as ended, and do not reveal MainActivity here: the
+            // expanded Flutter route owns the callUiReady handoff.
             OrexNotificationCenter.cancelCallNotification(context)
-            OrexIncomingCallActivity.finishForCall(managed.callId, managed.ringEventId)
         } else {
             OrexNotificationCenter.cancelIncomingCall(
                 context,
@@ -870,6 +870,30 @@ object OrexAndroidTelecomManager {
         action: String,
         extras: Map<String, Any?> = emptyMap(),
     ): Boolean {
+        if (action == "answer") {
+            val context = appContext ?: return false
+            val launched = OrexPushBridge.bringCallHandoffToFront(
+                context = context,
+                callId = managed.callId,
+                ringEventId = managed.ringEventId,
+                displayName = managed.displayName,
+            )
+            if (!launched) return false
+            val overlayReady = withTimeoutOrNull(1_800L) {
+                while (!OrexPushBridge.isCallHandoffOverlayReady(
+                        managed.callId,
+                        managed.ringEventId,
+                    )
+                ) {
+                    delay(16L)
+                }
+                true
+            } == true
+            if (!overlayReady) {
+                Log.e(TAG, "Timed out waiting for native call handoff cover")
+                return false
+            }
+        }
         val methodChannel = channel
         if (methodChannel == null) {
             val context = appContext ?: return false
@@ -889,6 +913,7 @@ object OrexAndroidTelecomManager {
                 video = extras["video"] as? Boolean ?: managed.video,
                 action = coldAction,
                 fromSystem = true,
+                bringUiToFront = coldAction == "answer",
             )
         }
         val payload = mutableMapOf<String, Any?>(

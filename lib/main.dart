@@ -333,8 +333,8 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       _openPushNotification,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final pendingCallUi = widget.matrix.call
-          .takePendingAcceptedIncomingCallUiRequest();
+      final pendingCallUi =
+          widget.matrix.call.pendingAcceptedIncomingCallUiRequest;
       if (pendingCallUi != null) _openAcceptedCall(pendingCallUi);
       if (widget.matrix.isLoggedIn) {
         unawaited(widget.matrix.push.ensurePermissionRequested());
@@ -660,7 +660,6 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
   }
 
   void _handleAcceptedCallUiRequest(OrexCallInstance instance) {
-    widget.matrix.call.takePendingAcceptedIncomingCallUiRequest();
     _openAcceptedCall(instance);
   }
 
@@ -677,7 +676,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       final nav = _navKey.currentState;
       final ctx = nav?.overlay?.context ?? _navKey.currentContext;
       if (nav == null || ctx == null || !ctx.mounted) {
-        if (attempt < 20) {
+        if (attempt < 80) {
           Future<void>.delayed(const Duration(milliseconds: 150), () {
             if (mounted) {
               _openAcceptedCall(instance, attempt: attempt + 1);
@@ -688,6 +687,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       }
 
       void notifyUiReady() {
+        widget.matrix.call.takePendingAcceptedIncomingCallUiRequest();
         final exactInstance = currentInstance();
         unawaited(
           widget.matrix.push.notifyCallUiReady(

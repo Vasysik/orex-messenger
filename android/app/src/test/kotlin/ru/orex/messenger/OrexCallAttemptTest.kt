@@ -176,4 +176,40 @@ class OrexCallAttemptTest {
         )
     }
 
+    @Test
+    fun callHandoffAcceptsOnlyExactOrLegacyPromotableIdentity() {
+        assertTrue(
+            sameOrPromotableCallAttempt(
+                "!room:orex",
+                "event-a",
+                "!room:orex",
+                "event-a",
+            ),
+        )
+        assertTrue(
+            sameOrPromotableCallAttempt(
+                "!room:orex",
+                null,
+                "!room:orex",
+                "event-a",
+            ),
+        )
+        assertFalse(
+            sameOrPromotableCallAttempt(
+                "!room:orex",
+                "event-old",
+                "!room:orex",
+                "event-new",
+            ),
+        )
+        assertFalse(
+            sameOrPromotableCallAttempt(
+                "!other:orex",
+                null,
+                "!room:orex",
+                "event-a",
+            ),
+        )
+    }
+
 }

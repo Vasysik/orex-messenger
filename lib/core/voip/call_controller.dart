@@ -68,6 +68,9 @@ class CallController extends ChangeNotifier {
 
   /// Replays an accepted-call route request that was emitted while Flutter's
   /// root navigator was still bootstrapping after a cold notification answer.
+  OrexCallInstance? get pendingAcceptedIncomingCallUiRequest =>
+      _pendingAcceptedIncomingCallUi;
+
   OrexCallInstance? takePendingAcceptedIncomingCallUiRequest() {
     final instance = _pendingAcceptedIncomingCallUi;
     _pendingAcceptedIncomingCallUi = null;
@@ -506,6 +509,11 @@ class CallController extends ChangeNotifier {
 
   bool get isActive => _session != null;
 
+  /// True after the local user accepted an incoming call. Mobile CallScreen
+  /// uses a stable "Соединение…" handoff caption while transport/media are
+  /// still coming up, instead of exposing internal setup stages to the user.
+  bool get isAcceptedIncomingConnection => !_initiator && _callAnswered;
+
   /// A start request can wait behind teardown or Telecom before it creates the
   /// media session. Mobile presentation stays expanded during that interval.
   bool get isStarting =>
@@ -872,6 +880,13 @@ class CallController extends ChangeNotifier {
         (!kIsWeb &&
             (defaultTargetPlatform == TargetPlatform.android ||
                 defaultTargetPlatform == TargetPlatform.iOS));
+    final acceptedUiHandoff = OrexAcceptedCallUiHandoff(
+      enabled: shouldRequestExpandedUi,
+      acceptedRoomId: acceptedInstance.roomId,
+      currentInstance: () => currentCallInstance,
+      requestUi: _requestAcceptedIncomingCallUi,
+    );
+
     final mediaStart = start(
       room.id,
       video: video,
@@ -879,18 +894,14 @@ class CallController extends ChangeNotifier {
       systemCallPrepared: registered,
       initialAnswered: true,
       ringEventId: acceptedInstance.ringEventId,
+      onSessionCreated: acceptedUiHandoff.requestIfReady,
       onSignalingReady: publishAccepted,
     );
     await mediaStart;
-    if (shouldRequestExpandedUi) {
-      final session = _session;
-      final uiInstance = currentCallInstance;
-      if (session?.status == CallStatus.connected &&
-          uiInstance != null &&
-          uiInstance.roomId == acceptedInstance.roomId) {
-        _requestAcceptedIncomingCallUi(uiInstance);
-      }
-    }
+    // Fallback for an implementation that completed without invoking the
+    // session callback. Normal mobile flow requests the expanded route much
+    // earlier, while CallSession is still CONNECTING.
+    acceptedUiHandoff.requestIfReady();
     try {
       await handledSync.timeout(const Duration(seconds: 4));
     } on TimeoutException {

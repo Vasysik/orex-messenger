@@ -154,9 +154,9 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
       });
       return;
     }
-    // The root listener opens the expanded route only after transport, media
-    // keys and restored media state are ready. Remove this exact incoming route
-    // even if the expanded route is already above it.
+    // The root listener opens the expanded route as soon as the local session
+    // exists, so it can show «Соединение…» during transport/media setup. Remove
+    // this exact incoming route even if the expanded route is already above it.
     _closeOwnRoute();
   }
 

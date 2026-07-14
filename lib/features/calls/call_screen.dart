@@ -40,6 +40,10 @@ class _CallScreenState extends State<CallScreen> {
     isMounted: () => mounted,
   );
 
+  String get _connectionCaption => _call.isAcceptedIncomingConnection
+      ? 'Соединение…'
+      : _call.setupCaption;
+
   bool _preferScreenShareFor(lk.Participant participant) =>
       _videoPreferences.prefersParticipantScreenShare(participant);
 
@@ -83,7 +87,7 @@ class _CallScreenState extends State<CallScreen> {
                         child: Center(
                           child: SquirrelMascot(
                             size: 120,
-                            caption: _call.setupCaption,
+                            caption: _connectionCaption,
                           ),
                         ),
                       ),
@@ -147,7 +151,7 @@ class _CallScreenState extends State<CallScreen> {
     switch (session.status) {
       case CallStatus.connecting:
         return Center(
-          child: SquirrelMascot(size: 120, caption: _call.setupCaption),
+          child: SquirrelMascot(size: 120, caption: _connectionCaption),
         );
       case CallStatus.failed:
         return Center(

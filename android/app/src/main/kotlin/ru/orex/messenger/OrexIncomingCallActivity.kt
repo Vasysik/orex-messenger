@@ -33,9 +33,11 @@ import java.lang.ref.WeakReference
  *
  * Структура намеренно повторяет уже существующий Flutter IncomingCallScreen:
  * ambient Orex background -> avatar/name/status по центру -> три действия снизу.
- * После Answer оболочка закрывается сразу: пользователь уже сделал выбор.
- * MainActivity не показывается поверх keyguard, поэтому содержимое мессенджера
- * остаётся за системной разблокировкой.
+ * После Answer оболочка показывает подключение, пока MainActivity строит
+ * расширенный Flutter CallScreen под нативным cover. Пользователь не видит
+ * незагруженный Home/minimized UI; shell исчезает только после готовности
+ * expanded route. MainActivity не показывается поверх keyguard, поэтому
+ * содержимое мессенджера остаётся за системной разблокировкой.
  */
 class OrexIncomingCallActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
@@ -47,6 +49,7 @@ class OrexIncomingCallActivity : Activity() {
     private var incomingVideo: Boolean = false
     private var systemManaged: Boolean = false
     private var handoffStarted = false
+    private var flutterBootstrapCovered = false
     private var statusText: TextView? = null
     private var avatarSlot: FrameLayout? = null
     private var actionsRow: View? = null
@@ -63,6 +66,13 @@ class OrexIncomingCallActivity : Activity() {
         super.onNewIntent(intent)
         setIntent(intent)
         render(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (handoffStarted && flutterBootstrapCovered && !isDeviceLocked()) {
+            finishAndRemoveTask()
+        }
     }
 
     override fun onDestroy() {
@@ -111,6 +121,7 @@ class OrexIncomingCallActivity : Activity() {
         }
         if (!sameCallAttempt(callId, ringEventId, nextCallId, nextRingEventId)) {
             handoffStarted = false
+            flutterBootstrapCovered = false
         }
         callId = nextCallId
         ringEventId = nextRingEventId
@@ -330,20 +341,24 @@ class OrexIncomingCallActivity : Activity() {
             return
         }
         OrexNotificationCenter.cancelCallNotification(applicationContext)
-        statusText?.text = "Открываем звонок…"
+        statusText?.text = "Подключаем к звонку…"
         progress?.visibility = View.VISIBLE
+        actionsRow?.visibility = View.INVISIBLE
         setEnabledRecursively(actionsRow, false)
 
-        val launched = if (systemManaged) {
-            OrexPushBridge.queueIncomingCallAction(
-                context = this,
-                callId = callId,
-                ringEventId = ringEventId,
-                displayName = displayName,
-                video = useVideo,
-                action = ACTION_ANSWER,
-                fromSystem = true,
-            )
+        // Queue the user action first. MainActivity installs a native cover over
+        // Flutter before consuming it, so a cold/background answer never exposes
+        // a half-built messenger screen.
+        OrexPushBridge.queueIncomingCallAction(
+            context = this,
+            callId = callId,
+            ringEventId = ringEventId,
+            displayName = displayName,
+            video = useVideo,
+            action = ACTION_ANSWER,
+            fromSystem = systemManaged,
+        )
+        if (systemManaged) {
             OrexAndroidTelecomManager.handleNotificationAction(
                 Intent().apply {
                     action = OrexAndroidTelecomManager.ACTION_ANSWER
@@ -353,49 +368,45 @@ class OrexIncomingCallActivity : Activity() {
                     }
                 },
             )
-            OrexPushBridge.bringAppToFront(this)
-        } else {
-            OrexPushBridge.launchIncomingCallAction(
-                context = this,
-                callId = callId,
-                ringEventId = ringEventId,
-                displayName = displayName,
-                video = useVideo,
-                action = "answer",
-                fromSystem = false,
-                bringUiToFront = true,
-            )
         }
+        val launched = OrexPushBridge.bringCallHandoffToFront(
+            context = this,
+            callId = callId,
+            ringEventId = ringEventId,
+            displayName = displayName,
+            avatarCacheKey = avatarCacheKey,
+        )
         if (!launched) {
+            OrexPushBridge.clearCallHandoffOverlayReady(callId, ringEventId)
             restoreAfterFailedHandoff("Не удалось открыть звонок")
-            return
         }
-
-        // MainActivity никогда не показывается поверх keyguard. После принятия
-        // закрываем call-shell только через системную разблокировку: звонок уже
-        // может готовиться, но сообщения и навигация Orex остаются защищены.
-        requestUnlockAfterAnswer()
     }
 
-    private fun requestUnlockAfterAnswer() {
-        val keyguard = getSystemService(KeyguardManager::class.java)
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !keyguard.isKeyguardLocked) {
+    private fun onFlutterBootstrapCovered() {
+        if (!handoffStarted || isFinishing) return
+        flutterBootstrapCovered = true
+        if (!isDeviceLocked()) {
             finishAndRemoveTask()
             return
         }
-
-        statusText?.text = "Звонок принят · разблокируйте телефон"
-        progress?.visibility = View.GONE
-        actionsRow?.visibility = View.INVISIBLE
+        statusText?.text = "Подключаем к звонку… · разблокируйте телефон"
+        val keyguard = getSystemService(KeyguardManager::class.java)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         keyguard.requestDismissKeyguard(
             this,
             object : KeyguardManager.KeyguardDismissCallback() {
-                override fun onDismissSucceeded() = finishAndRemoveTask()
-                override fun onDismissCancelled() = finishAndRemoveTask()
-                override fun onDismissError() = finishAndRemoveTask()
+                override fun onDismissSucceeded() {
+                    if (!isFinishing) finishAndRemoveTask()
+                }
+
+                override fun onDismissCancelled() = Unit
+                override fun onDismissError() = Unit
             },
         )
     }
+
+    private fun isDeviceLocked(): Boolean =
+        getSystemService(KeyguardManager::class.java).isKeyguardLocked
 
     private fun declineCall() {
         if (callId.isEmpty()) return
@@ -432,8 +443,10 @@ class OrexIncomingCallActivity : Activity() {
     private fun restoreAfterFailedHandoff(message: String) {
         OrexCallPresentationState.markEnded(applicationContext, callId, ringEventId)
         handoffStarted = false
+        flutterBootstrapCovered = false
         statusText?.text = message
         progress?.visibility = View.GONE
+        actionsRow?.visibility = View.VISIBLE
         setEnabledRecursively(actionsRow, true)
     }
 
@@ -524,6 +537,25 @@ class OrexIncomingCallActivity : Activity() {
             putExtra(EXTRA_SYSTEM_MANAGED, systemManaged)
         }
 
+        fun onFlutterBootstrapCovered(callId: String, ringEventId: String?) {
+            val activity = current?.get() ?: return
+            val sameAttempt = sameCallAttempt(
+                activity.callId,
+                activity.ringEventId,
+                callId,
+                ringEventId,
+            )
+            val canPromoteAttempt = activity.callId == callId &&
+                canPromoteRingAttempt(activity.ringEventId, ringEventId)
+            if (!sameAttempt && !canPromoteAttempt) return
+            if (canPromoteAttempt) activity.ringEventId = normalizeRingEventId(ringEventId)
+            activity.runOnUiThread { activity.onFlutterBootstrapCovered() }
+        }
+
+        fun onCallUiReady(callId: String, ringEventId: String?) {
+            onFlutterBootstrapCovered(callId, ringEventId)
+        }
+
         fun finishActive() {
             val activity = current?.get() ?: return
             activity.runOnUiThread {
@@ -580,7 +612,7 @@ class OrexIncomingCallActivity : Activity() {
 }
 
 /** Native approximation of Flutter AmbientBackground from glass.dart. */
-private class OrexAmbientBackgroundDrawable : Drawable() {
+internal class OrexAmbientBackgroundDrawable : Drawable() {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     override fun draw(canvas: Canvas) {

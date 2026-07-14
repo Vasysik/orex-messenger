@@ -95,11 +95,10 @@ class OrexCallForegroundService : Service() {
                 true
             }
             if (presentationMatched && (descriptor.answered || descriptor.incoming)) {
+                // The foreground owner silences duplicate ringing, but it must
+                // not tear down the native connecting shell. Only Flutter's
+                // callUiReady handshake may reveal the expanded call route.
                 OrexNotificationCenter.cancelCallNotification(this)
-                OrexIncomingCallActivity.finishForCall(
-                    descriptor.callId,
-                    descriptor.ringEventId,
-                )
             }
             Log.i(
                 TAG,

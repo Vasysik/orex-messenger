@@ -4,7 +4,7 @@
 сквозным шифрованием сообщений через **vodozemac** и нативными звонками Orex на
 стеке **MatrixRTC / LiveKit**. Единая кодовая база: **Web · Android · Windows**.
 
-Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+11**: это
+Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+12**: это
 исходный release candidate для dogfood с системными Android-звонками,
 killed-process push, MatrixRTC/LiveKit media E2EE и обязательным release quality
 gate. После обновления зависимостей сборки должны быть заново подтверждены на
@@ -138,8 +138,10 @@ helper с sanitization имени и защитой от path traversal.
 
 Что есть сейчас:
 
-- мобильный исходящий и принятый звонок сразу открывается развёрнутым; экран
-  показывает подготовку/соединение, пока MatrixRTC и LiveKit запускаются;
+- мобильный исходящий и принятый звонок открывается развёрнутым; при ответе из
+  background/cold start нативная оболочка сначала показывает «Подключаем к
+  звонку…», затем передаёт экран уже поставленному в navigator `CallScreen` со
+  статусом «Соединение…», не показывая Home или свёрнутую панель между этапами;
 - входящий личный звонок поверх текущего экрана;
 - полный экран звонка;
 - свёрнутая панель активного звонка;
@@ -424,10 +426,16 @@ Matrix request gate с `retry_after_ms`, fail-closed media E2EE и SQLCipher 4.1
 не записывается ошибочно в cancellation tombstone; это восстанавливает
 уведомление и full-screen incoming UI в фоне и при cold start. GitHub CI также
 запускает точную Gradle-задачу `:app:testDebugUnitTest`, поэтому native
-Kotlin/JUnit-тесты Orex проверяются отдельно от тестов Flutter-плагинов.
+Kotlin/JUnit-тесты Orex проверяются отдельно от тестов Flutter-плагинов. В
+`0.4.2+12` принятие из background/cold start получило явный UI handoff:
+нативное окно остаётся в состоянии «Подключаем к звонку…», MainActivity строит
+Flutter navigator под нативным cover, затем мобильный `CallScreen` открывается
+развёрнутым со статусом «Соединение…». Нативный cover снимается только после
+post-frame подтверждения расширенного route; foreground service и Core-Telecom
+больше не могут преждевременно закрыть connecting shell.
 
 **До выдачи пререлиза:** повторно выполнить `pub get`, `analyze`, `test` после
-изменений `+11`; smoke двух последовательных звонков Android ↔ Web ↔ Windows для accept/reject/redial, потери
+изменений `+12`; smoke двух последовательных звонков Android ↔ Web ↔ Windows для accept/reject/redial, потери
 сети, stage timeout, повторного входа после фантома, audio mute, background/lock
 screen и reconnect; проверить logout/soft logout после Matrix 8.x, release-сборки
 и push на убитом Android-процессе. Web smoke должен выполняться через

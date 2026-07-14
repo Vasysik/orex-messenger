@@ -8,20 +8,27 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.util.Log
+import android.view.ViewGroup
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    private var callHandoffOverlay: OrexCallHandoffOverlay? = null
+    private var callHandoffCallId: String? = null
+    private var callHandoffRingEventId: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installScoBroadcastCrashGuard()
         super.onCreate(savedInstanceState)
+        installCallHandoffOverlay(intent)
         OrexPushBridge.captureLaunchIntent(this, intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        installCallHandoffOverlay(intent)
         OrexPushBridge.captureLaunchIntent(this, intent)
     }
 
@@ -47,9 +54,103 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        clearCallHandoffOverlay(clearBridgeState = !isChangingConfigurations)
         setProximityEnabled(false)
         OrexPushBridge.detach(this)
         super.onDestroy()
+    }
+
+    @Deprecated("Back is blocked while the accepted call handoff owns the UI")
+    override fun onBackPressed() {
+        if (callHandoffOverlay != null) return
+        super.onBackPressed()
+    }
+
+    private fun installCallHandoffOverlay(source: Intent) {
+        if (!source.getBooleanExtra(EXTRA_CALL_HANDOFF, false)) return
+        val callId = source.getStringExtra(EXTRA_CALL_ID)?.trim().orEmpty()
+        if (callId.isEmpty()) return
+        val ringEventId = normalizeRingEventId(source.getStringExtra(EXTRA_RING_EVENT_ID))
+        val displayName = source.getStringExtra(EXTRA_DISPLAY_NAME)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: "Orex"
+        val avatarCacheKey = source.getStringExtra(EXTRA_AVATAR_CACHE_KEY)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+
+        if (callHandoffOverlay != null) {
+            val ownedCallId = callHandoffCallId.orEmpty()
+            val sameAttempt = sameCallAttempt(
+                ownedCallId,
+                callHandoffRingEventId,
+                callId,
+                ringEventId,
+            )
+            val canPromoteAttempt = ownedCallId == callId &&
+                canPromoteRingAttempt(callHandoffRingEventId, ringEventId)
+            if (sameAttempt || canPromoteAttempt) {
+                if (canPromoteAttempt) callHandoffRingEventId = ringEventId
+                OrexPushBridge.markCallHandoffOverlayReady(callId, ringEventId)
+                return
+            }
+        }
+
+        clearCallHandoffOverlay()
+        val overlay = OrexCallHandoffOverlay(this, displayName, avatarCacheKey)
+        callHandoffOverlay = overlay
+        callHandoffCallId = callId
+        callHandoffRingEventId = ringEventId
+        addContentView(
+            overlay,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        overlay.bringToFront()
+        OrexPushBridge.markCallHandoffOverlayReady(callId, ringEventId)
+        Log.i("OrexCallHandoff", "Native connecting cover ready call=$callId ring=$ringEventId")
+        window.decorView.post {
+            if (callHandoffOverlay === overlay && !isFinishing) {
+                OrexIncomingCallActivity.onFlutterBootstrapCovered(callId, ringEventId)
+            }
+        }
+    }
+
+    fun completeCallHandoff(callId: String, ringEventId: String?): Boolean {
+        val ownedCallId = callHandoffCallId ?: return false
+        val sameAttempt = sameCallAttempt(
+            ownedCallId,
+            callHandoffRingEventId,
+            callId,
+            ringEventId,
+        )
+        val canPromoteAttempt = ownedCallId == callId &&
+            canPromoteRingAttempt(callHandoffRingEventId, ringEventId)
+        if (!sameAttempt && !canPromoteAttempt) return false
+        Log.i("OrexCallHandoff", "Expanded Flutter call UI ready call=$callId ring=$ringEventId")
+        clearCallHandoffOverlay()
+        intent.removeExtra(EXTRA_CALL_HANDOFF)
+        return true
+    }
+
+    fun cancelCallHandoff(callId: String, ringEventId: String?): Boolean =
+        completeCallHandoff(callId, ringEventId)
+
+    private fun clearCallHandoffOverlay(clearBridgeState: Boolean = true) {
+        val overlay = callHandoffOverlay
+        val ownedCallId = callHandoffCallId
+        val ownedRingEventId = callHandoffRingEventId
+        callHandoffOverlay = null
+        callHandoffCallId = null
+        callHandoffRingEventId = null
+        if (clearBridgeState && ownedCallId != null) {
+            OrexPushBridge.clearCallHandoffOverlayReady(ownedCallId, ownedRingEventId)
+        }
+        if (overlay != null) {
+            (overlay.parent as? ViewGroup)?.removeView(overlay)
+        }
     }
 
     private val channelName = "orex/audio_devices"
@@ -494,5 +595,11 @@ class MainActivity : FlutterActivity() {
         val id: Int?,
     )
 
-
+    companion object {
+        const val EXTRA_CALL_HANDOFF = "orex_call_handoff"
+        const val EXTRA_CALL_ID = "orex_call_id"
+        const val EXTRA_RING_EVENT_ID = "orex_ring_event_id"
+        const val EXTRA_DISPLAY_NAME = "orex_display_name"
+        const val EXTRA_AVATAR_CACHE_KEY = "orex_avatar_cache_key"
+    }
 }

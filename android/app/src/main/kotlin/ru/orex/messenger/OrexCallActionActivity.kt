@@ -11,9 +11,9 @@ import android.util.Log
  *
  * Content taps open [OrexIncomingCallActivity]. Answer/Reject do not: the user
  * has already chosen an action, so showing the incoming panel again is both
- * confusing and race-prone. MainActivity is never allowed over the keyguard;
- * therefore an Answer from a locked device still requires normal device unlock
- * before any messenger content can become visible.
+ * confusing and race-prone. Answer opens MainActivity under a native
+ * connecting cover; Flutter content is revealed only after the expanded call
+ * route confirms readiness. A locked device still requires normal unlock.
  */
 class OrexCallActionActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -74,7 +74,12 @@ class OrexCallActionActivity : Activity() {
                             }
                         },
                     )
-                    OrexPushBridge.bringAppToFront(this)
+                    OrexPushBridge.bringCallHandoffToFront(
+                        context = this,
+                        callId = callId,
+                        ringEventId = ringEventId,
+                        displayName = displayName,
+                    )
                 } else {
                     OrexPushBridge.launchIncomingCallAction(
                         context = this,
