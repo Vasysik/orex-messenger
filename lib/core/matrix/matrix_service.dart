@@ -217,6 +217,11 @@ class MatrixService extends ChangeNotifier {
     // или gateway оставляет приложение в обычном foreground-sync режиме.
     try {
       await push.start();
+      // Native Answer can be persisted before the first Flutter frame. A sync
+      // callback may inspect the foreground descriptor in the tiny interval
+      // between platform initialization and takeInitialNotification(). Re-run
+      // recovery after the push bridge has loaded its pending command.
+      if (client.isLogged()) unawaited(callController.recoverPendingCall());
     } catch (e) {
       _log('Push', 'init failed, background delivery disabled', e);
     }

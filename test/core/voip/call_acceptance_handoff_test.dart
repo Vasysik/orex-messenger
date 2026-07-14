@@ -12,6 +12,7 @@ void main() {
         answered: false,
         pushBridgeReady: false,
         hasPendingIncomingAnswer: false,
+        withinAnswerGrace: true,
       ),
       isTrue,
     );
@@ -21,6 +22,7 @@ void main() {
         answered: false,
         pushBridgeReady: true,
         hasPendingIncomingAnswer: true,
+        withinAnswerGrace: false,
       ),
       isTrue,
     );
@@ -30,8 +32,19 @@ void main() {
         answered: false,
         pushBridgeReady: true,
         hasPendingIncomingAnswer: false,
+        withinAnswerGrace: false,
       ),
       isFalse,
+    );
+    expect(
+      orexShouldKeepRecoverableAnswerBootstrap(
+        incoming: true,
+        answered: false,
+        pushBridgeReady: true,
+        hasPendingIncomingAnswer: false,
+        withinAnswerGrace: true,
+      ),
+      isTrue,
     );
   });
 

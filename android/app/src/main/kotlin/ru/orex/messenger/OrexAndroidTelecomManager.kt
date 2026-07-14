@@ -841,7 +841,22 @@ object OrexAndroidTelecomManager {
             cleanup(managed)
             return true
         }
-        val success = control.disconnect(DisconnectCause(causeCode)) is CallControlResult.Success
+        val safeCauseCode = when (causeCode) {
+            DisconnectCause.LOCAL,
+            DisconnectCause.REMOTE,
+            DisconnectCause.MISSED,
+            DisconnectCause.REJECTED -> causeCode
+            else -> {
+                Log.w(
+                    TAG,
+                    "Unsupported Core-Telecom disconnect cause=$causeCode; using LOCAL",
+                )
+                DisconnectCause.LOCAL
+            }
+        }
+        val success = control.disconnect(
+            DisconnectCause(safeCauseCode),
+        ) is CallControlResult.Success
         if (!success) {
             managed.suppressDisconnectEvent = false
             managed.terminating = false

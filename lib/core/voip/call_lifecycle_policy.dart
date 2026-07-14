@@ -61,9 +61,10 @@ bool orexShouldKeepRecoverableAnswerBootstrap({
   required bool answered,
   required bool pushBridgeReady,
   required bool hasPendingIncomingAnswer,
+  required bool withinAnswerGrace,
 }) {
   if (!incoming || answered) return false;
-  return !pushBridgeReady || hasPendingIncomingAnswer;
+  return !pushBridgeReady || hasPendingIncomingAnswer || withinAnswerGrace;
 }
 
 /// One-shot bridge from an accepted incoming call to the expanded mobile UI.
