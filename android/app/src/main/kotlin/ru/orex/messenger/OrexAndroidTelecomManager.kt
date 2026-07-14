@@ -284,16 +284,27 @@ object OrexAndroidTelecomManager {
                 ) {
                     val canPromoteAttempt = managed.callId == callId &&
                         canPromoteRingAttempt(managed.ringEventId, ringEventId)
-                    if (!canPromoteAttempt) {
-                        Log.w(
-                            TAG,
-                            "Foreground descriptor rejected by live Telecom attempt " +
-                                "call=$callId ring=$ringEventId",
-                        )
-                        result.success(false)
-                        return
+                    if (canPromoteAttempt) {
+                        promoteManagedAttempt = true
+                    } else {
+                        // updateForegroundCall is the process runtime claiming the
+                        // only active Orex call. A stale Core-Telecom coroutine from
+                        // a previous attempt must not poison every later start with
+                        // "descriptor rejected". Replace it the same way reportCall()
+                        // replaces stale attempts; a real simultaneous call is still
+                        // impossible because Dart CallController is single-call.
+                        appScope.launch {
+                            try {
+                                disconnectInternal(managed, DisconnectCause.LOCAL)
+                                withTimeoutOrNull(2000) { managed.job?.join() }
+                                cleanup(managed)
+                            } catch (error: Throwable) {
+                                Log.w(TAG, "Failed to clear stale Telecom attempt", error)
+                                managed.job?.cancel()
+                                cleanup(managed)
+                            }
+                        }
                     }
-                    promoteManagedAttempt = true
                 }
                 val startedAt = call.argument<Number>("startedAt")?.toLong()
                     ?.takeIf { it > 0L } ?: System.currentTimeMillis()

@@ -555,7 +555,11 @@ object OrexPushBridge {
     ): Boolean = startMainActivity(
         context,
         Intent(context, MainActivity::class.java).apply {
-            putExtra(MainActivity.EXTRA_CALL_HANDOFF, true)
+            // Do not install a second native connecting cover in MainActivity.
+            // After Answer the foreground activity is only a Flutter host; the
+            // single visible call surface is CallScreen. The accepted command is
+            // already persisted above and will be drained through MethodChannel.
+            putExtra("orex_call_host_open", true)
             putExtra(MainActivity.EXTRA_CALL_ID, callId)
             normalizeRingEventId(ringEventId)?.let {
                 putExtra(MainActivity.EXTRA_RING_EVENT_ID, it)

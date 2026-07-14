@@ -860,14 +860,33 @@ class VoipService extends ChangeNotifier {
 
   /// Сообщить инициатору, что пользователь явно принял звонок.
   Future<void> notifyAccepted(OrexCallInstance instance) =>
-      _signaling.sendDisposition(instance, _acceptedEventType);
+      _sendDispositionBestEffort(instance, _acceptedEventType);
 
   /// Сообщить инициатору (другим участникам комнаты), что мы отклонили звонок.
   Future<void> notifyRejected(OrexCallInstance instance) =>
-      _signaling.sendDisposition(instance, _rejectedEventType);
+      _sendDispositionBestEffort(instance, _rejectedEventType);
 
   Future<void> notifyBusy(OrexCallInstance instance) =>
-      _signaling.sendDisposition(instance, _busyEventType);
+      _sendDispositionBestEffort(instance, _busyEventType);
+
+  Future<void> _sendDispositionBestEffort(
+    OrexCallInstance instance,
+    String eventType,
+  ) async {
+    try {
+      await _signaling.sendDisposition(instance, eventType);
+    } catch (error) {
+      // Dispositions are an acceleration/control plane, not the local call
+      // state owner. On web and during room-migration tests an unencrypted room
+      // can reject plaintext call control; letting that exception escape breaks
+      // all subsequent incoming/outgoing presentation.
+      OrexLog.d(
+        'Voip',
+        'call disposition skipped event=$eventType room=${instance.roomId}',
+        error,
+      );
+    }
+  }
 
   /// Явно завершить личный звонок на удалённых устройствах.
   ///
@@ -884,20 +903,29 @@ class VoipService extends ChangeNotifier {
       _ringEventIds.remove(roomId);
     }
     await Future.wait<void>([
-      _signaling.sendDisposition(instance, _endedEventType),
+      _sendDispositionBestEffort(instance, _endedEventType),
       if (outgoingRing != null &&
           orexCallInstanceIdsMatch(outgoingRing.eventId, instance.ringEventId))
-        _signaling.sendCancellation(
-          room,
-          ringEventId: outgoingRing.eventId,
-          action: 'ended',
-        ).then((sent) {
-          if (!sent &&
-              !_ringEventIds.containsKey(roomId) &&
-              isCurrentCallInstance(instance)) {
-            _ringEventIds[roomId] = outgoingRing;
-          }
-        }),
+        _signaling
+            .sendCancellation(
+              room,
+              ringEventId: outgoingRing.eventId,
+              action: 'ended',
+            )
+            .then((sent) {
+              if (!sent &&
+                  !_ringEventIds.containsKey(roomId) &&
+                  isCurrentCallInstance(instance)) {
+                _ringEventIds[roomId] = outgoingRing;
+              }
+            })
+            .catchError((Object error) {
+              OrexLog.d(
+                'Voip',
+                'call cancellation skipped room=$roomId',
+                error,
+              );
+            }),
     ]);
   }
 

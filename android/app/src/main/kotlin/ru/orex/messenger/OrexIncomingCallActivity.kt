@@ -389,7 +389,16 @@ class OrexIncomingCallActivity : Activity() {
             displayName = displayName,
             avatarCacheKey = avatarCacheKey,
         )
-        if (!launched) {
+        if (launched) {
+            // The native incoming shell is only the pre-answer surface. Once the
+            // accepted command is persisted and MainActivity is requested, the
+            // single user-facing connection surface must be Flutter CallScreen.
+            // Keeping this shell alive created the visible "connecting window"
+            // over a second Flutter incoming route and let its timeout win.
+            handler.postDelayed({
+                if (!isFinishing) finishAndRemoveTask()
+            }, HANDOFF_SHELL_DISMISS_MS)
+        } else {
             answerTimeout?.let(handler::removeCallbacks)
             answerTimeout = null
             // The command is already owned by the foreground runtime. Failure
@@ -547,6 +556,7 @@ class OrexIncomingCallActivity : Activity() {
         private const val DEFAULT_TIMEOUT_MS = 45_000L
         private const val MAX_TIMEOUT_MS = 90_000L
         private const val FAILURE_MESSAGE_VISIBLE_MS = 1_500L
+        private const val HANDOFF_SHELL_DISMISS_MS = 550L
         private const val match = -1
         private const val wrap = -2
 

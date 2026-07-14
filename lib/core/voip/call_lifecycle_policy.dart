@@ -87,11 +87,16 @@ class OrexAcceptedCallUiHandoff {
 
   bool get requested => _requested;
 
+  void request(OrexCallInstance instance) {
+    if (!enabled || _requested || instance.roomId != acceptedRoomId) return;
+    _requested = true;
+    requestUi(instance);
+  }
+
   void requestIfReady() {
     if (!enabled || _requested) return;
     final instance = currentInstance();
     if (instance == null || instance.roomId != acceptedRoomId) return;
-    _requested = true;
-    requestUi(instance);
+    request(instance);
   }
 }

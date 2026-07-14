@@ -63,6 +63,26 @@ void main() {
     expect(requested, hasLength(1));
   });
 
+  test('accepted UI can be requested before CallSession exists', () {
+    const accepted = OrexCallInstance(
+      roomId: '!room:orex',
+      ringEventId: r'$ring',
+    );
+    final requested = <OrexCallInstance>[];
+    final handoff = OrexAcceptedCallUiHandoff(
+      enabled: true,
+      acceptedRoomId: accepted.roomId,
+      currentInstance: () => null,
+      requestUi: requested.add,
+    );
+
+    handoff.request(accepted);
+    handoff.requestIfReady();
+
+    expect(requested, [accepted]);
+    expect(handoff.requested, isTrue);
+  });
+
   test('handoff waits for the exact accepted room and respects disabled desktop flow', () {
     const wrong = OrexCallInstance(roomId: '!other:orex');
     final requested = <OrexCallInstance>[];

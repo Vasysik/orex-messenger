@@ -257,6 +257,28 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
         expected.routeKey;
   }
 
+  bool _isCallSurfaceOwningRoom(String roomId) {
+    final call = widget.matrix.call;
+    final current = call.currentCallInstance;
+    return call.roomId == roomId || current?.roomId == roomId;
+  }
+
+  bool _isIncomingPresentationSuppressedForAcceptedFlow(
+    OrexCallInstance instance,
+  ) {
+    final call = widget.matrix.call;
+    if (call.isActive || call.isStarting) {
+      if (_isCallSurfaceOwningRoom(instance.roomId)) return true;
+    }
+    if (call.isAcceptingIncoming(instance.roomId)) return true;
+    final pendingUi = call.pendingAcceptedIncomingCallUiRequest;
+    if (pendingUi?.roomId == instance.roomId) return true;
+    return widget.matrix.push.hasPendingIncomingAnswer(
+      instance.roomId,
+      ringEventId: instance.ringEventId,
+    );
+  }
+
   OrexCallInstance _canonicalCallInstance(OrexCallInstance instance) {
     final promoted = _callInstanceAliases[instance.routeKey];
     if (promoted == null) return instance;
@@ -564,11 +586,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
         widget.matrix.voip?.isIncomingCallVisible(currentInstance()) ?? false;
 
     final call = widget.matrix.call;
-    if (call.isActive) return;
-    if (widget.matrix.push.hasPendingIncomingAnswer(
-      room.id,
-      ringEventId: currentInstance().ringEventId,
-    )) {
+    if (_isIncomingPresentationSuppressedForAcceptedFlow(currentInstance())) {
       return;
     }
     if (!isVisible()) return;
@@ -619,13 +637,9 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       final call = widget.matrix.call;
       if (!_isForeground ||
           !isVisible() ||
-          widget.matrix.push.hasPendingIncomingAnswer(
-            room.id,
-            ringEventId: currentInstance().ringEventId,
-          ) ||
+          _isIncomingPresentationSuppressedForAcceptedFlow(currentInstance()) ||
           _attemptMapContains(_pendingCallActionAttempts, sourceInstance) ||
-          call.isAcceptingIncomingInstance(currentInstance()) ||
-          call.isActive) {
+          call.isAcceptingIncomingInstance(currentInstance())) {
         _releaseAttempt(_incomingCallDialogs, routeOwner);
         return;
       }
@@ -719,7 +733,19 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     if (!mounted || requested == null) return;
     final instance = _canonicalCallInstance(requested);
     _acceptedCallUiCandidate = instance;
-    if (!widget.matrix.call.isActive || !_isCurrentCall(instance)) {
+    final call = widget.matrix.call;
+    final ownsAcceptedRoom = _isCallSurfaceOwningRoom(instance.roomId);
+    if ((!call.isActive && !call.isStarting) || !ownsAcceptedRoom) {
+      if (call.isAcceptingIncoming(instance.roomId) ||
+          widget.matrix.push.hasPendingIncomingAnswer(
+            instance.roomId,
+            ringEventId: instance.ringEventId,
+          )) {
+        _scheduleAcceptedCallUiDrain(
+          delay: const Duration(milliseconds: 120),
+        );
+        return;
+      }
       _acceptedCallUiCandidate = null;
       _acceptedCallUiRetry?.cancel();
       _acceptedCallUiRetry = null;
@@ -774,13 +800,12 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     _expandedCallRouteKey = instance.routeKey;
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted ||
-          !widget.matrix.call.isActive ||
-          !_isCurrentCall(instance) ||
-          !identical(_expandedCallRoute, route)) {
-        return;
+      if (!mounted || !identical(_expandedCallRoute, route)) return;
+      final call = widget.matrix.call;
+      if ((call.isActive || call.isStarting) &&
+          _isCallSurfaceOwningRoom(instance.roomId)) {
+        notifyUiReady();
       }
-      notifyUiReady();
     });
 
     routeClosed.whenComplete(() {

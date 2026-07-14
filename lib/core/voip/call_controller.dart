@@ -929,6 +929,11 @@ class CallController extends ChangeNotifier {
       requestUi: _requestAcceptedIncomingCallUi,
     );
 
+    // Request the expanded call surface before the potentially long media
+    // connection awaits. The root UI will retry until [start] has established
+    // its room identity, so the user sees one CallScreen "Соединение…" instead
+    // of keeping the incoming panel/shell alive until LiveKit finishes.
+    acceptedUiHandoff.request(acceptedInstance);
     final mediaStart = start(
       room.id,
       video: video,
