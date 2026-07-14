@@ -24,7 +24,6 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import android.widget.TextView
 import java.lang.ref.WeakReference
 
@@ -42,6 +41,7 @@ import java.lang.ref.WeakReference
 class OrexIncomingCallActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private var ringTimeout: Runnable? = null
+    private var answerTimeout: Runnable? = null
     private var callId: String = ""
     private var ringEventId: String? = null
     private var displayName: String = "Orex"
@@ -53,7 +53,7 @@ class OrexIncomingCallActivity : Activity() {
     private var statusText: TextView? = null
     private var avatarSlot: FrameLayout? = null
     private var actionsRow: View? = null
-    private var progress: ProgressBar? = null
+    private var progress: View? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -78,6 +78,8 @@ class OrexIncomingCallActivity : Activity() {
     override fun onDestroy() {
         ringTimeout?.let(handler::removeCallbacks)
         ringTimeout = null
+        answerTimeout?.let(handler::removeCallbacks)
+        answerTimeout = null
         if (current?.get() === this) current = null
         super.onDestroy()
     }
@@ -185,8 +187,7 @@ class OrexIncomingCallActivity : Activity() {
             statusText,
             LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(4) },
         )
-        progress = ProgressBar(this).apply {
-            indeterminateTintList = ColorStateList.valueOf(OREX_COPPER)
+        progress = OrexIndeterminateSpinnerView(this, OREX_COPPER).apply {
             visibility = View.GONE
         }
         center.addView(
@@ -340,22 +341,26 @@ class OrexIncomingCallActivity : Activity() {
             finishAndRemoveTask()
             return
         }
-        OrexCallForegroundService.startAnswering(
+        val foregroundStarted = OrexCallForegroundService.startAnswering(
             context = applicationContext,
             callId = callId,
             ringEventId = ringEventId,
             displayName = displayName,
             video = useVideo,
         )
+        if (!foregroundStarted) {
+            restoreAfterFailedHandoff("Не удалось запустить звонок")
+            return
+        }
         OrexNotificationCenter.cancelCallNotification(applicationContext)
         statusText?.text = "Подключаем к звонку…"
         progress?.visibility = View.VISIBLE
         actionsRow?.visibility = View.INVISIBLE
         setEnabledRecursively(actionsRow, false)
 
-        // Queue the user action first. MainActivity installs a native cover over
-        // Flutter before consuming it, so a cold/background answer never exposes
-        // a half-built messenger screen.
+        // Queue the command before opening UI. The process-owned Flutter runtime
+        // consumes it as soon as its MethodChannel is ready; MainActivity and its
+        // native cover are presentation only and never gate call execution.
         OrexPushBridge.queueIncomingCallAction(
             context = this,
             callId = callId,
@@ -365,6 +370,7 @@ class OrexIncomingCallActivity : Activity() {
             action = ACTION_ANSWER,
             fromSystem = systemManaged,
         )
+        scheduleAnswerTimeout()
         if (systemManaged) {
             OrexAndroidTelecomManager.handleNotificationAction(
                 Intent().apply {
@@ -384,10 +390,45 @@ class OrexIncomingCallActivity : Activity() {
             avatarCacheKey = avatarCacheKey,
         )
         if (!launched) {
-            OrexPushBridge.clearCallHandoffOverlayReady(callId, ringEventId)
-            OrexCallForegroundService.stop(applicationContext, callId, ringEventId)
-            restoreAfterFailedHandoff("Не удалось открыть звонок")
+            answerTimeout?.let(handler::removeCallbacks)
+            answerTimeout = null
+            // The command is already owned by the foreground runtime. Failure
+            // to open expanded UI must not cancel the accepted call.
+            statusText?.text = "Подключение продолжается в фоне…"
+            scheduleAnswerTimeout()
         }
+    }
+
+    private fun scheduleAnswerTimeout() {
+        answerTimeout?.let(handler::removeCallbacks)
+        answerTimeout = Runnable {
+            failAnswerBootstrap("Не удалось подключиться к звонку", stopService = true)
+        }.also {
+            handler.postDelayed(it, OrexCallForegroundService.ANSWERING_TIMEOUT_MS)
+        }
+    }
+
+    private fun failAnswerBootstrap(message: String, stopService: Boolean) {
+        if (!handoffStarted || isFinishing) return
+        answerTimeout?.let(handler::removeCallbacks)
+        answerTimeout = null
+        if (OrexCallForegroundService.isAnsweredCall(
+                applicationContext,
+                callId,
+                ringEventId,
+            )
+        ) {
+            finishAndRemoveTask()
+            return
+        }
+        OrexPushBridge.cancelPendingCallAction(applicationContext, callId, ringEventId)
+        if (stopService) {
+            OrexCallForegroundService.stop(applicationContext, callId, ringEventId)
+        }
+        restoreAfterFailedHandoff(message)
+        handler.postDelayed({
+            if (!isFinishing) finishAndRemoveTask()
+        }, FAILURE_MESSAGE_VISIBLE_MS)
     }
 
     private fun onFlutterBootstrapCovered() {
@@ -505,6 +546,7 @@ class OrexIncomingCallActivity : Activity() {
         private const val ACTION_REJECT = "reject"
         private const val DEFAULT_TIMEOUT_MS = 45_000L
         private const val MAX_TIMEOUT_MS = 90_000L
+        private const val FAILURE_MESSAGE_VISIBLE_MS = 1_500L
         private const val match = -1
         private const val wrap = -2
 
@@ -562,6 +604,23 @@ class OrexIncomingCallActivity : Activity() {
 
         fun onCallUiReady(callId: String, ringEventId: String?) {
             onFlutterBootstrapCovered(callId, ringEventId)
+        }
+
+        fun onAnswerBootstrapFailed(callId: String, ringEventId: String?) {
+            val activity = current?.get() ?: return
+            if (!sameOrPromotableCallAttempt(
+                    activity.callId,
+                    activity.ringEventId,
+                    callId,
+                    ringEventId,
+                )
+            ) return
+            activity.runOnUiThread {
+                activity.failAnswerBootstrap(
+                    "Не удалось подключиться к звонку",
+                    stopService = false,
+                )
+            }
         }
 
         fun finishActive() {

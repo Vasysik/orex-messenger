@@ -45,4 +45,16 @@ object OrexFlutterEngineOwner {
     }
 
     fun isRunning(): Boolean = engine?.dartExecutor?.isExecutingDart == true
+
+    /**
+     * Starts the process call runtime without requiring a Flutter Activity.
+     * The foreground service calls this immediately after entering foreground.
+     */
+    fun ensureStarted(context: Context): Boolean = try {
+        getOrCreate(context)
+        true
+    } catch (error: Throwable) {
+        Log.e(TAG, "Failed to start process-owned Flutter engine", error)
+        false
+    }
 }

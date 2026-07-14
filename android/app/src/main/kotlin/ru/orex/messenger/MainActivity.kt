@@ -6,6 +6,8 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import android.view.ViewGroup
@@ -22,6 +24,9 @@ class MainActivity : FlutterActivity() {
     private var callHandoffOverlay: OrexCallHandoffOverlay? = null
     private var callHandoffCallId: String? = null
     private var callHandoffRingEventId: String? = null
+    private val callHandoffHandler = Handler(Looper.getMainLooper())
+    private var callHandoffRevealTimeout: Runnable? = null
+    private var callHandoffTimeout: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installScoBroadcastCrashGuard()
@@ -59,12 +64,9 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
-        val keepCallRuntime = OrexCallForegroundService.hasLiveCall(applicationContext)
-        clearCallHandoffOverlay(
-            clearBridgeState = !isChangingConfigurations && !keepCallRuntime,
-        )
+        clearCallHandoffOverlay()
         setProximityEnabled(false)
-        OrexPushBridge.detach(this, keepChannel = keepCallRuntime)
+        OrexPushBridge.detach(this)
         super.onDestroy()
     }
 
@@ -98,8 +100,10 @@ class MainActivity : FlutterActivity() {
             val canPromoteAttempt = ownedCallId == callId &&
                 canPromoteRingAttempt(callHandoffRingEventId, ringEventId)
             if (sameAttempt || canPromoteAttempt) {
-                if (canPromoteAttempt) callHandoffRingEventId = ringEventId
-                OrexPushBridge.markCallHandoffOverlayReady(callId, ringEventId)
+                // Keep the original placeholder identity. It remains safely
+                // promotable to the exact ring event, while the already scheduled
+                // timeout keeps its original deadline and cannot be invalidated or
+                // extended by duplicate FCM/activity intents.
                 return
             }
         }
@@ -117,7 +121,7 @@ class MainActivity : FlutterActivity() {
             ),
         )
         overlay.bringToFront()
-        OrexPushBridge.markCallHandoffOverlayReady(callId, ringEventId)
+        scheduleCallHandoffTimeout()
         Log.i("OrexCallHandoff", "Native connecting cover ready call=$callId ring=$ringEventId")
         window.decorView.post {
             if (callHandoffOverlay === overlay && !isFinishing) {
@@ -146,20 +150,85 @@ class MainActivity : FlutterActivity() {
     fun cancelCallHandoff(callId: String, ringEventId: String?): Boolean =
         completeCallHandoff(callId, ringEventId)
 
-    private fun clearCallHandoffOverlay(clearBridgeState: Boolean = true) {
+    private fun clearCallHandoffOverlay() {
+        callHandoffRevealTimeout?.let(callHandoffHandler::removeCallbacks)
+        callHandoffRevealTimeout = null
+        callHandoffTimeout?.let(callHandoffHandler::removeCallbacks)
+        callHandoffTimeout = null
         val overlay = callHandoffOverlay
-        val ownedCallId = callHandoffCallId
-        val ownedRingEventId = callHandoffRingEventId
         callHandoffOverlay = null
         callHandoffCallId = null
         callHandoffRingEventId = null
-        if (clearBridgeState && ownedCallId != null) {
-            OrexPushBridge.clearCallHandoffOverlayReady(ownedCallId, ownedRingEventId)
-        }
         if (overlay != null) {
             (overlay.parent as? ViewGroup)?.removeView(overlay)
         }
     }
+
+    private fun scheduleCallHandoffTimeout() {
+        callHandoffRevealTimeout?.let(callHandoffHandler::removeCallbacks)
+        callHandoffTimeout?.let(callHandoffHandler::removeCallbacks)
+        val callId = callHandoffCallId ?: return
+        val ringEventId = callHandoffRingEventId
+
+        // Once Dart has promoted the descriptor to answered=true, the call is
+        // already owned by the process runtime. Do not let a missing UI callback
+        // keep a native cover above Flutter forever.
+        callHandoffRevealTimeout = Runnable {
+            if (!ownsCallHandoff(callId, ringEventId)) return@Runnable
+            if (!OrexCallForegroundService.isAnsweredCall(
+                    applicationContext,
+                    callId,
+                    ringEventId,
+                )
+            ) return@Runnable
+            Log.w(
+                "OrexCallHandoff",
+                "Revealing answered call after UI handshake grace period " +
+                    "call=$callId ring=$ringEventId",
+            )
+            clearCallHandoffOverlay()
+            intent.removeExtra(EXTRA_CALL_HANDOFF)
+        }.also { callHandoffHandler.postDelayed(it, CALL_HANDOFF_REVEAL_TIMEOUT_MS) }
+
+        callHandoffTimeout = Runnable {
+            if (!ownsCallHandoff(callId, ringEventId)) return@Runnable
+            val answered = OrexCallForegroundService.isAnsweredCall(
+                applicationContext,
+                callId,
+                ringEventId,
+            )
+            if (!answered) {
+                OrexPushBridge.cancelPendingCallAction(
+                    applicationContext,
+                    callId,
+                    ringEventId,
+                )
+                OrexCallForegroundService.stop(applicationContext, callId, ringEventId)
+                Log.e("OrexCallHandoff", "Answer bootstrap timed out call=$callId ring=$ringEventId")
+            } else {
+                Log.w(
+                    "OrexCallHandoff",
+                    "Flutter route handshake timed out; revealing active app " +
+                        "call=$callId ring=$ringEventId",
+                )
+            }
+            clearCallHandoffOverlay()
+            intent.removeExtra(EXTRA_CALL_HANDOFF)
+        }.also {
+            callHandoffHandler.postDelayed(
+                it,
+                OrexCallForegroundService.ANSWERING_TIMEOUT_MS,
+            )
+        }
+    }
+
+    private fun ownsCallHandoff(callId: String, ringEventId: String?): Boolean =
+        sameOrPromotableCallAttempt(
+            callHandoffCallId,
+            callHandoffRingEventId,
+            callId,
+            ringEventId,
+        )
 
     private val channelName = "orex/audio_devices"
     private val androidOutputPrefix = "orex://android/audio-output/"
@@ -604,6 +673,7 @@ class MainActivity : FlutterActivity() {
     )
 
     companion object {
+        private const val CALL_HANDOFF_REVEAL_TIMEOUT_MS = 8_000L
         const val EXTRA_CALL_HANDOFF = "orex_call_handoff"
         const val EXTRA_CALL_ID = "orex_call_id"
         const val EXTRA_RING_EVENT_ID = "orex_ring_event_id"

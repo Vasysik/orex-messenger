@@ -22,7 +22,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -268,14 +267,11 @@ object OrexAndroidTelecomManager {
                     return
                 }
                 val video = call.argument<Boolean>("video") == true
-                val presentationRingEventId =
-                    OrexCallPresentationState.ringEventIdForCall(context, callId)
-                if (presentationRingEventId != null &&
-                    !sameRingAttempt(presentationRingEventId, ringEventId)
-                ) {
-                    result.success(false)
-                    return
-                }
+                // Presentation dedupe is not runtime ownership. A completed incoming
+                // call may leave a short-lived exact ring tombstone/presentation while
+                // the user immediately starts a fresh room call with no ring token.
+                // Foreground ownership is guarded below by the live Telecom call and
+                // the service descriptor; stale UI state must never reject it.
                 val managed = current
                 var promoteManagedAttempt = false
                 if (managed != null &&
@@ -289,6 +285,11 @@ object OrexAndroidTelecomManager {
                     val canPromoteAttempt = managed.callId == callId &&
                         canPromoteRingAttempt(managed.ringEventId, ringEventId)
                     if (!canPromoteAttempt) {
+                        Log.w(
+                            TAG,
+                            "Foreground descriptor rejected by live Telecom attempt " +
+                                "call=$callId ring=$ringEventId",
+                        )
                         result.success(false)
                         return
                     }
@@ -316,7 +317,23 @@ object OrexAndroidTelecomManager {
                 if (started && promoteManagedAttempt) {
                     managed?.ringEventId = ringEventId
                 }
+                if (!started) {
+                    Log.w(TAG, "Foreground descriptor update failed call=$callId ring=$ringEventId")
+                }
                 result.success(started)
+            }
+            "isForegroundCallReady" -> {
+                val context = appContext
+                val callId = call.argument<String>("callId")?.trim().orEmpty()
+                val ringEventId = normalizeRingEventId(call.argument<String>("ringEventId"))
+                result.success(
+                    context != null && callId.isNotEmpty() &&
+                        OrexCallForegroundService.isForegroundReady(
+                            context,
+                            callId,
+                            ringEventId,
+                        ),
+                )
             }
             "stopForegroundCall" -> {
                 val context = appContext
@@ -578,7 +595,7 @@ object OrexAndroidTelecomManager {
                 callId = callId,
                 ringEventId = ringEventId,
                 hasLiveOwner = hasLiveCall() ||
-                    OrexCallForegroundService.hasLiveCall(context),
+                    OrexCallForegroundService.shouldRetainRuntime(context),
             )
         }
         val managed = ManagedCall(
@@ -872,38 +889,36 @@ object OrexAndroidTelecomManager {
     ): Boolean {
         if (action == "answer") {
             val context = appContext ?: return false
-            OrexCallForegroundService.startAnswering(
+            val video = extras["video"] as? Boolean ?: managed.video
+            val foregroundStarted = OrexCallForegroundService.startAnswering(
                 context = context,
                 callId = managed.callId,
                 ringEventId = managed.ringEventId,
                 displayName = managed.displayName,
-                video = extras["video"] as? Boolean ?: managed.video,
+                video = video,
             )
-            val launched = OrexPushBridge.bringCallHandoffToFront(
+            if (!foregroundStarted) return false
+            OrexPushBridge.queueIncomingCallAction(
                 context = context,
                 callId = managed.callId,
                 ringEventId = managed.ringEventId,
                 displayName = managed.displayName,
+                video = video,
+                action = "answer",
+                fromSystem = true,
             )
-            if (!launched) {
-                OrexCallForegroundService.stop(context, managed.callId, managed.ringEventId)
-                return false
+            if (!OrexPushBridge.bringCallHandoffToFront(
+                    context = context,
+                    callId = managed.callId,
+                    ringEventId = managed.ringEventId,
+                    displayName = managed.displayName,
+                )
+            ) {
+                Log.w(TAG, "Accepted Telecom call queued without expanded UI")
             }
-            val overlayReady = withTimeoutOrNull(1_800L) {
-                while (!OrexPushBridge.isCallHandoffOverlayReady(
-                        managed.callId,
-                        managed.ringEventId,
-                    )
-                ) {
-                    delay(16L)
-                }
-                true
-            } == true
-            if (!overlayReady) {
-                Log.e(TAG, "Timed out waiting for native call handoff cover")
-                OrexCallForegroundService.stop(context, managed.callId, managed.ringEventId)
-                return false
-            }
+            // Telecom's transaction confirms the user's choice, not final media
+            // readiness. Native/Dart watchdogs own any later setup failure.
+            return true
         }
         val methodChannel = channel
         if (methodChannel == null) {

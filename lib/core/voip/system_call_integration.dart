@@ -280,6 +280,14 @@ class OrexSystemCallIntegration {
     'cameraEnabled': cameraEnabled,
   });
 
+  Future<bool> isForegroundCallReady(
+    String callId, {
+    String? ringEventId,
+  }) => _invokeBool('isForegroundCallReady', {
+    'callId': callId,
+    'ringEventId': ?_normalizedRingEventId(ringEventId),
+  });
+
   Future<bool> stopForegroundCall(String callId, {String? ringEventId}) =>
       _invokeBool('stopForegroundCall', {
         'callId': callId,

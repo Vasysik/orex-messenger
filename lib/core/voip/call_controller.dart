@@ -182,18 +182,27 @@ class CallController extends ChangeNotifier {
   }
 
   Future<void> _syncForegroundCall({bool force = false}) async {
-    if (!orexIsAndroidNativePlatform) return;
+    await _applyForegroundCall(force: force);
+  }
+
+  /// Makes Android foreground ownership explicit and observable.
+  ///
+  /// A call transport must never be allowed to continue when Android refused
+  /// the phone-call foreground service. Callers that are merely refreshing an
+  /// existing descriptor may ignore the result; the initial call pipeline must
+  /// require `true` before it starts signaling or media.
+  Future<bool> _applyForegroundCall({bool force = false}) async {
+    if (!orexIsAndroidNativePlatform) return true;
     final session = _session;
     final instance = currentCallInstance;
-    final callId = instance?.roomId;
     final startedAt = _start;
-    final room = callId == null ? null : matrix.client.getRoomById(callId);
-    if (session == null ||
-        callId == null ||
-        startedAt == null ||
-        room == null) {
-      return;
+    if (session == null || instance == null || startedAt == null) {
+      return false;
     }
+
+    final callId = instance.roomId;
+    final room = matrix.client.getRoomById(callId);
+    if (room == null) return false;
 
     // Answering is a user/signaling transition, not a transport-health state.
     // Once latched it must survive LiveKit reconnects; otherwise Android sees an
@@ -208,7 +217,7 @@ class CallController extends ChangeNotifier {
         _lastForegroundMicEnabled == micEnabled &&
         _lastForegroundAudioEnabled == audioEnabled &&
         _lastForegroundCameraEnabled == cameraEnabled) {
-      return;
+      return true;
     }
 
     final applied = await _systemCalls.updateForegroundCall(
@@ -221,19 +230,52 @@ class CallController extends ChangeNotifier {
       micEnabled: micEnabled,
       audioEnabled: audioEnabled,
       cameraEnabled: cameraEnabled,
-      ringEventId: instance?.ringEventId,
+      ringEventId: instance.ringEventId,
     );
-    if (!applied ||
-        _session != session ||
-        instance == null ||
-        !_isCurrentControllerInstance(instance)) {
-      return;
+    if (!applied) {
+      OrexLog.d(
+        'Call',
+        'native foreground descriptor rejected room=$callId '
+        'ring=${instance.ringEventId}',
+      );
+      return false;
+    }
+    if (_session != session || !_isCurrentControllerInstance(instance)) {
+      return false;
+    }
+
+    // startForegroundService() only schedules Service creation. Do not start
+    // MatrixRTC/LiveKit until Android confirms that startForeground() completed
+    // for this exact call attempt.
+    final readinessDeadline = DateTime.now().add(
+      const Duration(seconds: 6),
+    );
+    var foregroundReady = false;
+    while (DateTime.now().isBefore(readinessDeadline)) {
+      if (_session != session || !_isCurrentControllerInstance(instance)) {
+        return false;
+      }
+      foregroundReady = await _systemCalls.isForegroundCallReady(
+        callId,
+        ringEventId: instance.ringEventId,
+      );
+      if (foregroundReady) break;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    if (!foregroundReady) {
+      OrexLog.d(
+        'Call',
+        'native foreground acknowledgement missing room=$callId '
+        'ring=${instance.ringEventId}',
+      );
+      return false;
     }
     _foregroundCallInstance = instance;
     _lastForegroundAnswered = answered;
     _lastForegroundMicEnabled = micEnabled;
     _lastForegroundAudioEnabled = audioEnabled;
     _lastForegroundCameraEnabled = cameraEnabled;
+    return true;
   }
 
   Future<void> _stopForegroundCall(OrexCallInstance? instance) async {
@@ -1367,6 +1409,23 @@ class CallController extends ChangeNotifier {
       return;
     }
     if (!recoverable.answered) {
+      final keepAnswerBootstrap = orexShouldKeepRecoverableAnswerBootstrap(
+        incoming: recoverable.incoming,
+        answered: recoverable.answered,
+        pushBridgeReady: matrix.push.isReady,
+        hasPendingIncomingAnswer: matrix.push.hasPendingIncomingAnswer(
+          recoverable.callId,
+          ringEventId: recoverable.ringEventId,
+        ),
+      );
+      if (keepAnswerBootstrap) {
+        OrexLog.d(
+          'Call',
+          'keeping native answer bootstrap room=${recoverable.callId} '
+              'pushReady=${matrix.push.isReady}',
+        );
+        return;
+      }
       await _discardKnownRecoverableCall(recoverable);
       return;
     }
@@ -1601,13 +1660,27 @@ class CallController extends ChangeNotifier {
     // Android's background-start exemptions. Any start failure below rolls this
     // owner back through _failStart().
     try {
-      await orexRunCallStage<void>(
+      final foregroundOwned = await orexRunCallStage<bool>(
         stage: 'foreground-owner',
         timeout: const Duration(seconds: 8),
-        operation: () => _syncForegroundCall(force: true),
+        operation: () => _applyForegroundCall(force: true),
       );
+      if (!foregroundOwned) {
+        mediaKeyProvider?.discardPreparedSession(mediaKeySession);
+        await _failStart(
+          s,
+          'Не удалось запустить звонок. Повторите попытку.',
+        );
+        return;
+      }
     } on OrexCallStageTimeout catch (e) {
       OrexLog.d('Call', 'foreground call owner timed out room=$roomId', e);
+      mediaKeyProvider?.discardPreparedSession(mediaKeySession);
+      await _failStart(
+        s,
+        'Запуск звонка занял слишком много времени. Повторите попытку.',
+      );
+      return;
     }
     if (wasCancelled() || generation != _lifecycleGeneration || _session != s) {
       await _stopForegroundCall(

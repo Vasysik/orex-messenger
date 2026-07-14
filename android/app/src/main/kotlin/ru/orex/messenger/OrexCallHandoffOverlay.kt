@@ -1,7 +1,6 @@
 package ru.orex.messenger
 
 import android.content.Context
-import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -10,7 +9,6 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import android.widget.TextView
 
 /**
@@ -56,9 +54,7 @@ internal class OrexCallHandoffOverlay(
             LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(4) },
         )
         center.addView(
-            ProgressBar(context).apply {
-                indeterminateTintList = ColorStateList.valueOf(OREX_COPPER)
-            },
+            OrexIndeterminateSpinnerView(context, OREX_COPPER),
             LinearLayout.LayoutParams(dp(32), dp(32)).apply { topMargin = dp(16) },
         )
         addView(center, LayoutParams(match, wrap, Gravity.CENTER).apply { bottomMargin = dp(48) })

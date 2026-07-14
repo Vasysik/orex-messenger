@@ -252,4 +252,35 @@ class OrexCallAttemptTest {
         )
     }
 
+    @Test
+    fun unansweredIncomingBootstrapExpiresButActiveCallDoesNot() {
+        assertTrue(
+            shouldExpireAnsweringCall(
+                incoming = true,
+                answered = false,
+                startedAt = 1_000L,
+                now = 71_000L,
+                timeoutMs = 70_000L,
+            ),
+        )
+        assertFalse(
+            shouldExpireAnsweringCall(
+                incoming = true,
+                answered = true,
+                startedAt = 1_000L,
+                now = 100_000L,
+                timeoutMs = 70_000L,
+            ),
+        )
+        assertFalse(
+            shouldExpireAnsweringCall(
+                incoming = false,
+                answered = false,
+                startedAt = 1_000L,
+                now = 100_000L,
+                timeoutMs = 70_000L,
+            ),
+        )
+    }
+
 }

@@ -51,6 +51,21 @@ bool orexShouldNotifyEndedForSystemTermination({
   required bool acceptedInProgress,
 }) => !rejected && acceptedInProgress;
 
+/// Keeps the native `answered=false` descriptor while an accepted cold-start
+/// command is still being loaded or is waiting for the app-level handler.
+///
+/// Ordinary stale incoming descriptors are discarded once the push bridge is
+/// ready and proves that no matching Answer command exists.
+bool orexShouldKeepRecoverableAnswerBootstrap({
+  required bool incoming,
+  required bool answered,
+  required bool pushBridgeReady,
+  required bool hasPendingIncomingAnswer,
+}) {
+  if (!incoming || answered) return false;
+  return !pushBridgeReady || hasPendingIncomingAnswer;
+}
+
 /// One-shot bridge from an accepted incoming call to the expanded mobile UI.
 ///
 /// The bridge is intentionally triggered by local CallSession creation, not by

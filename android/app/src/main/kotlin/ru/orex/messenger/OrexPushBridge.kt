@@ -109,8 +109,6 @@ object OrexPushBridge {
     )
 
     private val callHandoffLock = Any()
-    private var callHandoffReadyCallId: String? = null
-    private var callHandoffReadyRingEventId: String? = null
     private var deferredCallHandoffOpen: DeferredCallHandoffOpen? = null
 
     @Volatile
@@ -134,19 +132,18 @@ object OrexPushBridge {
         if (channel == null) attachEngine(activity.applicationContext, messenger)
     }
 
-    fun detach(activity: Activity, keepChannel: Boolean = false) {
+    /**
+     * Detaches only the Activity projection.
+     *
+     * The MethodChannel belongs to [OrexFlutterEngineOwner], not to an Activity.
+     * Clearing it here leaves a still-running Dart isolate unable to receive a
+     * cold/background Answer command until another Activity happens to attach.
+     */
+    fun detach(activity: Activity) {
         if (this.activity !== activity) return
         this.activity = null
         activityResumed = false
         pendingPermissionResult = null
-        if (!keepChannel) {
-            dartBridgeReady = false
-            channel?.setMethodCallHandler(null)
-            channel = null
-            synchronized(callHandoffLock) {
-                deferredCallHandoffOpen?.dispatched = false
-            }
-        }
     }
 
     fun onActivityResumed(activity: Activity) {
@@ -521,10 +518,8 @@ object OrexPushBridge {
             video = video,
             fromSystem = fromSystem,
         )
-        // Answer is persisted immediately, but a live Flutter engine must not
-        // receive it until MainActivity has installed the native connecting
-        // cover. Cold start still consumes the persisted payload through
-        // takeInitialNotification().
+        // Answer is persisted immediately and belongs to the process runtime.
+        // MainActivity is best-effort presentation and never gates execution.
         val open = openPayload(payload, action)
         if (action == "answer") {
             deferNotificationOpenForCallHandoff(context.applicationContext, open)
@@ -545,7 +540,8 @@ object OrexPushBridge {
             bringAppToFront(context)
         }
         if (!launched && action == "answer") {
-            releaseDeferredCallHandoffOpen(callId, ringEventId)
+            Log.w(TAG, "Accepted call queued without expanded Activity call=$callId")
+            return true
         }
         return launched
     }
@@ -896,44 +892,21 @@ object OrexPushBridge {
         }
     }
 
-    fun markCallHandoffOverlayReady(callId: String, ringEventId: String?) {
-        val normalizedCallId = callId.trim()
-        if (normalizedCallId.isEmpty()) return
-        synchronized(callHandoffLock) {
-            callHandoffReadyCallId = normalizedCallId
-            callHandoffReadyRingEventId = normalizeRingEventId(ringEventId)
-        }
-        flushDeferredCallHandoffOpen()
-    }
-
-    fun isCallHandoffOverlayReady(callId: String, ringEventId: String?): Boolean {
+    /**
+     * Removes one accepted-call command from both the in-memory handoff and the
+     * process-death-safe pending-open slot. Used by native watchdogs so a later
+     * app launch cannot replay an already failed answer.
+     */
+    fun cancelPendingCallAction(
+        context: Context,
+        callId: String,
+        ringEventId: String?,
+    ): Boolean {
         val normalizedCallId = callId.trim()
         if (normalizedCallId.isEmpty()) return false
-        return synchronized(callHandoffLock) {
-            callHandoffAttemptMatches(
-                callHandoffReadyCallId,
-                callHandoffReadyRingEventId,
-                normalizedCallId,
-                normalizeRingEventId(ringEventId),
-            )
-        }
-    }
-
-    fun clearCallHandoffOverlayReady(callId: String, ringEventId: String?) {
-        val normalizedCallId = callId.trim()
-        if (normalizedCallId.isEmpty()) return
         val normalizedRingEventId = normalizeRingEventId(ringEventId)
-        synchronized(callHandoffLock) {
-            if (callHandoffAttemptMatches(
-                    callHandoffReadyCallId,
-                    callHandoffReadyRingEventId,
-                    normalizedCallId,
-                    normalizedRingEventId,
-                )
-            ) {
-                callHandoffReadyCallId = null
-                callHandoffReadyRingEventId = null
-            }
+        var removed = synchronized(callHandoffLock) {
+            var changed = false
             val deferred = deferredCallHandoffOpen
             if (deferred != null && callHandoffAttemptMatches(
                     deferred.callId,
@@ -943,43 +916,39 @@ object OrexPushBridge {
                 )
             ) {
                 deferredCallHandoffOpen = null
+                changed = true
             }
+            changed
         }
-    }
 
-    fun releaseDeferredCallHandoffOpen(callId: String, ringEventId: String?) {
-        val normalizedCallId = callId.trim()
-        if (normalizedCallId.isEmpty()) return
-        val normalizedRingEventId = normalizeRingEventId(ringEventId)
-        val payload = synchronized(callHandoffLock) {
-            val deferred = deferredCallHandoffOpen
-            if (deferred == null || !callHandoffAttemptMatches(
-                    deferred.callId,
-                    deferred.ringEventId,
+        val preferences = prefs(context.applicationContext)
+        val encoded = preferences.getString(PREF_PENDING_OPEN, null)
+        if (encoded != null) {
+            val decoded = decodePayload(encoded)
+            val pendingCallId = decoded["call_id"]?.trim().orEmpty()
+                .ifEmpty { decoded["room_id"]?.trim().orEmpty() }
+            val pendingRingEventId = normalizeRingEventId(decoded["event_id"])
+            if (decoded["orex_action"] == "answer" &&
+                pendingCallId.isNotEmpty() &&
+                callHandoffAttemptMatches(
+                    pendingCallId,
+                    pendingRingEventId,
                     normalizedCallId,
                     normalizedRingEventId,
                 )
             ) {
-                null
-            } else {
-                deferredCallHandoffOpen = null
-                deferred.payload
+                preferences.edit().remove(PREF_PENDING_OPEN).commit()
+                removed = true
             }
         }
-        if (payload != null) dispatchNotificationOpen(payload)
+        return removed
     }
 
     private fun flushDeferredCallHandoffOpen() {
         val payload = synchronized(callHandoffLock) {
             val deferred = deferredCallHandoffOpen
             if (deferred == null || deferred.dispatched || channel == null ||
-                !dartBridgeReady ||
-                !callHandoffAttemptMatches(
-                    callHandoffReadyCallId,
-                    callHandoffReadyRingEventId,
-                    deferred.callId,
-                    deferred.ringEventId,
-                )
+                !dartBridgeReady
             ) {
                 null
             } else {
@@ -988,7 +957,7 @@ object OrexPushBridge {
             }
         }
         if (payload != null) {
-            Log.i(TAG, "Dispatching accepted call after native handoff cover")
+            Log.i(TAG, "Dispatching accepted call to process runtime")
             dispatchNotificationOpen(payload)
         }
     }
@@ -1021,45 +990,32 @@ object OrexPushBridge {
                 .ifEmpty { decoded["room_id"]?.trim().orEmpty() }
             val ringEventId = normalizeRingEventId(decoded["event_id"])
             if (callId.isNotEmpty()) {
-                val ready = synchronized(callHandoffLock) {
-                    val handoffReady = callHandoffAttemptMatches(
-                        callHandoffReadyCallId,
-                        callHandoffReadyRingEventId,
-                        callId,
-                        ringEventId,
-                    )
-                    if (!handoffReady) {
-                        val current = deferredCallHandoffOpen
-                        if (current == null || !callHandoffAttemptMatches(
-                                current.callId,
-                                current.ringEventId,
-                                callId,
-                                ringEventId,
-                            )
-                        ) {
+                val shouldDeliver = synchronized(callHandoffLock) {
+                    val deferred = deferredCallHandoffOpen?.takeIf {
+                        callHandoffAttemptMatches(
+                            it.callId,
+                            it.ringEventId,
+                            callId,
+                            ringEventId,
+                        )
+                    }
+                    if (deferred?.dispatched == true) {
+                        false
+                    } else {
+                        if (deferred == null) {
                             deferredCallHandoffOpen = DeferredCallHandoffOpen(
                                 callId = callId,
                                 ringEventId = ringEventId,
                                 payload = decoded,
+                                dispatched = true,
                             )
+                        } else {
+                            deferred.dispatched = true
                         }
-                    } else {
-                        val deferred = deferredCallHandoffOpen?.takeIf {
-                            callHandoffAttemptMatches(
-                                it.callId,
-                                it.ringEventId,
-                                callId,
-                                ringEventId,
-                            )
-                        }
-                        if (deferred?.dispatched == true) {
-                            return@synchronized false
-                        }
-                        deferred?.dispatched = true
+                        true
                     }
-                    handoffReady
                 }
-                if (!ready) return null
+                if (!shouldDeliver) return null
             }
         }
         return decoded
@@ -1073,6 +1029,11 @@ object OrexPushBridge {
         val decoded = decodePayload(encoded)
         if (decoded.isEmpty() || decoded[DELIVERY_ID_KEY] == deliveryId) {
             preferences.edit().remove(PREF_PENDING_OPEN).apply()
+            synchronized(callHandoffLock) {
+                deferredCallHandoffOpen?.takeIf {
+                    it.payload[DELIVERY_ID_KEY] == deliveryId
+                }?.let { deferredCallHandoffOpen = null }
+            }
         }
         return true
     }

@@ -18,16 +18,15 @@ import androidx.core.content.ContextCompat
 /**
  * Foreground owner активного звонка Orex.
  *
- * LiveKit остаётся во Flutter-процессе, но системный phoneCall service не даёт
- * Android считать продолжающийся вызов обычной фоновой работой. Descriptor
- * сохраняется отдельно, чтобы после process recreation Flutter мог проверить
- * MatrixRTC state и безопасно переподключить media без повторного ring.
- * Для исходящего вызова service стартует уже во время подключения; recoverable
- * descriptor становится пригодным для media recovery только после answered=true.
+ * Это process-level owner звонка. Service первым входит в foreground, затем
+ * гарантирует запуск единственного FlutterEngine, где живут Matrix sync,
+ * CallController и LiveKit. Activity только присоединяет UI к уже работающему
+ * runtime и не является условием принятия/продолжения звонка.
  */
 class OrexCallForegroundService : Service() {
     private val heartbeatHandler = Handler(Looper.getMainLooper())
     private var wakeLock: PowerManager.WakeLock? = null
+    private var answerWatchdog: Runnable? = null
     private val heartbeat = object : Runnable {
         override fun run() {
             val descriptor = readDescriptor(this@OrexCallForegroundService)
@@ -35,15 +34,37 @@ class OrexCallForegroundService : Service() {
                 heartbeatHandler.removeCallbacks(this)
                 return
             }
+            if (shouldExpireAnsweringCall(
+                    incoming = descriptor.incoming,
+                    answered = descriptor.answered,
+                    startedAt = descriptor.startedAt,
+                    now = System.currentTimeMillis(),
+                    timeoutMs = ANSWERING_TIMEOUT_MS,
+                )
+            ) {
+                expireAnsweringAttempt(descriptor, "native answer watchdog")
+                return
+            }
             val refreshed = descriptor.copy(updatedAt = System.currentTimeMillis())
             persistDescriptor(this@OrexCallForegroundService, refreshed)
+            if (foregroundReady && sameOrPromotableCallAttempt(
+                    foregroundReadyCallId,
+                    foregroundReadyRingEventId,
+                    refreshed.callId,
+                    refreshed.ringEventId,
+                )
+            ) {
+                foregroundReadyUpdatedAt = refreshed.updatedAt
+            }
             ensureForegroundNotificationVisible(refreshed)
+            ensureCallRuntimeStarted(refreshed)
             heartbeatHandler.postDelayed(this, HEARTBEAT_INTERVAL_MS)
         }
     }
 
     override fun onCreate() {
         super.onCreate()
+        clearForegroundReadiness()
         serviceRunning = true
     }
 
@@ -52,8 +73,20 @@ class OrexCallForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val descriptor = readDescriptor(this)
         if (descriptor == null) {
+            clearForegroundReadiness()
             stopForegroundCompat()
             stopSelf()
+            return START_NOT_STICKY
+        }
+        if (shouldExpireAnsweringCall(
+                incoming = descriptor.incoming,
+                answered = descriptor.answered,
+                startedAt = descriptor.startedAt,
+                now = System.currentTimeMillis(),
+                timeoutMs = ANSWERING_TIMEOUT_MS,
+            )
+        ) {
+            expireAnsweringAttempt(descriptor, "stale service restart")
             return START_NOT_STICKY
         }
 
@@ -74,6 +107,11 @@ class OrexCallForegroundService : Service() {
                     notification,
                 )
             }
+            foregroundReadyCallId = descriptor.callId
+            foregroundReadyRingEventId = normalizeRingEventId(descriptor.ringEventId)
+            foregroundReadyUpdatedAt = descriptor.updatedAt
+            foregroundReady = true
+            logNotificationVisibilityConstraints()
             // The foreground descriptor is the native source of truth while
             // Flutter/Telecom callbacks race. As soon as answer/start reaches
             // this service, suppress and close every stale incoming surface for
@@ -105,19 +143,11 @@ class OrexCallForegroundService : Service() {
                     "answered=${descriptor.answered} mic=${descriptor.micEnabled} " +
                     "audio=${descriptor.audioEnabled}",
             )
-            if (descriptor.answered && !OrexFlutterEngineOwner.isRunning()) {
-                heartbeatHandler.post {
-                    try {
-                        OrexFlutterEngineOwner.getOrCreate(applicationContext)
-                        Log.i(TAG, "Restarted headless Flutter call runtime")
-                    } catch (error: Throwable) {
-                        Log.e(TAG, "Failed to restart Flutter call runtime", error)
-                    }
-                }
-            }
+            scheduleAnswerWatchdog(descriptor)
+            ensureCallRuntimeStarted(descriptor)
         } catch (error: Throwable) {
             Log.e(TAG, "Failed to enter call foreground state", error)
-            stopSelf()
+            failForegroundOwnership(descriptor)
             return START_NOT_STICKY
         }
         return START_STICKY
@@ -152,9 +182,67 @@ class OrexCallForegroundService : Service() {
             val refreshed = descriptor.copy(updatedAt = System.currentTimeMillis())
             persistDescriptor(this, refreshed)
             ensureForegroundNotificationVisible(refreshed)
+            scheduleAnswerWatchdog(refreshed)
+            ensureCallRuntimeStarted(refreshed)
             Log.i(TAG, "Call task removed; foreground media runtime retained call=${descriptor.callId}")
         }
         super.onTaskRemoved(rootIntent)
+    }
+
+    private fun logNotificationVisibilityConstraints() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(
+                TAG,
+                "POST_NOTIFICATIONS denied: call service is active, but Android may hide " +
+                    "its notification from the notification drawer",
+            )
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(android.app.NotificationManager::class.java)
+            val channel = manager.getNotificationChannel(
+                OrexNotificationCenter.ONGOING_CALL_CHANNEL_ID,
+            )
+            if (channel?.importance == android.app.NotificationManager.IMPORTANCE_NONE) {
+                Log.w(TAG, "Ongoing-call notification channel is disabled by the user")
+            }
+        }
+    }
+
+    private fun failForegroundOwnership(descriptor: Descriptor) {
+        clearForegroundReadiness()
+        OrexPushBridge.cancelPendingCallAction(
+            context = applicationContext,
+            callId = descriptor.callId,
+            ringEventId = descriptor.ringEventId,
+        )
+        OrexCallPresentationState.markEnded(
+            context = applicationContext,
+            callId = descriptor.callId,
+            ringEventId = descriptor.ringEventId,
+            endedAt = System.currentTimeMillis(),
+        )
+        val current = readDescriptor(applicationContext)
+        if (current != null && sameOrPromotableCallAttempt(
+                current.callId,
+                current.ringEventId,
+                descriptor.callId,
+                descriptor.ringEventId,
+            )
+        ) {
+            clearDescriptor(applicationContext)
+        }
+        pendingNotification = null
+        OrexNotificationCenter.cancelCallNotification(applicationContext)
+        OrexNotificationCenter.cancelOngoingCallNotification(applicationContext)
+        OrexIncomingCallActivity.onAnswerBootstrapFailed(
+            descriptor.callId,
+            descriptor.ringEventId,
+        )
+        stopForegroundCompat()
+        stopSelf()
     }
 
     private fun ensureForegroundNotificationVisible(descriptor: Descriptor) {
@@ -188,10 +276,87 @@ class OrexCallForegroundService : Service() {
         }
     }
 
+    private fun ensureCallRuntimeStarted(descriptor: Descriptor) {
+        val wasRunning = OrexFlutterEngineOwner.isRunning()
+        heartbeatHandler.post {
+            if (readDescriptor(this)?.let {
+                    sameCallAttempt(
+                        it.callId,
+                        it.ringEventId,
+                        descriptor.callId,
+                        descriptor.ringEventId,
+                    ) || (it.callId == descriptor.callId &&
+                        canPromoteRingAttempt(it.ringEventId, descriptor.ringEventId))
+                } != true
+            ) return@post
+            if (OrexFlutterEngineOwner.ensureStarted(applicationContext) && !wasRunning) {
+                Log.i(TAG, "Process call runtime active call=${descriptor.callId}")
+            }
+        }
+    }
+
+    private fun scheduleAnswerWatchdog(descriptor: Descriptor) {
+        answerWatchdog?.let(heartbeatHandler::removeCallbacks)
+        answerWatchdog = null
+        if (!descriptor.incoming || descriptor.answered) return
+        val remaining = (descriptor.startedAt + ANSWERING_TIMEOUT_MS - System.currentTimeMillis())
+            .coerceAtLeast(0L)
+        answerWatchdog = Runnable {
+            val current = readDescriptor(this) ?: return@Runnable
+            val matches = sameCallAttempt(
+                current.callId,
+                current.ringEventId,
+                descriptor.callId,
+                descriptor.ringEventId,
+            ) || (current.callId == descriptor.callId &&
+                canPromoteRingAttempt(current.ringEventId, descriptor.ringEventId))
+            if (!matches) return@Runnable
+            if (shouldExpireAnsweringCall(
+                    incoming = current.incoming,
+                    answered = current.answered,
+                    startedAt = current.startedAt,
+                    now = System.currentTimeMillis(),
+                    timeoutMs = ANSWERING_TIMEOUT_MS,
+                )
+            ) {
+                expireAnsweringAttempt(current, "native answer watchdog")
+            }
+        }.also { heartbeatHandler.postDelayed(it, remaining) }
+    }
+
+    private fun expireAnsweringAttempt(descriptor: Descriptor, reason: String) {
+        clearForegroundReadiness()
+        Log.e(TAG, "Expiring unanswered call bootstrap call=${descriptor.callId} reason=$reason")
+        OrexPushBridge.cancelPendingCallAction(
+            context = applicationContext,
+            callId = descriptor.callId,
+            ringEventId = descriptor.ringEventId,
+        )
+        OrexCallPresentationState.markEnded(
+            context = applicationContext,
+            callId = descriptor.callId,
+            ringEventId = descriptor.ringEventId,
+            endedAt = System.currentTimeMillis(),
+        )
+        clearDescriptor(applicationContext)
+        pendingNotification = null
+        OrexNotificationCenter.cancelCallNotification(applicationContext)
+        OrexNotificationCenter.cancelOngoingCallNotification(applicationContext)
+        OrexIncomingCallActivity.onAnswerBootstrapFailed(
+            descriptor.callId,
+            descriptor.ringEventId,
+        )
+        stopForegroundCompat()
+        stopSelf()
+    }
+
     override fun onDestroy() {
+        clearForegroundReadiness()
         serviceRunning = false
         pendingNotification = null
         heartbeatHandler.removeCallbacks(heartbeat)
+        answerWatchdog?.let(heartbeatHandler::removeCallbacks)
+        answerWatchdog = null
         releaseCallWakeLock()
         stopForegroundCompat()
         super.onDestroy()
@@ -334,12 +499,32 @@ class OrexCallForegroundService : Service() {
         private const val KEY_UPDATED_AT = "updated_at"
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
         private const val DESCRIPTOR_STALE_MS = 3 * HEARTBEAT_INTERVAL_MS
+        const val ANSWERING_TIMEOUT_MS = 35_000L
 
         @Volatile
         private var pendingNotification: Notification? = null
 
         @Volatile
         private var serviceRunning: Boolean = false
+
+        @Volatile
+        private var foregroundReady: Boolean = false
+
+        @Volatile
+        private var foregroundReadyCallId: String? = null
+
+        @Volatile
+        private var foregroundReadyRingEventId: String? = null
+
+        @Volatile
+        private var foregroundReadyUpdatedAt: Long = 0L
+
+        private fun clearForegroundReadiness() {
+            foregroundReady = false
+            foregroundReadyCallId = null
+            foregroundReadyRingEventId = null
+            foregroundReadyUpdatedAt = 0L
+        }
 
         fun startAnswering(
             context: Context,
@@ -396,8 +581,7 @@ class OrexCallForegroundService : Service() {
                         current.ringEventId,
                         descriptor.ringEventId,
                     )
-                val currentHasLiveOwner = serviceRunning &&
-                    System.currentTimeMillis() - current.updatedAt <= DESCRIPTOR_STALE_MS
+                val currentHasLiveOwner = hasLiveCall(context)
                 val mayReplace = shouldReplaceForegroundDescriptor(
                     currentCallId = current.callId,
                     currentRingEventId = current.ringEventId,
@@ -415,6 +599,10 @@ class OrexCallForegroundService : Service() {
                     clearDescriptor(context)
                 }
             }
+            // Every update needs a fresh acknowledgement from onStartCommand.
+            // Identity alone is insufficient for repeated room calls because local
+            // outgoing attempts intentionally have no Matrix ring event id.
+            clearForegroundReadiness()
             persistDescriptor(context, descriptor)
             pendingNotification = notification
             val intent = Intent(context, OrexCallForegroundService::class.java).apply {
@@ -425,6 +613,21 @@ class OrexCallForegroundService : Service() {
                 true
             } catch (error: Throwable) {
                 Log.e(TAG, "Failed to start call foreground service", error)
+                val stored = readDescriptor(context)
+                if (stored != null && (
+                        sameCallAttempt(
+                            stored.callId,
+                            stored.ringEventId,
+                            descriptor.callId,
+                            descriptor.ringEventId,
+                        ) || (stored.callId == descriptor.callId &&
+                            canPromoteRingAttempt(stored.ringEventId, descriptor.ringEventId))
+                    )
+                ) {
+                    clearForegroundReadiness()
+                    clearDescriptor(context)
+                    pendingNotification = null
+                }
                 false
             }
         }
@@ -463,11 +666,46 @@ class OrexCallForegroundService : Service() {
                     presentationMatched = presentationMatched,
                 )
             ) return false
+            clearForegroundReadiness()
             clearDescriptor(context)
             pendingNotification = null
             context.stopService(Intent(context, OrexCallForegroundService::class.java))
             OrexNotificationCenter.cancelOngoingCallNotification(context)
             return true
+        }
+
+        fun isForegroundReady(
+            context: Context,
+            callId: String,
+            ringEventId: String? = null,
+        ): Boolean {
+            if (!serviceRunning || !foregroundReady) return false
+            if (!sameOrPromotableCallAttempt(
+                    foregroundReadyCallId,
+                    foregroundReadyRingEventId,
+                    callId,
+                    ringEventId,
+                )
+            ) return false
+            val descriptor = readDescriptor(context) ?: return false
+            if (foregroundReadyUpdatedAt < descriptor.updatedAt) return false
+            if (!sameOrPromotableCallAttempt(
+                    descriptor.callId,
+                    descriptor.ringEventId,
+                    callId,
+                    ringEventId,
+                )
+            ) return false
+            val now = System.currentTimeMillis()
+            if (shouldExpireAnsweringCall(
+                    incoming = descriptor.incoming,
+                    answered = descriptor.answered,
+                    startedAt = descriptor.startedAt,
+                    now = now,
+                    timeoutMs = ANSWERING_TIMEOUT_MS,
+                )
+            ) return false
+            return now - descriptor.updatedAt <= DESCRIPTOR_STALE_MS
         }
 
         fun hasLiveCall(context: Context): Boolean {
@@ -476,12 +714,46 @@ class OrexCallForegroundService : Service() {
             return System.currentTimeMillis() - descriptor.updatedAt <= DESCRIPTOR_STALE_MS
         }
 
+        /**
+         * Activity teardown must retain the engine as soon as a descriptor was
+         * committed, even if startForegroundService has not reached onCreate yet.
+         */
+        fun shouldRetainRuntime(context: Context): Boolean {
+            val descriptor = readDescriptor(context) ?: return false
+            val now = System.currentTimeMillis()
+            if (shouldExpireAnsweringCall(
+                    incoming = descriptor.incoming,
+                    answered = descriptor.answered,
+                    startedAt = descriptor.startedAt,
+                    now = now,
+                    timeoutMs = ANSWERING_TIMEOUT_MS,
+                )
+            ) return false
+            return now - descriptor.updatedAt <= DESCRIPTOR_STALE_MS
+        }
+
+        fun isAnsweredCall(
+            context: Context,
+            callId: String,
+            ringEventId: String? = null,
+        ): Boolean {
+            val descriptor = readDescriptor(context) ?: return false
+            val matches = sameCallAttempt(
+                descriptor.callId,
+                descriptor.ringEventId,
+                callId,
+                ringEventId,
+            ) || (descriptor.callId == callId &&
+                canPromoteRingAttempt(descriptor.ringEventId, ringEventId))
+            return matches && descriptor.answered &&
+                System.currentTimeMillis() - descriptor.updatedAt <= DESCRIPTOR_STALE_MS
+        }
+
         fun ownsCall(
             context: Context,
             callId: String,
             ringEventId: String? = null,
         ): Boolean {
-            if (!serviceRunning) return false
             var descriptor = readDescriptor(context) ?: return false
             if (!sameCallAttempt(
                     descriptor.callId,
@@ -496,7 +768,16 @@ class OrexCallForegroundService : Service() {
                 descriptor = descriptor.copy(ringEventId = normalizeRingEventId(ringEventId))
                 persistDescriptor(context, descriptor)
             }
-            return System.currentTimeMillis() - descriptor.updatedAt <= DESCRIPTOR_STALE_MS
+            val now = System.currentTimeMillis()
+            if (shouldExpireAnsweringCall(
+                    incoming = descriptor.incoming,
+                    answered = descriptor.answered,
+                    startedAt = descriptor.startedAt,
+                    now = now,
+                    timeoutMs = ANSWERING_TIMEOUT_MS,
+                )
+            ) return false
+            return now - descriptor.updatedAt <= DESCRIPTOR_STALE_MS
         }
 
         fun readRecovery(context: Context): Map<String, Any?>? =

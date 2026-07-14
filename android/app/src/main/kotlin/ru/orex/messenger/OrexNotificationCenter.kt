@@ -570,7 +570,7 @@ object OrexNotificationCenter {
             context = context,
             callId = callId,
             ringEventId = ringToken,
-            hasLiveOwner = OrexCallForegroundService.hasLiveCall(context) ||
+            hasLiveOwner = OrexCallForegroundService.shouldRetainRuntime(context) ||
                 OrexAndroidTelecomManager.hasLiveCall(),
         )
         return OrexCallPresentationState.claimPushRing(

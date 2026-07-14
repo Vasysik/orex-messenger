@@ -11,9 +11,9 @@ import android.util.Log
  *
  * Content taps open [OrexIncomingCallActivity]. Answer/Reject do not: the user
  * has already chosen an action, so showing the incoming panel again is both
- * confusing and race-prone. Answer opens MainActivity under a native
- * connecting cover; Flutter content is revealed only after the expanded call
- * route confirms readiness. A locked device still requires normal unlock.
+ * confusing and race-prone. Answer is persisted for the process-owned call
+ * runtime first; opening MainActivity under a native connecting cover is only
+ * presentation. A locked device still requires normal unlock.
  */
 class OrexCallActionActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,13 +51,21 @@ class OrexCallActionActivity : Activity() {
                         ringEventId,
                     )
                 ) return
-                OrexCallForegroundService.startAnswering(
+                val foregroundStarted = OrexCallForegroundService.startAnswering(
                     context = applicationContext,
                     callId = callId,
                     ringEventId = ringEventId,
                     displayName = displayName,
                     video = useVideo,
                 )
+                if (!foregroundStarted) {
+                    OrexCallPresentationState.markEnded(
+                        applicationContext,
+                        callId,
+                        ringEventId,
+                    )
+                    return
+                }
                 OrexNotificationCenter.cancelCallNotification(applicationContext)
                 val launched = if (systemManaged) {
                     // Publish the explicit user choice before MainActivity can
@@ -100,13 +108,9 @@ class OrexCallActionActivity : Activity() {
                     )
                 }
                 if (!launched) {
-                    Log.e(TAG, "Failed to launch answered call $callId")
-                    OrexCallPresentationState.markEnded(
-                        applicationContext,
-                        callId,
-                        ringEventId,
-                    )
-                    OrexCallForegroundService.stop(applicationContext, callId, ringEventId)
+                    // Call execution is already queued in the process runtime;
+                    // expanded UI is best-effort only.
+                    Log.w(TAG, "Accepted call queued without expanded UI $callId")
                 }
             }
 

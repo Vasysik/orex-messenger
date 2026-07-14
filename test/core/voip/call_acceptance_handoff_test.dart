@@ -5,6 +5,36 @@ import 'package:orex_messenger/core/voip/call_attempt.dart';
 import 'package:orex_messenger/core/voip/call_lifecycle_policy.dart';
 
 void main() {
+  test('cold answer descriptor survives until pending command is loaded', () {
+    expect(
+      orexShouldKeepRecoverableAnswerBootstrap(
+        incoming: true,
+        answered: false,
+        pushBridgeReady: false,
+        hasPendingIncomingAnswer: false,
+      ),
+      isTrue,
+    );
+    expect(
+      orexShouldKeepRecoverableAnswerBootstrap(
+        incoming: true,
+        answered: false,
+        pushBridgeReady: true,
+        hasPendingIncomingAnswer: true,
+      ),
+      isTrue,
+    );
+    expect(
+      orexShouldKeepRecoverableAnswerBootstrap(
+        incoming: true,
+        answered: false,
+        pushBridgeReady: true,
+        hasPendingIncomingAnswer: false,
+      ),
+      isFalse,
+    );
+  });
+
   test('accepted mobile UI is requested when session exists, before media completes', () async {
     const instance = OrexCallInstance(
       roomId: '!room:orex',

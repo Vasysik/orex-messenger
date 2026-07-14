@@ -55,11 +55,17 @@ class OrexPushService {
   OrexPushOpen? _pendingIncomingAnswer;
   String? _lastPublishedDeliveryId;
   bool _started = false;
+  bool _ready = false;
   bool _disposed = false;
 
   Stream<OrexPushOpen> get onNotificationOpened => _openController.stream;
 
   bool get isConfigured => gateway != null;
+
+  /// Native pending-open state has been loaded for this Dart isolate.
+  /// Call recovery uses this boundary to avoid discarding an accepted cold-start
+  /// descriptor before the answer command is available.
+  bool get isReady => _ready;
 
   /// Только platform identity означает, что эта платформа действительно
   /// зарегистрировала remote Matrix pusher и сама владеет background delivery.
@@ -107,22 +113,27 @@ class OrexPushService {
     _started = true;
     try {
       await _platform.initialize();
-      await _registration.start();
       _openSub = _platform.notificationOpens.listen(
         _publishOpen,
         onError: (Object error, StackTrace _) {
           OrexLog.d('Push', 'notification open stream failed', error);
         },
       );
+      // Subscribe before registration or any native method can make the
+      // Android bridge flush a persisted cold-start Answer command.
+      await _registration.start();
 
       final initial = await _platform.takeInitialNotification();
       if (initial != null) _publishOpen(initial);
+
+      _ready = true;
 
       unawaited(sync(force: true));
     } catch (_) {
       await _openSub?.cancel();
       _openSub = null;
       _started = false;
+      _ready = false;
       rethrow;
     }
   }
@@ -367,6 +378,7 @@ class OrexPushService {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _ready = false;
     _pendingIncomingAnswer = null;
     await _openSub?.cancel();
     await _registration.dispose();

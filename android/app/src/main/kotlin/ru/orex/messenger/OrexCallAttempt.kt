@@ -142,3 +142,23 @@ internal fun shouldReplaceForegroundDescriptor(
     ) return false
     return !hasLiveOwner
 }
+
+/**
+ * A native answering shell is only a short-lived bootstrap state.
+ *
+ * Once the user accepted the call, Dart/MatrixRTC must either promote the
+ * foreground descriptor to answered=true or tear the attempt down. Keeping an
+ * unanswered descriptor forever produces a zombie foreground service and an
+ * overlay that can never be completed after a failed cold start.
+ */
+internal fun shouldExpireAnsweringCall(
+    incoming: Boolean,
+    answered: Boolean,
+    startedAt: Long,
+    now: Long,
+    timeoutMs: Long,
+): Boolean {
+    if (!incoming || answered || startedAt <= 0L || timeoutMs <= 0L) return false
+    if (now < startedAt) return false
+    return now - startedAt >= timeoutMs
+}

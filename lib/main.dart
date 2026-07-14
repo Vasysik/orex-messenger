@@ -234,6 +234,8 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
   StreamSubscription<OrexCallInstancePromotion>? _callInstancePromotionSub;
   StreamSubscription<OrexCallInstance>? _acceptedCallUiSub;
   StreamSubscription<OrexPushOpen>? _pushOpenSub;
+  Timer? _acceptedCallUiRetry;
+  OrexCallInstance? _acceptedCallUiCandidate;
   String? _pushRoomId;
   String? _expandedCallRouteKey;
   Route<void>? _expandedCallRoute;
@@ -305,6 +307,9 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     if (_expandedCallRouteKey == previousKey) {
       _expandedCallRouteKey = promotion.current.routeKey;
     }
+    if (_acceptedCallUiCandidate?.routeKey == previousKey) {
+      _acceptedCallUiCandidate = promotion.current;
+    }
   }
 
   @override
@@ -352,6 +357,9 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     final previousState = _lifecycleState;
     _lifecycleState = state;
     if (state == AppLifecycleState.resumed) {
+      final pendingAcceptedUi =
+          widget.matrix.call.pendingAcceptedIncomingCallUiRequest;
+      if (pendingAcceptedUi != null) _openAcceptedCall(pendingAcceptedUi);
       final backgroundedAt = _backgroundedAt;
       _backgroundedAt = null;
       if (backgroundedAt != null && widget.matrix.call.isActive) {
@@ -685,84 +693,101 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     _openAcceptedCall(instance);
   }
 
-  void _openAcceptedCall(OrexCallInstance instance, {int attempt = 0}) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      OrexCallInstance currentInstance() => _canonicalCallInstance(instance);
+  void _openAcceptedCall(OrexCallInstance instance) {
+    _acceptedCallUiCandidate = _canonicalCallInstance(instance);
+    _acceptedCallUiRetry?.cancel();
+    _acceptedCallUiRetry = null;
+    _scheduleAcceptedCallUiDrain();
+  }
 
+  void _scheduleAcceptedCallUiDrain({
+    Duration delay = Duration.zero,
+  }) {
+    if (!mounted || _acceptedCallUiCandidate == null) return;
+    if (_acceptedCallUiRetry?.isActive == true) return;
+    _acceptedCallUiRetry = Timer(delay, () {
+      _acceptedCallUiRetry = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _drainAcceptedCallUi();
+      });
+      WidgetsBinding.instance.scheduleFrame();
+    });
+  }
+
+  void _drainAcceptedCallUi() {
+    final requested = _acceptedCallUiCandidate;
+    if (!mounted || requested == null) return;
+    final instance = _canonicalCallInstance(requested);
+    _acceptedCallUiCandidate = instance;
+    if (!widget.matrix.call.isActive || !_isCurrentCall(instance)) {
+      _acceptedCallUiCandidate = null;
+      _acceptedCallUiRetry?.cancel();
+      _acceptedCallUiRetry = null;
+      return;
+    }
+
+    final nav = _navKey.currentState;
+    final ctx = nav?.overlay?.context ?? _navKey.currentContext;
+    if (nav == null || ctx == null || !ctx.mounted) {
+      _scheduleAcceptedCallUiDrain(
+        delay: const Duration(milliseconds: 200),
+      );
+      return;
+    }
+
+    void notifyUiReady() {
+      _acceptedCallUiCandidate = null;
+      _acceptedCallUiRetry?.cancel();
+      _acceptedCallUiRetry = null;
+      widget.matrix.call.takePendingAcceptedIncomingCallUiRequest();
+      final exactInstance = _canonicalCallInstance(instance);
+      unawaited(
+        widget.matrix.push.notifyCallUiReady(
+          exactInstance.roomId,
+          ringEventId: exactInstance.ringEventId,
+        ),
+      );
+    }
+
+    if (MediaQuery.sizeOf(ctx).width >= 900) {
+      widget.matrix.call.minimize();
+      notifyUiReady();
+      return;
+    }
+
+    final existingRoute = _expandedCallRoute;
+    if (existingRoute != null && existingRoute.isActive) {
+      widget.matrix.call.expand();
+      _expandedCallRouteKey = instance.routeKey;
+      notifyUiReady();
+      return;
+    }
+    _expandedCallRoute = null;
+    _expandedCallRouteKey = null;
+
+    widget.matrix.call.expand();
+    final route = MaterialPageRoute<void>(
+      builder: (_) => CallScreen(matrix: widget.matrix),
+    );
+    final routeClosed = nav.push<void>(route);
+    _expandedCallRoute = route;
+    _expandedCallRouteKey = instance.routeKey;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted ||
           !widget.matrix.call.isActive ||
-          !_isCurrentCall(currentInstance())) {
+          !_isCurrentCall(instance) ||
+          !identical(_expandedCallRoute, route)) {
         return;
       }
+      notifyUiReady();
+    });
 
-      final nav = _navKey.currentState;
-      final ctx = nav?.overlay?.context ?? _navKey.currentContext;
-      if (nav == null || ctx == null || !ctx.mounted) {
-        if (attempt < 80) {
-          Future<void>.delayed(const Duration(milliseconds: 150), () {
-            if (mounted) {
-              _openAcceptedCall(instance, attempt: attempt + 1);
-            }
-          });
-        }
-        return;
+    routeClosed.whenComplete(() {
+      if (identical(_expandedCallRoute, route)) {
+        _expandedCallRoute = null;
+        _expandedCallRouteKey = null;
       }
-
-      void notifyUiReady() {
-        widget.matrix.call.takePendingAcceptedIncomingCallUiRequest();
-        final exactInstance = currentInstance();
-        unawaited(
-          widget.matrix.push.notifyCallUiReady(
-            exactInstance.roomId,
-            ringEventId: exactInstance.ringEventId,
-          ),
-        );
-      }
-
-      if (MediaQuery.sizeOf(ctx).width >= 900) {
-        widget.matrix.call.minimize();
-        notifyUiReady();
-        return;
-      }
-
-      final existingRoute = _expandedCallRoute;
-      if (existingRoute != null && existingRoute.isActive) {
-        widget.matrix.call.expand();
-        if (_expandedCallRouteKey != currentInstance().routeKey) {
-          _expandedCallRouteKey = currentInstance().routeKey;
-        }
-        notifyUiReady();
-        return;
-      }
-      _expandedCallRoute = null;
-      _expandedCallRouteKey = null;
-
-      widget.matrix.call.expand();
-      final route = MaterialPageRoute<void>(
-        builder: (_) => CallScreen(matrix: widget.matrix),
-      );
-      final routeClosed = nav.push<void>(route);
-      _expandedCallRoute = route;
-      _expandedCallRouteKey = currentInstance().routeKey;
-
-      // Закрываем нативную lock-screen оболочку только после того, как Flutter
-      // действительно отрисовал расширенный режим звонка.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted ||
-            !widget.matrix.call.isActive ||
-            !_isCurrentCall(currentInstance()) ||
-            !identical(_expandedCallRoute, route)) {
-          return;
-        }
-        notifyUiReady();
-      });
-
-      routeClosed.whenComplete(() {
-        if (identical(_expandedCallRoute, route)) {
-          _expandedCallRoute = null;
-          _expandedCallRouteKey = null;
-        }
-      });
     });
   }
 
@@ -781,6 +806,9 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _acceptedCallUiRetry?.cancel();
+    _acceptedCallUiRetry = null;
+    _acceptedCallUiCandidate = null;
     WidgetsBinding.instance.removeObserver(this);
     _verificationSub?.cancel();
     _incomingCallSub?.cancel();
