@@ -51,19 +51,33 @@ bool orexShouldNotifyEndedForSystemTermination({
   required bool acceptedInProgress,
 }) => !rejected && acceptedInProgress;
 
+/// Closing the local incoming surface is part of a system Answer handoff.
+/// It must not tear down the native foreground owner while that same Answer is
+/// still creating the Dart call session.
+bool orexShouldPreserveAnswerBootstrapForIncomingDismissal({
+  required bool cancelsPendingAccept,
+  required bool acceptInProgress,
+}) => !cancelsPendingAccept && acceptInProgress;
+
 /// Keeps the native `answered=false` descriptor while an accepted cold-start
 /// command is still being loaded or is waiting for the app-level handler.
 ///
-/// Ordinary stale incoming descriptors are discarded once the push bridge is
-/// ready and proves that no matching Answer command exists.
+/// An `incoming && !answered` descriptor is created only by Android's explicit
+/// native Answer action. For the first native watchdog window it is therefore
+/// authoritative even if the Dart bridge has not observed its queued command
+/// yet. Without that grace period, Matrix startup can clear the descriptor in
+/// the narrow gap between native dispatch and push-handler registration.
 bool orexShouldKeepRecoverableAnswerBootstrap({
   required bool incoming,
   required bool answered,
   required bool pushBridgeReady,
   required bool hasPendingIncomingAnswer,
+  required Duration descriptorAge,
 }) {
   if (!incoming || answered) return false;
-  return !pushBridgeReady || hasPendingIncomingAnswer;
+  return descriptorAge < const Duration(seconds: 70) ||
+      !pushBridgeReady ||
+      hasPendingIncomingAnswer;
 }
 
 /// One-shot bridge from an accepted incoming call to the expanded mobile UI.

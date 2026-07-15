@@ -259,7 +259,13 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
           defaultTargetPlatform == TargetPlatform.linux ||
           defaultTargetPlatform == TargetPlatform.macOS);
 
-  bool get _canPresentIncomingCallUi => _isForeground || _isDesktopHost;
+  bool get _canPresentIncomingCallUi =>
+      _isForeground ||
+      _isDesktopHost ||
+      (kIsWeb && _lifecycleState == AppLifecycleState.inactive);
+
+  bool _usesWideCallPresentation(BuildContext context) =>
+      (_isDesktopHost || kIsWeb) && MediaQuery.sizeOf(context).width >= 900;
 
   bool _isCurrentCall(OrexCallInstance instance) {
     final expected = _canonicalCallInstance(instance);
@@ -689,7 +695,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
         retryLater();
         return;
       }
-      final isWide = MediaQuery.sizeOf(ctx).width >= 900;
+      final isWide = _usesWideCallPresentation(ctx);
       final Future<void> future;
       try {
         future = isWide
@@ -815,7 +821,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       );
     }
 
-    if (MediaQuery.sizeOf(ctx).width >= 900) {
+    if (_usesWideCallPresentation(ctx)) {
       widget.matrix.call.minimize();
       notifyUiReady();
       return;

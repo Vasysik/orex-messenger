@@ -5,13 +5,38 @@ import 'package:orex_messenger/core/voip/call_attempt.dart';
 import 'package:orex_messenger/core/voip/call_lifecycle_policy.dart';
 
 void main() {
-  test('cold answer descriptor survives until pending command is loaded', () {
+  test('closing the system incoming surface preserves an active answer handoff', () {
+    expect(
+      orexShouldPreserveAnswerBootstrapForIncomingDismissal(
+        cancelsPendingAccept: false,
+        acceptInProgress: true,
+      ),
+      isTrue,
+    );
+    expect(
+      orexShouldPreserveAnswerBootstrapForIncomingDismissal(
+        cancelsPendingAccept: true,
+        acceptInProgress: true,
+      ),
+      isFalse,
+    );
+    expect(
+      orexShouldPreserveAnswerBootstrapForIncomingDismissal(
+        cancelsPendingAccept: false,
+        acceptInProgress: false,
+      ),
+      isFalse,
+    );
+  });
+
+  test('fresh cold-answer descriptor survives bridge dispatch races', () {
     expect(
       orexShouldKeepRecoverableAnswerBootstrap(
         incoming: true,
         answered: false,
         pushBridgeReady: false,
         hasPendingIncomingAnswer: false,
+        descriptorAge: Duration.zero,
       ),
       isTrue,
     );
@@ -21,6 +46,7 @@ void main() {
         answered: false,
         pushBridgeReady: true,
         hasPendingIncomingAnswer: true,
+        descriptorAge: const Duration(seconds: 1),
       ),
       isTrue,
     );
@@ -30,6 +56,17 @@ void main() {
         answered: false,
         pushBridgeReady: true,
         hasPendingIncomingAnswer: false,
+        descriptorAge: const Duration(seconds: 1),
+      ),
+      isTrue,
+    );
+    expect(
+      orexShouldKeepRecoverableAnswerBootstrap(
+        incoming: true,
+        answered: false,
+        pushBridgeReady: true,
+        hasPendingIncomingAnswer: false,
+        descriptorAge: const Duration(seconds: 71),
       ),
       isFalse,
     );

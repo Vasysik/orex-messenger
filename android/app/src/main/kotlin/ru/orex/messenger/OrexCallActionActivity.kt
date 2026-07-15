@@ -1,6 +1,7 @@
 package ru.orex.messenger
 
 import android.app.Activity
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -13,7 +14,8 @@ import android.util.Log
  * has already chosen an action, so showing the incoming panel again is both
  * confusing and race-prone. Answer is persisted for the process-owned call
  * runtime first; opening MainActivity under a native connecting cover is only
- * presentation. A locked device still requires normal unlock.
+ * presentation. On a locked device, Answer is first routed through the trusted
+ * full-screen incoming surface so Android can require device credentials.
  */
 class OrexCallActionActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,6 +46,25 @@ class OrexCallActionActivity : Activity() {
 
         when (action) {
             ACTION_ANSWER, ACTION_ANSWER_VIDEO -> {
+                if (isDeviceLocked()) {
+                    try {
+                        startActivity(
+                            OrexIncomingCallActivity.createIntent(
+                                context = this,
+                                callId = callId,
+                                ringEventId = ringEventId,
+                                displayName = displayName,
+                                video = video,
+                                timeoutAfterMs = 45_000L,
+                                action = action,
+                                systemManaged = systemManaged,
+                            ),
+                        )
+                    } catch (error: Throwable) {
+                        Log.e(TAG, "Unable to show lock-screen answer gate call=$callId", error)
+                    }
+                    return
+                }
                 val useVideo = action == ACTION_ANSWER_VIDEO || video
                 val launched = OrexPushBridge.acceptIncomingCallFromNativeAction(
                     context = this,
@@ -92,6 +113,10 @@ class OrexCallActionActivity : Activity() {
             }
         }
     }
+
+    private fun isDeviceLocked(): Boolean =
+        (getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)
+            ?.isKeyguardLocked == true
 
     companion object {
         private const val TAG = "OrexCallAction"

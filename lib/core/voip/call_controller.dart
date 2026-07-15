@@ -1259,7 +1259,11 @@ class CallController extends ChangeNotifier {
     if (dismissal.cancelsPendingAccept) {
       _cancelPendingIncomingAccept(instance);
     }
-    if (_sameCallInstance(_systemAnswerInProgress, instance) ||
+    if (orexShouldPreserveAnswerBootstrapForIncomingDismissal(
+          cancelsPendingAccept: dismissal.cancelsPendingAccept,
+          acceptInProgress: isAcceptingIncomingInstance(instance),
+        ) ||
+        _sameCallInstance(_systemAnswerInProgress, instance) ||
         _sameCallInstance(_systemTerminationInProgress, instance) ||
         (isActive && _isCurrentControllerInstance(instance))) {
       return;
@@ -1414,6 +1418,7 @@ class CallController extends ChangeNotifier {
       return;
     }
     if (!recoverable.answered) {
+      final descriptorAge = DateTime.now().difference(recoverable.startedAt);
       final keepAnswerBootstrap = orexShouldKeepRecoverableAnswerBootstrap(
         incoming: recoverable.incoming,
         answered: recoverable.answered,
@@ -1422,11 +1427,13 @@ class CallController extends ChangeNotifier {
           recoverable.callId,
           ringEventId: recoverable.ringEventId,
         ),
+        descriptorAge: descriptorAge,
       );
       if (keepAnswerBootstrap) {
         OrexLog.d(
           'Call',
           'keeping native answer bootstrap room=${recoverable.callId} '
+              'ageMs=${descriptorAge.inMilliseconds} '
               'pushReady=${matrix.push.isReady}',
         );
         return;

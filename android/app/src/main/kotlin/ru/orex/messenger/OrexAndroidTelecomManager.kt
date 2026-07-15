@@ -1,5 +1,6 @@
 package ru.orex.messenger
 
+import android.app.KeyguardManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -73,6 +74,7 @@ object OrexAndroidTelecomManager {
         var endpoints: List<CallEndpointCompat> = emptyList(),
         var answered: Boolean = false,
         var answerRequested: Boolean = false,
+        var telecomAnswerAwaitingUnlock: Boolean = false,
         var lastMuted: Boolean? = null,
         var suppressDisconnectEvent: Boolean = false,
         var terminating: Boolean = false,
@@ -171,6 +173,72 @@ object OrexAndroidTelecomManager {
                 emitActionAndAwait(call, "toggleAudio")
             }
         }
+    }
+
+    /**
+     * Completes a Core-Telecom Answer that was acknowledged to the system
+     * while the device was locked. The corresponding [onAnswer] transaction
+     * has already succeeded, so this deliberately starts only the app's
+     * foreground/Dart bootstrap and never calls CallControlScope.answer again.
+     */
+    fun continueTelecomAnswerAfterUnlock(
+        context: Context,
+        callId: String,
+        ringEventId: String?,
+    ): Boolean {
+        val appContext = context.applicationContext
+        val managed = synchronized(this) {
+            current?.takeIf {
+                it.incoming &&
+                    !it.terminating &&
+                    it.telecomAnswerAwaitingUnlock &&
+                    sameCallAttempt(it.callId, it.ringEventId, callId, ringEventId)
+            }?.also { it.telecomAnswerAwaitingUnlock = false }
+        } ?: return false
+        if (!OrexCallPresentationState.markAnswering(
+                appContext,
+                managed.callId,
+                managed.ringEventId,
+            )
+        ) {
+            return false
+        }
+        val foregroundStarted = OrexCallForegroundService.startAnswering(
+            context = appContext,
+            callId = managed.callId,
+            ringEventId = managed.ringEventId,
+            displayName = managed.displayName,
+            video = managed.video,
+        )
+        if (!foregroundStarted) {
+            OrexCallPresentationState.markEnded(
+                appContext,
+                managed.callId,
+                managed.ringEventId,
+            )
+            appScope.launch { cleanupFailedAnswer(managed) }
+            return false
+        }
+        OrexNotificationCenter.cancelCallNotification(appContext)
+        OrexPushBridge.queueIncomingCallAction(
+            context = appContext,
+            callId = managed.callId,
+            ringEventId = managed.ringEventId,
+            displayName = managed.displayName,
+            video = managed.video,
+            action = "answer",
+            fromSystem = true,
+        )
+        if (!OrexPushBridge.bringCallHandoffToFront(
+                context = appContext,
+                callId = managed.callId,
+                ringEventId = managed.ringEventId,
+                displayName = managed.displayName,
+            )
+        ) {
+            Log.w(TAG, "Deferred Telecom answer queued without expanded UI")
+        }
+        return true
     }
 
     fun requestAudioRoute(
@@ -665,19 +733,35 @@ object OrexAndroidTelecomManager {
                     onAnswer = { callType ->
                         val requestedVideo =
                             callType == CallAttributesCompat.CALL_TYPE_VIDEO_CALL
-                        val handled = emitActionAndAwait(
-                            managed,
-                            "answer",
-                            mapOf("video" to requestedVideo),
-                        )
-                        if (!handled) {
-                            throw IllegalStateException(
-                                "Orex did not acknowledge Telecom answer for ${managed.callId}",
-                            )
+                        if (!managed.telecomAnswerAwaitingUnlock) {
+                            if (isDeviceLocked()) {
+                                if (!deferTelecomAnswerUntilUnlock(managed, requestedVideo)) {
+                                    throw IllegalStateException(
+                                        "Unable to open lock-screen gate for ${managed.callId}",
+                                    )
+                                }
+                                // Core Telecom's Answer transaction must resolve
+                                // within its short watchdog. Media/Dart startup is
+                                // deliberately delayed until the credential flow
+                                // has completed in OrexIncomingCallActivity.
+                                managed.answered = true
+                                managed.video = requestedVideo
+                            } else {
+                                val handled = emitActionAndAwait(
+                                    managed,
+                                    "answer",
+                                    mapOf("video" to requestedVideo),
+                                )
+                                if (!handled) {
+                                    throw IllegalStateException(
+                                        "Orex did not acknowledge Telecom answer for ${managed.callId}",
+                                    )
+                                }
+                                managed.answered = true
+                                managed.video = requestedVideo
+                                showNotification(managed)
+                            }
                         }
-                        managed.answered = true
-                        managed.video = requestedVideo
-                        showNotification(managed)
                     },
                     onDisconnect = { cause ->
                         managed.terminating = true
@@ -985,6 +1069,41 @@ object OrexAndroidTelecomManager {
                 )
             }
         } ?: false
+    }
+
+    private fun isDeviceLocked(): Boolean {
+        val context = appContext ?: return false
+        return context.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true
+    }
+
+    private fun deferTelecomAnswerUntilUnlock(
+        managed: ManagedCall,
+        video: Boolean,
+    ): Boolean {
+        val context = appContext ?: return false
+        managed.telecomAnswerAwaitingUnlock = true
+        managed.video = video
+        return try {
+            context.startActivity(
+                OrexIncomingCallActivity.createIntent(
+                    context = context,
+                    callId = managed.callId,
+                    ringEventId = managed.ringEventId,
+                    displayName = managed.displayName,
+                    video = video,
+                    timeoutAfterMs = 45_000L,
+                    action = OrexIncomingCallActivity.ACTION_TELECOM_ANSWER_AFTER_UNLOCK,
+                    systemManaged = true,
+                    avatarCacheKey = managed.avatarCacheKey,
+                ),
+            )
+            OrexNotificationCenter.cancelCallNotification(context)
+            true
+        } catch (error: Throwable) {
+            managed.telecomAnswerAwaitingUnlock = false
+            Log.e(TAG, "Unable to open lock-screen gate for ${managed.callId}", error)
+            false
+        }
     }
 
     private fun endpointNamesMatch(endpointName: String, preferredName: String): Boolean {

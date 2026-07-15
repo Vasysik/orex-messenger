@@ -33,7 +33,6 @@ object OrexNotificationCenter {
     const val ONGOING_CALL_NOTIFICATION_ID = 4041
     const val MESSAGE_CHANNEL_ID = "orex_messages_v3"
     const val INCOMING_CALL_CHANNEL_ID = "orex_calls_incoming_v4"
-    const val INCOMING_TELECOM_CALL_CHANNEL_ID = "orex_calls_telecom_v1"
     const val ONGOING_CALL_CHANNEL_ID = "orex_calls_ongoing_v2"
 
     private const val TAG = "OrexNotifications"
@@ -260,10 +259,13 @@ object OrexNotificationCenter {
         if (isRinging) {
             OrexIncomingCallActivity.promoteAttemptForCall(callId, ringEventId)
             if (decision == OrexCallPresentationState.IncomingDecision.SILENT_REFRESH) {
-                // Replace the FCM alert with the silent Core-Telecom channel.
-                // The system call now owns ringing; keeping the original
-                // notification channel alive makes both sources play at once.
-                Log.i(TAG, "Telecom took over incoming ringtone call=$callId")
+                // Self-managed Core-Telecom owns routing, but some devices do
+                // not provide its ringtone. Keep the already-posted FCM
+                // CallStyle notification as the sole alert source. The native
+                // full-screen Activity no longer has a separate player, so
+                // this cannot produce a duplicate ringtone.
+                Log.i(TAG, "Telecom adopted existing incoming notification call=$callId")
+                return null
             }
         }
         val alert = decision == OrexCallPresentationState.IncomingDecision.FIRST_ALERT
@@ -323,10 +325,6 @@ object OrexNotificationCenter {
             context = context,
             displayName = displayName,
             incoming = isRinging,
-            // Core-Telecom owns the actual ringtone once it has adopted the
-            // call. Its companion notification must be visual-only, otherwise
-            // the FCM notification-channel ringtone plays in parallel.
-            channelId = if (isRinging) INCOMING_TELECOM_CALL_CHANNEL_ID else null,
             openApp = openApp,
             fullScreen = openApp.takeIf {
                 isRinging && alert && !OrexPushBridge.isAppResumed()
@@ -673,9 +671,8 @@ object OrexNotificationCenter {
         timeoutAfterMs: Long?,
         alert: Boolean,
         avatarCacheKey: String? = null,
-        channelId: String? = null,
     ): Notification {
-        val notificationChannelId = channelId ?: if (incoming) {
+        val notificationChannelId = if (incoming) {
             INCOMING_CALL_CHANNEL_ID
         } else {
             ONGOING_CALL_CHANNEL_ID
@@ -786,9 +783,7 @@ object OrexNotificationCenter {
             }
 
             return builder.build().apply {
-                if (incoming && alert &&
-                    notificationChannelId == INCOMING_CALL_CHANNEL_ID
-                ) {
+                if (incoming && alert) {
                     flags = flags or Notification.FLAG_INSISTENT
                 }
                 if (!incoming) {
@@ -1024,19 +1019,6 @@ object OrexNotificationCenter {
                     enableVibration(true)
                     vibrationPattern = longArrayOf(0L, 700L, 500L, 700L)
                     setSound(Settings.System.DEFAULT_RINGTONE_URI, ringtoneAttributes)
-                },
-                NotificationChannel(
-                    INCOMING_TELECOM_CALL_CHANNEL_ID,
-                    "Системные звонки Orex",
-                    NotificationManager.IMPORTANCE_HIGH,
-                ).apply {
-                    // Core-Telecom supplies the ringing and vibration. This
-                    // channel replaces the FCM alert after Telecom adopts a
-                    // call, so Android never plays two ringtone owners.
-                    description = "Системная поверхность входящего звонка"
-                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                    enableVibration(false)
-                    setSound(null, null)
                 },
                 NotificationChannel(
                     ONGOING_CALL_CHANNEL_ID,

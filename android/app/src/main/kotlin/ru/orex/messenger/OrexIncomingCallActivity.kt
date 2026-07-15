@@ -48,6 +48,9 @@ class OrexIncomingCallActivity : Activity() {
     private var systemManaged: Boolean = false
     private var handoffStarted = false
     private var flutterBootstrapCovered = false
+    private var unlockForAnswerInProgress = false
+    private var pendingAnswerVideo: Boolean? = null
+    private var telecomAnswerAfterUnlock = false
     private var statusText: TextView? = null
     private var avatarSlot: FrameLayout? = null
     private var actionsRow: View? = null
@@ -68,6 +71,10 @@ class OrexIncomingCallActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (unlockForAnswerInProgress && !isDeviceLocked()) {
+            handler.post { continueAnswerAfterUnlock() }
+            return
+        }
         if (handoffStarted && flutterBootstrapCovered && !isDeviceLocked()) {
             finishAndRemoveTask()
         }
@@ -119,9 +126,22 @@ class OrexIncomingCallActivity : Activity() {
             if (callId.isEmpty()) finishAndRemoveTask()
             return
         }
-        if (!sameCallAttempt(callId, ringEventId, nextCallId, nextRingEventId)) {
+        val changedAttempt = !sameCallAttempt(
+            callId,
+            ringEventId,
+            nextCallId,
+            nextRingEventId,
+        )
+        if (changedAttempt) {
             handoffStarted = false
             flutterBootstrapCovered = false
+            unlockForAnswerInProgress = false
+            pendingAnswerVideo = null
+            telecomAnswerAfterUnlock = false
+            ringTimeout?.let(handler::removeCallbacks)
+            ringTimeout = null
+            answerTimeout?.let(handler::removeCallbacks)
+            answerTimeout = null
         }
         callId = nextCallId
         ringEventId = nextRingEventId
@@ -132,6 +152,7 @@ class OrexIncomingCallActivity : Activity() {
         val timeoutMs = source.getLongExtra(EXTRA_TIMEOUT_MS, DEFAULT_TIMEOUT_MS)
             .coerceIn(1_000L, MAX_TIMEOUT_MS)
         val requestedAction = source.getStringExtra(EXTRA_ACTION)?.trim()
+        showIncomingSurface(timeoutMs, rebuild = changedAttempt)
         when (requestedAction) {
             ACTION_ANSWER -> {
                 handler.post { beginAnswer(incomingVideo) }
@@ -141,14 +162,24 @@ class OrexIncomingCallActivity : Activity() {
                 handler.post { beginAnswer(true) }
                 return
             }
+            ACTION_TELECOM_ANSWER_AFTER_UNLOCK -> {
+                telecomAnswerAfterUnlock = true
+                handler.post { beginAnswer(incomingVideo) }
+                return
+            }
             ACTION_REJECT -> {
                 handler.post { declineCall() }
                 return
             }
         }
+    }
 
-        setContentView(buildContent())
-        ringTimeout?.let(handler::removeCallbacks)
+    private fun showIncomingSurface(timeoutMs: Long, rebuild: Boolean) {
+        if (handoffStarted) return
+        if (rebuild || statusText == null) {
+            setContentView(buildContent())
+        }
+        if (ringTimeout != null) return
         ringTimeout = Runnable {
             OrexNotificationCenter.cancelCall(applicationContext, callId, ringEventId)
             finishAndRemoveTask()
@@ -331,6 +362,71 @@ class OrexIncomingCallActivity : Activity() {
 
     private fun beginAnswer(useVideo: Boolean) {
         if (callId.isEmpty() || handoffStarted) return
+        if (isDeviceLocked()) {
+            requestUnlockForAnswer(useVideo)
+            return
+        }
+
+        startAnswerHandoff(useVideo)
+    }
+
+    private fun requestUnlockForAnswer(useVideo: Boolean) {
+        if (unlockForAnswerInProgress) return
+        unlockForAnswerInProgress = true
+        pendingAnswerVideo = useVideo
+        statusText?.text = "Разблокируйте телефон, чтобы ответить"
+        progress?.visibility = View.GONE
+        actionsRow?.visibility = View.VISIBLE
+        setEnabledRecursively(actionsRow, false)
+
+        // Android 8+ presents the system credential flow over this trusted
+        // showWhenLocked surface. Older devices resume here after the user
+        // unlocks normally, which onResume handles below.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val keyguard = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        if (keyguard == null) {
+            restoreAfterUnlockCancelled()
+            return
+        }
+        keyguard.requestDismissKeyguard(
+            this,
+            object : KeyguardManager.KeyguardDismissCallback() {
+                override fun onDismissSucceeded() {
+                    handler.post { continueAnswerAfterUnlock() }
+                }
+
+                override fun onDismissCancelled() {
+                    handler.post { restoreAfterUnlockCancelled() }
+                }
+
+                override fun onDismissError() {
+                    handler.post { restoreAfterUnlockCancelled() }
+                }
+            },
+        )
+    }
+
+    private fun continueAnswerAfterUnlock() {
+        if (!unlockForAnswerInProgress || handoffStarted || isFinishing) return
+        if (isDeviceLocked()) return
+        val useVideo = pendingAnswerVideo ?: incomingVideo
+        unlockForAnswerInProgress = false
+        pendingAnswerVideo = null
+        beginAnswer(useVideo)
+    }
+
+    private fun restoreAfterUnlockCancelled() {
+        if (!unlockForAnswerInProgress) return
+        unlockForAnswerInProgress = false
+        pendingAnswerVideo = null
+        if (handoffStarted || isFinishing) return
+        statusText?.text = "Входящий звонок…"
+        progress?.visibility = View.GONE
+        actionsRow?.visibility = View.VISIBLE
+        setEnabledRecursively(actionsRow, true)
+    }
+
+    private fun startAnswerHandoff(useVideo: Boolean) {
         handoffStarted = true
         ringTimeout?.let(handler::removeCallbacks)
         ringTimeout = null
@@ -340,15 +436,23 @@ class OrexIncomingCallActivity : Activity() {
         actionsRow?.visibility = View.INVISIBLE
         setEnabledRecursively(actionsRow, false)
 
-        val accepted = OrexPushBridge.acceptIncomingCallFromNativeAction(
-            context = this,
-            callId = callId,
-            ringEventId = ringEventId,
-            displayName = displayName,
-            video = useVideo,
-            fromSystem = systemManaged,
-            bringUiToFront = true,
-        )
+        val accepted = if (telecomAnswerAfterUnlock) {
+            OrexAndroidTelecomManager.continueTelecomAnswerAfterUnlock(
+                context = this,
+                callId = callId,
+                ringEventId = ringEventId,
+            )
+        } else {
+            OrexPushBridge.acceptIncomingCallFromNativeAction(
+                context = this,
+                callId = callId,
+                ringEventId = ringEventId,
+                displayName = displayName,
+                video = useVideo,
+                fromSystem = systemManaged,
+                bringUiToFront = true,
+            )
+        }
         if (!accepted) {
             restoreAfterFailedHandoff("Не удалось запустить звонок")
             handler.postDelayed({
@@ -458,6 +562,7 @@ class OrexIncomingCallActivity : Activity() {
         OrexCallPresentationState.markEnded(applicationContext, callId, ringEventId)
         handoffStarted = false
         flutterBootstrapCovered = false
+        telecomAnswerAfterUnlock = false
         statusText?.text = message
         progress?.visibility = View.GONE
         actionsRow?.visibility = View.VISIBLE
@@ -509,6 +614,7 @@ class OrexIncomingCallActivity : Activity() {
         private const val ACTION_ANSWER = "answer"
         private const val ACTION_ANSWER_VIDEO = "answer_video"
         private const val ACTION_REJECT = "reject"
+        const val ACTION_TELECOM_ANSWER_AFTER_UNLOCK = "telecom_answer_after_unlock"
         private const val DEFAULT_TIMEOUT_MS = 45_000L
         private const val MAX_TIMEOUT_MS = 90_000L
         private const val FAILURE_MESSAGE_VISIBLE_MS = 1_500L

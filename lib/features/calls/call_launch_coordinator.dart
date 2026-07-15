@@ -1,9 +1,20 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/matrix/matrix_service.dart';
 import 'call_screen.dart';
+
+bool _usesWideCallPresentation(BuildContext context, double wideBreakpoint) {
+  final isNativeDesktop =
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.linux ||
+          defaultTargetPlatform == TargetPlatform.macOS);
+  return (isNativeDesktop || kIsWeb) &&
+      MediaQuery.sizeOf(context).width >= wideBreakpoint;
+}
 
 /// Owns the presentation order for a user-initiated call.
 ///
@@ -18,7 +29,7 @@ Future<void> launchOrexCall(
   double wideBreakpoint = 900,
 }) async {
   final call = matrix.call;
-  final isWide = MediaQuery.sizeOf(context).width >= wideBreakpoint;
+  final isWide = _usesWideCallPresentation(context, wideBreakpoint);
 
   if (call.isActive && call.roomId == roomId) {
     if (isWide) {
