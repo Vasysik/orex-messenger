@@ -55,7 +55,7 @@ class OrexCallActionActivity : Activity() {
                                 ringEventId = ringEventId,
                                 displayName = displayName,
                                 video = video,
-                                timeoutAfterMs = 45_000L,
+                                timeoutAfterMs = OrexCallPresentationState.INCOMING_RING_TIMEOUT_MS,
                                 action = action,
                                 systemManaged = systemManaged,
                             ),

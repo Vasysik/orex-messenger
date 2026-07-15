@@ -5,6 +5,14 @@ import 'package:orex_messenger/core/voip/call_attempt.dart';
 import 'package:orex_messenger/core/voip/call_lifecycle_policy.dart';
 
 void main() {
+  test('ring lifetime covers the Android cold-answer bootstrap window', () {
+    expect(orexIncomingCallLifetime, const Duration(seconds: 75));
+    expect(
+      orexIncomingCallLifetime,
+      greaterThan(const Duration(seconds: 70)),
+    );
+  });
+
   test('closing the system incoming surface preserves an active answer handoff', () {
     expect(
       orexShouldPreserveAnswerBootstrapForIncomingDismissal(
@@ -100,24 +108,35 @@ void main() {
     expect(requested, hasLength(1));
   });
 
-  test('accepted UI can be requested before CallSession exists', () {
+  test('accepted UI waits for CallSession identity before latching', () {
     const accepted = OrexCallInstance(
       roomId: '!room:orex',
       ringEventId: r'$ring',
     );
     final requested = <OrexCallInstance>[];
+    OrexCallInstance? current;
     final handoff = OrexAcceptedCallUiHandoff(
       enabled: true,
       acceptedRoomId: accepted.roomId,
-      currentInstance: () => null,
+      currentInstance: () => current,
       requestUi: requested.add,
     );
 
-    handoff.request(accepted);
+    handoff.requestIfReady();
+    expect(requested, isEmpty);
+    expect(handoff.requested, isFalse);
+
+    // This mirrors CallController.onSessionCreated: the local identity has
+    // appeared, but LiveKit media is still free to be connecting.
+    current = accepted;
     handoff.requestIfReady();
 
     expect(requested, [accepted]);
     expect(handoff.requested, isTrue);
+
+    // Completion fallback must remain harmless after the handoff is sent.
+    handoff.requestIfReady();
+    expect(requested, hasLength(1));
   });
 
   test('handoff waits for the exact accepted room and respects disabled desktop flow', () {

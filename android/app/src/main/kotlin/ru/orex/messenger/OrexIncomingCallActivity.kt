@@ -615,7 +615,7 @@ class OrexIncomingCallActivity : Activity() {
         private const val ACTION_ANSWER_VIDEO = "answer_video"
         private const val ACTION_REJECT = "reject"
         const val ACTION_TELECOM_ANSWER_AFTER_UNLOCK = "telecom_answer_after_unlock"
-        private const val DEFAULT_TIMEOUT_MS = 45_000L
+        private const val DEFAULT_TIMEOUT_MS = OrexCallPresentationState.INCOMING_RING_TIMEOUT_MS
         private const val MAX_TIMEOUT_MS = 90_000L
         private const val FAILURE_MESSAGE_VISIBLE_MS = 1_500L
         private const val match = -1

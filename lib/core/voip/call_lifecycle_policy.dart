@@ -1,5 +1,10 @@
 import 'call_attempt.dart';
 
+/// One incoming call may need to cold-start the Flutter runtime after Android
+/// has already accepted it. Keep the MatrixRTC ring alive longer than the
+/// native 70-second answer-bootstrap watchdog, with a small delivery margin.
+const orexIncomingCallLifetime = Duration(seconds: 75);
+
 /// Pure lifecycle decisions for calls.
 ///
 /// Keeping these rules outside the stateful controller makes signaling

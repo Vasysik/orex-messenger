@@ -41,7 +41,13 @@ object OrexCallPresentationState {
     private const val PHASE_ANSWERING = "answering"
     private const val PHASE_ACTIVE = "active"
 
-    private const val DEFAULT_RING_WINDOW_MS = 45_000L
+    /**
+     * MatrixRTC's ringing lifetime on Android. It must exceed the native
+     * answer-bootstrap watchdog (70 s), otherwise a cold Flutter startup can
+     * be cancelled by the caller while the accepted call is still connecting.
+     */
+    const val INCOMING_RING_TIMEOUT_MS = 75_000L
+    private const val DEFAULT_RING_WINDOW_MS = INCOMING_RING_TIMEOUT_MS
     private const val CANCEL_TOMBSTONE_WINDOW_MS = 120_000L
     private const val MAX_CANCEL_TOMBSTONES = 16
     private const val ENDED_TOMBSTONE_WINDOW_MS = 120_000L
@@ -213,6 +219,17 @@ object OrexCallPresentationState {
             isCancelledRing(context, callId, normalizedRingEventId, now)
         ) return@synchronized IncomingDecision.SUPPRESS
         val state = readLiveState(context, now)
+        // A few legacy Core-Telecom callbacks still arrive without the Matrix
+        // ring id. With no live presentation there is no way to distinguish a
+        // delayed callback from a new call, so an exact cancellation tombstone
+        // for this room must win. New clients always provide the ring id and
+        // therefore remain able to start a fresh redial immediately.
+        if (state == null && normalizedRingEventId == null &&
+            readCancelledRings(context, now).any { it.callId == callId }
+        ) {
+            Log.i(TAG, "Tokenless Telecom ring suppressed by cancellation tombstone")
+            return@synchronized IncomingDecision.SUPPRESS
+        }
         if (state != null) {
             if (state.callId == callId) {
                 val currentRingEventId = currentRingToken(context)
@@ -401,6 +418,26 @@ object OrexCallPresentationState {
         val currentRingEventId = currentRingToken(context)
         sameCallAttempt(state.callId, currentRingEventId, callId, ringEventId) ||
             (state.callId == callId && canPromoteRingAttempt(currentRingEventId, ringEventId))
+    }
+
+    /**
+     * Whether the currently displayed incoming card is still owned by this
+     * exact (or legacy-to-exact promoted) attempt. Unlike
+     * [canCancelPresentation], an absent state is deliberately *not* owned:
+     * an old Core-Telecom cleanup must never cancel Android's shared incoming
+     * notification id after a newer FCM call has started presenting.
+     */
+    fun ownsLivePresentation(
+        context: Context,
+        callId: String,
+        ringEventId: String? = null,
+    ): Boolean = synchronized(lock) {
+        val state = readLiveState(context, System.currentTimeMillis())
+            ?: return@synchronized false
+        val currentRingEventId = currentRingToken(context)
+        sameCallAttempt(state.callId, currentRingEventId, callId, ringEventId) ||
+            (state.callId == callId &&
+                canPromoteRingAttempt(currentRingEventId, ringEventId))
     }
 
     fun cancelRingIfMatches(

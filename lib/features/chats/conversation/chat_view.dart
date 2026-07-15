@@ -60,6 +60,7 @@ class _ChatViewState extends State<ChatView> {
   final FocusNode _focusNode = FocusNode();
 
   static const int _historyPageSize = 40;
+  static const int _initialVisibleMessageCount = 40;
   static const int _openHistoryMaxPages = 32;
 
   Timeline? _timeline;
@@ -86,8 +87,7 @@ class _ChatViewState extends State<ChatView> {
     if (mounted) setState(() {});
   }
 
-  bool _isRenderableTimelineEvent(Event e) {
-    final room = _room;
+  bool _isRenderableTimelineEventForRoom(Room? room, Event e) {
     final hideMemberEvents = room != null && widget.matrix.isChannel(room);
     return (e.type == EventTypes.Message ||
             e.type == EventTypes.Encrypted ||
@@ -96,8 +96,8 @@ class _ChatViewState extends State<ChatView> {
         e.relationshipType != RelationshipTypes.edit;
   }
 
-  bool _hasRenderableTimelineEvents(List<Event> rawEvents) =>
-      rawEvents.any(_isRenderableTimelineEvent);
+  bool _isRenderableTimelineEvent(Event e) =>
+      _isRenderableTimelineEventForRoom(_room, e);
 
   bool get _isAtLatestEdge =>
       !_scroll.hasClients ||
@@ -230,51 +230,52 @@ class _ChatViewState extends State<ChatView> {
       },
     );
     await _markRead(room);
+    // Do not paint the short cache tail and then append the normal initial
+    // page a moment later. Besides looking like a lost-message bug, that
+    // layout jump makes the first scroll gesture unreliable on slower phones.
+    // Start with a full visible message window. Additional requests are needed
+    // when Matrix's page contains hidden channel state/member events.
+    await _warmInitialTimelineHistory(room, timeline);
+    if (!mounted) return;
     if (mounted) {
       setState(() {
         _room = room;
         _timeline = timeline;
-        _noMoreHistory = false;
+        _noMoreHistory = !timeline.canRequestHistory;
         _buildChatItems(timeline.events);
       });
       _jumpToLatestAfterFrame();
     }
-    await _refreshTimelineOnOpen(room, timeline);
-    if (mounted) {
-      setState(() => _buildChatItems(timeline.events));
-      _jumpToLatestAfterFrame();
-    }
   }
 
-  Future<void> _refreshTimelineOnOpen(Room room, Timeline timeline) async {
-    if (!timeline.canRequestHistory) {
-      if (mounted) setState(() => _noMoreHistory = true);
-      return;
-    }
+  Future<void> _warmInitialTimelineHistory(
+    Room room,
+    Timeline timeline,
+  ) async {
+    if (!timeline.canRequestHistory) return;
     try {
+      var renderableCount = timeline.events
+          .where((event) => _isRenderableTimelineEventForRoom(room, event))
+          .length;
       for (
         var page = 0;
-        page < _openHistoryMaxPages && timeline.canRequestHistory;
+        page < _openHistoryMaxPages &&
+            timeline.canRequestHistory &&
+            renderableCount < _initialVisibleMessageCount;
         page++
       ) {
         final beforeLen = timeline.events.length;
         await timeline.requestHistory(historyCount: _historyPageSize);
-        if (!mounted) return;
-        setState(() => _buildChatItems(timeline.events));
+        renderableCount = timeline.events
+            .where((event) => _isRenderableTimelineEventForRoom(room, event))
+            .length;
 
-        // Channels hide member events. In old low-traffic channels the first
-        // page can be made only of hidden state/member events, so open-time
-        // warm-up walks a wider history window before making the user scroll.
-        if (_hasRenderableTimelineEvents(timeline.events) ||
-            timeline.events.length == beforeLen) {
+        if (timeline.events.length == beforeLen) {
           break;
         }
       }
-      if (mounted && !timeline.canRequestHistory) {
-        setState(() => _noMoreHistory = true);
-      }
     } catch (e) {
-      OrexLog.d('Chat', 'open refresh failed room=${room.id}', e);
+      OrexLog.d('Chat', 'initial history warm-up failed room=${room.id}', e);
     }
   }
 

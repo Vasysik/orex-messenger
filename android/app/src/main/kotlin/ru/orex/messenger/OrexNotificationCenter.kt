@@ -39,7 +39,7 @@ object OrexNotificationCenter {
     private const val MESSAGE_GROUP_KEY = "orex_messages"
     private const val MESSAGE_HISTORY_PREFS = "orex_message_history_v3"
     private const val MAX_HISTORY_MESSAGES = 6
-    private const val DEFAULT_CALL_LIFETIME_MS = 45_000L
+    private const val DEFAULT_CALL_LIFETIME_MS = OrexCallPresentationState.INCOMING_RING_TIMEOUT_MS
     private const val MAX_CALL_LIFETIME_MS = 90_000L
     private const val CLOCK_SKEW_TOLERANCE_MS = 15_000L
 
@@ -429,6 +429,28 @@ object OrexNotificationCenter {
 
     fun cancelCallNotification(context: Context) {
         notificationManager(context).cancel(INCOMING_CALL_NOTIFICATION_ID)
+    }
+
+    /**
+     * The incoming call card uses one Android notification id. Core-Telecom
+     * cleanup can run after a newer FCM ring has already reused that id, so it
+     * may cancel the card only while the live presentation still belongs to
+     * its own call attempt. This intentionally does not alter presentation
+     * state: accepted LiveKit ownership is handled elsewhere.
+     */
+    fun cancelCallNotificationIfOwnedBy(
+        context: Context,
+        callId: String,
+        ringEventId: String? = null,
+    ): Boolean {
+        if (!OrexCallPresentationState.ownsLivePresentation(
+                context,
+                callId,
+                ringEventId,
+            )
+        ) return false
+        cancelCallNotification(context)
+        return true
     }
 
     fun cancelOngoingCallNotification(context: Context) {

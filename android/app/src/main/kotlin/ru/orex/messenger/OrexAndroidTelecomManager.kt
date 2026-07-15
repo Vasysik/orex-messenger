@@ -948,7 +948,11 @@ object OrexAndroidTelecomManager {
             // (for example during replacement/re-registration). Do not mark the
             // accepted call as ended, and do not reveal MainActivity here: the
             // expanded Flutter route owns the callUiReady handoff.
-            OrexNotificationCenter.cancelCallNotification(context)
+            OrexNotificationCenter.cancelCallNotificationIfOwnedBy(
+                context,
+                managed.callId,
+                managed.ringEventId,
+            )
         } else {
             OrexNotificationCenter.cancelIncomingCall(
                 context,
@@ -1091,7 +1095,7 @@ object OrexAndroidTelecomManager {
                     ringEventId = managed.ringEventId,
                     displayName = managed.displayName,
                     video = video,
-                    timeoutAfterMs = 45_000L,
+                    timeoutAfterMs = OrexCallPresentationState.INCOMING_RING_TIMEOUT_MS,
                     action = OrexIncomingCallActivity.ACTION_TELECOM_ANSWER_AFTER_UNLOCK,
                     systemManaged = true,
                     avatarCacheKey = managed.avatarCacheKey,

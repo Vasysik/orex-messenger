@@ -5,6 +5,7 @@ import 'package:matrix/matrix.dart';
 
 import '../../core/haptics/orex_haptics.dart';
 import '../../core/matrix/matrix_service.dart';
+import '../../core/voip/call_lifecycle_policy.dart';
 import '../../core/voip/voip_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
@@ -96,7 +97,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     }
     _ringtoneStarted = true;
     widget.matrix.audio.startIncomingRingtone();
-    _ringTimeout = Timer(const Duration(seconds: 45), () {
+    _ringTimeout = Timer(orexIncomingCallLifetime, () {
       if (!mounted || _busy || _dismissed) return;
       if (_ringtoneStarted) widget.matrix.audio.stopIncomingRingtone();
       widget.matrix.voip?.dismissIncomingFromSystem(_instance);

@@ -2,6 +2,7 @@ import 'package:matrix/matrix.dart';
 
 import '../logging/orex_logger.dart';
 import 'call_attempt.dart';
+import 'call_lifecycle_policy.dart';
 import 'call_ring_targets.dart';
 import 'matrix_call_control_transport.dart';
 import 'matrix_request_gate.dart';
@@ -94,7 +95,7 @@ final class PersonalCallSignaling {
     if (peers.isEmpty) return null;
     final notification = RtcNotificationContent.create(
       type: RtcNotificationType.ring,
-      lifetime: const Duration(seconds: 45),
+      lifetime: orexIncomingCallLifetime,
     );
     final transactionId = client.generateUniqueTransactionId();
     final content = <String, Object?>{

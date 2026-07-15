@@ -929,11 +929,11 @@ class CallController extends ChangeNotifier {
       requestUi: _requestAcceptedIncomingCallUi,
     );
 
-    // Request the expanded call surface before the potentially long media
-    // connection awaits. The root UI will retry until [start] has established
-    // its room identity, so the user sees one CallScreen "Соединение…" instead
-    // of keeping the incoming panel/shell alive until LiveKit finishes.
-    acceptedUiHandoff.request(acceptedInstance);
+    // Do not latch the one-shot UI handoff before [start]: at this point
+    // [currentCallInstance] still has no local room identity, so the root
+    // would correctly discard the request and the later session callback
+    // would be suppressed. [onSessionCreated] below runs as soon as the local
+    // session exists, while media is still connecting.
     final mediaStart = start(
       room.id,
       video: video,
@@ -1344,7 +1344,7 @@ class CallController extends ChangeNotifier {
     }
   }
 
-  static const Duration _outgoingAnswerTimeout = Duration(seconds: 45);
+  static const Duration _outgoingAnswerTimeout = orexIncomingCallLifetime;
 
   void _scheduleUnansweredTimeout(CallSession session, String callId) {
     _unansweredCallTimer?.cancel();
