@@ -665,21 +665,7 @@ class OrexCallForegroundService : Service() {
                     descriptorMatched = current != null,
                     presentationMatched = presentationMatched,
                 )
-            ) {
-                Log.i(
-                    TAG,
-                    "Ignored foreground stop call=$callId ring=$ringEventId " +
-                        "descriptor=${current?.callId}/${current?.ringEventId} " +
-                        "presentationMatched=$presentationMatched",
-                )
-                return false
-            }
-            Log.i(
-                TAG,
-                "Stopping foreground call call=$endedCallId ring=$endedRingEventId " +
-                    "descriptorMatched=${current != null} " +
-                    "presentationMatched=$presentationMatched",
-            )
+            ) return false
             clearForegroundReadiness()
             clearDescriptor(context)
             pendingNotification = null

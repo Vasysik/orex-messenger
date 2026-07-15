@@ -283,11 +283,6 @@ class CallController extends ChangeNotifier {
     if (_sameCallInstance(_foregroundCallInstance, instance)) {
       _clearForegroundCallState();
     }
-    OrexLog.d(
-      'Call',
-      'stopping native foreground owner room=${instance.roomId} '
-          'ring=${instance.ringEventId}',
-    );
     await _systemCalls.stopForegroundCall(
       instance.roomId,
       ringEventId: instance.ringEventId,
@@ -1393,10 +1388,6 @@ class CallController extends ChangeNotifier {
     String callId, {
     String? ringEventId,
   }) async {
-    OrexLog.d(
-      'Call',
-      'discarding requested recoverable call room=$callId ring=$ringEventId',
-    );
     final cleared = await _systemCalls.clearRecoverableCall(
       callId,
       ringEventId: ringEventId,
@@ -1408,11 +1399,6 @@ class CallController extends ChangeNotifier {
   Future<void> _discardKnownRecoverableCall(
     OrexRecoverableSystemCall recoverable,
   ) async {
-    OrexLog.d(
-      'Call',
-      'discarding stale recoverable call room=${recoverable.callId} '
-          'ring=${recoverable.ringEventId} answered=${recoverable.answered}',
-    );
     final cleared = await _systemCalls.clearRecoverableCall(
       recoverable.callId,
       ringEventId: recoverable.ringEventId,
@@ -1428,31 +1414,20 @@ class CallController extends ChangeNotifier {
       return;
     }
     if (!recoverable.answered) {
-      final answerBootstrapAge = DateTime.now().difference(
-        recoverable.startedAt,
-      );
-      final withinAnswerGrace =
-          answerBootstrapAge <= const Duration(seconds: 30);
-      final hasPendingIncomingAnswer = matrix.push.hasPendingIncomingAnswer(
-        recoverable.callId,
-        ringEventId: recoverable.ringEventId,
-      );
       final keepAnswerBootstrap = orexShouldKeepRecoverableAnswerBootstrap(
         incoming: recoverable.incoming,
         answered: recoverable.answered,
         pushBridgeReady: matrix.push.isReady,
-        hasPendingIncomingAnswer: hasPendingIncomingAnswer,
-        withinAnswerGrace: withinAnswerGrace,
+        hasPendingIncomingAnswer: matrix.push.hasPendingIncomingAnswer(
+          recoverable.callId,
+          ringEventId: recoverable.ringEventId,
+        ),
       );
       if (keepAnswerBootstrap) {
         OrexLog.d(
           'Call',
           'keeping native answer bootstrap room=${recoverable.callId} '
-              'ring=${recoverable.ringEventId} '
-              'ageMs=${answerBootstrapAge.inMilliseconds} '
-              'pushReady=${matrix.push.isReady} '
-              'pendingAnswer=$hasPendingIncomingAnswer '
-              'withinGrace=$withinAnswerGrace',
+              'pushReady=${matrix.push.isReady}',
         );
         return;
       }

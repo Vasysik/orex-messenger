@@ -43,7 +43,6 @@ object OrexPushBridge {
     const val ACTION_RESTORE_ONGOING_CALL_NOTIFICATION =
         "ru.orex.messenger.action.RESTORE_ONGOING_CALL_NOTIFICATION"
     private const val UI_RESOLVE_TIMEOUT_MS = 40_000L
-    private const val CALL_HANDOFF_DEDUPE_MS = 15_000L
 
     private const val MAX_PAYLOAD_ENTRIES = 48
     private const val MAX_PAYLOAD_KEY_LENGTH = 96
@@ -109,15 +108,8 @@ object OrexPushBridge {
         var dispatched: Boolean = false,
     )
 
-    private data class RecentCallHandoff(
-        val callId: String,
-        val ringEventId: String?,
-        val queuedAt: Long,
-    )
-
     private val callHandoffLock = Any()
     private var deferredCallHandoffOpen: DeferredCallHandoffOpen? = null
-    private var recentCallHandoff: RecentCallHandoff? = null
 
     @Volatile
     private var activityResumed = false
@@ -902,39 +894,14 @@ object OrexPushBridge {
         context: Context,
         payload: Map<String, String>,
     ) {
-        val candidate = normalizePayload(payload)
-        if (candidate.isEmpty()) return
-        val callId = candidate["call_id"]?.trim().orEmpty()
-            .ifEmpty { candidate["room_id"]?.trim().orEmpty() }
+        val normalized = persistNotificationOpen(context, payload) ?: return
+        val callId = normalized["call_id"]?.trim().orEmpty()
+            .ifEmpty { normalized["room_id"]?.trim().orEmpty() }
         if (callId.isEmpty()) {
-            val normalized = persistNotificationOpen(context, candidate) ?: return
             dispatchNotificationOpen(normalized)
             return
         }
-        val ringEventId = normalizeRingEventId(candidate["event_id"])
-        val now = System.currentTimeMillis()
-        val duplicate = synchronized(callHandoffLock) {
-            val recent = recentCallHandoff
-            val matches = recent != null &&
-                now - recent.queuedAt <= CALL_HANDOFF_DEDUPE_MS &&
-                callHandoffAttemptMatches(
-                    recent.callId,
-                    recent.ringEventId,
-                    callId,
-                    ringEventId,
-                )
-            if (!matches) {
-                recentCallHandoff = RecentCallHandoff(callId, ringEventId, now)
-            }
-            matches
-        }
-        if (duplicate) {
-            Log.i(TAG, "Coalesced duplicate accepted call handoff call=$callId")
-            flushDeferredCallHandoffOpen()
-            return
-        }
-
-        val normalized = persistNotificationOpen(context, candidate) ?: return
+        val ringEventId = normalizeRingEventId(normalized["event_id"])
         synchronized(callHandoffLock) {
             deferredCallHandoffOpen = DeferredCallHandoffOpen(
                 callId = callId,

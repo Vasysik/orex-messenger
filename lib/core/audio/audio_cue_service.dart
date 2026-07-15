@@ -33,7 +33,6 @@ class AudioCueService extends ChangeNotifier {
 
   Timer? _ringtoneWatchdog;
   bool _ringing = false;
-  int _ringtoneGeneration = 0;
   String? inputDeviceId;
   String? outputDeviceId;
   String? cameraDeviceId;
@@ -226,26 +225,16 @@ class AudioCueService extends ChangeNotifier {
   Future<void> startIncomingRingtone() async {
     if (_ringing) return;
     _ringing = true;
-    final generation = ++_ringtoneGeneration;
-    bool stillCurrent() => _ringing && generation == _ringtoneGeneration;
     OrexLog.d('Audio', 'start incoming ringtone');
     try {
       await _ensureAsset(incomingAsset);
-      if (!stillCurrent()) return;
       await _ringtonePlayer.setReleaseMode(ReleaseMode.loop);
-      if (!stillCurrent()) return;
       await _ringtonePlayer.play(_assetSource(incomingAsset));
-      if (!stillCurrent()) await _ringtonePlayer.stop();
     } catch (e) {
-      // Answer/Reject can stop the ringtone while Android's MediaPlayer is
-      // still preparing. Do not turn that expected cancellation into a fallback
-      // beep loop or let the stale start operation resurrect the ringtone.
-      if (!stillCurrent()) return;
       OrexLog.d('Audio', 'incoming ringtone asset playback failed', e);
       await _fallback(SystemSoundType.alert);
-      if (!stillCurrent()) return;
       _ringtoneWatchdog = Timer.periodic(const Duration(seconds: 2), (_) {
-        if (stillCurrent()) _fallback(SystemSoundType.alert);
+        _fallback(SystemSoundType.alert);
       });
     }
   }
@@ -254,7 +243,6 @@ class AudioCueService extends ChangeNotifier {
     if (!_ringing && _ringtoneWatchdog == null) return;
     OrexLog.d('Audio', 'stop incoming ringtone');
     _ringing = false;
-    _ringtoneGeneration++;
     _ringtoneWatchdog?.cancel();
     _ringtoneWatchdog = null;
     try {
