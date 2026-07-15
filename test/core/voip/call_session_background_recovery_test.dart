@@ -5,6 +5,10 @@ import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:orex_messenger/core/voip/call_session.dart';
 
 void main() {
+  test('allows a bounded mobile ICE handoff before failing the call stage', () {
+    expect(orexMobileIceConnectionTimeout, const Duration(seconds: 25));
+  });
+
   group('orexShouldReconnectCallAfterBackground', () {
     test('keeps a healthy room on the existing connection', () {
       expect(

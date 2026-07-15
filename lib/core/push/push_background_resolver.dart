@@ -23,6 +23,19 @@ class OrexResolvedPush {
   final Map<String, String> data;
 }
 
+@visibleForTesting
+bool orexIsCallOutcomeSummary({
+  required String eventType,
+  required Map<String, dynamic> content,
+}) =>
+    eventType == EventTypes.Message &&
+    content['com.orex.call_outcome'] is String;
+
+bool _isOrexCallOutcomeSummary(Event event) => orexIsCallOutcomeSummary(
+  eventType: event.type,
+  content: event.content,
+);
+
 /// Формирует plaintext payload из события, уже расшифрованного живым sync.
 /// Никаких повторных Matrix-запросов здесь нет: это локальный notification
 /// fallback для desktop и конфигураций без remote pusher.
@@ -30,6 +43,9 @@ Map<String, String>? resolveOrexSyncedMatrixNotification(Event event) {
   if (event.type != EventTypes.Message && event.type != EventTypes.Sticker) {
     return null;
   }
+  // Call outcomes stay in the Matrix timeline, but an old "missed call"
+  // summary must never become a delayed ordinary-message notification.
+  if (_isOrexCallOutcomeSummary(event)) return null;
   if (event.messageType == MessageTypes.BadEncrypted) return null;
   final body = OrexMatrixPushResolver._messageBody(event);
   if (body == null) return null;
@@ -110,6 +126,17 @@ class OrexMatrixPushResolver {
           roomId: roomId,
           eventId: eventId,
           reason: 'already_read_or_unavailable',
+        ),
+      );
+    }
+
+    if (_isOrexCallOutcomeSummary(event)) {
+      return OrexResolvedPush(
+        _dropPayload(
+          rawPayload,
+          roomId: roomId,
+          eventId: eventId,
+          reason: 'call_outcome_summary',
         ),
       );
     }

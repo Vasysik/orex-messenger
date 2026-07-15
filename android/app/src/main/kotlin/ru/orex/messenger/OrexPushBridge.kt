@@ -580,7 +580,13 @@ object OrexPushBridge {
             return false
         }
         OrexNotificationCenter.cancelCallNotification(appContext)
-        OrexIncomingCallActivity.finishForCall(callId, ringEventId)
+        // The full-screen incoming activity is the only trusted surface that
+        // may remain above the keyguard. Keep it alive while Flutter boots the
+        // accepted call; it closes itself after callUiReady (and requests the
+        // normal credential flow on a locked device).
+        if (!bringUiToFront) {
+            OrexIncomingCallActivity.finishForCall(callId, ringEventId)
+        }
         queueIncomingCallAction(
             context = appContext,
             callId = callId,

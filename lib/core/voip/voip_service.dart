@@ -1088,6 +1088,16 @@ class VoipService extends ChangeNotifier {
     return _promoteLegacyCallInstance(instance.roomId, ringEventId);
   }
 
+  /// A native action can arrive before Matrix sync has materialized the ring.
+  /// Preserve its exact identity first, otherwise that later sync can reopen
+  /// the Flutter incoming UI (and restart its ringtone) while answer is live.
+  void _tombstoneTrustedIncomingAction(OrexCallInstance instance) {
+    final ringEventId = instance.ringEventId?.trim();
+    if (ringEventId == null || ringEventId.isEmpty) return;
+    _suppressCall(instance.roomId, ringEventId);
+    _recordCallDisposition(instance.roomId, ringEventId: ringEventId);
+  }
+
   String _exactAttemptKey(String roomId, String ringEventId) =>
       '$roomId\u001f$ringEventId';
 
@@ -2052,9 +2062,9 @@ class VoipService extends ChangeNotifier {
   /// экран сам управляет навигацией после завершения асинхронного действия.
   void dismissIncomingFromSystem(OrexCallInstance instance) {
     promoteCallInstance(instance);
+    _tombstoneTrustedIncomingAction(instance);
     if (!isCurrentCallInstance(instance)) return;
     final roomId = instance.roomId;
-    _suppressCall(roomId, instance.ringEventId);
     final removed = _removeShownAttempt(instance);
     if (removed != null) {
       _dismiss.add(
@@ -2069,16 +2079,10 @@ class VoipService extends ChangeNotifier {
 
   /// Пометить обработанным (принят/отклонён) и сообщить другим своим устройствам.
   Future<void> markCallHandled(OrexCallInstance instance) async {
-    final roomId = instance.roomId;
     promoteCallInstance(instance);
+    _tombstoneTrustedIncomingAction(instance);
     if (isCurrentCallInstance(instance)) {
-      _suppressCall(roomId, instance.ringEventId);
       _removeShownAttempt(instance);
-      _recordCallDisposition(
-        roomId,
-        ringEventId: instance.ringEventId,
-        cleanupAfter: null,
-      );
     }
     await _signaling.sendHandled(instance);
   }

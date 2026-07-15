@@ -33,6 +33,7 @@ object OrexNotificationCenter {
     const val ONGOING_CALL_NOTIFICATION_ID = 4041
     const val MESSAGE_CHANNEL_ID = "orex_messages_v3"
     const val INCOMING_CALL_CHANNEL_ID = "orex_calls_incoming_v4"
+    const val INCOMING_TELECOM_CALL_CHANNEL_ID = "orex_calls_telecom_v1"
     const val ONGOING_CALL_CHANNEL_ID = "orex_calls_ongoing_v2"
 
     private const val TAG = "OrexNotifications"
@@ -259,13 +260,10 @@ object OrexNotificationCenter {
         if (isRinging) {
             OrexIncomingCallActivity.promoteAttemptForCall(callId, ringEventId)
             if (decision == OrexCallPresentationState.IncomingDecision.SILENT_REFRESH) {
-                // The first ringing owner already posted the notification. Reposting
-                // the same notification ID as silent removes FLAG_INSISTENT on MIUI
-                // and several other OEM builds, stopping the ringtone while leaving
-                // a stale "Incoming call" card visible. Telecom only adopts state;
-                // it must not replace the active ringing presentation.
-                Log.i(TAG, "Telecom adopted existing incoming notification call=$callId")
-                return null
+                // Replace the FCM alert with the silent Core-Telecom channel.
+                // The system call now owns ringing; keeping the original
+                // notification channel alive makes both sources play at once.
+                Log.i(TAG, "Telecom took over incoming ringtone call=$callId")
             }
         }
         val alert = decision == OrexCallPresentationState.IncomingDecision.FIRST_ALERT
@@ -325,6 +323,10 @@ object OrexNotificationCenter {
             context = context,
             displayName = displayName,
             incoming = isRinging,
+            // Core-Telecom owns the actual ringtone once it has adopted the
+            // call. Its companion notification must be visual-only, otherwise
+            // the FCM notification-channel ringtone plays in parallel.
+            channelId = if (isRinging) INCOMING_TELECOM_CALL_CHANNEL_ID else null,
             openApp = openApp,
             fullScreen = openApp.takeIf {
                 isRinging && alert && !OrexPushBridge.isAppResumed()
@@ -671,8 +673,13 @@ object OrexNotificationCenter {
         timeoutAfterMs: Long?,
         alert: Boolean,
         avatarCacheKey: String? = null,
+        channelId: String? = null,
     ): Notification {
-        val channelId = if (incoming) INCOMING_CALL_CHANNEL_ID else ONGOING_CALL_CHANNEL_ID
+        val notificationChannelId = channelId ?: if (incoming) {
+            INCOMING_CALL_CHANNEL_ID
+        } else {
+            ONGOING_CALL_CHANNEL_ID
+        }
         val effectiveFullScreen = fullScreen?.takeIf {
             incoming && canUseFullScreenIntent(context)
         }
@@ -684,7 +691,7 @@ object OrexNotificationCenter {
         val avatar = OrexAvatarCache.load(context, avatarCacheKey)
 
         fun buildNotification(useCallStyle: Boolean): Notification {
-            val builder = callBuilder(context, channelId)
+            val builder = callBuilder(context, notificationChannelId)
                 .setSmallIcon(R.drawable.ic_stat_orex)
                 .setColor(context.getColor(R.color.orex_launch_icon_background))
                 .setContentTitle(displayName)
@@ -779,7 +786,11 @@ object OrexNotificationCenter {
             }
 
             return builder.build().apply {
-                if (incoming && alert) flags = flags or Notification.FLAG_INSISTENT
+                if (incoming && alert &&
+                    notificationChannelId == INCOMING_CALL_CHANNEL_ID
+                ) {
+                    flags = flags or Notification.FLAG_INSISTENT
+                }
                 if (!incoming) {
                     flags = flags or Notification.FLAG_ONGOING_EVENT or Notification.FLAG_NO_CLEAR
                 }
@@ -1013,6 +1024,19 @@ object OrexNotificationCenter {
                     enableVibration(true)
                     vibrationPattern = longArrayOf(0L, 700L, 500L, 700L)
                     setSound(Settings.System.DEFAULT_RINGTONE_URI, ringtoneAttributes)
+                },
+                NotificationChannel(
+                    INCOMING_TELECOM_CALL_CHANNEL_ID,
+                    "Системные звонки Orex",
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    // Core-Telecom supplies the ringing and vibration. This
+                    // channel replaces the FCM alert after Telecom adopts a
+                    // call, so Android never plays two ringtone owners.
+                    description = "Системная поверхность входящего звонка"
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                    enableVibration(false)
+                    setSound(null, null)
                 },
                 NotificationChannel(
                     ONGOING_CALL_CHANNEL_ID,

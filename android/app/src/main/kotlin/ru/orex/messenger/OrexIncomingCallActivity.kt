@@ -4,9 +4,6 @@ import android.app.Activity
 import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
-import android.media.AudioAttributes
-import android.media.Ringtone
-import android.media.RingtoneManager
 import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
@@ -55,8 +52,6 @@ class OrexIncomingCallActivity : Activity() {
     private var avatarSlot: FrameLayout? = null
     private var actionsRow: View? = null
     private var progress: View? = null
-    private var nativeRingtone: Ringtone? = null
-    private var nativeRingtoneWatchdog: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -83,7 +78,6 @@ class OrexIncomingCallActivity : Activity() {
         ringTimeout = null
         answerTimeout?.let(handler::removeCallbacks)
         answerTimeout = null
-        stopNativeRingtone()
         if (current?.get() === this) current = null
         super.onDestroy()
     }
@@ -154,10 +148,8 @@ class OrexIncomingCallActivity : Activity() {
         }
 
         setContentView(buildContent())
-        startNativeRingtone()
         ringTimeout?.let(handler::removeCallbacks)
         ringTimeout = Runnable {
-            stopNativeRingtone()
             OrexNotificationCenter.cancelCall(applicationContext, callId, ringEventId)
             finishAndRemoveTask()
         }.also { handler.postDelayed(it, timeoutMs) }
@@ -342,7 +334,6 @@ class OrexIncomingCallActivity : Activity() {
         handoffStarted = true
         ringTimeout?.let(handler::removeCallbacks)
         ringTimeout = null
-        stopNativeRingtone()
 
         statusText?.text = "Подключаем к звонку…"
         progress?.visibility = View.VISIBLE
@@ -366,13 +357,11 @@ class OrexIncomingCallActivity : Activity() {
             return
         }
 
-        // This Activity is only the pre-answer full-screen surface. After Answer
-        // there is exactly one connecting UI: Flutter CallScreen. The foreground
-        // service and the persisted answer command keep running even if the user
-        // still needs to unlock the device before MainActivity is visible.
-        handler.postDelayed({
-            if (!isFinishing) finishAndRemoveTask()
-        }, HANDOFF_SHELL_DISMISS_MS)
+        // Keep the trusted lock-screen surface until Flutter has actually
+        // bootstrapped the call UI. Closing it immediately makes MainActivity
+        // race the keyguard and can expose the connecting screen without the
+        // expected device-unlock flow.
+        scheduleAnswerTimeout()
     }
 
     private fun scheduleAnswerTimeout() {
@@ -435,7 +424,6 @@ class OrexIncomingCallActivity : Activity() {
 
     private fun declineCall() {
         if (callId.isEmpty()) return
-        stopNativeRingtone()
         if (!OrexCallPresentationState.markEnded(applicationContext, callId, ringEventId)) {
             finishAndRemoveTask()
             return
@@ -474,55 +462,6 @@ class OrexIncomingCallActivity : Activity() {
         progress?.visibility = View.GONE
         actionsRow?.visibility = View.VISIBLE
         setEnabledRecursively(actionsRow, true)
-    }
-
-    private fun startNativeRingtone() {
-        if (handoffStarted || isFinishing) return
-        if (isNativeRingtonePlaying()) return
-        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE) ?: return
-        try {
-            nativeRingtone = RingtoneManager.getRingtone(applicationContext, uri)?.apply {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    audioAttributes = AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                }
-                play()
-            }
-        } catch (_: Throwable) {
-            nativeRingtone = null
-        }
-        scheduleNativeRingtoneWatchdog()
-    }
-
-    private fun isNativeRingtonePlaying(): Boolean =
-        try {
-            nativeRingtone?.isPlaying == true
-        } catch (_: Throwable) {
-            false
-        }
-
-    private fun scheduleNativeRingtoneWatchdog() {
-        nativeRingtoneWatchdog?.let(handler::removeCallbacks)
-        nativeRingtoneWatchdog = Runnable {
-            if (handoffStarted || isFinishing || callId.isEmpty()) return@Runnable
-            try {
-                if (!isNativeRingtonePlaying()) {
-                    nativeRingtone?.play()
-                }
-            } catch (_: Throwable) {}
-            scheduleNativeRingtoneWatchdog()
-        }.also { handler.postDelayed(it, RINGTONE_WATCHDOG_MS) }
-    }
-
-    private fun stopNativeRingtone() {
-        nativeRingtoneWatchdog?.let(handler::removeCallbacks)
-        nativeRingtoneWatchdog = null
-        try {
-            nativeRingtone?.stop()
-        } catch (_: Throwable) {}
-        nativeRingtone = null
     }
 
     private fun setEnabledRecursively(view: View?, enabled: Boolean) {
@@ -573,8 +512,6 @@ class OrexIncomingCallActivity : Activity() {
         private const val DEFAULT_TIMEOUT_MS = 45_000L
         private const val MAX_TIMEOUT_MS = 90_000L
         private const val FAILURE_MESSAGE_VISIBLE_MS = 1_500L
-        private const val HANDOFF_SHELL_DISMISS_MS = 550L
-        private const val RINGTONE_WATCHDOG_MS = 2_000L
         private const val match = -1
         private const val wrap = -2
 

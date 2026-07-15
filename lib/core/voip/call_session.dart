@@ -19,6 +19,23 @@ import 'voice_state_repository.dart';
 enum CallStatus { connecting, connected, failed, ended }
 
 @visibleForTesting
+const orexMobileIceConnectionTimeout = Duration(seconds: 25);
+
+// LiveKit defaults the primary ICE connection to 10 seconds. That is too
+// aggressive for a mobile handoff that needs to obtain a TURN candidate, but
+// remains bounded below by CallController's 30-second media-stage watchdog.
+const _orexMobileConnectOptions = lk.ConnectOptions(
+  timeouts: lk.Timeouts(
+    connection: orexMobileIceConnectionTimeout,
+    debounce: Duration(milliseconds: 20),
+    publish: Duration(seconds: 10),
+    subscribe: Duration(seconds: 10),
+    peerConnection: orexMobileIceConnectionTimeout,
+    iceRestart: orexMobileIceConnectionTimeout,
+  ),
+);
+
+@visibleForTesting
 bool orexShouldReconnectCallAfterBackground({
   required lk.ConnectionState? connectionState,
   required bool hasReachedMediaReady,
@@ -319,7 +336,11 @@ class CallSession extends ChangeNotifier {
         await _disposeRoom(candidate);
         return;
       }
-      await candidate.connect(creds.url, creds.jwt);
+      await candidate.connect(
+        creds.url,
+        creds.jwt,
+        connectOptions: _orexMobileConnectOptions,
+      );
       if (!_isCurrentConnection(generation)) {
         await _disposeRoom(candidate);
         return;
