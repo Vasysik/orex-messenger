@@ -49,16 +49,19 @@ void main() {
   });
 
   group('MatrixRTC call generation', () {
-    test('exact incoming ring always wins over a stale previous membership', () {
-      expect(
-        orexSelectMatrixRtcCallId(
-          roomId: '!room:example.org',
-          expectedRingEventId: r'$new-ring',
-          remoteCallIds: const ['!room:example.org'],
-        ),
-        r'$new-ring',
-      );
-    });
+    test(
+      'exact incoming ring always wins over a stale previous membership',
+      () {
+        expect(
+          orexSelectMatrixRtcCallId(
+            roomId: '!room:example.org',
+            expectedRingEventId: r'$new-ring',
+            remoteCallIds: const ['!room:example.org'],
+          ),
+          r'$new-ring',
+        );
+      },
+    );
 
     test('sequential rings produce isolated MatrixRTC generations', () {
       final first = orexSelectMatrixRtcCallId(
@@ -153,6 +156,40 @@ void main() {
   });
 
   group('exact call-attempt promotion', () {
+    test('native Answer may reserve a fresh or tokenless incoming attempt', () {
+      expect(
+        orexCanClaimNativeIncomingAttempt(
+          actionRingEventId: r'$ring-A',
+          knownRingEventIds: const <String?>[],
+        ),
+        isTrue,
+      );
+      expect(
+        orexCanClaimNativeIncomingAttempt(
+          actionRingEventId: r'$ring-A',
+          knownRingEventIds: const <String?>[null],
+        ),
+        isTrue,
+      );
+      expect(
+        orexCanClaimNativeIncomingAttempt(
+          actionRingEventId: r'$ring-A',
+          knownRingEventIds: const <String?>[r'$ring-A'],
+        ),
+        isTrue,
+      );
+    });
+
+    test('native Answer never claims a different exact redial', () {
+      expect(
+        orexCanClaimNativeIncomingAttempt(
+          actionRingEventId: r'$ring-B',
+          knownRingEventIds: const <String?>[r'$ring-A'],
+        ),
+        isFalse,
+      );
+    });
+
     test('promotes only a current tokenless attempt', () {
       expect(
         orexShouldPromoteLegacyCallInstance(

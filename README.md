@@ -388,7 +388,7 @@ flutter pub get
 flutter analyze --no-pub
 flutter test --no-pub
 Push-Location android
-.\gradlew.bat :app:testDebugUnitTest --no-daemon
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug --no-daemon
 Pop-Location
 flutter build web --release --no-web-resources-cdn
 flutter build apk --release --split-per-abi
@@ -399,6 +399,81 @@ flutter build windows --release
 версией, которой собирается пререлиз. Android release требует signing и Firebase
 configuration; Windows/Linux дополнительно проверяют наличие SQLCipher через
 runtime fail-closed check.
+
+### 11.1. Служебные инструменты
+
+#### Диагностика Android-звонка
+
+`tool\collect_orex_call_logs.ps1` интерактивно собирает один тестовый сеанс
+Android-звонка. Скрипт проверяет подключённое ADB-устройство, по умолчанию
+очищает logcat, сохраняет все его буферы без привязки к PID, снимает состояние
+Activity/Telecom/уведомлений/audio/power через `dumpsys`, создаёт
+отфильтрованный `02-logcat-orex-focused.txt` и упаковывает результат в
+`orex-test-logs\orex-call-<дата>.zip`.
+
+```powershell
+.\tool\collect_orex_call_logs.ps1
+.\tool\collect_orex_call_logs.ps1 -NoClear    # сохранить старый logcat
+.\tool\collect_orex_call_logs.ps1 -Bugreport  # дополнительно снять adb bugreport
+```
+
+Скрипт рассчитан на одно устройство в состоянии `adb devices = device`.
+Перед передачей архива проверьте его на access token, FCM token, пароли и
+приватные URL. Каталог `orex-test-logs` не коммитится.
+
+#### Web-биндинги vodozemac
+
+`tool/setup_web_vodozemac.sh` пересобирает WASM-биндинги vodozemac и полностью
+заменяет сгенерированный каталог `web/pkg`. Он нужен после обновления
+`flutter_vodozemac`, при восстановлении отсутствующего `web/pkg` или при
+осознанной регенерации Web-криптографии; обычный `flutter build web` его не
+запускает.
+
+Скрипт запускается из корня репозитория в Bash и требует Rust (`rustup`,
+`cargo`). Версия `VERSION` в скрипте должна меняться вместе с версией
+`flutter_vodozemac` в `pubspec.yaml`.
+
+```bash
+./tool/setup_web_vodozemac.sh
+```
+
+Не храните вручную созданные файлы в `web/pkg`: скрипт удаляет каталог перед
+генерацией.
+
+#### Проверка Android native vodozemac
+
+`android/cargokit_proxy/run_build_tool.cmd` — внутренний Windows-proxy, а не
+команда для ручного запуска. Gradle автоматически подключает его только для
+задач `flutter_vodozemac` на Windows.
+
+Proxy берёт Flutter SDK из `android/local.properties`, вызывает исходный
+Cargokit с теми же входными параметрами, удаляет старые `.so` перед сборкой и
+завершает Gradle с ошибкой, если хотя бы для одного запрошенного ABI не создан
+`libvodozemac_bindings_dart.so`. Это предотвращает ложный успешный APK без
+native E2EE-библиотеки. `android/cargokit_proxy/gradle/plugin.gradle` —
+служебный marker-файл proxy и также не запускается вручную.
+
+Задачи `verifyDebugVodozemacNativeLibs`, `verifyProfileVodozemacNativeLibs` и
+`verifyReleaseVodozemacNativeLibs` проверяют уже объединённые native-библиотеки
+приложения. Они автоматически входят в `assemble*`, `package*` и `bundle*`;
+при диагностике можно вызвать проверку отдельно:
+
+```powershell
+Push-Location android
+.\gradlew.bat verifyDebugVodozemacNativeLibs --no-daemon
+Pop-Location
+```
+
+#### Деплой и CI
+
+`docker-compose.web.yml` публикует `build/web` через nginx в существующей
+внешней сети `traefik-proxy` и задаёт production security headers. Инструкции
+по запуску — в [Web release](docs/release-web.md).
+
+`.github/workflows/ci.yml` выполняет проверки для pull request и веток
+`main`/`master`: Dart analyze/test, Kotlin/JUnit, проверку Web security
+contract, Android debug/release и Windows release build. Workflow не публикует
+артефакты и не выполняет деплой.
 
 ## 12. Древо разработки
 

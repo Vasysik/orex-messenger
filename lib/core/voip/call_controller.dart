@@ -736,6 +736,11 @@ class CallController extends ChangeNotifier {
     if (_disposed) return Future<void>.value();
     final callInstance = instance ?? _instanceForRoom(room.id);
     _adoptTrustedExactInstance(callInstance);
+    OrexLog.d(
+      'Call',
+      'incoming accept requested room=${callInstance.roomId} '
+          'ring=${callInstance.ringEventId} system=$fromSystem',
+    );
     if (isActive && _isCurrentControllerInstance(callInstance)) {
       return Future<void>.value();
     }
@@ -809,6 +814,11 @@ class CallController extends ChangeNotifier {
       return true;
     }
 
+    OrexLog.d(
+      'Call',
+      'incoming accept entered room=${instance.roomId} '
+          'ring=${instance.ringEventId}',
+    );
     matrix.audio.stopIncomingRingtone();
     // Persist ANSWERING before any potentially slow Telecom/Matrix operation,
     // so a delayed duplicate FCM delivery cannot ring again in the meantime.
@@ -934,6 +944,11 @@ class CallController extends ChangeNotifier {
     // would correctly discard the request and the later session callback
     // would be suppressed. [onSessionCreated] below runs as soon as the local
     // session exists, while media is still connecting.
+    OrexLog.d(
+      'Call',
+      'incoming accept starting local session room=${acceptedInstance.roomId} '
+          'ring=${acceptedInstance.ringEventId}',
+    );
     final mediaStart = start(
       room.id,
       video: video,
@@ -1664,6 +1679,10 @@ class CallController extends ChangeNotifier {
     _session = s;
     s.addListener(_onSessionChanged);
     notifyListeners();
+    OrexLog.d(
+      'Call',
+      'local CallSession created room=$roomId ring=$ringEventId',
+    );
     onSessionCreated?.call();
 
     // Claim foreground execution before signaling/Telecom/network waits. A

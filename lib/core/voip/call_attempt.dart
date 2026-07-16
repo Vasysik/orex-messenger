@@ -35,6 +35,25 @@ class OrexCallInstancePromotion {
 bool orexCallInstanceIdsMatch(String? expected, String? received) =>
     expected == received;
 
+/// Whether a native Answer action may reserve an incoming call attempt before
+/// Matrix sync has materialized that attempt in [VoipService].
+///
+/// A tokenless legacy attempt is promotable to an exact native ring id. A
+/// different exact id is never promotable: it is a separate redial and must
+/// not be accepted through an old notification action.
+bool orexCanClaimNativeIncomingAttempt({
+  required String? actionRingEventId,
+  required Iterable<String?> knownRingEventIds,
+}) {
+  final action = actionRingEventId?.trim();
+  for (final known in knownRingEventIds) {
+    final normalized = known?.trim();
+    if (normalized == null || normalized.isEmpty) continue;
+    if (normalized != action) return false;
+  }
+  return true;
+}
+
 /// Applies a disposition only to the attempt that is current at receipt time.
 ///
 /// A tokenless legacy disposition is deliberately ignored once the current

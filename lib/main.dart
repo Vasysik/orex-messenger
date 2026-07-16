@@ -448,6 +448,11 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
   }
 
   void _openPushNotification(OrexPushOpen open) {
+    // MatrixService claims native Answer actions before this widget exists, so
+    // a cold start cannot wait on navigator construction. Its CallController
+    // handoff below will reopen the expanded route once the local session is
+    // ready; all other notification actions remain UI-owned here.
+    if (widget.matrix.push.handlesIncomingCallAnswer(open)) return;
     final actionInstance =
         open.kind == 'incoming_call' &&
             open.action != null &&
@@ -780,8 +785,10 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     final instance = _canonicalCallInstance(requested);
     _acceptedCallUiCandidate = instance;
     final call = widget.matrix.call;
-    final ownsAcceptedRoom = _isCallSurfaceOwningRoom(instance.roomId);
-    if ((!call.isActive && !call.isStarting) || !ownsAcceptedRoom) {
+    // A room can be redialed while a stale route callback is still queued.
+    // Only the exact Matrix ring identity may claim the expanded surface.
+    final ownsAcceptedCall = _isCurrentCall(instance);
+    if ((!call.isActive && !call.isStarting) || !ownsAcceptedCall) {
       if (call.isAcceptingIncoming(instance.roomId) ||
           widget.matrix.push.hasPendingIncomingAnswer(
             instance.roomId,
@@ -849,7 +856,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       if (!mounted || !identical(_expandedCallRoute, route)) return;
       final call = widget.matrix.call;
       if ((call.isActive || call.isStarting) &&
-          _isCallSurfaceOwningRoom(instance.roomId)) {
+          _isCurrentCall(instance)) {
         notifyUiReady();
       }
     });

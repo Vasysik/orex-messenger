@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../audio/audio_cue_service.dart';
 import '../config/orex_config.dart';
 import '../push/orex_push_service.dart';
+import '../push/push_platform_bridge.dart';
 import '../voip/call_controller.dart';
 import '../logging/orex_logger.dart';
 import '../media/orex_avatar_cache.dart';
@@ -126,6 +127,7 @@ class MatrixService extends ChangeNotifier {
   StreamSubscription? _syncSub;
   StreamSubscription? _loginStateSub;
   StreamSubscription? _userProfileSub;
+  final Map<String, Future<void>> _incomingCallAnswerBootstraps = {};
   Future<void>? _avatarWarmupFuture;
   bool _avatarWarmupRequestedAfterCurrent = false;
   DateTime? _lastAvatarWarmup;
@@ -169,6 +171,11 @@ class MatrixService extends ChangeNotifier {
       _log('Voip', 'init failed, calls disabled', e);
     }
     final callController = call;
+    // Android can dispatch an accepted native call while the Activity is still
+    // constructing its Flutter view. Claim that action at the process layer,
+    // not from a widget listener, so CallController can create its local
+    // session immediately and queue the later UI handoff safely.
+    push.setIncomingCallAnswerHandler(_handleIncomingCallAnswer);
 
     _syncSub = client.onSync.stream.listen((_) {
       _playNotificationCueIfNeeded();
@@ -229,6 +236,165 @@ class MatrixService extends ChangeNotifier {
         }),
       );
     }
+  }
+
+  Future<void> _handleIncomingCallAnswer(OrexPushOpen open) {
+    final roomId = open.roomId?.trim();
+    if (roomId == null || roomId.isEmpty) {
+      return _finishUnresolvableIncomingCallAnswer(open, roomId: null);
+    }
+    final instance = OrexCallInstance(
+      roomId: roomId,
+      ringEventId: open.ringEventId,
+    );
+    final existing = _incomingCallAnswerBootstraps[instance.routeKey];
+    if (existing != null) return existing;
+
+    late final Future<void> operation;
+    operation = _acceptIncomingCallFromPush(open, instance).whenComplete(() {
+      if (identical(
+        _incomingCallAnswerBootstraps[instance.routeKey],
+        operation,
+      )) {
+        _incomingCallAnswerBootstraps.remove(instance.routeKey);
+      }
+    });
+    _incomingCallAnswerBootstraps[instance.routeKey] = operation;
+    return operation;
+  }
+
+  Future<void> _acceptIncomingCallFromPush(
+    OrexPushOpen open,
+    OrexCallInstance instance,
+  ) async {
+    final callVoip = voip;
+    var nativeAnswerClaimed = false;
+    bool isThisAttemptActive() {
+      final current = call.currentCallInstance;
+      return call.isActive &&
+          current != null &&
+          current.roomId == instance.roomId &&
+          orexCallInstanceIdsMatch(current.ringEventId, instance.ringEventId);
+    }
+
+    _log(
+      'Push',
+      'bootstrap answer received room=${instance.roomId} '
+          'ring=${instance.ringEventId}',
+    );
+    try {
+      var room = client.getRoomById(instance.roomId);
+      room ??= await _resolveIncomingCallRoom(instance.roomId);
+      if (room == null) {
+        await _finishUnresolvableIncomingCallAnswer(
+          open,
+          roomId: instance.roomId,
+        );
+        return;
+      }
+
+      _log(
+        'Push',
+        'bootstrap answer resolved room=${room.id}; starting CallController',
+      );
+      if (callVoip == null ||
+          !callVoip.claimIncomingCallFromNativeAction(instance)) {
+        _log(
+          'Push',
+          'bootstrap answer rejected stale or unavailable attempt '
+              'room=${instance.roomId} ring=${instance.ringEventId}',
+        );
+        await push.notifyCallEnded(
+          instance.roomId,
+          ringEventId: instance.ringEventId,
+        );
+        return;
+      }
+      nativeAnswerClaimed = true;
+      // This mirrors the former widget-level path. It only removes an
+      // incoming presentation for this exact attempt. The claim above keeps
+      // ownership alive even when the first Matrix sync has not yet
+      // materialized the incoming call.
+      callVoip.dismissIncomingFromSystem(instance);
+      await call.acceptIncoming(
+        room,
+        video: open.video,
+        instance: instance,
+        fromSystem: open.fromSystem,
+        requestExpandedUi: true,
+      );
+      if (!isThisAttemptActive()) {
+        _log(
+          'Push',
+          'bootstrap answer completed without an active call '
+              'room=${instance.roomId}',
+        );
+        await push.notifyCallEnded(
+          instance.roomId,
+          ringEventId: instance.ringEventId,
+        );
+      }
+    } catch (error) {
+      _log('Push', 'bootstrap answer failed room=${instance.roomId}', error);
+      if (!isThisAttemptActive()) {
+        await push.notifyCallEnded(
+          instance.roomId,
+          ringEventId: instance.ringEventId,
+        );
+      }
+    } finally {
+      if (nativeAnswerClaimed && !isThisAttemptActive()) {
+        callVoip?.releaseIncomingCallFromNativeAction(instance);
+      }
+      push.consumePendingIncomingAnswer(open);
+    }
+  }
+
+  Future<void> _finishUnresolvableIncomingCallAnswer(
+    OrexPushOpen open, {
+    required String? roomId,
+  }) async {
+    final targetRoomId = roomId ?? open.roomId?.trim();
+    _log(
+      'Push',
+      'bootstrap answer has no available room room=$targetRoomId '
+          'ring=${open.ringEventId}',
+    );
+    if (targetRoomId != null && targetRoomId.isNotEmpty) {
+      await push.notifyCallEnded(targetRoomId, ringEventId: open.ringEventId);
+    }
+    push.consumePendingIncomingAnswer(open);
+  }
+
+  Future<Room?> _resolveIncomingCallRoom(String roomId) async {
+    const totalBudget = Duration(seconds: 12);
+    const syncTimeout = Duration(seconds: 2);
+    final deadline = DateTime.now().add(totalBudget);
+    Object? lastError;
+
+    while (DateTime.now().isBefore(deadline)) {
+      final cached = client.getRoomById(roomId);
+      if (cached != null) return cached;
+      try {
+        await client
+            .oneShotSync(timeout: syncTimeout)
+            .timeout(const Duration(seconds: 4));
+      } catch (error) {
+        lastError = error;
+      }
+      final synced = client.getRoomById(roomId);
+      if (synced != null) return synced;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+
+    if (lastError != null) {
+      _log(
+        'Push',
+        'bootstrap answer room sync exhausted room=$roomId',
+        lastError,
+      );
+    }
+    return client.getRoomById(roomId);
   }
 
   void _scheduleAvatarCacheWarmup({bool force = false}) {
@@ -378,6 +544,8 @@ class MatrixService extends ChangeNotifier {
     _syncSub?.cancel();
     _loginStateSub?.cancel();
     _userProfileSub?.cancel();
+    push.setIncomingCallAnswerHandler(null);
+    _incomingCallAnswerBootstraps.clear();
     final voipService = voip;
     call.dispose();
     audio.dispose();

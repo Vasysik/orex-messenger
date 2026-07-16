@@ -1,5 +1,6 @@
 import java.util.Properties
 import org.gradle.api.GradleException
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
@@ -60,10 +61,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17.toString()
-    }
-
     signingConfigs {
         if (hasReleaseSigning) {
             create("release") {
@@ -92,6 +89,12 @@ android {
                 signingConfig = signingConfigs.getByName("release")
             }
         }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 
@@ -148,3 +151,58 @@ gradle.taskGraph.whenReady {
 flutter {
     source = "../.."
 }
+
+// flutter_vodozemac supplies the E2EE primitives used by Matrix and push
+// handling. Older Cargokit Windows scripts can log an error yet return exit
+// code 0, which otherwise produces an APK without its native library.
+// Verify the final merge instead of allowing such an APK to be tested.
+fun registerVodozemacNativeLibsVerification(variant: String) {
+    val variantDirectory = variant.replaceFirstChar { it.lowercaseChar() }
+    val verificationTask = tasks.register("verify${variant}VodozemacNativeLibs") {
+        group = "verification"
+        description = "Checks flutter_vodozemac native bindings in $variant."
+        dependsOn(
+            tasks.matching { task ->
+                task.name == "merge${variant}NativeLibs"
+            },
+        )
+        // This task intentionally has no output: the APK must be checked even
+        // when Android's native merge itself is already up to date.
+        outputs.upToDateWhen { false }
+
+        doLast {
+            val mergedNativeLibs = layout.buildDirectory
+                .dir(
+                    "intermediates/merged_native_libs/$variantDirectory/" +
+                        "merge${variant}NativeLibs/out/lib",
+                )
+                .get()
+                .asFile
+            val includesVodozemac = mergedNativeLibs.exists() &&
+                mergedNativeLibs.walkTopDown().any { candidate ->
+                    candidate.isFile &&
+                        candidate.name == "libvodozemac_bindings_dart.so"
+                }
+
+            if (!includesVodozemac) {
+                throw GradleException(
+                    "flutter_vodozemac native bindings are missing from the " +
+                        "$variant variant. Cargokit must produce " +
+                        "libvodozemac_bindings_dart.so.",
+                )
+            }
+        }
+    }
+
+    tasks
+        .matching { task ->
+            task.name == "assemble$variant" ||
+                task.name == "package$variant" ||
+                task.name == "bundle$variant"
+        }
+        .configureEach {
+            dependsOn(verificationTask)
+        }
+}
+
+listOf("Debug", "Profile", "Release").forEach(::registerVodozemacNativeLibsVerification)

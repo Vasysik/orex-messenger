@@ -181,8 +181,12 @@ void main() {
       ),
       isFalse,
     );
+    // An accepted cold-start command remains persisted until a process-level
+    // call coordinator has actually claimed it.
+    expect(platform.acknowledged, isEmpty);
 
     service.consumePendingIncomingAnswer(answer);
+    await Future<void>.delayed(Duration.zero);
     expect(
       service.hasPendingIncomingAnswer(
         '!call:example.org',
@@ -190,6 +194,55 @@ void main() {
       ),
       isFalse,
     );
+    expect(platform.acknowledged, ['answer-delivery']);
+
+    await service.dispose();
+    await client.dispose(closeDatabase: false);
+  });
+
+  test('bootstrap handler claims a cold native answer before UI construction',
+      () async {
+    const answer = OrexPushOpen(<String, String>{
+      'orex_kind': 'incoming_call',
+      'room_id': '!call:example.org',
+      'event_id': r'$ring-answer',
+      'orex_action': 'answer',
+      'orex_delivery_id': 'answer-delivery',
+    });
+    final platform = _FakePushPlatform(initialOpen: answer);
+    final client = Client(
+      'OrexPushBootstrapAnswerTest',
+      database: MatrixSdkDatabase.buildWithoutOpen(
+        'OrexPushBootstrapAnswerTest',
+      ),
+    );
+    final service = OrexPushService(
+      client: client,
+      gateway: null,
+      platform: platform,
+      tokenStore: _MemoryTokenStore(),
+    );
+    final handled = Completer<OrexPushOpen>();
+    service.setIncomingCallAnswerHandler((open) async {
+      if (!handled.isCompleted) handled.complete(open);
+    });
+
+    await service.start();
+    final received = await handled.future;
+
+    expect(received, same(answer));
+    expect(platform.acknowledged, isEmpty);
+    expect(
+      service.hasPendingIncomingAnswer(
+        '!call:example.org',
+        ringEventId: r'$ring-answer',
+      ),
+      isTrue,
+    );
+
+    service.consumePendingIncomingAnswer(answer);
+    await Future<void>.delayed(Duration.zero);
+    expect(platform.acknowledged, ['answer-delivery']);
 
     await service.dispose();
     await client.dispose(closeDatabase: false);

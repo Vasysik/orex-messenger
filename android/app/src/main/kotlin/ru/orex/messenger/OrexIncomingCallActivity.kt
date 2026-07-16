@@ -106,8 +106,14 @@ class OrexIncomingCallActivity : Activity() {
             )
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        window.statusBarColor = Color.TRANSPARENT
-        window.navigationBarColor = OREX_DARK_BG
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            // Android 15 enforces edge-to-edge and ignores these legacy bar
+            // colors. Keep the visual fallback only where it still applies.
+            @Suppress("DEPRECATION")
+            window.statusBarColor = Color.TRANSPARENT
+            @Suppress("DEPRECATION")
+            window.navigationBarColor = OREX_DARK_BG
+        }
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility =
             View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN

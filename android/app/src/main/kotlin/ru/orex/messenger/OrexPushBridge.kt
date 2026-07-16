@@ -804,7 +804,7 @@ object OrexPushBridge {
             return
         }
         try {
-            FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+            legacyFcmTokenTask().addOnCompleteListener { task ->
                 if (task.isSuccessful) {
                     val token = task.result?.trim().orEmpty()
                     if (token.isNotEmpty()) {
@@ -824,6 +824,14 @@ object OrexPushBridge {
             result.success(prefs(context).getString(PREF_TOKEN, null))
         }
     }
+
+    /**
+     * Matrix pushers currently address devices with an FCM registration token.
+     * FCM's replacement registration API exposes a Firebase Installation ID,
+     * so moving to it requires a coordinated server-side pusher migration.
+     */
+    @Suppress("DEPRECATION")
+    private fun legacyFcmTokenTask() = FirebaseMessaging.getInstance().token
 
     private fun requestPermission(result: MethodChannel.Result) {
         val currentActivity = activity
@@ -1132,7 +1140,10 @@ object OrexPushBridge {
         for (key in extras.keySet()) {
             if (!key.startsWith(EXTRA_PREFIX)) continue
             val payloadKey = key.removePrefix(EXTRA_PREFIX)
-            val value = extras.get(key)?.toString() ?: continue
+            // Every extra under our private prefix is written with
+            // Intent.putExtra(String, String); reject a forged value of any
+            // other type rather than using Bundle's deprecated untyped getter.
+            val value = extras.getString(key) ?: continue
             result[payloadKey] = value
         }
         return normalizePayload(result)

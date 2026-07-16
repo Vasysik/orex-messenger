@@ -9,6 +9,10 @@ import 'push_background_resolver.dart';
 import 'push_platform_bridge.dart';
 import 'push_registration_service.dart';
 
+typedef OrexIncomingCallAnswerHandler = Future<void> Function(
+  OrexPushOpen open,
+);
+
 class OrexPushService {
   OrexPushService({
     required Client client,
@@ -53,6 +57,7 @@ class OrexPushService {
   DateTime? _lastSyncAttempt;
   OrexPushOpen? _pendingOpen;
   OrexPushOpen? _pendingIncomingAnswer;
+  OrexIncomingCallAnswerHandler? _incomingCallAnswerHandler;
   String? _lastPublishedDeliveryId;
   bool _started = false;
   bool _ready = false;
@@ -71,6 +76,28 @@ class OrexPushService {
   /// зарегистрировала remote Matrix pusher и сама владеет background delivery.
   bool get ownsBackgroundNotifications =>
       isConfigured && _platform.identity != null;
+
+  /// Answers from native Android UI must be claimed before a Flutter widget
+  /// tree exists. The handler is installed by the Matrix bootstrap during its
+  /// bootstrap; ordinary notification opens remain owned by the UI stream.
+  void setIncomingCallAnswerHandler(OrexIncomingCallAnswerHandler? handler) {
+    if (_disposed) return;
+    _incomingCallAnswerHandler = handler;
+    final pending = _pendingOpen;
+    if (handler == null || pending == null || !isIncomingCallAnswer(pending)) {
+      return;
+    }
+    _pendingOpen = null;
+    _lastPublishedDeliveryId = pending.deliveryId;
+    _routeIncomingCallAnswer(pending, handler);
+  }
+
+  bool handlesIncomingCallAnswer(OrexPushOpen open) =>
+      _incomingCallAnswerHandler != null && isIncomingCallAnswer(open);
+
+  static bool isIncomingCallAnswer(OrexPushOpen open) =>
+      open.kind == 'incoming_call' &&
+      (open.action == 'answer' || open.action == 'answer_video');
 
   bool hasPendingIncomingAnswer(
     String roomId, {
@@ -95,8 +122,7 @@ class OrexPushService {
 
   void consumePendingIncomingAnswer(OrexPushOpen open) {
     final pending = _pendingIncomingAnswer;
-    if (pending == null ||
-        (open.action != 'answer' && open.action != 'answer_video')) {
+    if (pending == null || !isIncomingCallAnswer(open)) {
       return;
     }
     if (pending.roomId != open.roomId) return;
@@ -106,6 +132,11 @@ class OrexPushService {
       return;
     }
     _pendingIncomingAnswer = null;
+    // Do not acknowledge an accepted cold-start command merely because it
+    // reached the Dart stream. Keeping native persistence until the bootstrap
+    // coordinator has claimed it makes a process death retryable instead of
+    // leaving the connecting cover with no command to replay.
+    unawaited(_acknowledgeOpen(open));
   }
 
   /// Поднимает только локальный bridge и подписки. Сетевой pusher sync не
@@ -304,17 +335,26 @@ class OrexPushService {
     if (_disposed) return;
     final deliveryId = open.deliveryId;
     if (deliveryId != null && deliveryId == _lastPublishedDeliveryId) {
-      unawaited(_acknowledgeOpen(open));
+      if (!isIncomingCallAnswer(open)) {
+        unawaited(_acknowledgeOpen(open));
+      }
       return;
     }
-    if (open.kind == 'incoming_call' &&
-        (open.action == 'answer' || open.action == 'answer_video')) {
+    if (isIncomingCallAnswer(open)) {
       _pendingIncomingAnswer = open;
+      final handler = _incomingCallAnswerHandler;
+      if (handler != null) {
+        _lastPublishedDeliveryId = deliveryId;
+        _routeIncomingCallAnswer(open, handler);
+        return;
+      }
     }
     if (_openController.hasListener) {
       _lastPublishedDeliveryId = deliveryId;
       _openController.add(open);
-      unawaited(_acknowledgeOpen(open));
+      if (!isIncomingCallAnswer(open)) {
+        unawaited(_acknowledgeOpen(open));
+      }
     } else {
       // Cold-start intent может прийти до создания OrexApp. Храним последнее
       // действие до первого UI-listener, а Android persistence не подтверждаем.
@@ -331,11 +371,29 @@ class OrexPushService {
       if (_openController.hasListener) {
         _lastPublishedDeliveryId = pending.deliveryId;
         _openController.add(pending);
-        unawaited(_acknowledgeOpen(pending));
+        if (!isIncomingCallAnswer(pending)) {
+          unawaited(_acknowledgeOpen(pending));
+        }
       } else {
         _pendingOpen = pending;
       }
     });
+  }
+
+  void _routeIncomingCallAnswer(
+    OrexPushOpen open,
+    OrexIncomingCallAnswerHandler handler,
+  ) {
+    OrexLog.d(
+      'Push',
+      'routing accepted call to bootstrap coordinator '
+          'room=${open.roomId} ring=${open.ringEventId}',
+    );
+    unawaited(
+      handler(open).catchError((Object error, StackTrace _) {
+        OrexLog.d('Push', 'incoming-call bootstrap handler failed', error);
+      }),
+    );
   }
 
   Future<void> _acknowledgeOpen(OrexPushOpen open) async {

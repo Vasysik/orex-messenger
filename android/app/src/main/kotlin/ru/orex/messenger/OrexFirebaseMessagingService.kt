@@ -4,6 +4,9 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
 class OrexFirebaseMessagingService : FirebaseMessagingService() {
+    @Deprecated(
+        message = "Orex currently registers Matrix pushers with legacy FCM registration tokens.",
+    )
     override fun onNewToken(token: String) {
         OrexPushBridge.onTokenRefresh(this, token)
     }

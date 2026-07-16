@@ -147,8 +147,25 @@ class MainActivity : FlutterActivity() {
         return true
     }
 
-    fun cancelCallHandoff(callId: String, ringEventId: String?): Boolean =
-        completeCallHandoff(callId, ringEventId)
+    fun cancelCallHandoff(callId: String, ringEventId: String?): Boolean {
+        val ownedCallId = callHandoffCallId ?: return false
+        val sameAttempt = sameCallAttempt(
+            ownedCallId,
+            callHandoffRingEventId,
+            callId,
+            ringEventId,
+        )
+        val canPromoteAttempt = ownedCallId == callId &&
+            canPromoteRingAttempt(callHandoffRingEventId, ringEventId)
+        if (!sameAttempt && !canPromoteAttempt) return false
+        Log.i(
+            "OrexCallHandoff",
+            "Flutter ended call before expanded UI became ready call=$callId ring=$ringEventId",
+        )
+        clearCallHandoffOverlay()
+        intent.removeExtra(EXTRA_CALL_HANDOFF)
+        return true
+    }
 
     private fun clearCallHandoffOverlay() {
         callHandoffRevealTimeout?.let(callHandoffHandler::removeCallbacks)
