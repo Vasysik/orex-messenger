@@ -53,6 +53,28 @@ void main() {
       );
     });
 
+    test('replays the current key to a forced active device', () {
+      expect(
+        orexPendingMediaKeyShareTargets(
+          remoteParticipantIds: const ['alice:phone', 'bob:desktop'],
+          sharedParticipantIds: {'alice:phone', 'bob:desktop'},
+          forceReplayParticipantIds: const ['alice:phone'],
+        ),
+        {'alice:phone'},
+      );
+    });
+
+    test('never replays a key to a device that already left', () {
+      expect(
+        orexPendingMediaKeyShareTargets(
+          remoteParticipantIds: const ['alice:phone'],
+          sharedParticipantIds: {'alice:phone'},
+          forceReplayParticipantIds: const ['bob:desktop'],
+        ),
+        isEmpty,
+      );
+    });
+
     test('keeps a same-device mobile rejoin in leave rotation recipients', () {
       expect(
         orexMediaKeyRecipientIdsAfterLeaveDebounce(const [

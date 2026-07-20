@@ -1393,6 +1393,7 @@ class VoipService extends ChangeNotifier {
   Future<void> _shareLocalMediaKeyWithNewParticipants(
     _CallKeyShareState state,
     List<CallParticipant> remoteParticipants,
+    {Set<String> forceReplayParticipantIds = const <String>{},}
   ) async {
     final groupCall = state.groupCall;
     final backend = groupCall.backend;
@@ -1407,6 +1408,7 @@ class VoipService extends ChangeNotifier {
     final pendingIds = orexPendingMediaKeyShareTargets(
       remoteParticipantIds: remoteIds,
       sharedParticipantIds: state.sharedParticipantIds,
+      forceReplayParticipantIds: forceReplayParticipantIds,
       sharedLocalKeyRevision: state.sharedLocalKeyRevision,
       currentLocalKeyRevision: keyRevision,
     );
@@ -1461,15 +1463,49 @@ class VoipService extends ChangeNotifier {
           }
 
           final participants = groupCall.participants.toList(growable: false);
-          final localParticipants = participants
-              .where((participant) => participant.isLocal)
-              .toList(growable: false);
+          final localParticipant = groupCall.localParticipant;
+          if (localParticipant == null) {
+            throw StateError(
+              'MatrixRTC local participant is not ready for media encryption',
+            );
+          }
           final remoteParticipants = participants
               .where((participant) => !participant.isLocal)
               .toList(growable: false);
+          final remoteById = <String, CallParticipant>{
+            for (final participant in remoteParticipants)
+              participant.id: participant,
+          };
+
+          // On a cold answer, LiveKit can already have a remote track while
+          // `/sync` has not hydrated its `m.call.member` into
+          // [groupCall.participants]. Verify the SFU identity against direct
+          // room state before using it for either sender-key replay or a key
+          // request; never share a key to an unverified identity.
+          if (groupCall.backend is OrexLiveKitBackend) {
+            final backend = groupCall.backend as OrexLiveKitBackend;
+            for (final identity in forceRemoteParticipantIds) {
+              if (remoteById.containsKey(identity)) continue;
+              final participant = await backend.resolveActiveParticipantByIdentity(
+                groupCall,
+                identity,
+              );
+              if (participant != null) {
+                remoteById[participant.id] = participant;
+              }
+            }
+          }
+          final observedRemoteParticipants = remoteById.values.toList(
+            growable: false,
+          );
+          final activeRemoteIds = remoteById.keys.toSet();
+          final forcedIds = forceRemoteParticipantIds.intersection(
+            activeRemoteIds,
+          );
           await _shareLocalMediaKeyWithNewParticipants(
             state,
-            remoteParticipants,
+            observedRemoteParticipants,
+            forceReplayParticipantIds: forcedIds,
           );
           if (!state.active || !identical(_keyShareState, state)) return;
 
@@ -1480,31 +1516,21 @@ class VoipService extends ChangeNotifier {
               knownRemoteMemberships > expectedRemoteParticipants
               ? knownRemoteMemberships
               : expectedRemoteParticipants;
-          if (localParticipants.isEmpty) {
-            throw StateError(
-              'MatrixRTC local participant is not ready for media encryption',
-            );
-          }
-          if (remoteParticipants.length < minimumRemoteParticipants) {
+          if (observedRemoteParticipants.length < minimumRemoteParticipants) {
             throw StateError(
               'MatrixRTC membership lag: expected $minimumRemoteParticipants '
-              'remote participant(s), saw ${remoteParticipants.length}',
+              'remote participant(s), saw ${observedRemoteParticipants.length}',
             );
           }
 
-          final activeRemoteIds = remoteParticipants
-              .map((participant) => participant.id)
-              .toSet();
-          final forcedIds = forceRemoteParticipantIds.intersection(
-            activeRemoteIds,
-          );
+          final localParticipants = <CallParticipant>[localParticipant];
           final missingLocal = localParticipants
               .where((participant) => !e2eeKeyProvider.hasKeyFor(participant))
               .toList(growable: false);
-          final missingRemote = remoteParticipants
+          final missingRemote = observedRemoteParticipants
               .where((participant) => !e2eeKeyProvider.hasKeyFor(participant))
               .toList(growable: false);
-          final forcedRemote = remoteParticipants
+          final forcedRemote = observedRemoteParticipants
               .where((participant) => forcedIds.contains(participant.id))
               .toList(growable: false);
           final forcedRevisions = <String, int>{

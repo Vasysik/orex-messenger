@@ -162,13 +162,21 @@ bool orexIsFreshRingAfterLeave({
 Set<String> orexPendingMediaKeyShareTargets({
   required Iterable<String> remoteParticipantIds,
   required Set<String> sharedParticipantIds,
+  Iterable<String> forceReplayParticipantIds = const <String>[],
   int sharedLocalKeyRevision = 0,
   int currentLocalKeyRevision = 0,
 }) {
   final remoteIds = remoteParticipantIds.toSet();
-  return sharedLocalKeyRevision == currentLocalKeyRevision
+  final pending = sharedLocalKeyRevision == currentLocalKeyRevision
       ? remoteIds.difference(sharedParticipantIds)
       : remoteIds;
+  // A successful encrypted to-device send has no delivery acknowledgement.
+  // When LiveKit explicitly reports a missing remote key, replay our current
+  // sender key to that still-active device without rotating it. This closes
+  // the cold-start race where its membership reached the server after the
+  // first key share was sent.
+  pending.addAll(remoteIds.intersection(forceReplayParticipantIds.toSet()));
+  return pending;
 }
 
 /// Rejects implausibly old or future-dated control events before they mutate

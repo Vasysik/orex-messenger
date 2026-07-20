@@ -77,35 +77,108 @@ final class OrexLiveKitBackend extends LiveKitBackend {
 
   bool _isCurrent(int expectedEpoch) => !_disposed && expectedEpoch == _epoch;
 
-  CallMembership? _activeMembership(
+  bool _isActiveMembership(
     GroupCallSession groupCall,
+    CallMembership membership,
+    String userId,
+    String deviceId,
+  ) =>
+      membership.userId == userId &&
+      membership.deviceId == deviceId &&
+      membership.callId == groupCall.groupCallId &&
+      membership.roomId == groupCall.room.id &&
+      membership.scope == groupCall.scope &&
+      membership.backend.type == type &&
+      !membership.isExpired;
+
+  CallMembership? _matchingActiveMembership(
+    GroupCallSession groupCall,
+    Iterable<CallMembership> memberships,
     String userId,
     String deviceId,
   ) {
-    for (final membership in groupCall.room.getCallMembershipsForUser(
-      userId,
-      deviceId,
-      groupCall.voip,
-    )) {
-      if (membership.callId == groupCall.groupCallId &&
-          membership.roomId == groupCall.room.id &&
-          membership.scope == groupCall.scope &&
-          membership.backend.type == type &&
-          !membership.isExpired) {
+    for (final membership in memberships) {
+      if (_isActiveMembership(groupCall, membership, userId, deviceId)) {
         return membership;
       }
     }
     return null;
   }
 
-  bool _validSenderEpoch(
+  CallMembership? _activeMembership(
     GroupCallSession groupCall,
     String userId,
     String deviceId,
+  ) => _matchingActiveMembership(
+    groupCall,
+    groupCall.room.getCallMembershipsForUser(
+      userId,
+      deviceId,
+      groupCall.voip,
+    ),
+    userId,
+    deviceId,
+  );
+
+  String _memberStateKey(
+    GroupCallSession groupCall,
+    String userId,
+    String deviceId,
+  ) {
+    final useMsc3757 =
+        groupCall.room.roomVersion?.contains('msc3757') ?? false;
+    return groupCall.voip.useUnprotectedPerDeviceStateKeys
+        ? '${deviceId}_$userId'
+        : useMsc3757
+        ? '${userId}_$deviceId'
+        : userId;
+  }
+
+  /// A process launched by an accepted push often receives a to-device key
+  /// before the next `/sync` has materialised the sender's `m.call.member` in
+  /// the local Room cache. `getRoomStateWithKey` only returns JSON; it does
+  /// not update that cache. Validate against its response directly instead of
+  /// silently discarding an otherwise valid key/request until a remote rejoin.
+  Future<CallMembership?> _resolveActiveMembership(
+    GroupCallSession groupCall,
+    String userId,
+    String deviceId,
+  ) async {
+    final cached = _activeMembership(groupCall, userId, deviceId);
+    if (cached != null) return cached;
+
+    try {
+      final content = await groupCall.room.client.getRoomStateWithKey(
+        groupCall.room.id,
+        EventTypes.GroupCallMember,
+        _memberStateKey(groupCall, userId, deviceId),
+      ).timeout(const Duration(seconds: 4));
+      return _matchingActiveMembership(
+        groupCall,
+        groupCall.room.getCallMembershipsFromEventContent(
+          content,
+          userId,
+          groupCall.room.id,
+          null,
+          groupCall.voip,
+        ),
+        userId,
+        deviceId,
+      );
+    } catch (error) {
+      OrexLog.d(
+        'VoipE2EE',
+        'unable to resolve call membership for $userId:$deviceId',
+        error,
+      );
+      return null;
+    }
+  }
+
+  bool _validSenderEpoch(
+    CallMembership membership,
     Map<String, dynamic> content,
   ) {
-    final membership = _activeMembership(groupCall, userId, deviceId);
-    if (membership == null) return false;
     final claimedEpoch = content[_senderEpochField]?.toString();
     // Other MatrixRTC implementations do not know the Orex extension. Keep
     // interoperability, while Orex-to-Orex events are strictly session-bound.
@@ -113,6 +186,32 @@ final class OrexLiveKitBackend extends LiveKitBackend {
       claimedEpoch: claimedEpoch,
       activeMembershipId: membership.membershipId,
     );
+  }
+
+  /// Turns a LiveKit identity into a MatrixRTC participant only after its
+  /// current `m.call.member` state has been verified on the homeserver. This
+  /// is deliberately stricter than trusting a raw SFU identity before sharing
+  /// a sender key through encrypted to-device events.
+  Future<CallParticipant?> resolveActiveParticipantByIdentity(
+    GroupCallSession groupCall,
+    String identity,
+  ) async {
+    final separator = identity.lastIndexOf(':');
+    if (separator <= 1 || separator >= identity.length - 1) return null;
+    final userId = identity.substring(0, separator);
+    final deviceId = identity.substring(separator + 1);
+    if (!userId.startsWith('@') ||
+        userId.indexOf(':') <= 1 ||
+        deviceId.contains(':')) {
+      return null;
+    }
+    final membership = await _resolveActiveMembership(
+      groupCall,
+      userId,
+      deviceId,
+    );
+    if (membership == null) return null;
+    return CallParticipant(groupCall.voip, userId: userId, deviceId: deviceId);
   }
 
   List<CallParticipant> _uniqueRemoteParticipants(
@@ -544,12 +643,23 @@ final class OrexLiveKitBackend extends LiveKitBackend {
     String userId,
     String deviceId,
     Map<String, dynamic> content,
-  ) {
-    return _enqueue((epoch) async {
-      if (!e2eeEnabled ||
-          !_validSenderEpoch(groupCall, userId, deviceId, content)) {
-        return;
-      }
+  ) async {
+    if (!e2eeEnabled) return;
+    final membership = await _resolveActiveMembership(
+      groupCall,
+      userId,
+      deviceId,
+    );
+    if (membership == null || !_validSenderEpoch(membership, content)) {
+      OrexLog.d(
+        'VoipE2EE',
+        'ignored media key without an active matching membership '
+            'from $userId:$deviceId',
+      );
+      return;
+    }
+    await _enqueue((epoch) async {
+      if (!e2eeEnabled) return;
       final keyContent = EncryptionKeysEventContent.fromJson(content);
       if (keyContent.callId != groupCall.groupCallId) return;
       final participant = CallParticipant(
@@ -579,29 +689,17 @@ final class OrexLiveKitBackend extends LiveKitBackend {
     Map<String, dynamic> content,
   ) async {
     if (!e2eeEnabled) return;
-    var membership = _activeMembership(groupCall, userId, deviceId);
-    if (membership == null) {
-      final useMsc3757 =
-          groupCall.room.roomVersion?.contains('msc3757') ?? false;
-      final stateKey = groupCall.voip.useUnprotectedPerDeviceStateKeys
-          ? '${deviceId}_$userId'
-          : useMsc3757
-          ? '${userId}_$deviceId'
-          : userId;
-      await groupCall.room.client.getRoomStateWithKey(
-        groupCall.room.id,
-        EventTypes.GroupCallMember,
-        stateKey,
+    final membership = await _resolveActiveMembership(
+      groupCall,
+      userId,
+      deviceId,
+    );
+    if (membership == null || !_validSenderEpoch(membership, content)) {
+      OrexLog.d(
+        'VoipE2EE',
+        'ignored media-key request without an active matching membership '
+            'from $userId:$deviceId',
       );
-      await groupCall.onMemberStateChanged();
-      membership = _activeMembership(groupCall, userId, deviceId);
-    }
-    if (membership == null) return;
-    final claimedEpoch = content[_senderEpochField]?.toString();
-    if (!orexMediaKeySenderEpochMatches(
-      claimedEpoch: claimedEpoch,
-      activeMembershipId: membership.membershipId,
-    )) {
       return;
     }
     await shareCurrentKeyWith(groupCall, <CallParticipant>[
