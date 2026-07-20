@@ -9,6 +9,22 @@ void main() {
     expect(orexMobileIceConnectionTimeout, const Duration(seconds: 25));
   });
 
+  group('orexInitialAudioOutputDeviceId', () {
+    test('preserves a concrete output for the initial web track', () {
+      expect(orexInitialAudioOutputDeviceId(' bt-stereo '), 'bt-stereo');
+    });
+
+    test('does not pass default or Android route ids to LiveKit', () {
+      expect(orexInitialAudioOutputDeviceId('default'), isNull);
+      expect(
+        orexInitialAudioOutputDeviceId(
+          'orex://android/audio-output/audio:2:42',
+        ),
+        isNull,
+      );
+    });
+  });
+
   group('orexShouldReconnectCallAfterBackground', () {
     test('keeps a healthy room on the existing connection', () {
       expect(

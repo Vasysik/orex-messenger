@@ -157,7 +157,8 @@ class AudioCueService extends ChangeNotifier {
   }
 
   Future<void> _applyOutputDevice() async {
-    final id = outputDeviceId?.trim();
+    final selectedId = outputDeviceId?.trim();
+    final id = orexPreferredWebAudioOutputDeviceId(selectedId);
 
     if (orexIsMobileNativePlatform) {
       // Mobile call routing is applied by CallSession with inCall: true.
@@ -167,6 +168,14 @@ class AudioCueService extends ChangeNotifier {
     }
 
     if (id == null || id.isEmpty) return;
+
+    if (kIsWeb &&
+        selectedId != null &&
+        selectedId.isNotEmpty &&
+        selectedId != id) {
+      outputDeviceId = id;
+      await _saveString(_kOutputDeviceId, id);
+    }
 
     if (orexIsMobileRouteId(id)) {
       outputDeviceId = null;

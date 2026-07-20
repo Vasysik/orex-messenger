@@ -65,6 +65,19 @@ bool orexShouldEnsureCameraAfterBackground({
 }
 
 @visibleForTesting
+String? orexInitialAudioOutputDeviceId(String? selectedId) {
+  final normalized = selectedId?.trim();
+  // Android route IDs are meaningful only to the native audio manager. They
+  // are not browser/LiveKit device IDs and must not be passed to RoomOptions.
+  return normalized == null ||
+          normalized.isEmpty ||
+          normalized == 'default' ||
+          orexIsMobileRouteId(normalized)
+      ? null
+      : normalized;
+}
+
+@visibleForTesting
 Duration orexEncryptionKeyRetryDelay(int attempt) {
   const delays = <Duration>[
     Duration(seconds: 2),
@@ -314,6 +327,8 @@ class CallSession extends ChangeNotifier {
     required int generation,
     bool completeReadiness = true,
   }) async {
+    await _prepareWebAudioRouting();
+    if (!_isCurrentConnection(generation)) return;
     final creds = await _fetchCredentials();
     if (!_isCurrentConnection(generation)) return;
     final providerFuture = e2eeKeyProvider;
@@ -326,6 +341,16 @@ class CallSession extends ChangeNotifier {
       roomOptions: lk.RoomOptions(
         adaptiveStream: adaptiveStream,
         dynacast: adaptiveStream,
+        // LiveKit applies this option to a remote web track before its first
+        // HTMLAudioElement.play(). Applying the sink only after the room event
+        // briefly opens the browser/default communications endpoint, which can
+        // put a Windows Bluetooth headset into low-quality Hands-Free mode.
+        defaultAudioOutputOptions: lk.AudioOutputOptions(
+          deviceId: _normalizedInitialAudioOutputDeviceId(),
+        ),
+        // Keep a reconnect/SDK auto-publish from ever falling back to the
+        // browser's default microphone before our explicit media restore runs.
+        defaultAudioCaptureOptions: _audioCaptureOptions(),
         encryption: lk.E2EEOptions(keyProvider: provider),
       ),
     );
@@ -748,6 +773,9 @@ class CallSession extends ChangeNotifier {
   }
 
   Future<void> _disposeRoom(lk.Room room) async {
+    if (kIsWeb) {
+      await _stopWebLocalCapture(room);
+    }
     try {
       await room.disconnect();
     } catch (e) {
@@ -1168,6 +1196,27 @@ class CallSession extends ChangeNotifier {
         : normalized;
   }
 
+  String? _normalizedInitialAudioOutputDeviceId() {
+    return orexInitialAudioOutputDeviceId(
+      orexPreferredWebAudioOutputDeviceId(
+        audioOutputDeviceIdProvider?.call(),
+      ),
+    );
+  }
+
+  Future<void> _prepareWebAudioRouting() async {
+    if (!kIsWeb) return;
+    final inputId = _normalizedInputDeviceId();
+    try {
+      await enumerateOrexAudioDevices(
+        requestPermission: inputId != null,
+        preferredInputDeviceId: inputId,
+      );
+    } catch (e) {
+      OrexLog.d('Call', 'web audio routing preparation failed', e);
+    }
+  }
+
   Future<void> syncAudioSettingsFromSettings({
     bool refreshVoiceGateCapture = true,
   }) async {
@@ -1204,12 +1253,23 @@ class CallSession extends ChangeNotifier {
   }
 
   Future<void> applyAudioOutput() async {
-    final id = audioOutputDeviceIdProvider?.call()?.trim();
+    var id = audioOutputDeviceIdProvider?.call()?.trim();
 
     if (orexIsMobileNativePlatform) {
       await OrexNativeAudioDevices.selectOutput(id, inCall: true);
       await _syncProximitySensor();
       return;
+    }
+
+    if (kIsWeb) {
+      try {
+        await enumerateOrexAudioDevices(
+          preferredInputDeviceId: _normalizedInputDeviceId(),
+        );
+      } catch (e) {
+        OrexLog.d('Call', 'web audio output refresh failed', e);
+      }
+      id = orexPreferredWebAudioOutputDeviceId(id);
     }
 
     if (id == null || id.isEmpty || orexIsMobileRouteId(id)) return;
@@ -1475,6 +1535,9 @@ class CallSession extends ChangeNotifier {
     status = CallStatus.ended;
     _connectGeneration++;
     _cancelReconnect();
+    if (kIsWeb) {
+      await _stopWebLocalCapture(_room);
+    }
     await _drainMediaOperations();
     try {
       await _clearLocalVoiceUiState();
@@ -1518,6 +1581,18 @@ class CallSession extends ChangeNotifier {
       }
     }
     if (!_disposed) notifyListeners();
+  }
+
+  Future<void> _stopWebLocalCapture(lk.Room? room) async {
+    if (!kIsWeb || room == null) return;
+    try {
+      final stopped = await OrexLiveKitTrackAccess.stopLocalCaptureTracks(
+        room.localParticipant,
+      );
+      OrexLog.d('Call', 'web local capture stopped tracks=$stopped');
+    } catch (e) {
+      OrexLog.d('Call', 'web local capture stop failed', e);
+    }
   }
 
   // OpenID-токен Matrix -> lk-jwt-service /sfu/get -> {url, jwt}
