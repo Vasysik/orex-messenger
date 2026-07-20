@@ -74,6 +74,8 @@ jobs:
           grep -q "Strict-Transport-Security:" web/_headers
           grep -q "X-Content-Type-Options: nosniff" web/_headers
           grep -q "Referrer-Policy: no-referrer" web/_headers
+          grep -q "script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'" web/_headers
+          grep -q "script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'" docker-compose.web.yml
 
       - name: Web release build
         run: >

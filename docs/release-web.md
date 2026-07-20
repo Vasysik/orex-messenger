@@ -94,11 +94,14 @@ flutter build web --release --no-pub --no-web-resources-cdn `
 docker compose -f docker-compose.web.yml up -d
 ```
 
-Обновление после новой сборки:
+Обновление после новой сборки или изменения `docker-compose.web.yml`:
 
 ```bash
-docker compose -f docker-compose.web.yml restart orex-web
+docker compose -f docker-compose.web.yml up -d --force-recreate orex-web
 ```
+
+`restart` не применяет изменённые Traefik labels, поэтому для CSP и прочих
+заголовков недостаточен.
 
 Проверка реальных заголовков после запуска:
 
@@ -116,3 +119,21 @@ COOP/COEP-заголовки нужны `SharedArrayBuffer`/flutter_rust_bridge;
 даже когда production deployment настроен правильно. Файл `web/_headers` остаётся декларацией тех же
 требований для хостингов, которые умеют читать этот формат; при Traefik
 заголовки реально выставляет middleware из `docker-compose.web.yml`.
+
+### CSP и обязательное E2EE
+
+Текущий `flutter_rust_bridge` использует JavaScript-конструктор `Function(...)`,
+чтобы подключить свой same-origin WASM-модуль шифрования. Поэтому в `script-src`
+намеренно есть `'unsafe-eval'` вместе с `'wasm-unsafe-eval'`: без него
+`flutter_vodozemac` не инициализируется и Orex не должен запускаться без E2EE.
+Это временный compatibility debt, а не разрешение сторонних скриптов: политика
+по-прежнему допускает scripts только с `'self'`. При обновлении bridge проверьте,
+что вызов `Function` исчез, и удалите `'unsafe-eval'` из **обоих** источников
+CSP (`docker-compose.web.yml` и `web/_headers`).
+
+Если после публикации появился экран запуска с кодом `STARTUP_*`, сначала
+проверьте страницу в инкогнито без расширений. Коды `STARTUP_PREFERENCES` и
+`STARTUP_MATRIX_CACHE` означают, что браузер запретил localStorage/IndexedDB;
+не очищайте локальные данные без резервной фразы E2EE. Для временной
+диагностической сборки можно явно задать `--dart-define=OREX_DEBUG_LOGS=true`;
+в обычном production build он должен оставаться `false`.

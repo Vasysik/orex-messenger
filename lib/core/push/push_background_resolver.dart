@@ -2,13 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
-import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
 import 'package:matrix/encryption/utils/key_verification.dart';
 import 'package:matrix/matrix.dart';
 
 import '../logging/orex_logger.dart';
 import '../media/orex_avatar_cache.dart';
 import '../storage/database.dart';
+import '../vodozemac_initializer.dart';
 
 const _backgroundPushChannelName = 'orex/push_background';
 const _backgroundPushClientName = 'OrexMessenger';
@@ -486,7 +486,7 @@ class _OrexBackgroundPushRuntime {
   }
 
   Future<Client> _createClient() async {
-    await vod.init().timeout(const Duration(seconds: 6));
+    await initializeOrexVodozemac();
     final database = await buildOrexDatabase();
     final client = Client(
       _backgroundPushClientName,

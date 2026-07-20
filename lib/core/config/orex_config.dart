@@ -222,7 +222,7 @@ class OrexConfig {
   /// Подробные dev-логи продуктовых Matrix-flow: создание комнат, metadata,
   /// права каналов, preview супергрупп.
   ///
-  /// По умолчанию выключены даже в debug-сборке. Для локальной диагностики:
+  /// По умолчанию выключены. Для локальной или временной release-диагностики:
   /// `--dart-define=OREX_DEBUG_LOGS=true`.
   static bool get debugLogs => current.debugLogs;
 

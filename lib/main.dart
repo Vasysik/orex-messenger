@@ -5,9 +5,9 @@ import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
 import 'package:matrix/matrix.dart' show Room;
 
+import 'core/bootstrap_failure.dart';
 import 'core/config/orex_config.dart';
 import 'core/config/app_version.dart';
 import 'core/storage/database.dart';
@@ -16,6 +16,7 @@ import 'core/push/push_background_resolver.dart';
 import 'core/push/push_platform_bridge.dart';
 import 'core/logging/orex_logger.dart';
 import 'core/voip/voip_service.dart';
+import 'core/vodozemac_initializer.dart';
 import 'features/auth/login_screen.dart';
 import 'features/calls/call_screen.dart';
 import 'features/calls/incoming_call_screen.dart';
@@ -71,28 +72,60 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
       'Bootstrap',
       'starting $orexAppName ${version.version}, Сборка ${version.buildNumber}',
     );
-    OrexConfig.validateSecurity();
+    await _runStartupStage<void>(
+      OrexStartupStage.configuration,
+      () => OrexConfig.validateSecurity(),
+    );
     try {
-      await vod.init().timeout(const Duration(seconds: 6));
-    } catch (e) {
+      await _runStartupStage<void>(
+        OrexStartupStage.crypto,
+        initializeOrexVodozemac,
+      );
+    } on OrexStartupFailure {
       if (OrexConfig.requireVodozemac) {
-        throw StateError(
-          'Не удалось инициализировать vodozemac. Запуск остановлен, '
-          'чтобы не открыть защищённый мессенджер без E2EE: $e',
-        );
+        rethrow;
       }
-      OrexLog.d('Bootstrap', 'vodozemac init skipped/failed, E2EE disabled', e);
+      OrexLog.d('Bootstrap', 'vodozemac init failed, E2EE disabled');
     }
 
-    final theme = await ThemeController.load();
-    final database = await buildOrexDatabase();
-    final matrix = MatrixService(
-      homeserver: OrexConfig.homeserverUri,
-      database: database,
+    final theme = await _runStartupStage(
+      OrexStartupStage.preferences,
+      ThemeController.load,
     );
-    await matrix.init();
+    final database = await _runStartupStage(
+      OrexStartupStage.matrixCache,
+      buildOrexDatabase,
+    );
+    final matrix = await _runStartupStage(
+      OrexStartupStage.session,
+      () async {
+        final service = MatrixService(
+          homeserver: OrexConfig.homeserverUri,
+          database: database,
+        );
+        await service.init();
+        return service;
+      },
+    );
     await minimumSplash;
     return _Services(matrix, theme, version);
+  }
+
+  Future<T> _runStartupStage<T>(
+    OrexStartupStage stage,
+    FutureOr<T> Function() action,
+  ) async {
+    try {
+      return await action();
+    } catch (error, stackTrace) {
+      OrexLog.d(
+        'Bootstrap',
+        'startup stage failed code=${stage.code} type=${error.runtimeType}',
+        error,
+        stackTrace: stackTrace,
+      );
+      throw OrexStartupFailure(stage);
+    }
   }
 
   @override
@@ -101,14 +134,16 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
       future: _future,
       builder: (context, snap) {
         if (snap.hasError) {
-          OrexLog.d('Bootstrap', 'startup failed', snap.error);
-          return const _MiniApp(
-            child: _StartupError(
-              error:
-                  'Проверьте подключение и перезапустите приложение. '
-                  'Подробности сохранены только в отладочном логе.',
-            ),
+          final error = snap.error;
+          final failure = error is OrexStartupFailure
+              ? error
+              : const OrexStartupFailure(OrexStartupStage.unknown);
+          OrexLog.d(
+            'Bootstrap',
+            'startup failed code=${failure.code} type=${error.runtimeType}',
+            error,
           );
+          return _MiniApp(child: _StartupError(failure: failure));
         }
         if (!snap.hasData) {
           return _MiniApp(child: SplashScreen(versionFuture: _versionFuture));
@@ -179,8 +214,8 @@ class SplashScreen extends StatelessWidget {
 }
 
 class _StartupError extends StatelessWidget {
-  const _StartupError({required this.error});
-  final String error;
+  const _StartupError({required this.failure});
+  final OrexStartupFailure failure;
 
   @override
   Widget build(BuildContext context) {
@@ -204,7 +239,16 @@ class _StartupError extends StatelessWidget {
                   style: TextStyle(fontSize: 18),
                 ),
                 const SizedBox(height: 8),
-                Text(error, textAlign: TextAlign.center),
+                Text(failure.userMessage, textAlign: TextAlign.center),
+                const SizedBox(height: 12),
+                Text(
+                  'Код: ${failure.code}',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: OrexColors.darkTextSoft,
+                    fontSize: 12,
+                  ),
+                ),
               ],
             ),
           ),

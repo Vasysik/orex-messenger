@@ -26,7 +26,9 @@ services:
       - "traefik.http.middlewares.orex-web-headers.headers.framedeny=true"
       - "traefik.http.middlewares.orex-web-headers.headers.contenttypenosniff=true"
       - "traefik.http.middlewares.orex-web-headers.headers.referrerpolicy=no-referrer"
-      - "traefik.http.middlewares.orex-web-headers.headers.contentsecuritypolicy=default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; manifest-src 'self'; connect-src 'self' https://vasys.ru https://jwt.vasys.ru https://lk.vasys.ru wss://lk.vasys.ru https://fonts.gstatic.com"
+      # flutter_rust_bridge 2.x uses Function(...) while wiring the local E2EE
+      # WASM module. Keep this compatibility exception until the bridge removes it.
+      - "traefik.http.middlewares.orex-web-headers.headers.contentsecuritypolicy=default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; manifest-src 'self'; connect-src 'self' https://vasys.ru https://jwt.vasys.ru https://lk.vasys.ru wss://lk.vasys.ru https://fonts.gstatic.com"
       - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Permissions-Policy=camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=(), usb=()"
       - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cross-Origin-Opener-Policy=same-origin"
       - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cross-Origin-Embedder-Policy=require-corp"
