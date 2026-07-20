@@ -122,7 +122,7 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
         'Bootstrap',
         'startup stage failed code=${stage.code} type=${error.runtimeType}',
         error,
-        stackTrace: stackTrace,
+        stackTrace,
       );
       throw OrexStartupFailure(stage);
     }

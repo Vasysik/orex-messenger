@@ -15,9 +15,8 @@ class OrexLog {
     String area,
     String message, [
     Object? error,
-  ], {
     StackTrace? stackTrace,
-  }) {
+  ]) {
     if (!_isEnabled) return;
     final suffix = error == null ? '' : ' | $error';
     debugPrint('[Orex][$area] $message$suffix');
