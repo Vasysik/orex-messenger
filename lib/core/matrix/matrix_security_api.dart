@@ -24,14 +24,28 @@ extension MatrixSecurityApi on MatrixService {
   /// Загрузка актуальной версии бэкапа с сервера.
   /// Вызывается при старте и после операций включения/выключения бэкапа.
   Future<void> updateServerBackupVersion() async {
-    _checkedServerBackup = true;
     // Если пользователь явно отключил бэкап в этой сессии — не «переоткрываем».
-    if (_backupDisabledByUser) return;
+    if (_backupDisabledByUser) {
+      _checkedServerBackup = true;
+      return;
+    }
     try {
       final currentBackup = await client.getRoomKeysVersionCurrent();
       _serverBackupVersion = currentBackup.version;
-    } catch (_) {
-      _serverBackupVersion = null;
+      _checkedServerBackup = true;
+    } on MatrixException catch (e) {
+      if (e.errcode == 'M_NOT_FOUND') {
+        _serverBackupVersion = null;
+        _checkedServerBackup = true;
+      } else {
+        // Сетевая/серверная ошибка не доказывает отсутствие бэкапа. Оставляем
+        // предыдущее подтверждённое состояние и разрешаем следующему sync retry.
+        _checkedServerBackup = false;
+        _log('Security', 'check server key backup failed', e);
+      }
+    } catch (e) {
+      _checkedServerBackup = false;
+      _log('Security', 'check server key backup failed', e);
     }
     _emitChange();
   }
@@ -64,19 +78,31 @@ extension MatrixSecurityApi on MatrixService {
   }
 
   Future<void> _loadBackupPrefs() async {
+    final userId = client.userID;
+    if (userId == null || userId.isEmpty) {
+      autoBackup = false;
+      lastBackup = null;
+      _backupDisabledByUser = false;
+      _autoBackupTimer?.cancel();
+      return;
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
-      autoBackup = prefs.getBool(_kAutoBackup) ?? false;
+      autoBackup = prefs.getBool(_accountPrefKey(_kAutoBackup)) ?? false;
       _backupDisabledByUser =
           prefs.getBool(_accountPrefKey(_kBackupDisabledByUser)) ?? false;
-      final ms = prefs.getInt(_kLastBackup);
-      if (ms != null) lastBackup = DateTime.fromMillisecondsSinceEpoch(ms);
+      final ms = prefs.getInt(_accountPrefKey(_kLastBackup));
+      lastBackup = ms == null
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch(ms);
       if (autoBackup && !_backupDisabledByUser) {
         _startAutoBackup();
       } else {
         _autoBackupTimer?.cancel();
       }
-    } catch (_) {}
+    } catch (e) {
+      _log('Security', 'load key backup preferences failed', e);
+    }
   }
 
   Future<void> _setBackupDisabledByUser(bool disabled) async {
@@ -92,7 +118,7 @@ extension MatrixSecurityApi on MatrixService {
     if (!on) _autoBackupTimer?.cancel();
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_kAutoBackup, on);
+      await prefs.setBool(_accountPrefKey(_kAutoBackup), on);
     } catch (_) {}
   }
 
@@ -193,7 +219,10 @@ extension MatrixSecurityApi on MatrixService {
     _emitChange();
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt(_kLastBackup, lastBackup!.millisecondsSinceEpoch);
+      await prefs.setInt(
+        _accountPrefKey(_kLastBackup),
+        lastBackup!.millisecondsSinceEpoch,
+      );
     } catch (_) {}
   }
 
@@ -228,8 +257,11 @@ extension MatrixSecurityApi on MatrixService {
         // null — новый ключ НЕ генерировался, диалог «сохраните ключ» не показываем.
         return null;
       }
-    } catch (_) {
-      // M_NOT_FOUND или сетевая ошибка — бэкапа нет, создаём ниже через bootstrap.
+    } on MatrixException catch (e) {
+      // Только подтверждённый M_NOT_FOUND означает отсутствие бэкапа.
+      // Timeout/DNS/5xx не должны создавать новый security state поверх
+      // недоступного существующего бэкапа.
+      if (e.errcode != 'M_NOT_FOUND') rethrow;
     }
 
     // Бэкапа нет — запускаем полный bootstrap для создания SSSS + бэкапа.

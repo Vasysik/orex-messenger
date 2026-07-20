@@ -253,7 +253,7 @@ Token и значения Matrix routing-полей не печатаются. �
 она есть, но нет `Message notification posted` / `Incoming call notification posted`,
 проверяются permission/channel и следующая строка native-лога.
 
-## 7. Что изменилось в `0.4.0+15`
+## 7. Что изменилось в `0.4.0`
 
 - FCM callback больше не ждёт Matrix, сеть, SQLCipher или FlutterEngine;
 - для E2EE-сообщений добавлен expedited `OrexPushResolveWorker`;

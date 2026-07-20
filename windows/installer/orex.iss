@@ -2,10 +2,10 @@
 #define MyAppPublisher "Orex"
 #define MyAppExeName "orex_messenger.exe"
 #ifndef MyAppVersion
-  #error Pass /DMyAppVersion from pubspec.yaml as shown in docs\release-builds.md.
+  #error Pass /DMyAppVersion from pubspec.yaml as shown in docs\release-windows.md.
 #endif
 #ifndef MyAppVersionInfo
-  #error Pass /DMyAppVersionInfo derived from pubspec.yaml as shown in docs\release-builds.md.
+  #error Pass /DMyAppVersionInfo derived from pubspec.yaml as shown in docs\release-windows.md.
 #endif
 #define ReleaseDir "..\..\build\windows\x64\runner\Release"
 

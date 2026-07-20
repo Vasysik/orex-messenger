@@ -2,13 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
-import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
 import 'package:matrix/encryption/utils/key_verification.dart';
 import 'package:matrix/matrix.dart';
 
 import '../logging/orex_logger.dart';
 import '../media/orex_avatar_cache.dart';
 import '../storage/database.dart';
+import '../vodozemac_initializer.dart';
 
 const _backgroundPushChannelName = 'orex/push_background';
 const _backgroundPushClientName = 'OrexMessenger';
@@ -21,6 +21,53 @@ class OrexResolvedPush {
   const OrexResolvedPush(this.data);
 
   final Map<String, String> data;
+}
+
+@visibleForTesting
+bool orexIsCallOutcomeSummary({
+  required String eventType,
+  required Map<String, dynamic> content,
+}) =>
+    eventType == EventTypes.Message &&
+    content['com.orex.call_outcome'] is String;
+
+bool _isOrexCallOutcomeSummary(Event event) => orexIsCallOutcomeSummary(
+  eventType: event.type,
+  content: event.content,
+);
+
+/// Формирует plaintext payload из события, уже расшифрованного живым sync.
+/// Никаких повторных Matrix-запросов здесь нет: это локальный notification
+/// fallback для desktop и конфигураций без remote pusher.
+Map<String, String>? resolveOrexSyncedMatrixNotification(Event event) {
+  if (event.type != EventTypes.Message && event.type != EventTypes.Sticker) {
+    return null;
+  }
+  // Call outcomes stay in the Matrix timeline, but an old "missed call"
+  // summary must never become a delayed ordinary-message notification.
+  if (_isOrexCallOutcomeSummary(event)) return null;
+  if (event.messageType == MessageTypes.BadEncrypted) return null;
+  final body = OrexMatrixPushResolver._messageBody(event);
+  if (body == null) return null;
+
+  final sender = OrexMatrixPushResolver._senderName(event, const {});
+  final roomName = OrexMatrixPushResolver._roomName(event, const {});
+  final title = event.room.isDirectChat == true || roomName == null
+      ? sender
+      : '$sender · $roomName';
+  return <String, String>{
+    'orex_kind': 'matrix_event',
+    'room_id': event.room.id,
+    'event_id': event.eventId,
+    'type': event.type,
+    'sender': event.senderId,
+    'sender_display_name': sender,
+    'room_name': ?roomName,
+    'title': title,
+    'body': body,
+    'content_body': body,
+    'content_msgtype': event.messageType,
+  };
 }
 
 class _OrexPushDecryptionPending implements Exception {
@@ -79,6 +126,17 @@ class OrexMatrixPushResolver {
           roomId: roomId,
           eventId: eventId,
           reason: 'already_read_or_unavailable',
+        ),
+      );
+    }
+
+    if (_isOrexCallOutcomeSummary(event)) {
+      return OrexResolvedPush(
+        _dropPayload(
+          rawPayload,
+          roomId: roomId,
+          eventId: eventId,
+          reason: 'call_outcome_summary',
         ),
       );
     }
@@ -428,7 +486,7 @@ class _OrexBackgroundPushRuntime {
   }
 
   Future<Client> _createClient() async {
-    await vod.init().timeout(const Duration(seconds: 6));
+    await initializeOrexVodozemac();
     final database = await buildOrexDatabase();
     final client = Client(
       _backgroundPushClientName,

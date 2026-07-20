@@ -12,6 +12,8 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugins.GeneratedPluginRegistrant
 import java.util.ArrayDeque
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * One-shot Matrix/E2EE resolver for FCM data messages.
@@ -47,6 +49,38 @@ object OrexPushBackgroundResolver {
     private var activeTimeout: Runnable? = null
     private var startupTimeout: Runnable? = null
     private var idleShutdown: Runnable? = null
+
+    /**
+     * Gives exclusive Flutter/Matrix ownership to the process call runtime.
+     * Active background requests fail cleanly and WorkManager retries them on
+     * the process engine instead of opening two encrypted databases/isolate sets.
+     */
+    fun yieldToProcessRuntime() {
+        fun stopNow() {
+            if (engine == null && !creatingEngine && active == null && queue.isEmpty()) return
+            Log.i(TAG, "Yielding headless resolver to process-owned Flutter runtime")
+            failAll()
+            destroyEngine()
+        }
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            stopNow()
+            return
+        }
+        val latch = CountDownLatch(1)
+        mainHandler.post {
+            try {
+                stopNow()
+            } finally {
+                latch.countDown()
+            }
+        }
+        try {
+            latch.await(2, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
 
     fun resolve(
         context: Context,

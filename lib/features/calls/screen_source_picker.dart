@@ -171,7 +171,7 @@ class _OrexScreenSourceDialogState extends State<_OrexScreenSourceDialog>
       if (!mounted || type != _activeType) return;
       setState(() {
         _loading = false;
-        _error = '$e';
+        _error = 'Не удалось получить список экранов и окон';
       });
     }
   }

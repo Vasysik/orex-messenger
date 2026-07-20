@@ -36,7 +36,6 @@ class OrexCallUiActions {
     return orexShowCallReaction(
       context: context,
       anchorKey: reactionButtonKey,
-      matrix: matrix,
       session: session,
       emojiSize: reactionEmojiSize,
     );

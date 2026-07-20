@@ -1,0 +1,2 @@
+// Marker file for the Windows Cargokit proxy. CargoKitBuildTask derives its
+// runner path from this file's parent directory.

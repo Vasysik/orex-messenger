@@ -236,6 +236,13 @@ extension MatrixSupergroupApi on MatrixService {
   }
 
   Future<void> _applySupergroupChildAccess(Room space, Room child) async {
+    // Дочерний чат супергруппы всегда закрытый и E2EE. Не создаём его
+    // публичным с последующим best-effort hardening: между этими операциями
+    // сообщения могли бы уйти plaintext/world-readable.
+    await child.setHistoryVisibility(HistoryVisibility.shared);
+    await _ensureRoomEncrypted(child);
+    await child.setGuestAccess(GuestAccess.forbidden);
+
     try {
       await client.setRoomStateWithKey(
         child.id,
@@ -248,20 +255,28 @@ extension MatrixSupergroupApi on MatrixService {
           ],
         },
       );
-    } catch (_) {
-      try {
-        await child.setJoinRules(JoinRules.invite);
-      } catch (_) {}
+    } on MatrixException catch (e) {
+      // Старые homeserver-ы могут не поддерживать restricted rooms. Безопасный
+      // fallback — invite-only, а не публичный доступ.
+      _log('Rooms', 'restricted child access unsupported child=${child.id}', e);
+      await child.setJoinRules(JoinRules.invite);
     }
-    try {
-      await client.setRoomVisibilityOnDirectory(
-        child.id,
-        visibility: Visibility.private,
-      );
-    } catch (_) {}
-    try {
-      await child.setGuestAccess(GuestAccess.forbidden);
-    } catch (_) {}
+
+    await client.setRoomVisibilityOnDirectory(
+      child.id,
+      visibility: Visibility.private,
+    );
+
+    final joinState = await client.getRoomStateWithKey(
+      child.id,
+      EventTypes.RoomJoinRules,
+      '',
+    );
+    final joinRule = joinState['join_rule']?.toString();
+    if (joinRule != 'restricted' && joinRule != 'invite') {
+      throw StateError('Supergroup child remained publicly joinable');
+    }
+    await _verifyRoomVisibility(child, false);
     _roomPublicOverrides[child.id] = false;
   }
 
@@ -343,12 +358,12 @@ extension MatrixSupergroupApi on MatrixService {
       // из preview. Поэтому invite здесь намеренно не передаём.
       invite: const [],
       groupCall: true,
-      preset:
-          public ? CreateRoomPreset.publicChat : CreateRoomPreset.privateChat,
-      visibility: public ? Visibility.public : Visibility.private,
-      historyVisibility:
-          public ? HistoryVisibility.worldReadable : HistoryVisibility.shared,
-      enableEncryption: !public,
+      // Параметр [public] оставлен для совместимости старых call-site,
+      // но security-модель child-room от него больше не зависит.
+      preset: CreateRoomPreset.privateChat,
+      visibility: Visibility.private,
+      historyVisibility: HistoryVisibility.shared,
+      enableEncryption: true,
       initialState: [
         _kindState(OrexRoomKind.group),
         _iconState(icon),
@@ -443,7 +458,7 @@ extension MatrixSupergroupApi on MatrixService {
     } catch (_) {}
     _forgetSupergroupChildPreview(space, child.id);
     if (canFullyDeleteRoom(child)) {
-      await deleteRoomForEveryone(child);
+      await closeRoomForEveryone(child);
     } else {
       await deleteRoom(child);
     }

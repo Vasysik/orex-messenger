@@ -9,18 +9,23 @@ import 'push_background_resolver.dart';
 import 'push_platform_bridge.dart';
 import 'push_registration_service.dart';
 
+typedef OrexIncomingCallAnswerHandler = Future<void> Function(
+  OrexPushOpen open,
+);
+
 class OrexPushService {
   OrexPushService({
     required Client client,
     required this.gateway,
     OrexPushPlatform? platform,
     OrexPushTokenStore? tokenStore,
-  })  : _client = client,
-        _platform = platform ??
-            OrexNativePushPlatform(
-              resolvePush: (payload) => resolveOrexMatrixPush(client, payload),
-            ),
-        _tokenStore = tokenStore ?? const _SharedPreferencesPushTokenStore() {
+  }) : _client = client,
+       _platform =
+           platform ??
+           OrexNativePushPlatform(
+             resolvePush: (payload) => resolveOrexMatrixPush(client, payload),
+           ),
+       _tokenStore = tokenStore ?? const _SharedPreferencesPushTokenStore() {
     _openController = StreamController<OrexPushOpen>.broadcast(
       onListen: _flushPendingOpen,
       sync: true,
@@ -51,13 +56,88 @@ class OrexPushService {
   Future<void>? _syncInFlight;
   DateTime? _lastSyncAttempt;
   OrexPushOpen? _pendingOpen;
+  OrexPushOpen? _pendingIncomingAnswer;
+  OrexIncomingCallAnswerHandler? _incomingCallAnswerHandler;
   String? _lastPublishedDeliveryId;
   bool _started = false;
+  bool _ready = false;
   bool _disposed = false;
 
   Stream<OrexPushOpen> get onNotificationOpened => _openController.stream;
 
   bool get isConfigured => gateway != null;
+
+  /// Native pending-open state has been loaded for this Dart isolate.
+  /// Call recovery uses this boundary to avoid discarding an accepted cold-start
+  /// descriptor before the answer command is available.
+  bool get isReady => _ready;
+
+  /// Только platform identity означает, что эта платформа действительно
+  /// зарегистрировала remote Matrix pusher и сама владеет background delivery.
+  bool get ownsBackgroundNotifications =>
+      isConfigured && _platform.identity != null;
+
+  /// Answers from native Android UI must be claimed before a Flutter widget
+  /// tree exists. The handler is installed by the Matrix bootstrap during its
+  /// bootstrap; ordinary notification opens remain owned by the UI stream.
+  void setIncomingCallAnswerHandler(OrexIncomingCallAnswerHandler? handler) {
+    if (_disposed) return;
+    _incomingCallAnswerHandler = handler;
+    final pending = _pendingOpen;
+    if (handler == null || pending == null || !isIncomingCallAnswer(pending)) {
+      return;
+    }
+    _pendingOpen = null;
+    _lastPublishedDeliveryId = pending.deliveryId;
+    _routeIncomingCallAnswer(pending, handler);
+  }
+
+  bool handlesIncomingCallAnswer(OrexPushOpen open) =>
+      _incomingCallAnswerHandler != null && isIncomingCallAnswer(open);
+
+  static bool isIncomingCallAnswer(OrexPushOpen open) =>
+      open.kind == 'incoming_call' &&
+      (open.action == 'answer' || open.action == 'answer_video');
+
+  bool hasPendingIncomingAnswer(
+    String roomId, {
+    String? ringEventId,
+  }) {
+    final pending = _pendingIncomingAnswer;
+    if (pending == null ||
+        pending.kind != 'incoming_call' ||
+        (pending.action != 'answer' && pending.action != 'answer_video') ||
+        pending.roomId != roomId.trim()) {
+      return false;
+    }
+    final pendingRing = pending.ringEventId;
+    final candidateRing = ringEventId?.trim();
+    if (pendingRing == null || pendingRing.isEmpty) return true;
+    if (candidateRing == null || candidateRing.isEmpty) return true;
+    return pendingRing == candidateRing;
+  }
+
+  Future<void> activateIncomingCallWindow() =>
+      _platform.activateIncomingCallWindow();
+
+  void consumePendingIncomingAnswer(OrexPushOpen open) {
+    final pending = _pendingIncomingAnswer;
+    if (pending == null || !isIncomingCallAnswer(open)) {
+      return;
+    }
+    if (pending.roomId != open.roomId) return;
+    final pendingRing = pending.ringEventId;
+    final openRing = open.ringEventId;
+    if (pendingRing != null && openRing != null && pendingRing != openRing) {
+      return;
+    }
+    _pendingIncomingAnswer = null;
+    // Do not acknowledge an accepted cold-start command merely because it
+    // reached the Dart stream. Keeping native persistence until the bootstrap
+    // coordinator has claimed it makes a process death retryable instead of
+    // leaving the connecting cover with no command to replay.
+    unawaited(_acknowledgeOpen(open));
+  }
 
   /// Поднимает только локальный bridge и подписки. Сетевой pusher sync не
   /// блокирует bootstrap: он запускается отдельно и имеет собственный error
@@ -67,22 +147,27 @@ class OrexPushService {
     _started = true;
     try {
       await _platform.initialize();
-      await _registration.start();
       _openSub = _platform.notificationOpens.listen(
         _publishOpen,
         onError: (Object error, StackTrace _) {
           OrexLog.d('Push', 'notification open stream failed', error);
         },
       );
+      // Subscribe before registration or any native method can make the
+      // Android bridge flush a persisted cold-start Answer command.
+      await _registration.start();
 
       final initial = await _platform.takeInitialNotification();
       if (initial != null) _publishOpen(initial);
+
+      _ready = true;
 
       unawaited(sync(force: true));
     } catch (_) {
       await _openSub?.cancel();
       _openSub = null;
       _started = false;
+      _ready = false;
       rethrow;
     }
   }
@@ -158,28 +243,28 @@ class OrexPushService {
     }
   }
 
-  Future<void> notifyCallAnswering(String callId) async {
+  Future<void> notifyCallAnswering(String callId, {String? ringEventId}) async {
     if (_disposed) return;
     try {
-      await _platform.notifyCallAnswering(callId);
+      await _platform.notifyCallAnswering(callId, ringEventId: ringEventId);
     } catch (error) {
       OrexLog.d('Push', 'native call answering acknowledgement failed', error);
     }
   }
 
-  Future<void> notifyCallUiReady(String callId) async {
+  Future<void> notifyCallUiReady(String callId, {String? ringEventId}) async {
     if (_disposed) return;
     try {
-      await _platform.notifyCallUiReady(callId);
+      await _platform.notifyCallUiReady(callId, ringEventId: ringEventId);
     } catch (error) {
       OrexLog.d('Push', 'native call handoff acknowledgement failed', error);
     }
   }
 
-  Future<void> notifyCallEnded(String callId) async {
+  Future<void> notifyCallEnded(String callId, {String? ringEventId}) async {
     if (_disposed) return;
     try {
-      await _platform.notifyCallEnded(callId);
+      await _platform.notifyCallEnded(callId, ringEventId: ringEventId);
     } catch (error) {
       OrexLog.d('Push', 'native call end acknowledgement failed', error);
     }
@@ -199,13 +284,32 @@ class OrexPushService {
     String? eventId,
   }) async {
     if (_disposed || !_client.isLogged()) return;
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) return;
+    final room = _client.getRoomById(normalizedRoomId);
+    final event = room?.lastEvent;
+    if (event == null) return;
+    final normalizedEventId = eventId?.trim();
+    if (normalizedEventId != null &&
+        normalizedEventId.isNotEmpty &&
+        event.eventId != normalizedEventId) {
+      return;
+    }
+    final payload = resolveOrexSyncedMatrixNotification(event);
+    if (payload == null) return;
     try {
-      await _platform.showLocalMatrixNotification(
-        roomId: roomId,
-        eventId: eventId,
-      );
+      await _platform.showLocalMatrixNotification(payload);
     } catch (error) {
       OrexLog.d('Push', 'local Matrix notification failed', error);
+    }
+  }
+
+  Future<void> dismissRoomNotifications(String roomId) async {
+    if (_disposed) return;
+    try {
+      await _platform.dismissRoomNotifications(roomId);
+    } catch (error) {
+      OrexLog.d('Push', 'room notification dismissal failed', error);
     }
   }
 
@@ -217,10 +321,9 @@ class OrexPushService {
   }
 
   Future<void> _requestPermissionOnce() async {
-    if (_disposed || !isConfigured || !_client.isLogged()) return;
-    if (!await _platform.isSupported()) return;
+    if (_disposed || !_client.isLogged()) return;
     final prefs = await SharedPreferences.getInstance();
-    const key = 'orex_push_permission_prompted_v2';
+    const key = 'orex_local_notification_permission_prompted_v1';
     if (prefs.getBool(key) == true) return;
     final status = await _platform.requestPermission();
     if (status != OrexPushPermissionStatus.notSupported) {
@@ -232,13 +335,26 @@ class OrexPushService {
     if (_disposed) return;
     final deliveryId = open.deliveryId;
     if (deliveryId != null && deliveryId == _lastPublishedDeliveryId) {
-      unawaited(_acknowledgeOpen(open));
+      if (!isIncomingCallAnswer(open)) {
+        unawaited(_acknowledgeOpen(open));
+      }
       return;
+    }
+    if (isIncomingCallAnswer(open)) {
+      _pendingIncomingAnswer = open;
+      final handler = _incomingCallAnswerHandler;
+      if (handler != null) {
+        _lastPublishedDeliveryId = deliveryId;
+        _routeIncomingCallAnswer(open, handler);
+        return;
+      }
     }
     if (_openController.hasListener) {
       _lastPublishedDeliveryId = deliveryId;
       _openController.add(open);
-      unawaited(_acknowledgeOpen(open));
+      if (!isIncomingCallAnswer(open)) {
+        unawaited(_acknowledgeOpen(open));
+      }
     } else {
       // Cold-start intent может прийти до создания OrexApp. Храним последнее
       // действие до первого UI-listener, а Android persistence не подтверждаем.
@@ -255,11 +371,29 @@ class OrexPushService {
       if (_openController.hasListener) {
         _lastPublishedDeliveryId = pending.deliveryId;
         _openController.add(pending);
-        unawaited(_acknowledgeOpen(pending));
+        if (!isIncomingCallAnswer(pending)) {
+          unawaited(_acknowledgeOpen(pending));
+        }
       } else {
         _pendingOpen = pending;
       }
     });
+  }
+
+  void _routeIncomingCallAnswer(
+    OrexPushOpen open,
+    OrexIncomingCallAnswerHandler handler,
+  ) {
+    OrexLog.d(
+      'Push',
+      'routing accepted call to bootstrap coordinator '
+          'room=${open.roomId} ring=${open.ringEventId}',
+    );
+    unawaited(
+      handler(open).catchError((Object error, StackTrace _) {
+        OrexLog.d('Push', 'incoming-call bootstrap handler failed', error);
+      }),
+    );
   }
 
   Future<void> _acknowledgeOpen(OrexPushOpen open) async {
@@ -305,6 +439,8 @@ class OrexPushService {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _ready = false;
+    _pendingIncomingAnswer = null;
     await _openSub?.cancel();
     await _registration.dispose();
     _platform.dispose();
@@ -332,9 +468,7 @@ class _MatrixPushRegistrar implements OrexPushRegistrar {
           // Не используем event_id_only: Android должен получить достаточно
           // данных, чтобы мгновенно показать notification/call UI без запуска
           // FlutterEngine и сетевого Matrix-запроса внутри FCM callback.
-          additionalProperties: <String, Object?>{
-            'platform': config.platform,
-          },
+          additionalProperties: <String, Object?>{'platform': config.platform},
         ),
         deviceDisplayName: config.deviceDisplayName,
         kind: 'http',
@@ -349,7 +483,10 @@ class _MatrixPushRegistrar implements OrexPushRegistrar {
   }
 
   @override
-  Future<void> unregister({required String token, required String appId}) async {
+  Future<void> unregister({
+    required String token,
+    required String appId,
+  }) async {
     await client.deletePusher(PusherId(appId: appId, pushkey: token));
     OrexLog.d('Push', 'Matrix pusher removed app=$appId');
   }

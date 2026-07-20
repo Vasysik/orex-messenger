@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../audio/audio_cue_service.dart';
 import '../config/orex_config.dart';
 import '../push/orex_push_service.dart';
+import '../push/push_platform_bridge.dart';
 import '../voip/call_controller.dart';
 import '../logging/orex_logger.dart';
 import '../media/orex_avatar_cache.dart';
@@ -71,6 +72,10 @@ class MatrixService extends ChangeNotifier {
       KeyVerificationMethod.emoji,
       KeyVerificationMethod.numbers,
     },
+    // MatrixRTC logs raw media keys at INFO. Never enable SDK INFO/FINE in the
+    // application process; opt-in debug builds retain warnings, production and
+    // explicitly quiet debug runs emit only SDK errors.
+    logLevel: kDebugMode && OrexConfig.debugLogs ? Level.warning : Level.error,
   );
 
   /// MatrixRTC-сигналинг звонков. Создаётся при init(); null, если модуль
@@ -93,8 +98,9 @@ class MatrixService extends ChangeNotifier {
   late final MatrixVoicePermissionsService voicePermissions =
       MatrixVoicePermissionsService(this);
 
-  /// Локально отслеживаемая версия бэкапа на сервере.
-  /// null означает, что бэкап на сервере отсутствует или недоступен.
+  /// Локально отслеживаемая подтверждённая версия бэкапа на сервере.
+  /// null означает подтверждённое отсутствие/отключение; транспортная ошибка
+  /// не стирает ранее известное состояние и оставляет проверку на retry.
   String? _serverBackupVersion;
   String? get serverBackupVersion => _serverBackupVersion;
 
@@ -121,6 +127,7 @@ class MatrixService extends ChangeNotifier {
   StreamSubscription? _syncSub;
   StreamSubscription? _loginStateSub;
   StreamSubscription? _userProfileSub;
+  final Map<String, Future<void>> _incomingCallAnswerBootstraps = {};
   Future<void>? _avatarWarmupFuture;
   bool _avatarWarmupRequestedAfterCurrent = false;
   DateTime? _lastAvatarWarmup;
@@ -153,10 +160,28 @@ class MatrixService extends ChangeNotifier {
     await client.init(
       waitForFirstSync: false, // покажем кэш сразу, не ждём сеть
     );
+
+    // Build signaling before any sync/login callback can lazily construct the
+    // CallController. Previously an early desktop sync could create CallController
+    // while matrix.voip was still null, permanently missing all incoming/remote
+    // call stream subscriptions until another call path warmed the runtime.
+    try {
+      voip = VoipService(client);
+    } catch (e) {
+      _log('Voip', 'init failed, calls disabled', e);
+    }
+    final callController = call;
+    // Android can dispatch an accepted native call while the Activity is still
+    // constructing its Flutter view. Claim that action at the process layer,
+    // not from a widget listener, so CallController can create its local
+    // session immediately and queue the later UI handoff safely.
+    push.setIncomingCallAnswerHandler(_handleIncomingCallAnswer);
+
     _syncSub = client.onSync.stream.listen((_) {
       _playNotificationCueIfNeeded();
       push.handleMatrixSync();
       _scheduleAvatarCacheWarmup();
+      if (client.isLogged()) unawaited(callController.recoverPendingCall());
       // Проверяем версию бэкапа только один раз после логина,
       // и только если пользователь не выключал его вручную в этой сессии.
       if (!_checkedServerBackup &&
@@ -167,6 +192,17 @@ class MatrixService extends ChangeNotifier {
       notifyListeners();
     });
     _loginStateSub = client.onLoginStateChanged.stream.listen((_) async {
+      final loggedIn = client.isLogged();
+      if (loggedIn) {
+        // A successful login may reuse this MatrixService after a previous
+        // logout. Its first /sync will schedule cleanup for the new account.
+        voip?.resumeStaleMembershipCleanupForLoggedInAccount();
+      } else {
+        // Session expiry and remote logout bypass MatrixAuthApi.logout().
+        // Latch local call cancellation before the asynchronous cleanup starts.
+        voip?.pauseStaleMembershipCleanupForAccountTransition();
+        unawaited(callController.terminateForAccountTransition());
+      }
       // При логауте/смене аккаунта сбрасываем runtime-статус и перечитываем
       // сохранённое намерение пользователя для текущего аккаунта.
       _checkedServerBackup = false;
@@ -177,7 +213,11 @@ class MatrixService extends ChangeNotifier {
       _lastAvatarWarmup = null;
       await _loadBackupPrefs();
       push.handleLoginStateChanged();
-      if (client.isLogged()) _scheduleAvatarCacheWarmup(force: true);
+      if (client.isLogged()) {
+        _scheduleAvatarCacheWarmup(force: true);
+        voip?.refreshIncomingCalls();
+        unawaited(callController.recoverPendingCall());
+      }
       notifyListeners();
     });
     // Обновление профиля меняет сам MXC URI. Не чистим весь media-cache на
@@ -187,12 +227,6 @@ class MatrixService extends ChangeNotifier {
       _scheduleAvatarCacheWarmup(force: true);
       notifyListeners();
     });
-    // VoIP-сигналинг (звонки). Изолируем сбой, чтобы он не ронял запуск.
-    try {
-      voip = VoipService(client);
-    } catch (e) {
-      _log('Voip', 'init failed, calls disabled', e);
-    }
     _scheduleAvatarCacheWarmup(force: true);
 
     await _loadBackupPrefs();
@@ -213,6 +247,165 @@ class MatrixService extends ChangeNotifier {
         }),
       );
     }
+  }
+
+  Future<void> _handleIncomingCallAnswer(OrexPushOpen open) {
+    final roomId = open.roomId?.trim();
+    if (roomId == null || roomId.isEmpty) {
+      return _finishUnresolvableIncomingCallAnswer(open, roomId: null);
+    }
+    final instance = OrexCallInstance(
+      roomId: roomId,
+      ringEventId: open.ringEventId,
+    );
+    final existing = _incomingCallAnswerBootstraps[instance.routeKey];
+    if (existing != null) return existing;
+
+    late final Future<void> operation;
+    operation = _acceptIncomingCallFromPush(open, instance).whenComplete(() {
+      if (identical(
+        _incomingCallAnswerBootstraps[instance.routeKey],
+        operation,
+      )) {
+        _incomingCallAnswerBootstraps.remove(instance.routeKey);
+      }
+    });
+    _incomingCallAnswerBootstraps[instance.routeKey] = operation;
+    return operation;
+  }
+
+  Future<void> _acceptIncomingCallFromPush(
+    OrexPushOpen open,
+    OrexCallInstance instance,
+  ) async {
+    final callVoip = voip;
+    var nativeAnswerClaimed = false;
+    bool isThisAttemptActive() {
+      final current = call.currentCallInstance;
+      return call.isActive &&
+          current != null &&
+          current.roomId == instance.roomId &&
+          orexCallInstanceIdsMatch(current.ringEventId, instance.ringEventId);
+    }
+
+    _log(
+      'Push',
+      'bootstrap answer received room=${instance.roomId} '
+          'ring=${instance.ringEventId}',
+    );
+    try {
+      var room = client.getRoomById(instance.roomId);
+      room ??= await _resolveIncomingCallRoom(instance.roomId);
+      if (room == null) {
+        await _finishUnresolvableIncomingCallAnswer(
+          open,
+          roomId: instance.roomId,
+        );
+        return;
+      }
+
+      _log(
+        'Push',
+        'bootstrap answer resolved room=${room.id}; starting CallController',
+      );
+      if (callVoip == null ||
+          !callVoip.claimIncomingCallFromNativeAction(instance)) {
+        _log(
+          'Push',
+          'bootstrap answer rejected stale or unavailable attempt '
+              'room=${instance.roomId} ring=${instance.ringEventId}',
+        );
+        await push.notifyCallEnded(
+          instance.roomId,
+          ringEventId: instance.ringEventId,
+        );
+        return;
+      }
+      nativeAnswerClaimed = true;
+      // This mirrors the former widget-level path. It only removes an
+      // incoming presentation for this exact attempt. The claim above keeps
+      // ownership alive even when the first Matrix sync has not yet
+      // materialized the incoming call.
+      callVoip.dismissIncomingFromSystem(instance);
+      await call.acceptIncoming(
+        room,
+        video: open.video,
+        instance: instance,
+        fromSystem: open.fromSystem,
+        requestExpandedUi: true,
+      );
+      if (!isThisAttemptActive()) {
+        _log(
+          'Push',
+          'bootstrap answer completed without an active call '
+              'room=${instance.roomId}',
+        );
+        await push.notifyCallEnded(
+          instance.roomId,
+          ringEventId: instance.ringEventId,
+        );
+      }
+    } catch (error) {
+      _log('Push', 'bootstrap answer failed room=${instance.roomId}', error);
+      if (!isThisAttemptActive()) {
+        await push.notifyCallEnded(
+          instance.roomId,
+          ringEventId: instance.ringEventId,
+        );
+      }
+    } finally {
+      if (nativeAnswerClaimed && !isThisAttemptActive()) {
+        callVoip?.releaseIncomingCallFromNativeAction(instance);
+      }
+      push.consumePendingIncomingAnswer(open);
+    }
+  }
+
+  Future<void> _finishUnresolvableIncomingCallAnswer(
+    OrexPushOpen open, {
+    required String? roomId,
+  }) async {
+    final targetRoomId = roomId ?? open.roomId?.trim();
+    _log(
+      'Push',
+      'bootstrap answer has no available room room=$targetRoomId '
+          'ring=${open.ringEventId}',
+    );
+    if (targetRoomId != null && targetRoomId.isNotEmpty) {
+      await push.notifyCallEnded(targetRoomId, ringEventId: open.ringEventId);
+    }
+    push.consumePendingIncomingAnswer(open);
+  }
+
+  Future<Room?> _resolveIncomingCallRoom(String roomId) async {
+    const totalBudget = Duration(seconds: 12);
+    const syncTimeout = Duration(seconds: 2);
+    final deadline = DateTime.now().add(totalBudget);
+    Object? lastError;
+
+    while (DateTime.now().isBefore(deadline)) {
+      final cached = client.getRoomById(roomId);
+      if (cached != null) return cached;
+      try {
+        await client
+            .oneShotSync(timeout: syncTimeout)
+            .timeout(const Duration(seconds: 4));
+      } catch (error) {
+        lastError = error;
+      }
+      final synced = client.getRoomById(roomId);
+      if (synced != null) return synced;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+
+    if (lastError != null) {
+      _log(
+        'Push',
+        'bootstrap answer room sync exhausted room=$roomId',
+        lastError,
+      );
+    }
+    return client.getRoomById(roomId);
   }
 
   void _scheduleAvatarCacheWarmup({bool force = false}) {
@@ -267,11 +460,14 @@ class MatrixService extends ChangeNotifier {
     for (final room in client.rooms) {
       final count = room.notificationCount;
       final previous = _notificationCounts[room.id] ?? 0;
+      if (_notificationSnapshotReady && previous > 0 && count == 0) {
+        unawaited(push.dismissRoomNotifications(room.id));
+      }
       if (_notificationSnapshotReady &&
           count > previous &&
           room.id != _foregroundRoomId) {
-        final rtcNotification =
-            room.lastEvent?.tryParseRtcNotificationContent();
+        final rtcNotification = room.lastEvent
+            ?.tryParseRtcNotificationContent();
         if (rtcNotification?.notificationType != RtcNotificationType.ring) {
           increasedRooms.add(room);
         }
@@ -284,10 +480,16 @@ class MatrixService extends ChangeNotifier {
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     final appIsBackgrounded =
         lifecycle != null && lifecycle != AppLifecycleState.resumed;
-    if (appIsBackgrounded) {
-      // При настроенном Matrix pusher системным уведомлением владеет FCM.
-      // Локальный sync-fallback иначе создаст второй notification поверх него.
-      if (push.isConfigured) return;
+    final nativeLocalNotifications =
+        !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.windows);
+    if (nativeLocalNotifications) {
+      // В background Android remote pusher уже владеет доставкой и локальный
+      // sync не должен создавать дубль. В foreground FCM намеренно подавляется
+      // native bridge, поэтому сообщение из НЕ открытой комнаты публикуем из
+      // текущего Matrix sync. Windows всегда использует свой native runner.
+      if (appIsBackgrounded && push.ownsBackgroundNotifications) return;
       for (final room in increasedRooms) {
         unawaited(
           push.showSyncedMatrixNotification(
@@ -299,12 +501,17 @@ class MatrixService extends ChangeNotifier {
       return;
     }
 
+    // У платформ без собственного notification bridge остаётся только
+    // внутриприложенный звуковой cue.
     audio.playNotification();
   }
 
   void setForegroundRoomId(String? roomId) {
     final value = roomId?.trim();
-    _foregroundRoomId = value == null || value.isEmpty ? null : value;
+    final next = value == null || value.isEmpty ? null : value;
+    if (next == _foregroundRoomId) return;
+    _foregroundRoomId = next;
+    if (next != null) unawaited(push.dismissRoomNotifications(next));
   }
 
   /// Принудительно перерисовать слушателей (например, после завершения
@@ -322,8 +529,14 @@ class MatrixService extends ChangeNotifier {
   void _log(String area, String message, [Object? error]) =>
       OrexLog.d(area, message, error);
 
-  Future<void> _disposeNetworkResources() async {
+  Future<void> _disposeNetworkResources(VoipService? voipService) async {
     try {
+      // Keep Matrix and native E2EE resources alive until CallController's
+      // synchronous dispose hook has finished its asynchronous Room teardown.
+      await call.shutdownComplete;
+      voipService?.dispose();
+      final voipShutdown = voipService?.shutdownComplete;
+      if (voipShutdown != null) await voipShutdown;
       // Push lifecycle may still have an in-flight pusher mutation that uses
       // the Matrix client. Keep the client alive until that queue is drained.
       await push.dispose();
@@ -342,10 +555,12 @@ class MatrixService extends ChangeNotifier {
     _syncSub?.cancel();
     _loginStateSub?.cancel();
     _userProfileSub?.cancel();
+    push.setIncomingCallAnswerHandler(null);
+    _incomingCallAnswerBootstraps.clear();
+    final voipService = voip;
     call.dispose();
-    voip?.dispose();
     audio.dispose();
-    unawaited(_disposeNetworkResources());
+    unawaited(_disposeNetworkResources(voipService));
     super.dispose();
   }
 }

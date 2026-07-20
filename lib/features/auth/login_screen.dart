@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/config/app_version.dart';
+import '../../core/logging/orex_logger.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
@@ -72,20 +73,28 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
       widget.onLoggedIn();
     } catch (e) {
-      String msg = e.toString();
-      if (msg.contains('M_USER_IN_USE')) {
+      final details = e.toString();
+      OrexLog.d(
+        'Auth',
+        _isRegistering ? 'registration failed' : 'login failed',
+        e,
+      );
+      String msg = _isRegistering
+          ? 'Не удалось создать аккаунт. Попробуйте ещё раз.'
+          : 'Не удалось войти. Попробуйте ещё раз.';
+      if (details.contains('M_USER_IN_USE')) {
         msg = 'Это имя пользователя уже занято';
-      } else if (msg.contains('M_INVALID_USERNAME')) {
+      } else if (details.contains('M_INVALID_USERNAME')) {
         msg = 'Недопустимое имя пользователя (только латиница, цифры, _, -, .)';
-      } else if (msg.contains('M_FORBIDDEN')) {
+      } else if (details.contains('M_FORBIDDEN')) {
         msg = _isRegistering
             ? 'Неверный или истёкший код приглашения'
             : 'Неверный логин или пароль';
-      } else if (msg.contains('M_UNKNOWN_TOKEN') ||
-          msg.contains('M_MISSING_TOKEN')) {
+      } else if (details.contains('M_UNKNOWN_TOKEN') ||
+          details.contains('M_MISSING_TOKEN')) {
         msg = 'Недействительный токен приглашения';
-      } else if (msg.contains('SocketException') ||
-          msg.contains('Connection refused')) {
+      } else if (details.contains('SocketException') ||
+          details.contains('Connection refused')) {
         msg = 'Нет подключения к серверу. Проверьте интернет.';
       }
       if (mounted) setState(() => _error = msg);

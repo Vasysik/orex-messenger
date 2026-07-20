@@ -1,0 +1,41 @@
+services:
+  orex-web:
+    image: nginx:1.30.3-alpine
+    container_name: orex-web
+    restart: unless-stopped
+    volumes:
+      - ./build/web:/usr/share/nginx/html:ro
+    networks:
+      - traefik-proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-proxy"
+
+      - "traefik.http.routers.orex-web.rule=Host(`orex.vasys.ru`)"
+      - "traefik.http.routers.orex-web.entrypoints=websecure"
+      - "traefik.http.routers.orex-web.tls=true"
+      - "traefik.http.routers.orex-web.tls.certresolver=myresolver"
+      - "traefik.http.routers.orex-web.service=orex-web"
+      - "traefik.http.routers.orex-web.middlewares=orex-web-headers,orex-web-compress"
+      - "traefik.http.services.orex-web.loadbalancer.server.port=80"
+
+      - "traefik.http.middlewares.orex-web-compress.compress=true"
+
+      - "traefik.http.middlewares.orex-web-headers.headers.stsseconds=31536000"
+      - "traefik.http.middlewares.orex-web-headers.headers.forcestsheader=true"
+      - "traefik.http.middlewares.orex-web-headers.headers.framedeny=true"
+      - "traefik.http.middlewares.orex-web-headers.headers.contenttypenosniff=true"
+      - "traefik.http.middlewares.orex-web-headers.headers.referrerpolicy=no-referrer"
+      # flutter_rust_bridge 2.x uses Function(...) while wiring the local E2EE
+      # WASM module. Keep this compatibility exception until the bridge removes it.
+      - "traefik.http.middlewares.orex-web-headers.headers.contentsecuritypolicy=default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; manifest-src 'self'; connect-src 'self' https://vasys.ru https://jwt.vasys.ru https://lk.vasys.ru wss://lk.vasys.ru https://fonts.gstatic.com"
+      - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Permissions-Policy=camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=(), usb=()"
+      - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cross-Origin-Opener-Policy=same-origin"
+      - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cross-Origin-Embedder-Policy=require-corp"
+      - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cross-Origin-Resource-Policy=same-origin"
+      - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cache-Control=no-cache"
+      - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.X-Robots-Tag=noindex, nofollow, noarchive"
+
+networks:
+  traefik-proxy:
+    external: true

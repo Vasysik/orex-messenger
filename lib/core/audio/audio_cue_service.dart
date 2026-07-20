@@ -33,6 +33,7 @@ class AudioCueService extends ChangeNotifier {
 
   Timer? _ringtoneWatchdog;
   bool _ringing = false;
+  int _ringtoneGeneration = 0;
   String? inputDeviceId;
   String? outputDeviceId;
   String? cameraDeviceId;
@@ -50,8 +51,7 @@ class AudioCueService extends ChangeNotifier {
       cameraDeviceId = _nullIfEmpty(prefs.getString(_kCameraDeviceId));
       if (orexIsMobileRouteId(outputDeviceId) &&
           (!orexIsMobileNativePlatform ||
-              orexIsAndroidSpeakerOutputDeviceId(outputDeviceId) ||
-              orexIsAndroidEarpieceOutputDeviceId(outputDeviceId))) {
+              orexIsAndroidSpeakerOutputDeviceId(outputDeviceId))) {
         outputDeviceId = null;
         await prefs.remove(_kOutputDeviceId);
       }
@@ -226,15 +226,25 @@ class AudioCueService extends ChangeNotifier {
   Future<void> startIncomingRingtone() async {
     if (_ringing) return;
     _ringing = true;
+    final generation = ++_ringtoneGeneration;
+    bool stillCurrent() => _ringing && generation == _ringtoneGeneration;
     OrexLog.d('Audio', 'start incoming ringtone');
     try {
       await _ensureAsset(incomingAsset);
+      if (!stillCurrent()) return;
       await _ringtonePlayer.setReleaseMode(ReleaseMode.loop);
+      if (!stillCurrent()) return;
       await _ringtonePlayer.play(_assetSource(incomingAsset));
+      if (!stillCurrent() && !_ringing) {
+        await _ringtonePlayer.stop();
+      }
     } catch (e) {
+      if (!stillCurrent()) return;
       OrexLog.d('Audio', 'incoming ringtone asset playback failed', e);
       await _fallback(SystemSoundType.alert);
+      if (!stillCurrent()) return;
       _ringtoneWatchdog = Timer.periodic(const Duration(seconds: 2), (_) {
+        if (!stillCurrent()) return;
         _fallback(SystemSoundType.alert);
       });
     }
@@ -244,10 +254,12 @@ class AudioCueService extends ChangeNotifier {
     if (!_ringing && _ringtoneWatchdog == null) return;
     OrexLog.d('Audio', 'stop incoming ringtone');
     _ringing = false;
+    final generation = ++_ringtoneGeneration;
     _ringtoneWatchdog?.cancel();
     _ringtoneWatchdog = null;
     try {
       await _ringtonePlayer.stop();
+      if (_ringing || generation != _ringtoneGeneration) return;
       await _ringtonePlayer.setReleaseMode(ReleaseMode.release);
     } catch (_) {}
   }
@@ -282,6 +294,8 @@ class AudioCueService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _ringing = false;
+    _ringtoneGeneration++;
     _ringtoneWatchdog?.cancel();
     _cuePlayer.dispose();
     _ringtonePlayer.dispose();

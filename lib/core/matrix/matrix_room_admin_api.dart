@@ -31,72 +31,168 @@ extension MatrixRoomAdminApi on MatrixService {
     _emitChange();
   }
 
-  Future<void> deleteRoomForEveryone(Room room) async {
+  /// Закрывает комнату для участников и удаляет её из локального списка.
+  ///
+  /// Matrix не предоставляет клиенту универсальную операцию физического
+  /// удаления серверной истории. Поэтому этот метод сначала fail-closed
+  /// закрывает дальнейший доступ, затем удаляет участников и только после
+  /// успешного завершения выходит сам.
+  Future<void> closeRoomForEveryone(Room room) async {
     if (!canFullyDeleteRoom(room)) {
-      throw StateError('Only the owner can delete this room for everyone');
+      throw StateError('Only the owner can close this room for everyone');
     }
     if (room.isSpace) {
       final children = List<Room>.of(supergroupChildren(room));
+      final uncontrolledChildren = children
+          .where((child) => !canFullyDeleteRoom(child))
+          .toList();
+      if (uncontrolledChildren.isNotEmpty) {
+        throw StateError(
+          'Нельзя закрыть супергруппу для всех: нет полного контроля над '
+          '${uncontrolledChildren.length} дочерней комнатой(ами)',
+        );
+      }
       for (final child in children) {
-        if (canFullyDeleteRoom(child)) {
-          await deleteRoomForEveryone(child);
-        } else {
-          await deleteRoom(child);
-        }
+        await closeRoomForEveryone(child);
       }
     }
-    await _releaseRoomAlias(room);
-    try {
-      await client.setRoomVisibilityOnDirectory(
-        room.id,
-        visibility: Visibility.private,
-      );
-    } catch (_) {}
+
+    await _applyRoomVisibility(room, false);
 
     final ownId = client.userID;
     final users = await room.requestParticipants(
       const [Membership.join, Membership.invite],
     );
+    final failedUsers = <String>[];
     for (final user in users) {
       if (user.id == ownId) continue;
       try {
         await room.kick(user.id);
-      } catch (_) {}
+      } catch (e) {
+        failedUsers.add(user.id);
+        _log('Rooms', 'close room kick failed room=${room.id} user=${user.id}', e);
+      }
     }
-    try {
-      if (room.membership != Membership.leave) await room.leave();
-    } catch (_) {}
-    try {
-      await room.forget();
-    } catch (_) {}
+    if (failedUsers.isNotEmpty) {
+      throw StateError(
+        'Не удалось удалить ${failedUsers.length} участник(ов); '
+        'комната уже закрыта, повторите операцию',
+      );
+    }
+
+    if (room.membership != Membership.leave) await room.leave();
+    await room.forget();
+    _roomPublicOverrides.remove(room.id);
     _emitChange();
   }
 
-  Future<void> _applyRoomVisibility(Room room, bool public) async {
+  /// Совместимость со старыми call-site. Название исторически неточное:
+  /// серверная история Matrix этим действием не уничтожается.
+  @Deprecated('Use closeRoomForEveryone; Matrix history is not physically deleted')
+  Future<void> deleteRoomForEveryone(Room room) => closeRoomForEveryone(room);
+
+  Future<void> _setRoomJoinRule(Room room, bool public) async {
     try {
       await room.setJoinRules(public ? JoinRules.public : JoinRules.invite);
-    } catch (_) {
+    } catch (e) {
+      _log('Rooms', 'set join rule via Room API failed, trying raw state room=${room.id}', e);
       await client.setRoomStateWithKey(
         room.id,
         EventTypes.RoomJoinRules,
         '',
-        {'join_rule': public ? JoinRules.public.text : JoinRules.invite.text},
+        {'join_rule': public ? 'public' : 'invite'},
       );
     }
+  }
+
+  Future<bool> _roomHasEncryptionState(Room room) async {
     try {
-      await client.setRoomVisibilityOnDirectory(
+      await client.getRoomStateWithKey(
         room.id,
-        visibility: public ? Visibility.public : Visibility.private,
+        'm.room.encryption',
+        '',
       );
-    } catch (_) {
-      // Some homeservers allow changing join rules but restrict directory writes.
+      return true;
+    } on MatrixException catch (e) {
+      if (e.errcode == 'M_NOT_FOUND') return false;
+      rethrow;
     }
-    try {
-      await room.setGuestAccess(GuestAccess.forbidden);
-    } catch (_) {}
-    if (!public) {
-      await _releaseRoomAlias(room);
+  }
+
+  Future<void> _ensureRoomEncrypted(Room room) async {
+    if (room.isSpace || await _roomHasEncryptionState(room)) return;
+    await room.enableEncryption();
+    if (!await _roomHasEncryptionState(room)) {
+      throw StateError('Homeserver did not persist m.room.encryption');
     }
+  }
+
+  Future<void> _verifyRoomVisibility(Room room, bool public) async {
+    final joinState = await client.getRoomStateWithKey(
+      room.id,
+      EventTypes.RoomJoinRules,
+      '',
+    );
+    final joinRule = joinState['join_rule']?.toString();
+    final directoryVisibility =
+        await client.getRoomVisibilityOnDirectory(room.id);
+    final guestState = await client.getRoomStateWithKey(
+      room.id,
+      'm.room.guest_access',
+      '',
+    );
+    final guestAccess = guestState['guest_access']?.toString();
+
+    if (public) {
+      if (joinRule != 'public' ||
+          directoryVisibility != Visibility.public ||
+          guestAccess != 'forbidden') {
+        throw StateError('Homeserver did not persist public room access policy');
+      }
+      return;
+    }
+
+    if (joinRule == 'public' ||
+        directoryVisibility == Visibility.public ||
+        guestAccess != 'forbidden') {
+      throw StateError('Homeserver did not persist private room access policy');
+    }
+
+    if (!room.isSpace) {
+      final historyState = await client.getRoomStateWithKey(
+        room.id,
+        'm.room.history_visibility',
+        '',
+      );
+      if (historyState['history_visibility']?.toString() ==
+          'world_readable') {
+        throw StateError('Private room history is still world-readable');
+      }
+      if (!await _roomHasEncryptionState(room)) {
+        throw StateError('Private room is not encrypted');
+      }
+    }
+  }
+
+  Future<void> _applyRoomVisibility(Room room, bool public) async {
+    // При закрытии комнаты порядок намеренно fail-closed: сначала прекращаем
+    // публикацию новой открытой истории и включаем необратимое E2EE, только
+    // затем меняем правила входа. Уже опубликованную world-readable историю
+    // Matrix задним числом секретной не делает.
+    if (!public && !room.isSpace) {
+      await room.setHistoryVisibility(HistoryVisibility.shared);
+      await _ensureRoomEncrypted(room);
+    }
+
+    await room.setGuestAccess(GuestAccess.forbidden);
+    await _setRoomJoinRule(room, public);
+    await client.setRoomVisibilityOnDirectory(
+      room.id,
+      visibility: public ? Visibility.public : Visibility.private,
+    );
+    if (!public) await _releaseRoomAlias(room);
+
+    await _verifyRoomVisibility(room, public);
     _roomPublicOverrides[room.id] = public;
   }
 
@@ -104,12 +200,22 @@ extension MatrixRoomAdminApi on MatrixService {
     Room room,
     HistoryVisibility visibility,
   ) async {
+    if (visibility == HistoryVisibility.worldReadable && room.isSpace) {
+      throw StateError(
+        'World-readable history is not allowed for spaces with child rooms',
+      );
+    }
+    if (visibility == HistoryVisibility.worldReadable &&
+        (!isPublicRoom(room) || await _roomHasEncryptionState(room))) {
+      throw StateError(
+        'World-readable history is allowed only for public unencrypted rooms',
+      );
+    }
+
     await room.setHistoryVisibility(visibility);
     if (room.isSpace) {
       for (final child in supergroupChildren(room)) {
-        try {
-          await child.setHistoryVisibility(visibility);
-        } catch (_) {}
+        await child.setHistoryVisibility(visibility);
       }
     }
     _emitChange();

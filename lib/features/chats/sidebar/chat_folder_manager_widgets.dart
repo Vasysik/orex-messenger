@@ -97,7 +97,7 @@ class _FolderManagerState extends State<_FolderManager> {
           roomIds: roomIds,
         );
       },
-    ).whenComplete(controller.dispose);
+    ).whenComplete(() => disposeOrexDialogControllers([controller]));
     return result;
   }
 

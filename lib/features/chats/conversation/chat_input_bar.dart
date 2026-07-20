@@ -34,6 +34,14 @@ class _InputBar extends StatelessWidget {
   final VoidCallback onToggleEmojiPicker;
   final VoidCallback onTapInput;
 
+  void _runWithHaptic(
+    VoidCallback action, {
+    OrexHapticKind kind = OrexHapticKind.action,
+  }) {
+    unawaited(OrexHaptics.trigger(kind));
+    action();
+  }
+
   // ИСПРАВЛЕНИЕ: Сделали массив смайликов публичным для доступа препроцессора
   static const emojis = [
     '😀',
@@ -190,7 +198,7 @@ class _InputBar extends StatelessWidget {
           child: Row(
             children: [
               IconButton(
-                onPressed: canSend ? onAttach : null,
+                onPressed: canSend ? () => _runWithHaptic(onAttach) : null,
                 icon: const Icon(Icons.attach_file),
                 color: OrexColors.copper,
               ),
@@ -228,7 +236,12 @@ class _InputBar extends StatelessWidget {
                         ),
                       ),
                       GestureDetector(
-                        onTap: canSend ? onToggleEmojiPicker : null,
+                        onTap: canSend
+                            ? () => _runWithHaptic(
+                                  onToggleEmojiPicker,
+                                  kind: OrexHapticKind.selection,
+                                )
+                            : null,
                         child: Icon(
                           showEmojiPicker
                               ? Icons.keyboard_hide_outlined
@@ -243,7 +256,12 @@ class _InputBar extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               GestureDetector(
-                onTap: canSend ? onSend : null,
+                onTap: canSend
+                    ? () => _runWithHaptic(
+                          onSend,
+                          kind: OrexHapticKind.confirm,
+                        )
+                    : null,
                 child: Container(
                   width: 46,
                   height: 46,

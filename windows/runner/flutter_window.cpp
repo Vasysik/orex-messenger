@@ -1,6 +1,7 @@
 #include "flutter_window.h"
 
 #include <windows.h>
+#include <shellapi.h>
 #include <mmdeviceapi.h>
 #include <propvarutil.h>
 #include <propsys.h>
@@ -8,10 +9,12 @@
 
 #include <optional>
 #include <string>
+#include <variant>
 
 #include <flutter/standard_method_codec.h>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "resource.h"
 
 namespace {
 
@@ -22,14 +25,35 @@ constexpr PROPERTYKEY kPkeyDeviceFriendlyName = {
     14,
 };
 
+constexpr UINT kNotificationCallbackMessage = WM_APP + 42;
+constexpr UINT kNotificationIconId = 1;
+
+std::wstring Utf8ToWide(const std::string& value) {
+  if (value.empty()) return std::wstring();
+  const int size = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
+  if (size <= 1) return std::wstring();
+  std::wstring result(size, L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, result.data(), size);
+  result.pop_back();
+  return result;
+}
+
+std::string MapString(const flutter::EncodableMap& map, const char* key) {
+  const auto it = map.find(flutter::EncodableValue(key));
+  if (it == map.end()) return std::string();
+  const auto* value = std::get_if<std::string>(&it->second);
+  return value == nullptr ? std::string() : *value;
+}
+
 std::string WideToUtf8(const std::wstring& value) {
   if (value.empty()) return std::string();
   const int size = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr,
                                        0, nullptr, nullptr);
   if (size <= 1) return std::string();
-  std::string result(size - 1, '\0');
+  std::string result(size, '\0');
   WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, result.data(), size,
                       nullptr, nullptr);
+  result.pop_back();
   return result;
 }
 
@@ -124,7 +148,8 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
 
-  audio_devices_channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+  audio_devices_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
       flutter_controller_->engine()->messenger(), "orex/audio_devices",
       &flutter::StandardMethodCodec::GetInstance());
   audio_devices_channel_->SetMethodCallHandler(
@@ -138,6 +163,42 @@ bool FlutterWindow::OnCreate() {
           // Windows output switching is applied by LiveKit/flutter_webrtc with
           // the WASAPI endpoint id returned by listAudioDevices().
           result->Success(flutter::EncodableValue());
+          return;
+        }
+        result->NotImplemented();
+      });
+
+  push_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+      flutter_controller_->engine()->messenger(), "orex/push",
+      &flutter::StandardMethodCodec::GetInstance());
+  push_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) {
+        const auto* arguments =
+            call.arguments() == nullptr
+                ? nullptr
+                : std::get_if<flutter::EncodableMap>(call.arguments());
+        if (call.method_name() == "showLocalMatrixNotification") {
+          if (arguments == nullptr) {
+            result->Success(flutter::EncodableValue(false));
+            return;
+          }
+          ShowWindowsNotification(*arguments);
+          result->Success(flutter::EncodableValue(true));
+          return;
+        }
+        if (call.method_name() == "dismissRoomNotifications") {
+          if (arguments != nullptr) {
+            DismissWindowsNotification(MapString(*arguments, "roomId"));
+          }
+          result->Success(flutter::EncodableValue(true));
+          return;
+        }
+        if (call.method_name() == "activateIncomingCallWindow") {
+          ActivateWindow();
+          result->Success(flutter::EncodableValue(true));
           return;
         }
         result->NotImplemented();
@@ -158,12 +219,79 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  DismissWindowsNotification(notification_room_id_);
+  push_channel_ = nullptr;
   audio_devices_channel_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
 
   Win32Window::OnDestroy();
+}
+
+void FlutterWindow::ShowWindowsNotification(
+    const flutter::EncodableMap& payload) {
+  const std::string title = MapString(payload, "title");
+  const std::string body = MapString(payload, "body");
+  const std::string room_id = MapString(payload, "room_id");
+  if (title.empty() || body.empty() || room_id.empty() ||
+      GetHandle() == nullptr) {
+    return;
+  }
+  if (!notification_icon_added_) {
+    notification_icon_ = {};
+    notification_icon_.cbSize = sizeof(NOTIFYICONDATAW);
+    notification_icon_.hWnd = GetHandle();
+    notification_icon_.uID = kNotificationIconId;
+    notification_icon_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    notification_icon_.uCallbackMessage = kNotificationCallbackMessage;
+    notification_icon_.hIcon = static_cast<HICON>(LoadImageW(
+        GetModuleHandle(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR));
+    wcscpy_s(notification_icon_.szTip, L"Orex Messenger");
+    notification_icon_added_ =
+        Shell_NotifyIconW(NIM_ADD, &notification_icon_) == TRUE;
+  }
+  if (!notification_icon_added_) return;
+
+  const std::wstring wide_title = Utf8ToWide(title);
+  const std::wstring wide_body = Utf8ToWide(body);
+  wcsncpy_s(notification_icon_.szInfoTitle, wide_title.c_str(), _TRUNCATE);
+  wcsncpy_s(notification_icon_.szInfo, wide_body.c_str(), _TRUNCATE);
+  notification_icon_.dwInfoFlags = NIIF_INFO | NIIF_RESPECT_QUIET_TIME;
+  notification_icon_.uFlags = NIF_INFO;
+  Shell_NotifyIconW(NIM_MODIFY, &notification_icon_);
+
+  notification_payload_ = payload;
+  notification_room_id_ = room_id;
+}
+
+void FlutterWindow::DismissWindowsNotification(const std::string& room_id) {
+  if (!room_id.empty() && room_id != notification_room_id_) return;
+  if (notification_icon_added_) {
+    Shell_NotifyIconW(NIM_DELETE, &notification_icon_);
+    notification_icon_added_ = false;
+  }
+  notification_payload_.clear();
+  notification_room_id_.clear();
+}
+
+void FlutterWindow::ActivateWindow() {
+  if (GetHandle() != nullptr) {
+    ShowWindow(GetHandle(), SW_RESTORE);
+    SetForegroundWindow(GetHandle());
+  }
+}
+
+void FlutterWindow::ActivateNotification() {
+  ActivateWindow();
+  if (push_channel_ && !notification_payload_.empty()) {
+    push_channel_->InvokeMethod(
+        "onNotificationOpened",
+        std::make_unique<flutter::EncodableValue>(notification_payload_));
+  }
+  DismissWindowsNotification(notification_room_id_);
 }
 
 LRESULT
@@ -181,6 +309,13 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   }
 
   switch (message) {
+    case kNotificationCallbackMessage:
+      if (lparam == NIN_BALLOONUSERCLICK || lparam == WM_LBUTTONUP) {
+        ActivateNotification();
+      } else if (lparam == NIN_BALLOONHIDE || lparam == NIN_BALLOONTIMEOUT) {
+        DismissWindowsNotification(notification_room_id_);
+      }
+      return 0;
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
       break;

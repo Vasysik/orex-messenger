@@ -32,6 +32,8 @@ void main() {
       );
       expect(config.homeserverHost, 'vasys.ru');
       expect(config.allowInsecureDesktopCache, isFalse);
+      expect(config.allowUnencryptedCalls, isFalse);
+      expect(config.debugLogs, isFalse);
     });
 
     test('allows explicit production endpoint overrides', () {
@@ -173,6 +175,14 @@ void main() {
           throwsA(isA<StateError>()),
         );
       }
+    });
+
+    test('allows unencrypted calls only through an explicit escape hatch', () {
+      final config = OrexRuntimeConfig.fromDefines(
+        allowUnencryptedCalls: true,
+      );
+
+      expect(config.allowUnencryptedCalls, isTrue);
     });
 
     test('accepts explicit insecure desktop cache escape hatch', () {

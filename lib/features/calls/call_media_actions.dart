@@ -2,7 +2,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../core/audio/audio_device_utils.dart';
-import '../../core/matrix/matrix_service.dart';
 import '../../core/voip/call_session.dart';
 import '../../core/voip/screen_share_controller.dart';
 import 'call_controls.dart';
@@ -11,7 +10,6 @@ import 'screen_source_picker.dart';
 Future<void> orexShowCallReaction({
   required BuildContext context,
   required GlobalKey anchorKey,
-  required MatrixService matrix,
   required CallSession session,
   double emojiSize = 30,
 }) async {
@@ -21,7 +19,6 @@ Future<void> orexShowCallReaction({
     emojiSize: emojiSize,
   );
   if (emoji == null) return;
-  await matrix.audio.playReaction();
   await session.sendVoiceReaction(emoji);
 }
 
@@ -56,7 +53,7 @@ Future<void> orexToggleScreenShare({
 }
 
 Future<void> orexCycleCamera(CallSession session) async {
-  final cameras = await enumerateOrexCameraDevices(requestPermission: true);
+  final cameras = await enumerateOrexCameraDevices();
   if (cameras.isEmpty) return;
   await session.cycleCameraDevice(cameras);
 }

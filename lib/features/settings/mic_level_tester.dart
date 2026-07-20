@@ -11,6 +11,46 @@ import '../../core/matrix/matrix_service.dart';
 import '../../core/voip/voice_gate_controller.dart';
 import '../../shared/theme/orex_theme.dart';
 
+typedef OrexMicLevelRecorderFactory = OrexMicLevelRecorder Function();
+
+abstract interface class OrexMicLevelRecorder {
+  Future<bool> hasPermission();
+  Future<rec.InputDevice?> resolveInputDevice(String? inputDeviceId);
+  Future<Stream<Uint8List>> startStream(rec.RecordConfig config);
+  Stream<rec.Amplitude> onAmplitudeChanged(Duration interval);
+  Future<void> stop();
+  Future<void> dispose();
+}
+
+class _RecordMicLevelRecorder implements OrexMicLevelRecorder {
+  _RecordMicLevelRecorder() : _recorder = rec.AudioRecorder();
+
+  final rec.AudioRecorder _recorder;
+
+  @override
+  Future<bool> hasPermission() => _recorder.hasPermission();
+
+  @override
+  Future<rec.InputDevice?> resolveInputDevice(String? inputDeviceId) =>
+      OrexVoiceGateController.recordDeviceFor(_recorder, inputDeviceId);
+
+  @override
+  Future<Stream<Uint8List>> startStream(rec.RecordConfig config) =>
+      _recorder.startStream(config);
+
+  @override
+  Stream<rec.Amplitude> onAmplitudeChanged(Duration interval) =>
+      _recorder.onAmplitudeChanged(interval);
+
+  @override
+  Future<void> stop() async {
+    await _recorder.stop();
+  }
+
+  @override
+  Future<void> dispose() => _recorder.dispose();
+}
+
 class OrexMicLevelTester extends StatefulWidget {
   const OrexMicLevelTester({
     super.key,
@@ -21,6 +61,7 @@ class OrexMicLevelTester extends StatefulWidget {
     required this.onThresholdChanged,
     required this.onThresholdEnabledChanged,
     this.compact = false,
+    this.recorderFactory = _RecordMicLevelRecorder.new,
   });
 
   final MatrixService matrix;
@@ -30,39 +71,45 @@ class OrexMicLevelTester extends StatefulWidget {
   final ValueChanged<double> onThresholdChanged;
   final ValueChanged<bool> onThresholdEnabledChanged;
   final bool compact;
+  final OrexMicLevelRecorderFactory recorderFactory;
 
   @override
   State<OrexMicLevelTester> createState() => _OrexMicLevelTesterState();
 }
 
 class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
-  rec.AudioRecorder? _recorder;
+  OrexMicLevelRecorder? _recorder;
   StreamSubscription<rec.Amplitude>? _ampSub;
   StreamSubscription<Uint8List>? _pcmSub;
   bool _testing = false;
   bool _starting = false;
+  int _lifecycleGeneration = 0;
+  Future<void>? _pendingStart;
   String? _error;
   double _levelDb = AudioCueService.minSpeakingThresholdDb;
   double _peakDb = AudioCueService.minSpeakingThresholdDb;
 
   @override
   void dispose() {
-    unawaited(_stop());
+    _lifecycleGeneration++;
+    unawaited(_stop(invalidateStart: false));
     super.dispose();
   }
 
   @override
   void didUpdateWidget(covariant OrexMicLevelTester oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.inputDeviceId != widget.inputDeviceId && _testing) {
+    if (oldWidget.inputDeviceId != widget.inputDeviceId &&
+        (_testing || _starting)) {
       unawaited(_restart());
     }
   }
 
   Future<void> _restart() async {
-    await _stop();
-    if (!mounted) return;
-    await _start();
+    final generation = ++_lifecycleGeneration;
+    await _stop(invalidateStart: false);
+    if (!_isCurrent(generation)) return;
+    await _start(expectedGeneration: generation);
   }
 
   Future<void> _toggle() async {
@@ -73,8 +120,10 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
     }
   }
 
-  Future<void> _start() async {
+  Future<void> _start({int? expectedGeneration}) async {
     if (_testing || _starting) return;
+    final generation = expectedGeneration ?? _lifecycleGeneration;
+    if (!_isCurrent(generation)) return;
     setState(() {
       _starting = true;
       _error = null;
@@ -82,16 +131,26 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
       _peakDb = AudioCueService.minSpeakingThresholdDb;
     });
 
-    rec.AudioRecorder? recorder;
+    final completion = Completer<void>();
+    final pendingStart = completion.future;
+    _pendingStart = pendingStart;
+    OrexMicLevelRecorder? recorder;
+    StreamSubscription<rec.Amplitude>? ampSub;
+    StreamSubscription<Uint8List>? pcmSub;
     try {
-      recorder = rec.AudioRecorder();
+      recorder = widget.recorderFactory();
       final allowed = await recorder.hasPermission();
       if (!allowed) throw StateError('Нет разрешения на микрофон');
 
-      final device = await OrexVoiceGateController.recordDeviceFor(
-        recorder,
-        widget.inputDeviceId,
-      );
+      if (!_isCurrent(generation)) {
+        await _release(recorder: recorder);
+        return;
+      }
+      final device = await recorder.resolveInputDevice(widget.inputDeviceId);
+      if (!_isCurrent(generation)) {
+        await _release(recorder: recorder);
+        return;
+      }
       final stream = await recorder.startStream(
         rec.RecordConfig(
           encoder: rec.AudioEncoder.pcm16bits,
@@ -105,33 +164,42 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
         ),
       );
 
-      _pcmSub = stream.listen(
+      if (!_isCurrent(generation)) {
+        await _release(recorder: recorder);
+        return;
+      }
+      pcmSub = stream.listen(
         (data) {
+          if (!_isCurrent(generation)) return;
           _updateLevel(OrexPcmAudioLevel.dbFromPcm16(data));
         },
         onError: (Object e) {
-          if (!mounted) return;
-          setState(() => _error = '$e');
+          OrexLog.d('Audio', 'microphone PCM stream failed', e);
+          if (!_isCurrent(generation)) return;
+          setState(() => _error = 'Ошибка чтения микрофона');
         },
       );
-      _ampSub = recorder
+      ampSub = recorder
           .onAmplitudeChanged(const Duration(milliseconds: 60))
           .listen(
             (amp) {
+              if (!_isCurrent(generation)) return;
               _updateLevel(_normalizeDb(amp.current));
             },
             onError: (Object e) {
-              if (!mounted) return;
-              setState(() => _error = '$e');
+              OrexLog.d('Audio', 'microphone amplitude stream failed', e);
+              if (!_isCurrent(generation)) return;
+              setState(() => _error = 'Ошибка чтения микрофона');
             },
           );
 
-      if (!mounted) {
-        await recorder.stop();
-        await recorder.dispose();
+      if (!_isCurrent(generation)) {
+        await _release(recorder: recorder, ampSub: ampSub, pcmSub: pcmSub);
         return;
       }
       _recorder = recorder;
+      _ampSub = ampSub;
+      _pcmSub = pcmSub;
       setState(() {
         _testing = true;
         _starting = false;
@@ -142,36 +210,62 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
       );
     } catch (e, st) {
       OrexLog.d('AudioDevices', 'mic level test failed stack=$st', e);
-      try {
-        await recorder?.dispose();
-      } catch (_) {}
-      if (!mounted) return;
+      await _release(recorder: recorder, ampSub: ampSub, pcmSub: pcmSub);
+      if (!_isCurrent(generation)) return;
+      OrexLog.d('Audio', 'microphone level test failed', e);
       setState(() {
         _starting = false;
         _testing = false;
-        _error = '$e';
+        _error = 'Не удалось запустить проверку микрофона';
       });
+    } finally {
+      if (identical(_pendingStart, pendingStart)) {
+        _pendingStart = null;
+      }
+      completion.complete();
     }
   }
 
-  Future<void> _stop() async {
+  Future<void> _stop({bool invalidateStart = true}) async {
+    final generation = invalidateStart
+        ? ++_lifecycleGeneration
+        : _lifecycleGeneration;
     final recorder = _recorder;
+    final pendingStart = _pendingStart;
     _recorder = null;
-    await _ampSub?.cancel();
-    await _pcmSub?.cancel();
+    final ampSub = _ampSub;
+    final pcmSub = _pcmSub;
     _ampSub = null;
     _pcmSub = null;
+    await _release(recorder: recorder, ampSub: ampSub, pcmSub: pcmSub);
+    await pendingStart;
+    if (!_isCurrent(generation)) return;
+    setState(() {
+      _testing = false;
+      _starting = false;
+    });
+  }
+
+  bool _isCurrent(int generation) =>
+      mounted && generation == _lifecycleGeneration;
+
+  Future<void> _release({
+    OrexMicLevelRecorder? recorder,
+    StreamSubscription<rec.Amplitude>? ampSub,
+    StreamSubscription<Uint8List>? pcmSub,
+  }) async {
+    try {
+      await ampSub?.cancel();
+    } catch (_) {}
+    try {
+      await pcmSub?.cancel();
+    } catch (_) {}
     try {
       await recorder?.stop();
     } catch (_) {}
     try {
       await recorder?.dispose();
     } catch (_) {}
-    if (!mounted) return;
-    setState(() {
-      _testing = false;
-      _starting = false;
-    });
   }
 
   void _updateLevel(double db) {
@@ -240,7 +334,7 @@ class _OrexMicLevelTesterState extends State<OrexMicLevelTester> {
                 ),
               );
               final testButton = FilledButton.icon(
-                onPressed: _starting ? null : _toggle,
+                onPressed: _toggle,
                 icon: _starting
                     ? const SizedBox(
                         width: 16,

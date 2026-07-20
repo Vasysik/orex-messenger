@@ -6,21 +6,39 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
+import android.view.ViewGroup
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    override fun provideFlutterEngine(context: Context): FlutterEngine =
+        OrexFlutterEngineOwner.getOrCreate(context)
+
+    override fun shouldDestroyEngineWithHost(): Boolean = false
+
+    private var callHandoffOverlay: OrexCallHandoffOverlay? = null
+    private var callHandoffCallId: String? = null
+    private var callHandoffRingEventId: String? = null
+    private val callHandoffHandler = Handler(Looper.getMainLooper())
+    private var callHandoffRevealTimeout: Runnable? = null
+    private var callHandoffTimeout: Runnable? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installScoBroadcastCrashGuard()
         super.onCreate(savedInstanceState)
+        installCallHandoffOverlay(intent)
         OrexPushBridge.captureLaunchIntent(this, intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        installCallHandoffOverlay(intent)
         OrexPushBridge.captureLaunchIntent(this, intent)
     }
 
@@ -46,12 +64,192 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        clearCallHandoffOverlay()
+        setProximityEnabled(false)
         OrexPushBridge.detach(this)
         super.onDestroy()
     }
 
+    @Deprecated("Back is blocked while the accepted call handoff owns the UI")
+    override fun onBackPressed() {
+        if (callHandoffOverlay != null) return
+        super.onBackPressed()
+    }
+
+    private fun installCallHandoffOverlay(source: Intent) {
+        if (!source.getBooleanExtra(EXTRA_CALL_HANDOFF, false)) return
+        val callId = source.getStringExtra(EXTRA_CALL_ID)?.trim().orEmpty()
+        if (callId.isEmpty()) return
+        val ringEventId = normalizeRingEventId(source.getStringExtra(EXTRA_RING_EVENT_ID))
+        val displayName = source.getStringExtra(EXTRA_DISPLAY_NAME)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: "Orex"
+        val avatarCacheKey = source.getStringExtra(EXTRA_AVATAR_CACHE_KEY)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+
+        if (callHandoffOverlay != null) {
+            val ownedCallId = callHandoffCallId.orEmpty()
+            val sameAttempt = sameCallAttempt(
+                ownedCallId,
+                callHandoffRingEventId,
+                callId,
+                ringEventId,
+            )
+            val canPromoteAttempt = ownedCallId == callId &&
+                canPromoteRingAttempt(callHandoffRingEventId, ringEventId)
+            if (sameAttempt || canPromoteAttempt) {
+                // Keep the original placeholder identity. It remains safely
+                // promotable to the exact ring event, while the already scheduled
+                // timeout keeps its original deadline and cannot be invalidated or
+                // extended by duplicate FCM/activity intents.
+                return
+            }
+        }
+
+        clearCallHandoffOverlay()
+        val overlay = OrexCallHandoffOverlay(this, displayName, avatarCacheKey)
+        callHandoffOverlay = overlay
+        callHandoffCallId = callId
+        callHandoffRingEventId = ringEventId
+        addContentView(
+            overlay,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        overlay.bringToFront()
+        scheduleCallHandoffTimeout()
+        Log.i("OrexCallHandoff", "Native connecting cover ready call=$callId ring=$ringEventId")
+        window.decorView.post {
+            if (callHandoffOverlay === overlay && !isFinishing) {
+                OrexIncomingCallActivity.onFlutterBootstrapCovered(callId, ringEventId)
+            }
+        }
+    }
+
+    fun completeCallHandoff(callId: String, ringEventId: String?): Boolean {
+        val ownedCallId = callHandoffCallId ?: return false
+        val sameAttempt = sameCallAttempt(
+            ownedCallId,
+            callHandoffRingEventId,
+            callId,
+            ringEventId,
+        )
+        val canPromoteAttempt = ownedCallId == callId &&
+            canPromoteRingAttempt(callHandoffRingEventId, ringEventId)
+        if (!sameAttempt && !canPromoteAttempt) return false
+        Log.i("OrexCallHandoff", "Expanded Flutter call UI ready call=$callId ring=$ringEventId")
+        clearCallHandoffOverlay()
+        intent.removeExtra(EXTRA_CALL_HANDOFF)
+        return true
+    }
+
+    fun cancelCallHandoff(callId: String, ringEventId: String?): Boolean {
+        val ownedCallId = callHandoffCallId ?: return false
+        val sameAttempt = sameCallAttempt(
+            ownedCallId,
+            callHandoffRingEventId,
+            callId,
+            ringEventId,
+        )
+        val canPromoteAttempt = ownedCallId == callId &&
+            canPromoteRingAttempt(callHandoffRingEventId, ringEventId)
+        if (!sameAttempt && !canPromoteAttempt) return false
+        Log.i(
+            "OrexCallHandoff",
+            "Flutter ended call before expanded UI became ready call=$callId ring=$ringEventId",
+        )
+        clearCallHandoffOverlay()
+        intent.removeExtra(EXTRA_CALL_HANDOFF)
+        return true
+    }
+
+    private fun clearCallHandoffOverlay() {
+        callHandoffRevealTimeout?.let(callHandoffHandler::removeCallbacks)
+        callHandoffRevealTimeout = null
+        callHandoffTimeout?.let(callHandoffHandler::removeCallbacks)
+        callHandoffTimeout = null
+        val overlay = callHandoffOverlay
+        callHandoffOverlay = null
+        callHandoffCallId = null
+        callHandoffRingEventId = null
+        if (overlay != null) {
+            (overlay.parent as? ViewGroup)?.removeView(overlay)
+        }
+    }
+
+    private fun scheduleCallHandoffTimeout() {
+        callHandoffRevealTimeout?.let(callHandoffHandler::removeCallbacks)
+        callHandoffTimeout?.let(callHandoffHandler::removeCallbacks)
+        val callId = callHandoffCallId ?: return
+        val ringEventId = callHandoffRingEventId
+
+        // Once Dart has promoted the descriptor to answered=true, the call is
+        // already owned by the process runtime. Do not let a missing UI callback
+        // keep a native cover above Flutter forever.
+        callHandoffRevealTimeout = Runnable {
+            if (!ownsCallHandoff(callId, ringEventId)) return@Runnable
+            if (!OrexCallForegroundService.isAnsweredCall(
+                    applicationContext,
+                    callId,
+                    ringEventId,
+                )
+            ) return@Runnable
+            Log.w(
+                "OrexCallHandoff",
+                "Revealing answered call after UI handshake grace period " +
+                    "call=$callId ring=$ringEventId",
+            )
+            clearCallHandoffOverlay()
+            intent.removeExtra(EXTRA_CALL_HANDOFF)
+        }.also { callHandoffHandler.postDelayed(it, CALL_HANDOFF_REVEAL_TIMEOUT_MS) }
+
+        callHandoffTimeout = Runnable {
+            if (!ownsCallHandoff(callId, ringEventId)) return@Runnable
+            val answered = OrexCallForegroundService.isAnsweredCall(
+                applicationContext,
+                callId,
+                ringEventId,
+            )
+            if (!answered) {
+                OrexPushBridge.cancelPendingCallAction(
+                    applicationContext,
+                    callId,
+                    ringEventId,
+                )
+                OrexCallForegroundService.stop(applicationContext, callId, ringEventId)
+                Log.e("OrexCallHandoff", "Answer bootstrap timed out call=$callId ring=$ringEventId")
+            } else {
+                Log.w(
+                    "OrexCallHandoff",
+                    "Flutter route handshake timed out; revealing active app " +
+                        "call=$callId ring=$ringEventId",
+                )
+            }
+            clearCallHandoffOverlay()
+            intent.removeExtra(EXTRA_CALL_HANDOFF)
+        }.also {
+            callHandoffHandler.postDelayed(
+                it,
+                OrexCallForegroundService.ANSWERING_TIMEOUT_MS,
+            )
+        }
+    }
+
+    private fun ownsCallHandoff(callId: String, ringEventId: String?): Boolean =
+        sameOrPromotableCallAttempt(
+            callHandoffCallId,
+            callHandoffRingEventId,
+            callId,
+            ringEventId,
+        )
+
     private val channelName = "orex/audio_devices"
     private val androidOutputPrefix = "orex://android/audio-output/"
+    private var proximityWakeLock: PowerManager.WakeLock? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -69,10 +267,14 @@ class MainActivity : FlutterActivity() {
                         val inCall = call.argument<Boolean>("inCall") == true
                         if (OrexAndroidTelecomManager.ownsCallRouting()) {
                             if (!inCall) {
-                                // Telecom завершит communication routing вместе с системной
-                                // сессией. Не сбрасываем AudioManager, пока call ещё зарегистрирован.
+                                // Telecom завершит physical endpoint вместе с системной
+                                // сессией. Здесь меняем только stream аппаратных клавиш:
+                                // прямой AudioManager route всё ещё нельзя трогать до cleanup call.
+                                volumeControlStream = AudioManager.STREAM_MUSIC
                                 result.success(true)
                             } else {
+                                // Core-Telecom owns the endpoint, while call media
+                                // itself must stay on the voice-call stream for volume keys.
                                 volumeControlStream = AudioManager.STREAM_VOICE_CALL
                                 val route = parseRouteId(id)
                                 val preferredEndpointName = route?.let { wanted ->
@@ -81,6 +283,7 @@ class MainActivity : FlutterActivity() {
                                         includeCallRoutes = true,
                                     ).firstOrNull { it.matches(wanted) }
                                         ?.device
+                                        ?.takeIf { it.requiresEndpointNameMatch() }
                                         ?.cleanProductName()
                                         ?.takeIf { it.isNotBlank() }
                                 }
@@ -92,6 +295,10 @@ class MainActivity : FlutterActivity() {
                         } else {
                             result.success(selectAudioOutput(id, inCall))
                         }
+                    }
+                    "setProximityEnabled" -> {
+                        val enabled = call.argument<Boolean>("enabled") == true
+                        result.success(setProximityEnabled(enabled))
                     }
                     else -> result.notImplemented()
                 }
@@ -119,6 +326,39 @@ class MainActivity : FlutterActivity() {
 
     private fun audioManager(): AudioManager =
         getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+    @Suppress("DEPRECATION")
+    private fun setProximityEnabled(enabled: Boolean): Boolean {
+        if (!enabled) {
+            val wakeLock = proximityWakeLock
+            proximityWakeLock = null
+            if (wakeLock?.isHeld == true) {
+                try {
+                    wakeLock.release()
+                } catch (e: Throwable) {
+                    Log.w("OrexAudioDevices", "proximity wake lock release failed", e)
+                    return false
+                }
+            }
+            return true
+        }
+
+        return try {
+            val manager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!manager.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
+                return false
+            }
+            val wakeLock = proximityWakeLock ?: manager.newWakeLock(
+                PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
+                "$packageName:orex-call-proximity",
+            ).also { proximityWakeLock = it }
+            if (!wakeLock.isHeld) wakeLock.acquire()
+            true
+        } catch (e: Throwable) {
+            Log.w("OrexAudioDevices", "proximity wake lock update failed", e)
+            false
+        }
+    }
 
     private fun listAudioDevices(includeCallRoutes: Boolean): List<Map<String, String>> {
         val items = linkedMapOf<String, RouteCandidate>()
@@ -220,9 +460,9 @@ class MainActivity : FlutterActivity() {
     @Suppress("DEPRECATION")
     private fun forceSpeakerphone(manager: AudioManager): Boolean {
         return try {
-            manager.mode = AudioManager.MODE_NORMAL
+            manager.mode = AudioManager.MODE_IN_COMMUNICATION
             manager.isSpeakerphoneOn = true
-            volumeControlStream = AudioManager.STREAM_MUSIC
+            volumeControlStream = AudioManager.STREAM_VOICE_CALL
             true
         } catch (e: Throwable) {
             Log.w("OrexAudioDevices", "force speakerphone failed", e)
@@ -234,18 +474,15 @@ class MainActivity : FlutterActivity() {
     private fun applyCommunicationRoute(manager: AudioManager, target: RouteCandidate): Boolean {
         return try {
             val isSpeaker = target.device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-            if (isSpeaker) {
-                return forceSpeakerphone(manager)
-            }
             manager.mode = AudioManager.MODE_IN_COMMUNICATION
-            manager.isSpeakerphoneOn = false
+            manager.isSpeakerphoneOn = isSpeaker
             val applied = if (target.communication || target.device.isBuiltInOutput()) {
                 manager.setCommunicationDevice(target.device)
             } else {
                 false
             }
             volumeControlStream = AudioManager.STREAM_VOICE_CALL
-            applied
+            applied || (isSpeaker && manager.isSpeakerphoneOn)
         } catch (e: Throwable) {
             Log.w("OrexAudioDevices", "set route failed ${target.routeId()}", e)
             false
@@ -266,11 +503,7 @@ class MainActivity : FlutterActivity() {
                 false
             } else {
                 manager.isSpeakerphoneOn = isSpeaker
-                volumeControlStream = if (isSpeaker) {
-                    AudioManager.STREAM_MUSIC
-                } else {
-                    AudioManager.STREAM_VOICE_CALL
-                }
+                volumeControlStream = AudioManager.STREAM_VOICE_CALL
                 true
             }
         } catch (e: Throwable) {
@@ -383,6 +616,9 @@ class MainActivity : FlutterActivity() {
         else -> isBleOutput() || isHearingAidOutput()
     }
 
+    private fun AudioDeviceInfo.requiresEndpointNameMatch(): Boolean =
+        isBluetoothOutput() || isWiredOutput() || isUsbOutput()
+
     private fun AudioDeviceInfo.isBuiltInOutput(): Boolean =
         type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ||
             type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
@@ -453,5 +689,12 @@ class MainActivity : FlutterActivity() {
         val id: Int?,
     )
 
-
+    companion object {
+        private const val CALL_HANDOFF_REVEAL_TIMEOUT_MS = 8_000L
+        const val EXTRA_CALL_HANDOFF = "orex_call_handoff"
+        const val EXTRA_CALL_ID = "orex_call_id"
+        const val EXTRA_RING_EVENT_ID = "orex_ring_event_id"
+        const val EXTRA_DISPLAY_NAME = "orex_display_name"
+        const val EXTRA_AVATAR_CACHE_KEY = "orex_avatar_cache_key"
+    }
 }

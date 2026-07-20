@@ -40,6 +40,8 @@ object OrexPushBridge {
     private const val DELIVERY_ID_KEY = "orex_delivery_id"
     private const val PERMISSION_REQUEST_CODE = 46041
     private const val ACTION_CALL_NOTIFICATION = "ru.orex.messenger.action.PUSH_CALL"
+    const val ACTION_RESTORE_ONGOING_CALL_NOTIFICATION =
+        "ru.orex.messenger.action.RESTORE_ONGOING_CALL_NOTIFICATION"
     private const val UI_RESOLVE_TIMEOUT_MS = 40_000L
 
     private const val MAX_PAYLOAD_ENTRIES = 48
@@ -99,25 +101,49 @@ object OrexPushBridge {
     private var pendingPermissionResult: MethodChannel.Result? = null
     private var firebaseConfigurationWarningLogged = false
 
+    private data class DeferredCallHandoffOpen(
+        val callId: String,
+        val ringEventId: String?,
+        val payload: Map<String, String>,
+        var dispatched: Boolean = false,
+    )
+
+    private val callHandoffLock = Any()
+    private var deferredCallHandoffOpen: DeferredCallHandoffOpen? = null
+
     @Volatile
     private var activityResumed = false
 
-    fun attach(activity: Activity, messenger: BinaryMessenger) {
-        this.activity = activity
-        applicationContext = activity.applicationContext
+    @Volatile
+    private var dartBridgeReady = false
+
+    fun attachEngine(context: Context, messenger: BinaryMessenger) {
+        applicationContext = context.applicationContext
+        dartBridgeReady = false
         channel?.setMethodCallHandler(null)
         channel = MethodChannel(messenger, CHANNEL_NAME).also { methodChannel ->
             methodChannel.setMethodCallHandler(::handleMethodCall)
         }
     }
 
+    fun attach(activity: Activity, messenger: BinaryMessenger) {
+        this.activity = activity
+        applicationContext = activity.applicationContext
+        if (channel == null) attachEngine(activity.applicationContext, messenger)
+    }
+
+    /**
+     * Detaches only the Activity projection.
+     *
+     * The MethodChannel belongs to [OrexFlutterEngineOwner], not to an Activity.
+     * Clearing it here leaves a still-running Dart isolate unable to receive a
+     * cold/background Answer command until another Activity happens to attach.
+     */
     fun detach(activity: Activity) {
         if (this.activity !== activity) return
         this.activity = null
         activityResumed = false
         pendingPermissionResult = null
-        channel?.setMethodCallHandler(null)
-        channel = null
     }
 
     fun onActivityResumed(activity: Activity) {
@@ -134,7 +160,11 @@ object OrexPushBridge {
         consumeLaunchIntent(intent)
         if (payload.isEmpty()) return
         OrexNotificationCenter.onNotificationOpened(context.applicationContext, payload)
-        deliverNotificationOpen(context.applicationContext, payload)
+        if (payload["orex_action"] == "answer") {
+            deferNotificationOpenForCallHandoff(context.applicationContext, payload)
+        } else {
+            deliverNotificationOpen(context.applicationContext, payload)
+        }
     }
 
     fun onTokenRefresh(context: Context, rawToken: String) {
@@ -167,12 +197,10 @@ object OrexPushBridge {
         val incomingCall = OrexNotificationCenter.isIncomingCallPayload(normalized)
         if (incomingCall || OrexNotificationCenter.isRtcNotificationPayload(normalized)) {
             OrexNotificationCenter.showPush(appContext, normalized, activityResumed)
-            if (incomingCall &&
-                !activityResumed &&
-                OrexNotificationCenter.needsCallAvatarResolution(appContext, normalized)
-            ) {
-                OrexPushResolveWorker.enqueue(appContext, normalized)
-            }
+            // A call envelope is complete enough for native presentation. Never
+            // start the headless Matrix Flutter engine merely to resolve an avatar:
+            // it can overlap the process-owned call engine during cold Answer and
+            // contend for the same encrypted Matrix database/plugins.
             return
         }
 
@@ -201,14 +229,14 @@ object OrexPushBridge {
         }
         val uiChannel = channel
         if (uiChannel == null) {
-            OrexPushBackgroundResolver.resolve(context, normalized, callback)
+            resolveWithAvailableRuntime(context, normalized, callback)
             return
         }
 
         val handler = Handler(Looper.getMainLooper())
         handler.post {
             if (channel !== uiChannel) {
-                OrexPushBackgroundResolver.resolve(context, normalized, callback)
+                resolveWithAvailableRuntime(context, normalized, callback)
                 return@post
             }
 
@@ -231,7 +259,7 @@ object OrexPushBridge {
                         handler.removeCallbacks(fallback)
                         val resolved = stringMap(result)
                         if (resolved.isEmpty()) {
-                            OrexPushBackgroundResolver.resolve(context, normalized, callback)
+                            resolveWithAvailableRuntime(context, normalized, callback)
                         } else {
                             callback(resolved)
                         }
@@ -246,18 +274,33 @@ object OrexPushBridge {
                         finished = true
                         handler.removeCallbacks(fallback)
                         Log.w(TAG, "Live Flutter resolver failed: $errorCode $errorMessage")
-                        OrexPushBackgroundResolver.resolve(context, normalized, callback)
+                        resolveWithAvailableRuntime(context, normalized, callback)
                     }
 
                     override fun notImplemented() {
                         if (finished) return
                         finished = true
                         handler.removeCallbacks(fallback)
-                        OrexPushBackgroundResolver.resolve(context, normalized, callback)
+                        resolveWithAvailableRuntime(context, normalized, callback)
                     }
                 },
             )
         }
+    }
+
+    private fun resolveWithAvailableRuntime(
+        context: Context,
+        payload: Map<String, String>,
+        callback: (Map<String, String>?) -> Unit,
+    ) {
+        if (OrexFlutterEngineOwner.isRunning()) {
+            // The process isolate exists but its Dart channel is still booting or
+            // temporarily unavailable. Returning null makes WorkManager retry and
+            // preserves the single-engine database ownership invariant.
+            callback(null)
+            return
+        }
+        OrexPushBackgroundResolver.resolve(context, payload, callback)
     }
 
     fun handleResolvedPush(context: Context, resolved: Map<String, String>) {
@@ -296,10 +339,12 @@ object OrexPushBridge {
         action: String?,
         requestCode: Int,
         fromSystem: Boolean = false,
+        ringEventId: String? = null,
         avatarCacheKey: String? = null,
     ): PendingIntent {
         val payload = incomingCallPayload(
             callId = callId,
+            ringEventId = ringEventId,
             displayName = displayName,
             video = video,
             fromSystem = fromSystem,
@@ -307,7 +352,7 @@ object OrexPushBridge {
         )
         return PendingIntent.getActivity(
             context,
-            requestCode xor callId.hashCode(),
+            callAttemptRequestCode(requestCode, callId, ringEventId),
             buildOpenIntent(context, payload, action),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -322,11 +367,13 @@ object OrexPushBridge {
         requestCode: Int,
         action: String? = null,
         systemManaged: Boolean = false,
+        ringEventId: String? = null,
         avatarCacheKey: String? = null,
     ): PendingIntent {
         val intent = OrexIncomingCallActivity.createIntent(
             context = context,
             callId = callId,
+            ringEventId = ringEventId,
             displayName = displayName,
             video = video,
             timeoutAfterMs = timeoutAfterMs,
@@ -336,7 +383,7 @@ object OrexPushBridge {
         )
         return PendingIntent.getActivity(
             context,
-            requestCode xor callId.hashCode(),
+            callAttemptRequestCode(requestCode, callId, ringEventId),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -350,18 +397,38 @@ object OrexPushBridge {
         action: String,
         requestCode: Int,
         systemManaged: Boolean = false,
+        ringEventId: String? = null,
     ): PendingIntent {
+        // Android 12+ blocks notification trampolines: a notification action
+        // must launch an Activity directly instead of entering a receiver which
+        // then calls startActivity(). This invisible Activity persists Answer,
+        // starts the foreground call runtime and opens MainActivity. Because it
+        // is not showWhenLocked, Android requests the normal device unlock first.
+        val intent = OrexCallActionActivity.createIntent(
+            context = context,
+            callId = callId,
+            ringEventId = ringEventId,
+            displayName = displayName,
+            video = video,
+            action = action,
+            systemManaged = systemManaged,
+        )
         return PendingIntent.getActivity(
             context,
-            requestCode xor callId.hashCode(),
-            OrexCallActionActivity.createIntent(
-                context = context,
-                callId = callId,
-                displayName = displayName,
-                video = video,
-                action = action,
-                systemManaged = systemManaged,
-            ),
+            callAttemptRequestCode(requestCode, callId, ringEventId),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    fun restoreOngoingCallNotificationPendingIntent(context: Context): PendingIntent {
+        val intent = Intent(context, OrexNotificationActionReceiver::class.java).apply {
+            action = ACTION_RESTORE_ONGOING_CALL_NOTIFICATION
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            7299,
+            intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
     }
@@ -373,9 +440,11 @@ object OrexPushBridge {
         video: Boolean,
         action: String,
         requestCode: Int,
+        ringEventId: String? = null,
     ): PendingIntent {
         val payload = incomingCallPayload(
             callId = callId,
+            ringEventId = ringEventId,
             displayName = displayName,
             video = video,
             fromSystem = false,
@@ -389,16 +458,22 @@ object OrexPushBridge {
         }
         return PendingIntent.getBroadcast(
             context,
-            requestCode xor callId.hashCode(),
+            callAttemptRequestCode(requestCode, callId, ringEventId),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
     }
 
     fun handleCallNotificationAction(context: Context, intent: Intent) {
+        if (intent.action == ACTION_RESTORE_ONGOING_CALL_NOTIFICATION) {
+            OrexCallForegroundService.republish(context.applicationContext)
+            return
+        }
         if (intent.action == OrexAndroidTelecomManager.ACTION_ANSWER ||
             intent.action == OrexAndroidTelecomManager.ACTION_DECLINE ||
-            intent.action == OrexAndroidTelecomManager.ACTION_HANG_UP
+            intent.action == OrexAndroidTelecomManager.ACTION_HANG_UP ||
+            intent.action == OrexAndroidTelecomManager.ACTION_TOGGLE_MIC ||
+            intent.action == OrexAndroidTelecomManager.ACTION_TOGGLE_AUDIO
         ) {
             OrexAndroidTelecomManager.handleNotificationAction(intent)
             return
@@ -406,11 +481,11 @@ object OrexPushBridge {
         if (intent.action != ACTION_CALL_NOTIFICATION) return
         val payload = extractPayload(intent)
         if (payload.isEmpty()) return
-        OrexNotificationCenter.cancelCallNotification(context)
         val action = payload["orex_action"] ?: return
         val launched = launchIncomingCallAction(
             context = context,
             callId = payload["call_id"] ?: payload["room_id"] ?: return,
+            ringEventId = payload["event_id"],
             displayName = payload["sender_display_name"] ?: "Orex",
             video = payload["orex_video"].equals("true", ignoreCase = true),
             action = action,
@@ -428,17 +503,21 @@ object OrexPushBridge {
         video: Boolean,
         action: String,
         fromSystem: Boolean,
+        ringEventId: String? = null,
     ) {
         val payload = incomingCallPayload(
             callId = callId,
+            ringEventId = ringEventId,
             displayName = displayName,
             video = video,
             fromSystem = fromSystem,
         )
-        deliverNotificationOpen(
-            context.applicationContext,
-            openPayload(payload, action),
-        )
+        val open = openPayload(payload, action)
+        if (action == "answer") {
+            deferNotificationOpenForCallHandoff(context.applicationContext, open)
+        } else {
+            deliverNotificationOpen(context.applicationContext, open)
+        }
     }
 
     fun launchIncomingCallAction(
@@ -449,32 +528,142 @@ object OrexPushBridge {
         action: String,
         fromSystem: Boolean,
         bringUiToFront: Boolean = action == "answer",
+        ringEventId: String? = null,
     ): Boolean {
-        val payload = incomingCallPayload(
-            callId = callId,
-            displayName = displayName,
-            video = video,
-            fromSystem = fromSystem,
-        )
-        // Сначала сохраняем команду. Cold start заберёт её через
-        // takeInitialNotification(), живой Flutter получит MethodChannel event.
-        // Так Answer не зависит от того, успела ли MainActivity создать engine.
-        deliverNotificationOpen(context.applicationContext, openPayload(payload, action))
-
-        if (!bringUiToFront && channel != null) return true
-        return bringAppToFront(context)
+        return when (action) {
+            "answer", "answer_video" -> acceptIncomingCallFromNativeAction(
+                context = context,
+                callId = callId,
+                ringEventId = ringEventId,
+                displayName = displayName,
+                video = action == "answer_video" || video,
+                fromSystem = fromSystem,
+                bringUiToFront = bringUiToFront,
+            )
+            else -> {
+                val payload = incomingCallPayload(
+                    callId = callId,
+                    ringEventId = ringEventId,
+                    displayName = displayName,
+                    video = video,
+                    fromSystem = fromSystem,
+                )
+                deliverNotificationOpen(context.applicationContext, openPayload(payload, action))
+                if (!bringUiToFront && channel != null) true else bringAppToFront(context)
+            }
+        }
     }
 
-    fun bringAppToFront(context: Context): Boolean {
-        return try {
-            context.startActivity(
-                Intent(context, MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                        Intent.FLAG_ACTIVITY_NO_ANIMATION
+    fun acceptIncomingCallFromNativeAction(
+        context: Context,
+        callId: String,
+        ringEventId: String?,
+        displayName: String,
+        video: Boolean,
+        fromSystem: Boolean,
+        bringUiToFront: Boolean,
+    ): Boolean {
+        val appContext = context.applicationContext
+        if (!OrexCallPresentationState.markAnswering(appContext, callId, ringEventId)) {
+            Log.i(TAG, "Ignoring accepted call action for non-presentable attempt call=$callId")
+            return false
+        }
+        val foregroundStarted = OrexCallForegroundService.startAnswering(
+            context = appContext,
+            callId = callId,
+            ringEventId = ringEventId,
+            displayName = displayName,
+            video = video,
+        )
+        if (!foregroundStarted) {
+            OrexCallPresentationState.markEnded(appContext, callId, ringEventId)
+            return false
+        }
+        OrexNotificationCenter.cancelCallNotification(appContext)
+        // The full-screen incoming activity is the only trusted surface that
+        // may remain above the keyguard. Keep it alive while Flutter boots the
+        // accepted call; it closes itself after callUiReady (and requests the
+        // normal credential flow on a locked device).
+        if (!bringUiToFront) {
+            OrexIncomingCallActivity.finishForCall(callId, ringEventId)
+        }
+        queueIncomingCallAction(
+            context = appContext,
+            callId = callId,
+            ringEventId = ringEventId,
+            displayName = displayName,
+            video = video,
+            action = "answer",
+            fromSystem = fromSystem,
+        )
+        if (fromSystem) {
+            OrexAndroidTelecomManager.handleNotificationAction(
+                intent = Intent().apply {
+                    action = OrexAndroidTelecomManager.ACTION_ANSWER
+                    putExtra(OrexAndroidTelecomManager.EXTRA_CALL_ID, callId)
+                    normalizeRingEventId(ringEventId)?.let {
+                        putExtra(OrexAndroidTelecomManager.EXTRA_RING_EVENT_ID, it)
+                    }
                 },
+                // This method has already started the FGS and queued the
+                // accepted-call handoff above. Telecom only needs to accept
+                // its CallControl now; re-running its answer bootstrap would
+                // deliver the same Dart action twice.
+                answerBootstrapAlreadyStarted = true,
             )
+        }
+        if (!bringUiToFront) return true
+        val launched = bringCallHandoffToFront(
+            context = appContext,
+            callId = callId,
+            ringEventId = ringEventId,
+            displayName = displayName,
+            avatarCacheKey = null,
+        )
+        if (!launched) {
+            Log.w(TAG, "Accepted call queued without expanded Activity call=$callId")
+        }
+        return true
+    }
+
+    fun bringCallHandoffToFront(
+        context: Context,
+        callId: String,
+        ringEventId: String?,
+        displayName: String,
+        avatarCacheKey: String? = null,
+    ): Boolean = startMainActivity(
+        context,
+        Intent(context, MainActivity::class.java).apply {
+            // The accepted command is persisted before this Activity launch. A
+            // small native cover is nevertheless required during a cold Flutter
+            // bootstrap, otherwise the launcher/splash can surface a generic
+            // startup error while Matrix and the call route are still restoring.
+            putExtra(MainActivity.EXTRA_CALL_HANDOFF, true)
+            putExtra("orex_call_host_open", true)
+            putExtra(MainActivity.EXTRA_CALL_ID, callId)
+            normalizeRingEventId(ringEventId)?.let {
+                putExtra(MainActivity.EXTRA_RING_EVENT_ID, it)
+            }
+            putExtra(MainActivity.EXTRA_DISPLAY_NAME, displayName)
+            if (!avatarCacheKey.isNullOrBlank()) {
+                putExtra(MainActivity.EXTRA_AVATAR_CACHE_KEY, avatarCacheKey)
+            }
+        },
+    )
+
+    fun bringAppToFront(context: Context): Boolean = startMainActivity(
+        context,
+        Intent(context, MainActivity::class.java),
+    )
+
+    private fun startMainActivity(context: Context, intent: Intent): Boolean {
+        return try {
+            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_NO_ANIMATION
+            context.startActivity(intent)
             true
         } catch (error: Throwable) {
             Log.e(TAG, "Failed to bring Orex UI to foreground", error)
@@ -484,6 +673,7 @@ object OrexPushBridge {
 
     private fun incomingCallPayload(
         callId: String,
+        ringEventId: String? = null,
         displayName: String,
         video: Boolean,
         fromSystem: Boolean,
@@ -492,6 +682,7 @@ object OrexPushBridge {
         put("orex_kind", "incoming_call")
         put("room_id", callId)
         put("call_id", callId)
+        normalizeRingEventId(ringEventId)?.let { put("event_id", it) }
         put("sender_display_name", displayName)
         put("orex_video", video.toString())
         put("orex_from_system", fromSystem.toString())
@@ -515,6 +706,10 @@ object OrexPushBridge {
     }
 
     private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        if (!dartBridgeReady) {
+            dartBridgeReady = true
+            flushDeferredCallHandoffOpen()
+        }
         when (call.method) {
             "isSupported" -> result.success(isFirebaseConfigured())
             "getToken" -> getToken(result)
@@ -525,45 +720,66 @@ object OrexPushBridge {
             }
             "showLocalMatrixNotification" -> {
                 val context = applicationContext
-                val roomId = call.argument<String>("roomId")?.trim().orEmpty()
-                if (context == null || roomId.isEmpty()) {
+                val payload = stringMap(call.arguments)
+                if (context == null || payload.isEmpty()) {
                     result.success(false)
                     return
                 }
-                OrexNotificationCenter.showLocalMatrixEvent(
-                    context = context,
-                    roomId = roomId,
-                    eventId = call.argument<String>("eventId")?.trim(),
-                )
+                OrexNotificationCenter.showPush(context, payload, appResumed = false)
                 result.success(true)
+            }
+            "dismissRoomNotifications" -> {
+                val context = applicationContext
+                val roomId = call.argument<String>("roomId")?.trim().orEmpty()
+                if (context != null && roomId.isNotEmpty()) {
+                    OrexNotificationCenter.dismissRoomNotifications(context, roomId)
+                }
+                result.success(context != null && roomId.isNotEmpty())
             }
             "callUiAnswering" -> {
                 val callId = call.argument<String>("callId")?.trim().orEmpty()
+                val ringEventId = call.argument<String>("ringEventId")
                 val context = applicationContext
-                if (callId.isNotEmpty() && context != null) {
-                    OrexCallPresentationState.markAnswering(context, callId)
+                val matched = callId.isNotEmpty() && context != null &&
+                    OrexCallPresentationState.markAnswering(context, callId, ringEventId)
+                if (matched) {
                     OrexNotificationCenter.cancelCallNotification(context)
                 }
-                result.success(callId.isNotEmpty())
+                result.success(matched)
             }
             "callUiReady" -> {
                 val callId = call.argument<String>("callId")?.trim().orEmpty()
+                val ringEventId = call.argument<String>("ringEventId")
                 val context = applicationContext
-                if (callId.isNotEmpty() && context != null) {
-                    OrexCallPresentationState.markActive(context, callId)
-                    OrexIncomingCallActivity.finishForCall(callId)
+                val presentationMatched = callId.isNotEmpty() && context != null &&
+                    OrexCallPresentationState.markActive(context, callId, ringEventId)
+                val main = activity as? MainActivity
+                val overlayMatched = callId.isNotEmpty() &&
+                    main?.completeCallHandoff(callId, ringEventId) == true
+                val accepted = presentationMatched || overlayMatched
+                if (accepted && context != null) {
+                    OrexIncomingCallActivity.onCallUiReady(callId, ringEventId)
+                    if (!overlayMatched) {
+                        bringAppToFront(context)
+                    }
                 }
-                result.success(callId.isNotEmpty())
+                result.success(accepted)
             }
             "callUiEnded" -> {
                 val callId = call.argument<String>("callId")?.trim().orEmpty()
+                val ringEventId = call.argument<String>("ringEventId")
                 val context = applicationContext
-                if (callId.isNotEmpty() && context != null) {
-                    OrexCallPresentationState.markEnded(context, callId)
+                val presentationMatched = callId.isNotEmpty() && context != null &&
+                    OrexCallPresentationState.markEnded(context, callId, ringEventId)
+                val overlayMatched = callId.isNotEmpty() &&
+                    (activity as? MainActivity)?.cancelCallHandoff(callId, ringEventId) == true
+                val ended = presentationMatched || overlayMatched
+                if (ended && context != null) {
+                    OrexCallForegroundService.stop(context, callId, ringEventId)
                     OrexNotificationCenter.cancelCallNotification(context)
-                    OrexIncomingCallActivity.finishForCall(callId)
+                    OrexIncomingCallActivity.finishForCall(callId, ringEventId)
                 }
-                result.success(callId.isNotEmpty())
+                result.success(ended)
             }
             "callUiHidden" -> result.success(true)
             "requestPermission" -> requestPermission(result)
@@ -593,7 +809,7 @@ object OrexPushBridge {
             return
         }
         try {
-            FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+            legacyFcmTokenTask().addOnCompleteListener { task ->
                 if (task.isSuccessful) {
                     val token = task.result?.trim().orEmpty()
                     if (token.isNotEmpty()) {
@@ -614,9 +830,17 @@ object OrexPushBridge {
         }
     }
 
+    /**
+     * Matrix pushers currently address devices with an FCM registration token.
+     * FCM's replacement registration API exposes a Firebase Installation ID,
+     * so moving to it requires a coordinated server-side pusher migration.
+     */
+    @Suppress("DEPRECATION")
+    private fun legacyFcmTokenTask() = FirebaseMessaging.getInstance().token
+
     private fun requestPermission(result: MethodChannel.Result) {
         val currentActivity = activity
-        if (currentActivity == null || !isFirebaseConfigured()) {
+        if (currentActivity == null) {
             result.success("not_supported")
             return
         }
@@ -681,13 +905,55 @@ object OrexPushBridge {
     }
 
     private fun deliverNotificationOpen(context: Context, payload: Map<String, String>) {
+        val normalized = persistNotificationOpen(context, payload) ?: return
+        dispatchNotificationOpen(normalized)
+    }
+
+    private fun deferNotificationOpenForCallHandoff(
+        context: Context,
+        payload: Map<String, String>,
+    ) {
+        val normalized = persistNotificationOpen(context, payload) ?: return
+        val callId = normalized["call_id"]?.trim().orEmpty()
+            .ifEmpty { normalized["room_id"]?.trim().orEmpty() }
+        if (callId.isEmpty()) {
+            dispatchNotificationOpen(normalized)
+            return
+        }
+        val ringEventId = normalizeRingEventId(normalized["event_id"])
+        synchronized(callHandoffLock) {
+            deferredCallHandoffOpen = DeferredCallHandoffOpen(
+                callId = callId,
+                ringEventId = ringEventId,
+                payload = normalized,
+            )
+        }
+        flushDeferredCallHandoffOpen()
+    }
+
+    private fun persistNotificationOpen(
+        context: Context,
+        payload: Map<String, String>,
+    ): Map<String, String>? {
         val normalized = normalizePayload(payload).toMutableMap()
-        if (normalized.isEmpty()) return
+        if (normalized.isEmpty()) return null
         normalized[DELIVERY_ID_KEY] = UUID.randomUUID().toString()
         prefs(context).edit().putString(PREF_PENDING_OPEN, JSONObject(normalized).toString()).apply()
+        return normalized
+    }
 
+    private fun dispatchNotificationOpen(normalized: Map<String, String>) {
         Handler(Looper.getMainLooper()).post {
-            val currentChannel = channel ?: return@post
+            val currentChannel = channel
+            if (currentChannel == null) {
+                val deliveryId = normalized[DELIVERY_ID_KEY]
+                synchronized(callHandoffLock) {
+                    deferredCallHandoffOpen?.takeIf {
+                        it.payload[DELIVERY_ID_KEY] == deliveryId
+                    }?.dispatched = false
+                }
+                return@post
+            }
             currentChannel.invokeMethod(
                 "onNotificationOpened",
                 normalized,
@@ -696,12 +962,111 @@ object OrexPushBridge {
 
                     override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
                         Log.w(TAG, "Flutter rejected notification open: $errorCode $errorMessage")
+                        dartBridgeReady = false
+                        rearmDeferredCallHandoff(normalized)
                     }
 
-                    override fun notImplemented() = Unit
+                    override fun notImplemented() {
+                        Log.i(TAG, "Flutter call handoff bridge is not ready yet; deferring answer")
+                        dartBridgeReady = false
+                        rearmDeferredCallHandoff(normalized)
+                    }
                 },
             )
         }
+    }
+
+    private fun rearmDeferredCallHandoff(payload: Map<String, String>) {
+        val deliveryId = payload[DELIVERY_ID_KEY]
+        synchronized(callHandoffLock) {
+            deferredCallHandoffOpen?.takeIf {
+                it.payload[DELIVERY_ID_KEY] == deliveryId
+            }?.dispatched = false
+        }
+    }
+
+    /**
+     * Removes one accepted-call command from both the in-memory handoff and the
+     * process-death-safe pending-open slot. Used by native watchdogs so a later
+     * app launch cannot replay an already failed answer.
+     */
+    fun cancelPendingCallAction(
+        context: Context,
+        callId: String,
+        ringEventId: String?,
+    ): Boolean {
+        val normalizedCallId = callId.trim()
+        if (normalizedCallId.isEmpty()) return false
+        val normalizedRingEventId = normalizeRingEventId(ringEventId)
+        var removed = synchronized(callHandoffLock) {
+            var changed = false
+            val deferred = deferredCallHandoffOpen
+            if (deferred != null && callHandoffAttemptMatches(
+                    deferred.callId,
+                    deferred.ringEventId,
+                    normalizedCallId,
+                    normalizedRingEventId,
+                )
+            ) {
+                deferredCallHandoffOpen = null
+                changed = true
+            }
+            changed
+        }
+
+        val preferences = prefs(context.applicationContext)
+        val encoded = preferences.getString(PREF_PENDING_OPEN, null)
+        if (encoded != null) {
+            val decoded = decodePayload(encoded)
+            val pendingCallId = decoded["call_id"]?.trim().orEmpty()
+                .ifEmpty { decoded["room_id"]?.trim().orEmpty() }
+            val pendingRingEventId = normalizeRingEventId(decoded["event_id"])
+            if (decoded["orex_action"] == "answer" &&
+                pendingCallId.isNotEmpty() &&
+                callHandoffAttemptMatches(
+                    pendingCallId,
+                    pendingRingEventId,
+                    normalizedCallId,
+                    normalizedRingEventId,
+                )
+            ) {
+                preferences.edit().remove(PREF_PENDING_OPEN).commit()
+                removed = true
+            }
+        }
+        return removed
+    }
+
+    private fun flushDeferredCallHandoffOpen() {
+        val payload = synchronized(callHandoffLock) {
+            val deferred = deferredCallHandoffOpen
+            if (deferred == null || deferred.dispatched || channel == null ||
+                !dartBridgeReady
+            ) {
+                null
+            } else {
+                deferred.dispatched = true
+                deferred.payload
+            }
+        }
+        if (payload != null) {
+            Log.i(TAG, "Dispatching accepted call to process runtime")
+            dispatchNotificationOpen(payload)
+        }
+    }
+
+    private fun callHandoffAttemptMatches(
+        firstCallId: String?,
+        firstRingEventId: String?,
+        secondCallId: String,
+        secondRingEventId: String?,
+    ): Boolean {
+        return sameOrPromotableCallAttempt(
+            firstCallId,
+            firstRingEventId,
+            secondCallId,
+            secondRingEventId,
+        )
     }
 
     private fun takePendingOpen(): Map<String, String>? {
@@ -712,6 +1077,39 @@ object OrexPushBridge {
         if (decoded.isEmpty()) {
             preferences.edit().remove(PREF_PENDING_OPEN).apply()
             return null
+        }
+        if (decoded["orex_action"] == "answer") {
+            val callId = decoded["call_id"]?.trim().orEmpty()
+                .ifEmpty { decoded["room_id"]?.trim().orEmpty() }
+            val ringEventId = normalizeRingEventId(decoded["event_id"])
+            if (callId.isNotEmpty()) {
+                val shouldDeliver = synchronized(callHandoffLock) {
+                    val deferred = deferredCallHandoffOpen?.takeIf {
+                        callHandoffAttemptMatches(
+                            it.callId,
+                            it.ringEventId,
+                            callId,
+                            ringEventId,
+                        )
+                    }
+                    if (deferred?.dispatched == true) {
+                        false
+                    } else {
+                        if (deferred == null) {
+                            deferredCallHandoffOpen = DeferredCallHandoffOpen(
+                                callId = callId,
+                                ringEventId = ringEventId,
+                                payload = decoded,
+                                dispatched = true,
+                            )
+                        } else {
+                            deferred.dispatched = true
+                        }
+                        true
+                    }
+                }
+                if (!shouldDeliver) return null
+            }
         }
         return decoded
     }
@@ -724,6 +1122,11 @@ object OrexPushBridge {
         val decoded = decodePayload(encoded)
         if (decoded.isEmpty() || decoded[DELIVERY_ID_KEY] == deliveryId) {
             preferences.edit().remove(PREF_PENDING_OPEN).apply()
+            synchronized(callHandoffLock) {
+                deferredCallHandoffOpen?.takeIf {
+                    it.payload[DELIVERY_ID_KEY] == deliveryId
+                }?.let { deferredCallHandoffOpen = null }
+            }
         }
         return true
     }
@@ -742,7 +1145,10 @@ object OrexPushBridge {
         for (key in extras.keySet()) {
             if (!key.startsWith(EXTRA_PREFIX)) continue
             val payloadKey = key.removePrefix(EXTRA_PREFIX)
-            val value = extras.get(key)?.toString() ?: continue
+            // Every extra under our private prefix is written with
+            // Intent.putExtra(String, String); reject a forged value of any
+            // other type rather than using Bundle's deprecated untyped getter.
+            val value = extras.getString(key) ?: continue
             result[payloadKey] = value
         }
         return normalizePayload(result)

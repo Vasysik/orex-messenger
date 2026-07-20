@@ -78,7 +78,9 @@ Future<void> showOrexCameraQuickSheet(
   required MatrixService matrix,
   CallSession? session,
 }) async {
-  final devices = await enumerateOrexCameraDevices(requestPermission: true);
+  final devices = await enumerateOrexCameraDevices(
+    requestPermission: session?.camOn != true,
+  );
   if (!context.mounted) return;
   final selectedId = orexResolveCurrentDeviceId(
     devices,
@@ -100,7 +102,17 @@ Future<void> showOrexCameraQuickSheet(
   );
   if (picked == null) return;
   if (session != null) {
-    await session.selectCameraDevice(picked);
+    String? pickedCategory;
+    for (final device in devices) {
+      if (device.id == picked) {
+        pickedCategory = device.category;
+        break;
+      }
+    }
+    await session.selectCameraDevice(
+      picked,
+      deviceCategory: pickedCategory,
+    );
   } else {
     await matrix.audio.setCameraDeviceId(picked);
   }

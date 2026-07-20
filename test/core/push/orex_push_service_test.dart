@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matrix/matrix.dart';
 import 'package:orex_messenger/core/push/orex_push_service.dart';
@@ -7,17 +9,17 @@ import 'package:orex_messenger/core/push/push_platform_bridge.dart';
 import 'package:orex_messenger/core/push/push_registration_service.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('Android app id matches the production Sygnal contract', () {
-    expect(
-      OrexNativePushPlatform.androidAppId,
-      'ru.vasys.orex_messenger',
-    );
+    expect(OrexNativePushPlatform.androidAppId, 'ru.vasys.orex_messenger');
   });
 
   test('incoming call open preserves action source and video flag', () {
     const open = OrexPushOpen(<String, String>{
       'orex_kind': 'incoming_call',
       'room_id': '!call:example.org',
+      'event_id': r'$ring-event',
       'orex_action': 'answer',
       'orex_from_system': 'true',
       'orex_video': 'true',
@@ -25,9 +27,84 @@ void main() {
 
     expect(open.kind, 'incoming_call');
     expect(open.roomId, '!call:example.org');
+    expect(open.ringEventId, r'$ring-event');
     expect(open.action, 'answer');
     expect(open.fromSystem, isTrue);
     expect(open.video, isTrue);
+  });
+
+  test('legacy incoming call open keeps attempt id nullable', () {
+    const open = OrexPushOpen(<String, String>{
+      'orex_kind': 'incoming_call',
+      'room_id': '!call:example.org',
+    });
+
+    expect(open.ringEventId, isNull);
+  });
+
+  test('Android call lifecycle bridge forwards the exact attempt id', () async {
+    const channel = MethodChannel('orex/test_push_attempt');
+    final calls = <MethodCall>[];
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return true;
+        });
+    final platform = OrexNativePushPlatform(channel: channel);
+    addTearDown(() {
+      platform.dispose();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    await platform.notifyCallAnswering(
+      '!call:example.org',
+      ringEventId: r'$ring-event',
+    );
+    await platform.notifyCallUiReady(
+      '!call:example.org',
+      ringEventId: r'$ring-event',
+    );
+    await platform.notifyCallEnded(
+      '!call:example.org',
+      ringEventId: r'$ring-event',
+    );
+
+    expect(calls.map((call) => call.method), [
+      'callUiAnswering',
+      'callUiReady',
+      'callUiEnded',
+    ]);
+    for (final call in calls) {
+      expect(call.arguments, {
+        'callId': '!call:example.org',
+        'ringEventId': r'$ring-event',
+      });
+    }
+  });
+
+  test('Windows incoming call activation restores the native host', () async {
+    const channel = MethodChannel('orex/test_windows_push_activation');
+    final calls = <MethodCall>[];
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return true;
+        });
+    final platform = OrexNativePushPlatform(channel: channel);
+    addTearDown(() {
+      platform.dispose();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    await platform.activateIncomingCallWindow();
+
+    expect(calls.map((call) => call.method), ['activateIncomingCallWindow']);
   });
 
   test('cold-start open is held until a UI listener receives it', () async {
@@ -66,6 +143,111 @@ void main() {
     await client.dispose(closeDatabase: false);
   });
 
+  test('delivered native answer suppresses duplicate ringing until consumed', () async {
+    final platform = _FakePushPlatform();
+    final client = Client(
+      'OrexPushPendingAnswerTest',
+      database: MatrixSdkDatabase.buildWithoutOpen('OrexPushPendingAnswerTest'),
+    );
+    final service = OrexPushService(
+      client: client,
+      gateway: null,
+      platform: platform,
+      tokenStore: _MemoryTokenStore(),
+    );
+    await service.start();
+
+    const answer = OrexPushOpen(<String, String>{
+      'orex_kind': 'incoming_call',
+      'room_id': '!call:example.org',
+      'event_id': r'$ring-answer',
+      'orex_action': 'answer',
+      'orex_delivery_id': 'answer-delivery',
+    });
+    platform.emitOpen(answer);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      service.hasPendingIncomingAnswer(
+        '!call:example.org',
+        ringEventId: r'$ring-answer',
+      ),
+      isTrue,
+    );
+    expect(
+      service.hasPendingIncomingAnswer(
+        '!call:example.org',
+        ringEventId: r'$other-ring',
+      ),
+      isFalse,
+    );
+    // An accepted cold-start command remains persisted until a process-level
+    // call coordinator has actually claimed it.
+    expect(platform.acknowledged, isEmpty);
+
+    service.consumePendingIncomingAnswer(answer);
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      service.hasPendingIncomingAnswer(
+        '!call:example.org',
+        ringEventId: r'$ring-answer',
+      ),
+      isFalse,
+    );
+    expect(platform.acknowledged, ['answer-delivery']);
+
+    await service.dispose();
+    await client.dispose(closeDatabase: false);
+  });
+
+  test('bootstrap handler claims a cold native answer before UI construction',
+      () async {
+    const answer = OrexPushOpen(<String, String>{
+      'orex_kind': 'incoming_call',
+      'room_id': '!call:example.org',
+      'event_id': r'$ring-answer',
+      'orex_action': 'answer',
+      'orex_delivery_id': 'answer-delivery',
+    });
+    final platform = _FakePushPlatform(initialOpen: answer);
+    final client = Client(
+      'OrexPushBootstrapAnswerTest',
+      database: MatrixSdkDatabase.buildWithoutOpen(
+        'OrexPushBootstrapAnswerTest',
+      ),
+    );
+    final service = OrexPushService(
+      client: client,
+      gateway: null,
+      platform: platform,
+      tokenStore: _MemoryTokenStore(),
+    );
+    final handled = Completer<OrexPushOpen>();
+    service.setIncomingCallAnswerHandler((open) async {
+      if (!handled.isCompleted) handled.complete(open);
+    });
+
+    await service.start();
+    final received = await handled.future;
+
+    expect(received, same(answer));
+    expect(platform.acknowledged, isEmpty);
+    expect(
+      service.hasPendingIncomingAnswer(
+        '!call:example.org',
+        ringEventId: r'$ring-answer',
+      ),
+      isTrue,
+    );
+
+    service.consumePendingIncomingAnswer(answer);
+    await Future<void>.delayed(Duration.zero);
+    expect(platform.acknowledged, ['answer-delivery']);
+
+    await service.dispose();
+    await client.dispose(closeDatabase: false);
+  });
+
   test('does not surface local sync notifications while logged out', () async {
     final platform = _FakePushPlatform();
     final client = Client(
@@ -89,6 +271,26 @@ void main() {
     // Logged-out clients must not surface stale local sync notifications.
     expect(platform.localNotifications, isEmpty);
 
+    await service.dispose();
+    await client.dispose(closeDatabase: false);
+  });
+
+  test('forwards room-scoped notification dismissal', () async {
+    final platform = _FakePushPlatform();
+    final client = Client(
+      'OrexPushDismissTest',
+      database: MatrixSdkDatabase.buildWithoutOpen('OrexPushDismissTest'),
+    );
+    final service = OrexPushService(
+      client: client,
+      gateway: null,
+      platform: platform,
+      tokenStore: _MemoryTokenStore(),
+    );
+
+    await service.dismissRoomNotifications('!room:example.org');
+
+    expect(platform.dismissedRooms, ['!room:example.org']);
     await service.dispose();
     await client.dispose(closeDatabase: false);
   });
@@ -134,16 +336,16 @@ class _FakePushPlatform implements OrexPushPlatform {
 
   @override
   OrexPushPlatformIdentity get identity => const OrexPushPlatformIdentity(
-        appId: 'ru.vasys.orex_messenger',
-        platform: 'android',
-        deviceLabel: 'Android',
-      );
+    appId: 'ru.vasys.orex_messenger',
+    platform: 'android',
+    deviceLabel: 'Android',
+  );
   final StreamController<String> _tokens = StreamController<String>.broadcast();
   final StreamController<OrexPushOpen> _opens =
       StreamController<OrexPushOpen>.broadcast();
   final List<String> acknowledged = <String>[];
-  final List<({String roomId, String? eventId})> localNotifications =
-      <({String roomId, String? eventId})>[];
+  final List<Map<String, String>> localNotifications = <Map<String, String>>[];
+  final List<String> dismissedRooms = <String>[];
   final Completer<void> firstAcknowledgement = Completer<void>();
 
   void emitOpen(OrexPushOpen open) => _opens.add(open);
@@ -175,24 +377,32 @@ class _FakePushPlatform implements OrexPushPlatform {
   Stream<OrexPushOpen> get notificationOpens => _opens.stream;
 
   @override
-  Future<void> notifyCallAnswering(String callId) async {}
+  Future<void> notifyCallAnswering(
+    String callId, {
+    String? ringEventId,
+  }) async {}
 
   @override
-  Future<void> notifyCallUiReady(String callId) async {}
+  Future<void> notifyCallUiReady(String callId, {String? ringEventId}) async {}
 
   @override
-  Future<void> notifyCallEnded(String callId) async {}
+  Future<void> notifyCallEnded(String callId, {String? ringEventId}) async {}
 
   @override
   Future<void> notifyCallUiHidden() async {}
 
   @override
-  Future<void> showLocalMatrixNotification({
-    required String roomId,
-    String? eventId,
-  }) async {
-    localNotifications.add((roomId: roomId, eventId: eventId));
+  Future<void> showLocalMatrixNotification(Map<String, String> payload) async {
+    localNotifications.add(Map<String, String>.of(payload));
   }
+
+  @override
+  Future<void> dismissRoomNotifications(String roomId) async {
+    dismissedRooms.add(roomId);
+  }
+
+  @override
+  Future<void> activateIncomingCallWindow() async {}
 
   @override
   Future<OrexPushPermissionStatus> requestPermission() async =>

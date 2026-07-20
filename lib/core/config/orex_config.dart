@@ -32,6 +32,7 @@ class OrexRuntimeConfig {
     required this.requireVodozemac,
     required this.debugLogs,
     required this.allowInsecureDesktopCache,
+    required this.allowUnencryptedCalls,
   });
 
   static const productionHomeserver = 'https://vasys.ru';
@@ -48,6 +49,7 @@ class OrexRuntimeConfig {
   final bool requireVodozemac;
   final bool debugLogs;
   final bool allowInsecureDesktopCache;
+  final bool allowUnencryptedCalls;
 
   factory OrexRuntimeConfig.fromDefines({
     String environmentName = 'production',
@@ -56,8 +58,9 @@ class OrexRuntimeConfig {
     String elementCallBase = '',
     String pushGateway = '',
     bool requireVodozemac = true,
-    bool debugLogs = true,
+    bool debugLogs = false,
     bool allowInsecureDesktopCache = false,
+    bool allowUnencryptedCalls = false,
   }) {
     final environment = OrexEnvironment.parse(environmentName);
     final resolvedHomeserver = _definedOrDefault(
@@ -85,6 +88,7 @@ class OrexRuntimeConfig {
       requireVodozemac: requireVodozemac,
       debugLogs: debugLogs,
       allowInsecureDesktopCache: allowInsecureDesktopCache,
+      allowUnencryptedCalls: allowUnencryptedCalls,
     )..validateSecurity();
   }
 
@@ -177,11 +181,18 @@ class OrexConfig {
   );
   static const _debugLogs = bool.fromEnvironment(
     'OREX_DEBUG_LOGS',
-    defaultValue: true,
+    defaultValue: false,
   );
   static const _allowInsecureDesktopCache = bool.fromEnvironment(
     'OREX_ALLOW_INSECURE_DESKTOP_CACHE',
     defaultValue: false,
+  );
+  static const _allowUnencryptedCalls = bool.fromEnvironment(
+    'OREX_ALLOW_UNENCRYPTED_CALLS',
+    defaultValue: false,
+  );
+  static const _liveKitAllowedHosts = String.fromEnvironment(
+    'OREX_LIVEKIT_ALLOWED_HOSTS',
   );
 
   static final OrexRuntimeConfig current = OrexRuntimeConfig.fromDefines(
@@ -193,6 +204,7 @@ class OrexConfig {
     requireVodozemac: _requireVodozemac,
     debugLogs: _debugLogs,
     allowInsecureDesktopCache: _allowInsecureDesktopCache,
+    allowUnencryptedCalls: _allowUnencryptedCalls,
   );
 
   static OrexEnvironment get environment => current.environment;
@@ -210,8 +222,8 @@ class OrexConfig {
   /// Подробные dev-логи продуктовых Matrix-flow: создание комнат, metadata,
   /// права каналов, preview супергрупп.
   ///
-  /// Отключение для release/dev-build:
-  /// `--dart-define=OREX_DEBUG_LOGS=false`.
+  /// По умолчанию выключены. Для локальной или временной release-диагностики:
+  /// `--dart-define=OREX_DEBUG_LOGS=true`.
   static bool get debugLogs => current.debugLogs;
 
   /// Escape hatch for Windows/Linux dogfooding while desktop SQLCipher is not
@@ -220,7 +232,45 @@ class OrexConfig {
   static bool get allowInsecureDesktopCache =>
       current.allowInsecureDesktopCache;
 
-  // LiveKit (wss://lk.vasys.ru) бэкенд возвращает сам через lk-jwt-service.
+  /// Security escape hatch for legacy/public Matrix rooms. Keep false in
+  /// production: media keys sent through an unencrypted room are visible to
+  /// the homeserver even though LiveKit frame encryption itself is enabled.
+  static bool get allowUnencryptedCalls => current.allowUnencryptedCalls;
+
+  static const _productionLiveKitHost = 'lk.vasys.ru';
+
+  /// LiveKit endpoint returned by lk-jwt-service is accepted only from this
+  /// explicit host set. Dev/staging must opt in with a dart-define.
+  static Set<String> get liveKitAllowedHosts {
+    final raw = _liveKitAllowedHosts.trim();
+    if (raw.isEmpty) {
+      if (!environment.isProduction) {
+        throw StateError(
+          'OREX_LIVEKIT_ALLOWED_HOSTS is required when OREX_ENV is not production',
+        );
+      }
+      return const {_productionLiveKitHost};
+    }
+
+    final hosts = raw
+        .split(',')
+        .map((value) => value.trim().toLowerCase())
+        .where((value) => value.isNotEmpty)
+        .toSet();
+    if (hosts.isEmpty ||
+        hosts.any(
+          (host) =>
+              host.contains('/') ||
+              host.contains(':') ||
+              host.contains('@') ||
+              Uri.tryParse('https://$host')?.host != host,
+        )) {
+      throw StateError(
+        'OREX_LIVEKIT_ALLOWED_HOSTS must be a comma-separated host list',
+      );
+    }
+    return Set.unmodifiable(hosts);
+  }
 
   /// Базовый адрес Element Call.
   ///
@@ -237,5 +287,8 @@ class OrexConfig {
   static String get homeserverHost => current.homeserverHost;
 
   /// Быстрая проверка security-инвариантов конфигурации на старте.
-  static void validateSecurity() => current.validateSecurity();
+  static void validateSecurity() {
+    current.validateSecurity();
+    liveKitAllowedHosts;
+  }
 }

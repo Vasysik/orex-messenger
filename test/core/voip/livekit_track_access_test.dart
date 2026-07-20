@@ -49,6 +49,31 @@ void main() {
       expect(second.enabled, isFalse);
     });
 
+
+    test('uses LiveKit remote publication enable and disable methods', () async {
+      final publication = _RemotePublication();
+
+      expect(
+        await OrexLiveKitTrackAccess.setRemotePublicationEnabled(
+          publication,
+          false,
+        ),
+        isTrue,
+      );
+      expect(publication.disableCalls, 1);
+      expect(publication.enabled, isFalse);
+
+      expect(
+        await OrexLiveKitTrackAccess.setRemotePublicationEnabled(
+          publication,
+          true,
+        ),
+        isTrue,
+      );
+      expect(publication.enableCalls, 1);
+      expect(publication.enabled, isTrue);
+    });
+
     test('readDynamic returns null for throwing getters', () {
       expect(
         OrexLiveKitTrackAccess.readDynamic(_ThrowingTrack(), 'track'),
@@ -154,4 +179,20 @@ final class _TrackPublication {
   final bool muted;
   final bool subscribed;
   final dynamic track;
+}
+
+final class _RemotePublication {
+  bool enabled = true;
+  int enableCalls = 0;
+  int disableCalls = 0;
+
+  Future<void> enable() async {
+    enableCalls++;
+    enabled = true;
+  }
+
+  Future<void> disable() async {
+    disableCalls++;
+    enabled = false;
+  }
 }

@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import '../../../shared/theme/orex_theme.dart';
 import '../../../shared/widgets/media_player.dart';
 import '../../../core/files/file_helper.dart';
+import '../../../core/media/incoming_media_policy.dart';
 import '../../../core/config/orex_config.dart';
 import '../../../core/matrix/matrix_member_event_text.dart';
 import '../../../domain/rooms/room_metadata.dart';

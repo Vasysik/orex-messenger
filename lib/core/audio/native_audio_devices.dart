@@ -57,4 +57,23 @@ class OrexNativeAudioDevices {
       return false;
     }
   }
+
+  static Future<bool> setProximityEnabled(bool enabled) async {
+    try {
+      final applied = await _channel.invokeMethod<bool>(
+        'setProximityEnabled',
+        {'enabled': enabled},
+      );
+      return applied ?? false;
+    } on MissingPluginException {
+      return false;
+    } catch (e) {
+      OrexLog.d(
+        'AudioDevices',
+        'native proximity update failed enabled=$enabled',
+        e,
+      );
+      return false;
+    }
+  }
 }

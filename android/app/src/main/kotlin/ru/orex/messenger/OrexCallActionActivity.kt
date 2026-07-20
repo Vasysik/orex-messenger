@@ -1,19 +1,21 @@
 package ru.orex.messenger
 
 import android.app.Activity
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 
 /**
- * Invisible trampoline for notification call actions.
+ * Direct notification action entry point.
  *
  * Content taps open [OrexIncomingCallActivity]. Answer/Reject do not: the user
  * has already chosen an action, so showing the incoming panel again is both
- * confusing and race-prone. MainActivity is never allowed over the keyguard;
- * therefore an Answer from a locked device still requires normal device unlock
- * before any messenger content can become visible.
+ * confusing and race-prone. Answer is persisted for the process-owned call
+ * runtime first; opening MainActivity under a native connecting cover is only
+ * presentation. On a locked device, Answer is first routed through the trusted
+ * full-screen incoming surface so Android can require device credentials.
  */
 class OrexCallActionActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -31,6 +33,7 @@ class OrexCallActionActivity : Activity() {
 
     private fun handle(source: Intent) {
         val callId = source.getStringExtra(EXTRA_CALL_ID)?.trim().orEmpty()
+        val ringEventId = normalizeRingEventId(source.getStringExtra(EXTRA_RING_EVENT_ID))
         val action = source.getStringExtra(EXTRA_ACTION)?.trim().orEmpty()
         if (callId.isEmpty() || action.isEmpty()) return
 
@@ -43,59 +46,63 @@ class OrexCallActionActivity : Activity() {
 
         when (action) {
             ACTION_ANSWER, ACTION_ANSWER_VIDEO -> {
-                val useVideo = action == ACTION_ANSWER_VIDEO || video
-                OrexCallPresentationState.markAnswering(applicationContext, callId)
-                OrexNotificationCenter.cancelCallNotification(applicationContext)
-                val launched = if (systemManaged) {
-                    // Publish the explicit user choice before MainActivity can
-                    // resume. Flutter then suppresses any stale incoming route
-                    // while Core-Telecom completes the same idempotent answer.
-                    OrexPushBridge.queueIncomingCallAction(
-                        context = this,
-                        callId = callId,
-                        displayName = displayName,
-                        video = useVideo,
-                        action = ACTION_ANSWER,
-                        fromSystem = true,
-                    )
-                    OrexAndroidTelecomManager.handleNotificationAction(
-                        Intent().apply {
-                            this.action = OrexAndroidTelecomManager.ACTION_ANSWER
-                            putExtra(OrexAndroidTelecomManager.EXTRA_CALL_ID, callId)
-                        },
-                    )
-                    OrexPushBridge.bringAppToFront(this)
-                } else {
-                    OrexPushBridge.launchIncomingCallAction(
-                        context = this,
-                        callId = callId,
-                        displayName = displayName,
-                        video = useVideo,
-                        action = "answer",
-                        fromSystem = false,
-                        bringUiToFront = true,
-                    )
+                if (isDeviceLocked()) {
+                    try {
+                        startActivity(
+                            OrexIncomingCallActivity.createIntent(
+                                context = this,
+                                callId = callId,
+                                ringEventId = ringEventId,
+                                displayName = displayName,
+                                video = video,
+                                timeoutAfterMs = OrexCallPresentationState.INCOMING_RING_TIMEOUT_MS,
+                                action = action,
+                                systemManaged = systemManaged,
+                            ),
+                        )
+                    } catch (error: Throwable) {
+                        Log.e(TAG, "Unable to show lock-screen answer gate call=$callId", error)
+                    }
+                    return
                 }
+                val useVideo = action == ACTION_ANSWER_VIDEO || video
+                val launched = OrexPushBridge.acceptIncomingCallFromNativeAction(
+                    context = this,
+                    callId = callId,
+                    ringEventId = ringEventId,
+                    displayName = displayName,
+                    video = useVideo,
+                    fromSystem = systemManaged,
+                    bringUiToFront = true,
+                )
                 if (!launched) {
-                    Log.e(TAG, "Failed to launch answered call $callId")
-                    OrexCallPresentationState.markEnded(applicationContext, callId)
+                    Log.w(TAG, "Accepted call action was not claimed $callId")
                 }
             }
 
             ACTION_REJECT -> {
+                if (!OrexCallPresentationState.markEnded(
+                        applicationContext,
+                        callId,
+                        ringEventId,
+                    )
+                ) return
                 OrexNotificationCenter.cancelCallNotification(applicationContext)
-                OrexCallPresentationState.markEnded(applicationContext, callId)
                 if (systemManaged) {
                     OrexAndroidTelecomManager.handleNotificationAction(
                         Intent().apply {
                             this.action = OrexAndroidTelecomManager.ACTION_DECLINE
                             putExtra(OrexAndroidTelecomManager.EXTRA_CALL_ID, callId)
+                            ringEventId?.let {
+                                putExtra(OrexAndroidTelecomManager.EXTRA_RING_EVENT_ID, it)
+                            }
                         },
                     )
                 } else {
                     OrexPushBridge.launchIncomingCallAction(
                         context = this,
                         callId = callId,
+                        ringEventId = ringEventId,
                         displayName = displayName,
                         video = video,
                         action = "reject",
@@ -107,9 +114,14 @@ class OrexCallActionActivity : Activity() {
         }
     }
 
+    private fun isDeviceLocked(): Boolean =
+        (getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)
+            ?.isKeyguardLocked == true
+
     companion object {
         private const val TAG = "OrexCallAction"
         private const val EXTRA_CALL_ID = "orex_call_id"
+        private const val EXTRA_RING_EVENT_ID = "orex_ring_event_id"
         private const val EXTRA_DISPLAY_NAME = "orex_display_name"
         private const val EXTRA_VIDEO = "orex_video"
         private const val EXTRA_ACTION = "orex_action"
@@ -121,12 +133,14 @@ class OrexCallActionActivity : Activity() {
         fun createIntent(
             context: Context,
             callId: String,
+            ringEventId: String? = null,
             displayName: String,
             video: Boolean,
             action: String,
             systemManaged: Boolean,
         ): Intent = Intent(context, OrexCallActionActivity::class.java).apply {
             putExtra(EXTRA_CALL_ID, callId)
+            normalizeRingEventId(ringEventId)?.let { putExtra(EXTRA_RING_EVENT_ID, it) }
             putExtra(EXTRA_DISPLAY_NAME, displayName)
             putExtra(EXTRA_VIDEO, video)
             putExtra(EXTRA_ACTION, action)

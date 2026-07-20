@@ -4,13 +4,13 @@
 сквозным шифрованием сообщений через **vodozemac** и нативными звонками Orex на
 стеке **MatrixRTC / LiveKit**. Единая кодовая база: **Web · Android · Windows**.
 
-Текущая версия: `0.4.0+25`.
-
-Orex сейчас находится в стадии **cross-platform alpha / dogfood и hardening
-версии 0.4.0**: это уже собираемый продукт с quality gate, системными Android-
-звонками и killed-process push flow, но ещё не публичный security-oriented релиз.
-Media E2EE звонков и полностью устойчивый active-call background lifecycle пока
-не заявляются как готовые.
+Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+5**: это
+исходный release candidate для dogfood с системными Android-звонками,
+killed-process push, MatrixRTC/LiveKit media E2EE и обязательным release quality
+gate. После обновления зависимостей сборки должны быть заново подтверждены на
+Android, Web и Windows. Версия ещё не является
+публичным security-certified релизом: перед таким заявлением нужны независимый
+аудит и полный Android ↔ Web ↔ Windows device smoke.
 
 ## 1. Продуктовый фокус
 
@@ -41,11 +41,6 @@ Flutter-запуск и авторизация используют единый
 - источник оформления один — `OrexBrandHeader`, поэтому splash и auth-экраны
   не смогут разъехаться при следующем изменении брендинга.
 
-В `0.4.0+9` Android-only оформление native launch surface удалено. На Android
-12+ системный splash остаётся пустым и не рисует launcher icon: прежняя попытка
-дублировать бренд до первого Flutter frame обрезала adaptive icon квадратом и
-визуально конфликтовала с настоящим Flutter splash.
-
 Сообщения защищаются на Matrix-слое:
 
 - `vodozemac` инициализируется до старта Matrix-клиента;
@@ -55,9 +50,10 @@ Flutter-запуск и авторизация используют единый
 - Windows/Linux desktop cache открывается через SQLCipher-backed FFI database и
   проверяет `PRAGMA cipher_version` перед использованием.
 
-Важно: E2EE сообщений не означает автоматическое E2EE для звонков или
-зашифрованный desktop-кэш на каждой платформе. Эти границы в Orex описаны
-явно, чтобы продукт не обещал больше, чем реально обеспечивает.
+Важно: E2EE сообщений и media E2EE звонков — разные криптографические слои.
+Orex включает их отдельно и не считает transport encryption заменой media E2EE.
+Desktop-кэш также защищается отдельным SQLCipher-backed слоем. Границы каждого
+механизма описаны явно, чтобы продукт не обещал больше, чем реально проверено.
 
 ## 3. Чаты и навигация
 
@@ -126,7 +122,10 @@ Orex поддерживает отправку вложений, предпро�
 - предварительная проверка drag-and-drop до чтения больших файлов в память.
 
 Это важно для desktop UX: пользователь может случайно бросить в окно огромный
-файл, и приложение не должно бездумно читать всё в RAM. На IO-платформах
+файл, и приложение не должно бездумно читать всё в RAM. Предварительная
+проверка уже защищает выбор и добавление вложений в очередь, но пересылка
+очень больших файлов ещё требует отдельного streaming-hardening из roadmap.
+На IO-платформах
 открытие скачанных файлов и системное воспроизведение медиа проходят через один
 helper с sanitization имени и защитой от path traversal.
 
@@ -137,22 +136,49 @@ helper с sanitization имени и защитой от path traversal.
 
 Что есть сейчас:
 
+- мобильный исходящий и принятый звонок открывается развёрнутым; при ответе из
+  background/cold start нативная оболочка сначала показывает «Подключаем к
+  звонку…», затем передаёт экран уже поставленному в navigator `CallScreen` со
+  статусом «Соединение…», не показывая Home или свёрнутую панель между этапами;
 - входящий личный звонок поверх текущего экрана;
 - полный экран звонка;
 - свёрнутая панель активного звонка;
 - единые call controls для полного и свёрнутого вида;
 - плитки участников, фокус на участника, zoom и предпочтение screen share;
 - microphone/camera/speaker controls;
-- быстрое переключение активной камеры без пересоздания звонка;
+- последовательное переключение активной камеры с одной управляемой LiveKit
+  publication: без второй вручную опубликованной camera publication и без
+  permission-probe, открывающего дополнительный capture во время звонка;
 - screen-share controls и desktop source picker на поддерживаемых платформах;
 - Android screen share пока не показывается в controls: MediaProjection flow ещё
   не реализован;
 - настройки аудиоустройств;
-- реакции и поднятая рука как состояние участника звонка;
+- на Android маршрутом earpiece/speaker/wired/Bluetooth управляет Core-Telecom;
+  для connected audio-call на earpiece proximity wake lock гасит экран у уха и
+  освобождается при видео, смене маршрута и завершении звонка;
+- семантический вибро-отклик Android для selection/action/confirm/destructive
+  действий в звонке и composer; desktop/web остаются безопасным no-op;
+- реакции и поднятая рука как состояние участника звонка; звук реакции
+  воспроизводится только у удалённых участников при появлении нового remote
+  reaction timestamp, а не локально у отправителя;
 - голосовые каналы для групп, каналов и чатов супергрупп;
 - listen-only UX для каналов;
 - rollback при ошибках signaling/media connect, чтобы не оставлять фантомную
-  активную сессию.
+  активную сессию;
+- точная идентичность попытки `room + ring event`: stale accept/reject/ended не
+  применяется к следующему звонку в той же комнате;
+- `accepted` публикуется после успешного MatrixRTC membership, `handled` закрывает
+  только лишние ringing surfaces, а reject/busy не уничтожает созданный
+  вызывающим зашифрованный MatrixRTC-канал;
+- delayed ring без живого membership подавляется и не может воскресить старый
+  Android incoming call;
+- accepted/rejected/busy/ended/handled в E2EE-комнатах отправляются как
+  Olm-encrypted to-device события конкретным Matrix DeviceKeys;
+- все call-control Matrix writes проходят через общую очередь с coalescing и
+  backoff по серверному `retry_after_ms`;
+- звонок fail-closed не запускается в незашифрованной Matrix-комнате. Временный
+  `OREX_ALLOW_UNENCRYPTED_CALLS=true` предназначен только для локальной
+  диагностики и снимает защиту доставки медиаключей от homeserver.
 
 Начиная с `0.4.0+4`, личные звонки на Android 8+ интегрированы с Android
 Telecom через Jetpack Core-Telecom:
@@ -161,12 +187,23 @@ Telecom через Jetpack Core-Telecom:
 - ответ, отклонение, завершение, mute и hold из системного UI/гарнитуры
   синхронизируются с `CallController` и LiveKit;
 - во время зарегистрированного системного звонка выбор earpiece/speaker/wired/
-  Bluetooth endpoint передаётся Telecom, а старый `AudioManager` route не
-  конкурирует с системным call stack;
+  Bluetooth endpoint передаётся только Core-Telecom; встроенные speaker/earpiece
+  подтверждаются по типу endpoint, а громкость остаётся на системном
+  `STREAM_VOICE_CALL`; сохранённый выбор earpiece больше не сбрасывается при
+  следующем запуске приложения; после успешной Telecom-регистрации LiveKit
+  получает полноценную `communication` audio-session configuration и остаётся в
+  manual lifecycle на время системного вызова, поэтому Core-Telecom сохраняет
+  единоличное владение endpoint routing; после завершения возвращается automatic
+  lifecycle, а fallback без Telecom его не покидает;
 - системные mute/hold не перезаписывают пользовательское предпочтение микрофона:
   после восстановления возвращается выбранное в Orex состояние;
 - входящие и активные вызовы разделены на разные notification channels: входящий
   вызов использует high-importance канал, активный — обычный ongoing-канал;
+  active-call notification принадлежит только `OrexCallForegroundService`, поэтому
+  поздний ring/handled/end cleanup не может удалить её из push-слоя; call cards
+  строятся через `NotificationCompat.CallStyle`: ongoing-карточка получает
+  обязательное системное действие завершения и два пользовательских действия —
+  микрофон и локальный звук;
 - на Android ниже API 26 и для несистемных голосовых каналов сохраняется прежний
   безопасный in-app fallback.
 
@@ -204,9 +241,9 @@ Matrix push локальными таймерами или фоновым pollin
 - на Android 14+ Orex проверяет `canUseFullScreenIntent()` и при первом запросе
   notification permission открывает системную страницу доступа, если право на
   полноэкранный звонок не выдано;
-- один фиксированный call notification ID используется push-слоем и
-  Core-Telecom, поэтому переход от cold push к системной call-сессии обновляет
-  одну карточку вместо создания дублей;
+- ringing и ongoing call notifications используют разные ID и разных владельцев:
+  answer/reject/push cleanup снимает только входящую карточку, а ongoing-карточку
+  создаёт и удаляет исключительно foreground call service;
 - внутри открытого приложения используется полноэкранный Flutter call UI той же
   двухкнопочной композиции; native full-screen intent подавляется, пока Activity
   реально находится в foreground;
@@ -217,50 +254,94 @@ Production gateway развёрнут рядом с Synapse как внутре�
 `http://sygnal:5000/_matrix/push/v1/notify`. Android сам к нему не подключается.
 Production build использует `app_id = ru.vasys.orex_messenger`.
 
-Практическая настройка Firebase и release gate описана в
-`docs/release-builds.md`, а диагностика цепочки Synapse → Sygnal → FCM — в
-`docs/push-infrastructure.md`.
+Когда desktop-процесс уже запущен, Windows показывает системные Matrix
+уведомления для новых сообщений из неоткрытых комнат и открывает нужный чат по
+нажатию. Доставка и активация для полностью закрытого Windows-клиента —
+отдельная задача ветки `0.4.x`.
+
+Практическая сборка описана в `docs/release-android.md`,
+`docs/release-windows.md` и `docs/release-web.md`; диагностика цепочки
+Synapse → Sygnal → FCM — в `docs/push-infrastructure.md`.
 
 LiveKit JWT берётся через `lk-jwt-service` по legacy-compatible контракту
 `POST /sfu/get`. В этот endpoint нельзя отправлять `requested_livekit_grants`:
 совместимые backend-ы отклоняют неизвестные поля с HTTP 400.
 
-## 8. Честный статус E2EE звонков
+## 7.2. `M_LIMIT_EXCEEDED` и приватный Synapse
 
-LiveKit transport защищает соединение на транспортном уровне, но это не то же
-самое, что media E2EE. Настоящее media E2EE требует ключа, который известен
-только участникам звонка и подключается в `livekit_client` через
-`RoomOptions(encryption: E2EEOptions(...))`.
+`M_LIMIT_EXCEEDED` возвращает homeserver или reverse proxy, а не LiveKit.
+Orex сериализует call-related Matrix writes, объединяет одинаковые in-flight
+операции и соблюдает `retry_after_ms`, чтобы ring, membership cleanup и
+media-key retry не создавали повторный request storm.
 
-Сейчас Orex не включает media E2EE для звонков, потому что ещё не построен
-надёжный key-management:
+Для маленького доверенного Synapse лимит сообщений настраивается в
+`homeserver.yaml`:
 
-- нужно получить общий call key не от LiveKit/SFU;
-- нужно передать или согласовать его через Matrix E2EE-состояние комнаты;
-- нужно включить LiveKit E2EE только когда все участники умеют его использовать;
-- нужно обработать ротацию ключей, reconnect и join позднего участника;
-- нужно протестировать Web, Android и Windows отдельно.
+```yaml
+rc_message:
+  per_second: 50
+  burst_count: 200
+```
 
-Поэтому Orex честно говорит: **сообщения — E2EE; звонки — пока не заявляются как
-media E2EE**. Это не финальная цель, а безопасная формулировка для текущей
-ветки `0.4.0+25`.
+После изменения требуется полный restart Synapse и его workers. Если 429
+остаётся, отдельно проверяется rate limiting в nginx/Traefik.
+
+Для конкретного локального пользователя message ratelimit можно отключить через
+Synapse Admin API `/_synapse/admin/v1/users/<user_id>/override_ratelimit`, передав
+`messages_per_second: 0` и `burst_count: 0`. Admin access token никогда не должен
+попадать в клиент Orex или репозиторий. Глобально отключать защиту не требуется:
+клиентский backoff всё равно остаётся обязательным на случай перегрузки сервера.
+
+## 8. Media E2EE звонков
+
+Звонки Orex теперь подключают LiveKit frame encryption через
+`RoomOptions(encryption: E2EEOptions(...))`. Ключи не берутся из LiveKit URL,
+JWT или room id: один `BaseKeyProvider` используется одновременно MatrixRTC-
+signaling слоем и LiveKit media layer.
+
+По умолчанию звонки разрешены только в Matrix-комнатах с включённым E2EE.
+Управляющие accepted/rejected/busy/ended/handled также идут через encrypted
+to-device; открытым остаётся только короткоживущий wake/cancel envelope, нужный
+Android-процессу до разблокировки Matrix crypto.
+
+MatrixRTC передаёт и запрашивает SFU-ключи через E2EE to-device события Matrix,
+а LiveKit шифрует audio/video/data frames теми же participant keys. Перед входом
+в медиа-комнату включён `preShareKey`. Для late join Orex после LiveKit transport
+явно пересинхронизирует MatrixRTC membership, запрашивает отсутствующие remote
+media keys и ждёт callbacks key-provider до публикации состояния `connected`.
+Тот же resync запускается при появлении нового remote participant и после media
+reconnect. Если комната не зашифрована, key provider или обязательные remote keys недоступны, звонок
+завершается ошибкой, а не продолжает работу с чёрным/немым ciphertext и не
+откатывается в plaintext. Escape hatch `OREX_ALLOW_UNENCRYPTED_CALLS=true`
+осознанно ослабляет эту гарантию и запрещён для production-пререлиза.
+
+На Web обязателен version-matched `e2ee.worker.dart.js`. CI собирает worker из
+того же тега `livekit_client`, который зафиксирован в `pubspec.yaml`, и Web
+release не проходит security contract без этого файла.
+
+Это не снимает оставшиеся release-требования: нужно прогнать реальные
+Android ↔ Windows ↔ Web звонки, late join, reconnect и key rotation. Server-side
+проверка ролей/voice grants в `/sfu/get` пока отдельно не реализована и не
+смешивается с media E2EE.
 
 ## 9. Локальное хранение
 
-Локальная Matrix-БД шифруется на поддерживаемых платформах:
+Локальная Matrix-БД шифруется на всех нативных платформах:
 
-- Android/iOS/macOS: `sqflite_sqlcipher`;
-- Windows/Linux: `sqlcipher_flutter_libs` + `sqlite3`/`sqflite_common_ffi`;
-- пароль БД генерируется как 256-битный секрет и хранится через
-  `flutter_secure_storage`.
+- Android/iOS/macOS: `sqflite_sqlcipher 3.4.x`;
+- Windows/Linux: `sqlite3 2.9.x` + `sqflite_common_ffi 2.3.x` +
+  `sqlcipher_flutter_libs 0.6.8`; эта совместимая ветка временно сохраняется,
+  потому что `matrix 8.1.0` ограничивает `sqlite3` диапазоном 2.x;
+- 256-битный пароль БД хранится через `flutter_secure_storage`.
 
-Desktop backend открывает новый файл `orex-sqlcipher.sqlite`. Старый
-`orex.sqlite` из dogfood-сборок не мигрируется и не читается: для Windows перед
-`0.3.3+3` миграции не нужны.
+Имена базы и ключа не менялись: мобильные платформы продолжают использовать
+`orex.sqlite`, Windows/Linux — `orex-sqlcipher.sqlite`, а пароль хранится под
+ключом `orex_db_pass`. Обновление `0.4.2` не удаляет существующий локальный кэш
+и не требует повторного входа только из-за изменений зависимостей.
 
-Если на Windows/Linux вместо SQLCipher случайно загрузится обычный `sqlite3`,
-Orex сразу падает на проверке `PRAGMA cipher_version`, чтобы не создать
-plaintext Matrix cache.
+На Windows/Linux Orex проверяет `PRAGMA cipher_version` и отказывается запускать
+Matrix cache, если native asset оказался обычным SQLite. Plaintext fallback в
+production отсутствует.
 
 ## 10. Архитектура
 
@@ -271,7 +352,7 @@ lib/
     storage/      platform database selection and cache security policy
     matrix/       MatrixService facade and Matrix APIs
     push/         Matrix pusher lifecycle and native notification bridge
-    voip/         CallController, CallSession, LiveKit credentials, media controllers
+    voip/         lifecycle orchestration, attempt/disposition/ring policies, Matrix signaling gate, media controllers
     audio/        audio cues and device preferences
   domain/
     rooms/        Orex room/domain preview models and Matrix mappers
@@ -293,87 +374,199 @@ test/
 этапе важнее стабильность, чем ещё один большой перенос API по папкам.
 Дальнейшая миграция должна идти по мере реальных продуктовых задач.
 
+Телефония после 0.4.2 разделена на presentation/coordinator, lifecycle policy,
+идентичность попытки и tombstone registry, encrypted Matrix control transport,
+rate-limit gate и media/platform integration. `VoipService` остаётся orchestration
+root для Matrix sync, MatrixRTC, push и UI streams; дальнейшее деление выполняется
+только вместе с конкретной runtime-проблемой, а не ради количества файлов.
+
 ## 11. Сборки и релизные артефакты
 
-Подробная инструкция по Android/Windows release-сборкам, ключам подписи и
-desktop storage лежит здесь:
+Release-инструкции разделены по платформам:
 
-[docs/release-builds.md](docs/release-builds.md)
+- [Android](docs/release-android.md)
+- [Windows](docs/release-windows.md)
+- [Web](docs/release-web.md)
 
 Короткий локальный quality gate перед release candidate:
 
 ```powershell
+flutter pub get
 flutter analyze --no-pub
 flutter test --no-pub
-flutter build web --release --no-pub
-flutter build apk --debug --no-pub
-flutter build apk --release --split-per-abi --no-pub
-flutter build windows --release --no-pub
+Push-Location android
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug --no-daemon
+Pop-Location
+flutter build web --release --no-web-resources-cdn
+flutter build apk --release --split-per-abi
+flutter build windows --release
 ```
 
-Android release требует signing и собирается только отдельными APK по ABI через
-`--split-per-abi`, чтобы тестировщик не скачивал единый fat APK с native-библиотеками
-для всех архитектур. Windows release теперь можно собирать с `OREX_ENV=production`:
-desktop database открывается через SQLCipher-backed FFI.
+`pubspec.lock` коммитится после успешного `flutter pub get` той же Flutter
+версией, которой собирается пререлиз. Android release требует signing и Firebase
+configuration; Windows/Linux дополнительно проверяют наличие SQLCipher через
+runtime fail-closed check.
 
-## 12. Дорожная карта
+### 11.1. Служебные инструменты
 
-Дорожная карта ниже фиксирует продуктовый порядок работ и зависимости между
+#### Диагностика Android-звонка
+
+`tool\collect_orex_call_logs.ps1` интерактивно собирает один тестовый сеанс
+Android-звонка. Скрипт проверяет подключённое ADB-устройство, по умолчанию
+очищает logcat, сохраняет все его буферы без привязки к PID, снимает состояние
+Activity/Telecom/уведомлений/audio/power через `dumpsys`, создаёт
+отфильтрованный `02-logcat-orex-focused.txt` и упаковывает результат в
+`orex-test-logs\orex-call-<дата>.zip`.
+
+```powershell
+.\tool\collect_orex_call_logs.ps1
+.\tool\collect_orex_call_logs.ps1 -NoClear    # сохранить старый logcat
+.\tool\collect_orex_call_logs.ps1 -Bugreport  # дополнительно снять adb bugreport
+```
+
+Скрипт рассчитан на одно устройство в состоянии `adb devices = device`.
+Перед передачей архива проверьте его на access token, FCM token, пароли и
+приватные URL. Каталог `orex-test-logs` не коммитится.
+
+#### Web-биндинги vodozemac
+
+`tool/setup_web_vodozemac.sh` пересобирает WASM-биндинги vodozemac и полностью
+заменяет сгенерированный каталог `web/pkg`. Он нужен после обновления
+`flutter_vodozemac`, при восстановлении отсутствующего `web/pkg` или при
+осознанной регенерации Web-криптографии; обычный `flutter build web` его не
+запускает.
+
+Скрипт запускается из корня репозитория в Bash и требует Rust (`rustup`,
+`cargo`). Версия `VERSION` в скрипте должна меняться вместе с версией
+`flutter_vodozemac` в `pubspec.yaml`.
+
+```bash
+./tool/setup_web_vodozemac.sh
+```
+
+Не храните вручную созданные файлы в `web/pkg`: скрипт удаляет каталог перед
+генерацией.
+
+#### Проверка Android native vodozemac
+
+`android/cargokit_proxy/run_build_tool.cmd` — внутренний Windows-proxy, а не
+команда для ручного запуска. Gradle автоматически подключает его только для
+задач `flutter_vodozemac` на Windows.
+
+Proxy берёт Flutter SDK из `android/local.properties`, вызывает исходный
+Cargokit с теми же входными параметрами, удаляет старые `.so` перед сборкой и
+завершает Gradle с ошибкой, если хотя бы для одного запрошенного ABI не создан
+`libvodozemac_bindings_dart.so`. Это предотвращает ложный успешный APK без
+native E2EE-библиотеки. `android/cargokit_proxy/gradle/plugin.gradle` —
+служебный marker-файл proxy и также не запускается вручную.
+
+Задачи `verifyDebugVodozemacNativeLibs`, `verifyProfileVodozemacNativeLibs` и
+`verifyReleaseVodozemacNativeLibs` проверяют уже объединённые native-библиотеки
+приложения. Они автоматически входят в `assemble*`, `package*` и `bundle*`;
+при диагностике можно вызвать проверку отдельно:
+
+```powershell
+Push-Location android
+.\gradlew.bat verifyDebugVodozemacNativeLibs --no-daemon
+Pop-Location
+```
+
+#### Деплой и CI
+
+`docker-compose.web.yml` публикует `build/web` через nginx в существующей
+внешней сети `traefik-proxy` и задаёт production security headers. Инструкции
+по запуску — в [Web release](docs/release-web.md).
+
+`.github/workflows/ci.yml` выполняет проверки для pull request и веток
+`main`/`master`: Dart analyze/test, Kotlin/JUnit, проверку Web security
+contract, Android debug/release и Windows release build. Workflow не публикует
+артефакты и не выполняет деплой.
+
+## 12. Древо разработки
+
+### Текущий статус ветки 0.4.2
+
+**Сделано:** полноэкранный запуск мобильного звонка, исправленный accept/reject,
+точная идентичность попытки, anti-replay по ID/времени, encrypted call-control,
+Matrix request gate с `retry_after_ms`, fail-closed media E2EE и SQLCipher 4.10
+через совместимую ветку `sqlite3 2.x` на desktop без смены существующей базы
+или ключа. В `0.4.2+9` добавлены конечные deadlines для MatrixRTC/LiveKit,
+рабочее отключение входящего LiveKit-аудио, ongoing-уведомление Android и
+исправление lifetime Web-диалогов. В `0.4.2+10` каждый личный звонок получает
+отдельное MatrixRTC-поколение по точному ring event ID: поздний cleanup первого
+звонка больше не может удалить membership второго. Compound lifecycle
+`GroupCallSession.enter/leave` не удерживает глобальную очередь Matrix-записей;
+запоздалый `enter` получает compensating teardown, cleanup одной SDK-сессии
+сериализован, а любой Matrix write имеет обязательный hard timeout. Завершение
+звонка освобождает UI и локальный owner до сетевого cleanup и само ограничено
+по времени, поэтому повторный вызов не ждёт зависшую предыдущую операцию. Так
+как `call_id` личного звонка стал поколенческим, для smoke и dogfood все
+участники звонка должны одновременно использовать сборку `0.4.2+10` или новее.
+В `0.4.2+11` Android-представление входящего вызова различает живого владельца
+звонка и оставшееся после остановленного процесса состояние `answering/active`.
+Свежий точный ring больше не подавляется старым SharedPreferences-состоянием и
+не записывается ошибочно в cancellation tombstone; это восстанавливает
+уведомление и full-screen incoming UI в фоне и при cold start. GitHub CI также
+запускает точную Gradle-задачу `:app:testDebugUnitTest`, поэтому native
+Kotlin/JUnit-тесты Orex проверяются отдельно от тестов Flutter-плагинов. В
+`0.4.2+12` принятие из background/cold start получило явный UI handoff:
+нативное окно остаётся в состоянии «Подключаем к звонку…», MainActivity строит
+Flutter navigator под нативным cover, затем мобильный `CallScreen` открывается
+развёрнутым со статусом «Соединение…». Нативный cover снимается только после
+post-frame подтверждения расширенного route; foreground service и Core-Telecom
+больше не могут преждевременно закрыть connecting shell. В `0.4.2+14` неудачные UI-изменения `+13` точечно откатены: у нативного
+экрана «Подключаем к звонку…» снова нет отдельной кнопки отмены или failure-
+режима, а ongoing-карточка снова использует прежние явные кнопки микрофона,
+звука и завершения вместо `CallStyle`, скрывавшего пользовательские действия.
+Cold-start handoff больше не отправляет Answer в ещё не готовый Dart
+`MethodChannel`: native bridge ждёт первого реального вызова из Dart, после чего
+доставляет сохранённый Answer; persisted open остаётся резервным путём. Это
+устраняет зависший connecting-cover и повторный Flutter-рингтон без добавления
+кнопок в экран подключения. Полезная часть `+13` сохранена: process-owned
+FlutterEngine, foreground phone-call service, wake lock, `START_STICKY`,
+удержание runtime при удалении задачи и восстановление пропавшей ongoing-
+карточки. Обычное сворачивание или смахивание Orex из recent apps не должно
+завершать активный разговор.
+
+
+**До выдачи пререлиза:** повторно выполнить `pub get`, `analyze`, `test` после
+изменений `+14`; smoke двух последовательных звонков Android ↔ Web ↔ Windows для accept/reject/redial, потери
+сети, stage timeout, повторного входа после фантома, audio mute, background/lock
+screen и reconnect; проверить logout/soft logout после Matrix 8.x, release-сборки
+и push на убитом Android-процессе. Web smoke должен выполняться через
+production reverse proxy: Chrome может блокировать Matrix `/sync` с
+`http://localhost` на публичный homeserver по Private Network Access/CORS, и в
+таком режиме звонок закономерно не получает membership и медиаключи. Переход на
+`sqlite3 3.x` отложен до снятия ограничения в Matrix SDK; он не должен
+форсироваться через `dependency_overrides`. Для Android отдельно проверить
+Answer при выключенном экране, смахивание задачи во время активного разговора,
+возврат по ongoing-уведомлению и отказ в `POST_NOTIFICATIONS`: без системного
+разрешения Android оставляет foreground service в Task Manager, но приложение
+не может принудительно показать карточку в notification drawer. Force stop из
+настроек Android остаётся жёсткой системной границей и прекращает любой call
+runtime; обычное закрытие UI/смахивание задачи теперь не должно завершать
+звонок.
+
+**Отложено:** миграция Android-проекта и зависимых Flutter-плагинов на
+Built-in Kotlin до того, как будущая версия Flutter удалит поддержку применения
+Kotlin Gradle Plugin из app/plugins; режим «только подтверждённые cross-signed
+устройства», серверный enforcement LiveKit grants/voice permissions, переход на
+`sqlite3 3.x` после
+совместимого Matrix SDK, миграция `flutter_secure_storage` на следующий major и
+дальнейшее дробление `VoipService` без подтверждённой runtime-проблемы.
+
+
+Древо разработки ниже фиксирует продуктовый порядок работ и зависимости между
 функциями. Она не превращает каждый пункт в обещание конкретной даты: версии —
 это логические этапы, а не календарный контракт.
 
-Главный принцип планирования после `0.4.0`: сначала закрыть системную надёжность
-мобильного клиента, затем построить единый слой контактов, сессий, приватности,
-уведомлений и локальных данных, и только после этого расширять timeline,
-профили и мультимедиа. Так новые функции не придётся повторно пришивать к
-разным экранам и платформенным обходным путям.
+Главный принцип дальнейшего планирования: сначала закрепить системную
+надёжность мобильного и desktop-клиентов, затем построить единый слой контактов,
+сессий, приватности, уведомлений и локальных данных, и только после этого
+расширять timeline, профили и мультимедиа. Так новые функции не придётся
+повторно пришивать к разным экранам и платформенным обходным путям.
 
-### 12.1. Версия 0.4.0 — полноценное мобильное приложение
-
-Главная цель `0.4.0` — сделать мобильный Orex настоящим системным мессенджером,
-а не desktop-клиентом, перенесённым на Android.
-
-1. **✅ Настоящие системные звонки Android — реализовано в `0.4.0+4`.**
-   Личные входящие и исходящие вызовы на Android 8+ интегрированы с Core-Telecom:
-   системный call UI, CallStyle-уведомление, действия гарнитуры/системных
-   поверхностей, Telecom audio endpoints и синхронизация mute/hold с LiveKit.
-2. **✅ Уведомления и вызовы при закрытом Android-приложении — реализовано.**
-   FCM receiver остаётся коротким, Matrix HTTP-pusher переживает ротацию token и
-   logout, E2EE-события разрешаются в expedited WorkManager, а killed-process
-   входящий вызов получает отдельное full-screen окно поверх lock screen и
-   cold-start действия «Ответить»/«Отклонить». До публичного релиза остаётся не
-   разработка feature, а обязательный device smoke на поддерживаемых Android.
-3. **✅ Переключение камеры в видеозвонке — реализовано.** Локальная видеоплитка
-   умеет быстро переключать активное camera device через LiveKit track и
-   откатываться к безопасному пересозданию track при ошибке fast switch.
-4. **🟡 Звонки в фоне и при заблокированном экране — частично.** Lock-screen
-   incoming flow работает, но активный звонок всё ещё живёт вместе с Flutter-
-   процессом: отдельного foreground call service и гарантированного reconnect
-   после process death нет.
-5. **🟡 Слуховой режим и голосовая связь — частично.** Earpiece/speaker/wired/
-   Bluetooth routing интегрирован с Android Telecom. Proximity sensor и
-   автоматическое выключение экрана у уха ещё не реализованы.
-6. **🟡 Вибро-отклик — частично.** Haptics есть на принятии и отклонении входящего
-   звонка; единой политики для остальных ключевых действий интерфейса пока нет.
-7. **🔴 Демонстрация экрана на Android — не реализована.** Controller явно
-   блокирует Android до появления MediaProjection flow; неработающая кнопка в
-   call controls скрыта, чтобы release-сборка не обещала недоступную функцию.
-8. **🔴 Вход по QR-коду — не реализован.** Передача или подтверждение сессии между
-   уже авторизованным устройством и новым клиентом остаётся отдельной задачей.
-
-#### Что сейчас реально мешает закрыть 0.4.0
-
-- active-call lifecycle всё ещё привязан к Flutter-процессу, а не к отдельному
-  Android foreground call service;
-- Android screen share требует полноценного MediaProjection lifecycle, а не
-  ещё одного fallback вокруг desktop-контроллера;
-- proximity sensor и haptics пока существуют как отдельные незавершённые куски,
-  без платформенного lifecycle/controller слоя;
-- killed-process push/call flow нуждается в воспроизводимом device smoke matrix
-  по Android API и OEM, потому что CI проверяет сборку, но не системное поведение;
-- QR-login отсутствует, если он остаётся обязательной частью scope `0.4.0`.
-
-### 12.2. Ветка 0.4.x — release hardening
+### 12.1. Ветка 0.4.x — release hardening
 
 Эта ветка не должна разрастаться в новый продуктовый релиз. Её задача —
 сделать уже существующие функции предсказуемыми перед расширением UX.
@@ -381,15 +574,26 @@ desktop database открывается через SQLCipher-backed FFI.
 * 🟡 единый безопасный pipeline временных медиафайлов: sanitization имён и
   запрет path traversal уже используются и для скачанных файлов, и для системного
   media player; контролируемая очистка временных файлов ещё нужна;
-* обработка legacy `orex.sqlite` из dogfood-сборок, чтобы старый plaintext cache
-  не оставался рядом с новой SQLCipher-базой;
-* ✅ явная Android backup policy: platform backup отключён для приложения;
+* 🟡 **Допилить уведомления на Windows.** Аватарки в уведомлениях, отработка 
+  уведомления при открытом чате, но свёрнутом приложении; сворчивание в трей
+* 🟡 **Обновление из приложения.** Проверка новой версии с понятным предложением
+  обновиться, ссылкой или запуском штатного installer-потока платформы и
+  проверяемым источником метаданных; без скрытой загрузки или автозамены
+  исполняемого файла;
+* 🟡 **Устойчивая пересылка очень больших файлов.** Streaming-передача,
+  ограничение памяти, отмена и понятная ошибка вместо вылета при forwarding;
+* 🟡 **Почта, восстановление и QR-вход.** Привязка и подтверждение e-mail,
+  безопасный сброс пароля и QR-передача/подтверждение сессии должны использовать
+  один account-security flow и не раскрывать адрес почты другим пользователям;
+* 🟡 **Демонстрация экрана на Android.** Полный MediaProjection lifecycle:
+  системное разрешение, foreground ownership, publication, stop/revoke и
+  корректное восстановление после background/lock screen;
 * privacy-safe crash reporting и диагностика критических flow: login, sync,
   calls и media;
 * release smoke tests и фиксация воспроизводимых версий backend/client
   зависимостей перед публичным распространением.
 
-### 12.3. Версия 0.5.0 — доверие, контакты и управление сессиями
+### 12.2. Версия 0.5.0 — доверие, контакты и управление сессиями
 
 Главная цель `0.5.0` — построить единый слой отношений между пользователем,
 собеседниками и устройствами. На него затем должны опираться приватность,
@@ -424,9 +628,9 @@ desktop database открывается через SQLCipher-backed FFI.
 - кто может приглашать в группы — `Все / Контакты / Никто`;
 - получение сообщений от неподтверждённых сессий — `Разрешить / Запретить`.
 
-### 12.4. Версия 0.6.0 — уведомления и локальный контроль данных
+### 12.3. Ветка 0.5.x — уведомления и локальный контроль данных
 
-Главная цель `0.6.0` — дать пользователю предсказуемый контроль над тем, что
+Главная цель `0.5.x` — дать пользователю предсказуемый контроль над тем, что
 приложение сообщает системе, загружает автоматически и хранит локально.
 
 #### Глобальные настройки уведомлений
@@ -462,9 +666,9 @@ killed-process resolution. Нельзя делать отдельную лока
 - очистка всех локальных данных с отдельным подтверждением и ясным объяснением,
   что произойдёт с сессией и зашифрованным локальным состоянием.
 
-### 12.5. Версия 0.7.0 — полноценная семантика переписки
+### 12.4. Версия 0.6.0 — полноценная семантика переписки
 
-Главная цель `0.7.0` — сделать timeline удобным для длинных и активных диалогов.
+Главная цель `0.6.0` — сделать timeline удобным для длинных и активных диалогов.
 
 1. **Юзабельные ответы.** Базовые reply events уже поддерживаются, но нужны
    полноценная цитата исходного сообщения, понятная связь reply chain, переход к
@@ -485,9 +689,9 @@ killed-process resolution. Нельзя делать отдельную лока
 7. **Голосования.** Создание опросов, выбор вариантов, результаты и обновление
    состояния в реальном времени.
 
-### 12.6. Версия 0.8.0 — профили, аватары и идентичность
+### 12.5. Ветка 0.6.x — профили, аватары и идентичность
 
-Главная цель `0.8.0` — превратить текущие карточки пользователя и комнаты в
+Главная цель `0.6.x` — превратить текущие карточки пользователя и комнаты в
 полноценные управляемые профили.
 
 1. **Полноценные профили пользователей.** Аватар, описание, Matrix ID, общие
@@ -503,9 +707,9 @@ killed-process resolution. Нельзя делать отдельную лока
 5. **Настройки профиля.** Управление публичными данными, аватарами и связанными
    privacy-настройками из одного места.
 
-### 12.7. Версия 0.9.0 — развитие мультимедиа
+### 12.6. Версия 0.7.0 — развитие мультимедиа
 
-Главная цель `0.9.0` — довести медиавозможности Orex до уровня повседневного
+Главная цель `0.7.0` — довести медиавозможности Orex до уровня повседневного
 мессенджера без зависимости от стороннего клиента.
 
 1. **Голосовые сообщения.** Запись, предпросмотр, отправка, waveform и
@@ -519,16 +723,17 @@ killed-process resolution. Нельзя делать отдельную лока
    для аудио, видео, голосовых сообщений и видео-заметок на Web, Android и
    Windows.
 
-### 12.8. Production security после первой публичной ветки
+### 12.7. Production security после первой публичной ветки
 
-* Media E2EE для звонков через LiveKit `E2EEOptions` и Matrix-backed call keys.
+* Cross-platform hardening media E2EE: late join, reconnect, key rotation и
+  совместимость Android ↔ Windows ↔ Web в release-сборках.
 * Server-side Orex authorization gateway для LiveKit token grants и настоящего
   enforcement voice permissions.
 * Дальнейшее сокращение plaintext-следов локального media cache и временных
   расшифрованных файлов.
 * Подпись Windows-дистрибутива и проверяемая публикация release artifacts.
 
-### 12.9. Архитектура после релиза
+### 12.8. Архитектура после релиза
 
 * Постепенно уводить API `MatrixService` за более узкие сервисы:
   `matrix.rooms`, `matrix.discovery`, `matrix.security`, `matrix.media`.
@@ -545,7 +750,10 @@ killed-process resolution. Нельзя делать отдельную лока
 
 - Лицензии Matrix SDK и зависимостей перед публичным релизом надо проверить
   отдельно относительно модели распространения Orex.
-- После первой стабильной сборки стоит закрепить версии пакетов: у Matrix SDK и
-  LiveKit бывают breaking changes между major-версиями.
+- Пререлиз фиксирует Matrix 8.1.0, LiveKit 2.9.0-dev.0 и flutter_webrtc 1.5.2.
+  `file_picker 11.0.2` использует новый static API `FilePicker.pickFiles`;
+  `package_info_plus 9.0.1` выбран как совместимая с `win32 5.x` ветка. Major
+  dependency upgrades делаются только вместе с `pub get`, analyze/test и device
+  smoke.
 - README описывает продукт и архитектурные границы. Детальные команды и ключи
   должны жить в release-документах, а не растворяться в продуктовой презентации.
