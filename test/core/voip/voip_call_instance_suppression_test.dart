@@ -2,6 +2,43 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:orex_messenger/core/voip/voip_service.dart';
 
 void main() {
+  group('stale membership cleanup scope', () {
+    bool canContinue({
+      bool disposed = false,
+      bool accountTransitionInProgress = false,
+      int scheduledGeneration = 7,
+      int currentGeneration = 7,
+      bool loggedIn = true,
+      String scheduledUserId = '@alice:example.org',
+      String? currentUserId = '@alice:example.org',
+      String scheduledDeviceId = 'ALICE',
+      String? currentDeviceId = 'ALICE',
+    }) => orexShouldContinueStaleMembershipCleanup(
+      disposed: disposed,
+      accountTransitionInProgress: accountTransitionInProgress,
+      scheduledGeneration: scheduledGeneration,
+      currentGeneration: currentGeneration,
+      loggedIn: loggedIn,
+      scheduledUserId: scheduledUserId,
+      currentUserId: currentUserId,
+      scheduledDeviceId: scheduledDeviceId,
+      currentDeviceId: currentDeviceId,
+    );
+
+    test('continues only for the scheduling account generation', () {
+      expect(canContinue(), isTrue);
+      expect(canContinue(currentGeneration: 8), isFalse);
+      expect(canContinue(currentUserId: '@bob:example.org'), isFalse);
+      expect(canContinue(currentDeviceId: 'BOB'), isFalse);
+    });
+
+    test('stops on logout, transition, or disposal', () {
+      expect(canContinue(loggedIn: false), isFalse);
+      expect(canContinue(accountTransitionInProgress: true), isFalse);
+      expect(canContinue(disposed: true), isFalse);
+    });
+  });
+
   group('orexIsNewCallInstanceAfterPersistedLeave', () {
     test('keeps suppressing the same continuing call membership', () {
       expect(

@@ -598,13 +598,18 @@ object OrexPushBridge {
         )
         if (fromSystem) {
             OrexAndroidTelecomManager.handleNotificationAction(
-                Intent().apply {
+                intent = Intent().apply {
                     action = OrexAndroidTelecomManager.ACTION_ANSWER
                     putExtra(OrexAndroidTelecomManager.EXTRA_CALL_ID, callId)
                     normalizeRingEventId(ringEventId)?.let {
                         putExtra(OrexAndroidTelecomManager.EXTRA_RING_EVENT_ID, it)
                     }
                 },
+                // This method has already started the FGS and queued the
+                // accepted-call handoff above. Telecom only needs to accept
+                // its CallControl now; re-running its answer bootstrap would
+                // deliver the same Dart action twice.
+                answerBootstrapAlreadyStarted = true,
             )
         }
         if (!bringUiToFront) return true

@@ -192,6 +192,17 @@ class MatrixService extends ChangeNotifier {
       notifyListeners();
     });
     _loginStateSub = client.onLoginStateChanged.stream.listen((_) async {
+      final loggedIn = client.isLogged();
+      if (loggedIn) {
+        // A successful login may reuse this MatrixService after a previous
+        // logout. Its first /sync will schedule cleanup for the new account.
+        voip?.resumeStaleMembershipCleanupForLoggedInAccount();
+      } else {
+        // Session expiry and remote logout bypass MatrixAuthApi.logout().
+        // Latch local call cancellation before the asynchronous cleanup starts.
+        voip?.pauseStaleMembershipCleanupForAccountTransition();
+        unawaited(callController.terminateForAccountTransition());
+      }
       // При логауте/смене аккаунта сбрасываем runtime-статус и перечитываем
       // сохранённое намерение пользователя для текущего аккаунта.
       _checkedServerBackup = false;

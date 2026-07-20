@@ -561,6 +561,48 @@ class CallController extends ChangeNotifier {
   bool get isStarting =>
       _startOperation != null && setupPhase != OrexCallSetupPhase.idle;
 
+  /// Releases local call ownership before the Matrix session changes.
+  ///
+  /// An incoming accept may still be waiting for push/Telecom before [start]
+  /// creates a [CallSession].  Invalidate that operation first: otherwise it
+  /// could finish after logout and create media using a revoked or replacement
+  /// Matrix session.  The regular [hangUp] path remains the single owner of
+  /// native, media and MatrixRTC teardown.
+  Future<void> terminateForAccountTransition() async {
+    if (_disposed) return;
+
+    final acceptingIncoming = _incomingAcceptFuture != null;
+    if (acceptingIncoming) {
+      _incomingAcceptGeneration++;
+      _incomingAcceptInstance = null;
+      _pendingAcceptedIncomingCallUi = null;
+    }
+
+    final shouldTerminate = orexShouldTerminateCallForAccountTransition(
+      active: isActive,
+      starting: _startOperation != null,
+      acceptingIncoming: acceptingIncoming,
+      hasSystemCall:
+          _systemCallInstance != null || _systemPreparationInstance != null,
+    );
+    if (!shouldTerminate) return;
+
+    final teardown = hangUp().catchError((Object error, StackTrace _) {
+      // Account teardown must still be allowed to continue when a platform
+      // callback fails. This handler also owns errors from a teardown that
+      // outlives the bounded logout wait below.
+      OrexLog.d('Call', 'account-transition call teardown failed', error);
+    });
+    try {
+      await teardown.timeout(const Duration(seconds: 10));
+    } on TimeoutException {
+      // [hangUp] releases local media/native ownership before its first await.
+      // The slower Matrix cleanup keeps its error handler above, while logout
+      // can proceed instead of leaving Settings indefinitely blocked.
+      OrexLog.d('Call', 'account-transition teardown continues in background');
+    }
+  }
+
   bool _isPersonalCall(Room? room) =>
       room != null &&
       (matrix.voip?.isPersonalCallRoom(room) ?? room.isDirectChat);

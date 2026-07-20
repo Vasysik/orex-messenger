@@ -80,6 +80,41 @@ class _OutgoingRing {
   final String eventId;
 }
 
+class _StaleMembershipCleanupScope {
+  const _StaleMembershipCleanupScope({
+    required this.generation,
+    required this.userId,
+    required this.deviceId,
+  });
+
+  final int generation;
+  final String userId;
+  final String deviceId;
+}
+
+/// A background stale-membership cleanup belongs to the Matrix credentials
+/// that scheduled it.  It must not continue after logout or after another
+/// account has taken over the same process.
+bool orexShouldContinueStaleMembershipCleanup({
+  required bool disposed,
+  required bool accountTransitionInProgress,
+  required int scheduledGeneration,
+  required int currentGeneration,
+  required bool loggedIn,
+  required String scheduledUserId,
+  required String? currentUserId,
+  required String scheduledDeviceId,
+  required String? currentDeviceId,
+}) =>
+    !disposed &&
+    !accountTransitionInProgress &&
+    scheduledGeneration == currentGeneration &&
+    loggedIn &&
+    scheduledUserId.isNotEmpty &&
+    scheduledUserId == currentUserId &&
+    scheduledDeviceId.isNotEmpty &&
+    scheduledDeviceId == currentDeviceId;
+
 class OrexIncomingCall {
   const OrexIncomingCall({required this.room, this.ringEventId});
 
@@ -206,41 +241,134 @@ class VoipService extends ChangeNotifier {
     );
   }
 
+  /// Stops best-effort /sync cleanup from crossing an account boundary.
+  ///
+  /// Call teardown owns its exact active membership separately; this only
+  /// cancels background discovery of stale memberships and invalidates an
+  /// already-running unawaited scan.
+  void pauseStaleMembershipCleanupForAccountTransition() {
+    if (_disposed) return;
+    _accountTransitionInProgress = true;
+    _staleMembershipCleanupGeneration++;
+    _staleMembershipCleanupTimer?.cancel();
+    _staleMembershipCleanupTimer = null;
+    _pendingMembershipCleanupRooms.clear();
+  }
+
+  /// Re-enables cleanup for the same still-authenticated account after an
+  /// explicit logout failed before Matrix revoked its credentials.
+  void resumeStaleMembershipCleanupAfterFailedAccountTransition() {
+    if (_disposed || !client.isLogged()) return;
+    _accountTransitionInProgress = false;
+    _scheduleStaleMembershipCleanup();
+  }
+
+  /// A new successful login starts a new cleanup generation on its first sync.
+  /// Do not schedule immediately: the client can still hold old cached rooms
+  /// while the new account's initial sync is being applied.
+  void resumeStaleMembershipCleanupForLoggedInAccount() {
+    if (_disposed || !client.isLogged()) return;
+    _accountTransitionInProgress = false;
+  }
+
+  bool _isStaleMembershipCleanupCurrent(_StaleMembershipCleanupScope scope) =>
+      orexShouldContinueStaleMembershipCleanup(
+        disposed: _disposed,
+        accountTransitionInProgress: _accountTransitionInProgress,
+        scheduledGeneration: scope.generation,
+        currentGeneration: _staleMembershipCleanupGeneration,
+        loggedIn: client.isLogged(),
+        scheduledUserId: scope.userId,
+        currentUserId: client.userID?.trim(),
+        scheduledDeviceId: scope.deviceId,
+        currentDeviceId: client.deviceID?.trim(),
+      );
+
   /// Cleanup is serialized with call ownership. Removing Matrix state while a
   /// cached SDK GroupCallSession is still entered makes Matrix immediately
   /// force-join it again, producing the phantom loop seen in the logs.
   void _scheduleStaleMembershipCleanup() {
-    if (_disposed || _staleMembershipCleanupInFlight != null) return;
+    final userId = client.userID?.trim();
+    final deviceId = client.deviceID?.trim();
+    if (_disposed ||
+        _accountTransitionInProgress ||
+        _staleMembershipCleanupInFlight != null ||
+        !client.isLogged() ||
+        userId == null ||
+        userId.isEmpty ||
+        deviceId == null ||
+        deviceId.isEmpty) {
+      return;
+    }
+    final scope = _StaleMembershipCleanupScope(
+      generation: _staleMembershipCleanupGeneration,
+      userId: userId,
+      deviceId: deviceId,
+    );
     late final Future<void> operation;
-    operation = _cleanupOwnStaleMemberships().whenComplete(() {
-      if (identical(_staleMembershipCleanupInFlight, operation)) {
-        _staleMembershipCleanupInFlight = null;
-      }
-    });
+    operation =
+        (() async {
+          try {
+            await _cleanupOwnStaleMemberships(scope);
+          } catch (error) {
+            // This task is deliberately unawaited from /sync. Do not turn a
+            // session-expiry/logout race into an unhandled asynchronous exception.
+            if (_isStaleMembershipCleanupCurrent(scope)) {
+              OrexLog.d(
+                'Voip',
+                'background stale membership cleanup failed',
+                error,
+              );
+            }
+          }
+        })().whenComplete(() {
+          if (identical(_staleMembershipCleanupInFlight, operation)) {
+            _staleMembershipCleanupInFlight = null;
+          }
+        });
     _staleMembershipCleanupInFlight = operation;
     unawaited(operation);
   }
 
   /// Удаляем своё членство в звонках, в которых мы на самом деле не находимся.
-  Future<void> _cleanupOwnStaleMemberships() async {
-    final myId = client.userID;
+  Future<void> _cleanupOwnStaleMemberships(
+    _StaleMembershipCleanupScope scope,
+  ) async {
+    if (!_isStaleMembershipCleanupCurrent(scope)) return;
     final roomIds = <String>{
       ..._pendingMembershipCleanupRooms,
       for (final room in client.rooms)
-        if (_callMembers(room).contains(myId)) room.id,
+        if (_callMembers(room).contains(scope.userId)) room.id,
     };
     for (final roomId in roomIds) {
-      if (_disposed) return;
+      if (!_isStaleMembershipCleanupCurrent(scope)) return;
       final room = client.getRoomById(roomId);
       if (room == null) continue;
-      await _cleanupStaleRoomState(room, operationName: 'startup');
+      await _cleanupStaleRoomState(
+        room,
+        operationName: 'startup',
+        staleMembershipCleanupScope: scope,
+      );
     }
   }
 
   Future<void> _cleanupStaleRoomState(
     Room room, {
     required String operationName,
+    _StaleMembershipCleanupScope? staleMembershipCleanupScope,
   }) async {
+    bool canContinue() =>
+        staleMembershipCleanupScope == null ||
+        _isStaleMembershipCleanupCurrent(staleMembershipCleanupScope);
+    if (!canContinue()) return;
+    final userId = staleMembershipCleanupScope?.userId ?? client.userID;
+    final deviceId = staleMembershipCleanupScope?.deviceId ?? client.deviceID;
+    if (userId == null ||
+        userId.isEmpty ||
+        deviceId == null ||
+        deviceId.isEmpty) {
+      return;
+    }
     final protectedCallIds = <String>{
       if (active?.room.id == room.id) active!.groupCallId,
       if (_keyShareState?.groupCall.room.id == room.id)
@@ -252,7 +380,7 @@ class VoipService extends ChangeNotifier {
     };
 
     final localMembershipCallIds = room
-        .getCallMembershipsForUser(client.userID!, client.deviceID!, voip)
+        .getCallMembershipsForUser(userId, deviceId, voip)
         .where(
           (membership) =>
               !membership.isExpired &&
@@ -279,12 +407,14 @@ class VoipService extends ChangeNotifier {
 
     var allRemoved = true;
     for (final gc in staleSessions) {
+      if (!canContinue()) return;
       // All paths that touch the same SDK session share one cleanup tail. The
       // first-call hangup and a second-call preflight can therefore never run
       // two leave/dispose sequences against one GroupCallSession concurrently.
       final cleanup = _queueGroupCallCleanup(
         gc,
         operationName: '$operationName-stale-session',
+        staleMembershipCleanupScope: staleMembershipCleanupScope,
       );
       try {
         await cleanup.timeout(const Duration(seconds: 10));
@@ -311,13 +441,17 @@ class VoipService extends ChangeNotifier {
     // wildcard because a replacement call may already be publishing its own
     // generation in the same room.
     for (final callId in callIdsWithoutSession) {
+      if (!canContinue()) return;
       try {
         await OrexMatrixRequestGate.shared.run<void>(
           operationName: '$operationName-orphan-membership-cleanup',
           coalesceKey: 'membership-cleanup:${room.id}:$callId',
           maxAttempts: 1,
           operationTimeout: const Duration(seconds: 8),
-          operation: () => room.removeFamedlyCallMemberEvent(callId, voip),
+          operation: () async {
+            if (!canContinue()) return;
+            await room.removeFamedlyCallMemberEvent(callId, voip);
+          },
         );
       } catch (error) {
         allRemoved = false;
@@ -329,6 +463,7 @@ class VoipService extends ChangeNotifier {
       }
     }
 
+    if (!canContinue()) return;
     if (allRemoved) {
       _pendingMembershipCleanupRooms.remove(room.id);
       OrexLog.d('Voip', 'removed phantom call membership room=${room.id}');
@@ -661,6 +796,8 @@ class VoipService extends ChangeNotifier {
   Timer? _staleMembershipCleanupTimer;
   Future<void>? _staleMembershipCleanupInFlight;
   final Set<String> _pendingMembershipCleanupRooms = <String>{};
+  bool _accountTransitionInProgress = false;
+  int _staleMembershipCleanupGeneration = 0;
 
   static const _leftCallsPrefsKey = 'orex_voip_left_calls_v1';
   static const _maxPersistedLeftAge = Duration(days: 7);
@@ -1392,9 +1529,9 @@ class VoipService extends ChangeNotifier {
 
   Future<void> _shareLocalMediaKeyWithNewParticipants(
     _CallKeyShareState state,
-    List<CallParticipant> remoteParticipants,
-    {Set<String> forceReplayParticipantIds = const <String>{},}
-  ) async {
+    List<CallParticipant> remoteParticipants, {
+    Set<String> forceReplayParticipantIds = const <String>{},
+  }) async {
     final groupCall = state.groupCall;
     final backend = groupCall.backend;
     if (backend is! OrexLiveKitBackend) {
@@ -1486,10 +1623,8 @@ class VoipService extends ChangeNotifier {
             final backend = groupCall.backend as OrexLiveKitBackend;
             for (final identity in forceRemoteParticipantIds) {
               if (remoteById.containsKey(identity)) continue;
-              final participant = await backend.resolveActiveParticipantByIdentity(
-                groupCall,
-                identity,
-              );
+              final participant = await backend
+                  .resolveActiveParticipantByIdentity(groupCall, identity);
               if (participant != null) {
                 remoteById[participant.id] = participant;
               }
@@ -1684,7 +1819,9 @@ class VoipService extends ChangeNotifier {
   /// Explicitly re-checks incoming calls after login/runtime activation.
   /// Desktop lifecycle delivery must not depend on making an outgoing call first.
   void refreshIncomingCalls() {
-    if (_disposed || !_suppressionRestored) return;
+    if (_disposed || _accountTransitionInProgress || !_suppressionRestored) {
+      return;
+    }
     _scan();
   }
 
@@ -2263,6 +2400,7 @@ class VoipService extends ChangeNotifier {
     GroupCallSession groupCall, {
     required String operationName,
     bool repeatAfterExisting = false,
+    _StaleMembershipCleanupScope? staleMembershipCleanupScope,
   }) {
     // State/registry ownership is released synchronously, even when an older
     // cleanup for this session is still waiting on the network. This prevents
@@ -2274,7 +2412,13 @@ class VoipService extends ChangeNotifier {
     late final Future<void> next;
     next = previous
         .catchError((Object _, StackTrace _) {})
-        .then<void>((_) => _cleanupGroupCallSession(groupCall, operationName))
+        .then<void>(
+          (_) => _cleanupGroupCallSession(
+            groupCall,
+            operationName,
+            staleMembershipCleanupScope: staleMembershipCleanupScope,
+          ),
+        )
         .whenComplete(() {
           if (identical(_groupCallCleanupTails[groupCall], next)) {
             _groupCallCleanupTails.remove(groupCall);
@@ -2286,8 +2430,9 @@ class VoipService extends ChangeNotifier {
 
   Future<void> _cleanupGroupCallSession(
     GroupCallSession groupCall,
-    String operationName,
-  ) async {
+    String operationName, {
+    _StaleMembershipCleanupScope? staleMembershipCleanupScope,
+  }) async {
     final room = groupCall.room;
     final callId = groupCall.groupCallId;
     _detachGroupCallSession(groupCall);
@@ -2312,13 +2457,25 @@ class VoipService extends ChangeNotifier {
           },
         ),
       ],
-      removeMembership: () => OrexMatrixRequestGate.shared.run<void>(
-        operationName: '$operationName-membership-cleanup',
-        coalesceKey: 'membership-cleanup:${room.id}:$callId',
-        maxAttempts: 1,
-        operationTimeout: const Duration(seconds: 8),
-        operation: () => room.removeFamedlyCallMemberEvent(callId, voip),
-      ),
+      removeMembership: () async {
+        final canContinue =
+            staleMembershipCleanupScope == null ||
+            _isStaleMembershipCleanupCurrent(staleMembershipCleanupScope);
+        if (!canContinue) return;
+        await OrexMatrixRequestGate.shared.run<void>(
+          operationName: '$operationName-membership-cleanup',
+          coalesceKey: 'membership-cleanup:${room.id}:$callId',
+          maxAttempts: 1,
+          operationTimeout: const Duration(seconds: 8),
+          operation: () async {
+            final canContinue =
+                staleMembershipCleanupScope == null ||
+                _isStaleMembershipCleanupCurrent(staleMembershipCleanupScope);
+            if (!canContinue) return;
+            await room.removeFamedlyCallMemberEvent(callId, voip);
+          },
+        );
+      },
       stepTimeout: const Duration(seconds: 8),
     );
     for (final failure in result.failures) {
@@ -2329,6 +2486,10 @@ class VoipService extends ChangeNotifier {
         failure.error,
       );
     }
+    final canContinue =
+        staleMembershipCleanupScope == null ||
+        _isStaleMembershipCleanupCurrent(staleMembershipCleanupScope);
+    if (!canContinue) return;
     if (result.membershipRemoved) {
       _pendingMembershipCleanupRooms.remove(room.id);
     } else {

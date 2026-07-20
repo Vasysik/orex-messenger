@@ -85,6 +85,11 @@ int? _retryAfterFromText(String text) {
 /// 2. duplicate in-flight writes with the same semantic key are coalesced;
 /// 3. a server-provided `retry_after_ms` blocks later writes too, preventing a
 ///    retry storm across ring, membership cleanup and media-key messages.
+///
+/// A caller-visible timeout does not release the write lane. Matrix transport
+/// futures are not cancellable, so the original request may still reach the
+/// homeserver after its caller gives up waiting. Letting a newer write start
+/// first could therefore allow the stale request to overwrite newer state.
 final class OrexMatrixRequestGate {
   OrexMatrixRequestGate({
     this.minimumSpacing = const Duration(milliseconds: 90),
@@ -119,7 +124,18 @@ final class OrexMatrixRequestGate {
       if (existing != null) return existing.then((value) => value as T);
     }
 
-    final queued = _tail.then<T>((_) async {
+    final previousTail = _tail;
+    final releaseTail = Completer<void>();
+    Future<void>? timedOutRequest;
+
+    // Reserve this queue position immediately. On a timeout the public future
+    // completes first, but this tail remains pending until the underlying
+    // Matrix request has actually settled.
+    _tail = previousTail
+        .then<void>((_) => releaseTail.future)
+        .then<void>((_) {}, onError: (Object _, StackTrace _) {});
+
+    final queued = previousTail.then<T>((_) async {
       Object? lastError;
       StackTrace? lastStack;
       for (var attempt = 0; attempt < maxAttempts; attempt++) {
@@ -127,9 +143,18 @@ final class OrexMatrixRequestGate {
         _lastStartedAt = DateTime.now();
         try {
           final pending = operation();
-          return await pending.timeout(
-            operationTimeout ?? defaultOperationTimeout,
+          final settled = pending.then<void>(
+            (_) {},
+            onError: (Object _, StackTrace _) {},
           );
+          try {
+            return await pending.timeout(
+              operationTimeout ?? defaultOperationTimeout,
+            );
+          } on TimeoutException {
+            timedOutRequest = settled;
+            rethrow;
+          }
         } catch (error, stack) {
           lastError = error;
           lastStack = stack;
@@ -162,12 +187,25 @@ final class OrexMatrixRequestGate {
       );
     });
 
-    final asObject = queued.then<Object?>((value) => value);
-    _tail = asObject.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
+    void releaseQueueTail() {
+      if (!releaseTail.isCompleted) releaseTail.complete();
+    }
+
+    unawaited(
+      queued.then<void>(
+        (_) => releaseQueueTail(),
+        onError: (Object error, StackTrace _) {
+          final request = timedOutRequest;
+          if (error is TimeoutException && request != null) {
+            unawaited(request.whenComplete(releaseQueueTail));
+            return;
+          }
+          releaseQueueTail();
+        },
+      ),
     );
     if (key != null && key.isNotEmpty) {
+      final asObject = queued.then<Object?>((value) => value);
       _inFlight[key] = asObject;
       void cleanup() {
         if (identical(_inFlight[key], asObject)) _inFlight.remove(key);

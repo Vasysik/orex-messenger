@@ -38,6 +38,7 @@ extension MatrixAuthApi on MatrixService {
       password: password,
       initialDeviceDisplayName: 'Orex',
     );
+    voip?.resumeStaleMembershipCleanupForLoggedInAccount();
     // access_token и deviceId SDK сохранит в свою БД автоматически.
   }
 
@@ -68,6 +69,7 @@ extension MatrixAuthApi on MatrixService {
           initialDeviceDisplayName: 'Orex',
           auth: auth,
         );
+        voip?.resumeStaleMembershipCleanupForLoggedInAccount();
         return;
       } on MatrixException catch (e) {
         if (!e.requireAdditionalAuthentication) rethrow;
@@ -138,11 +140,23 @@ extension MatrixAuthApi on MatrixService {
   }
 
   Future<void> logout() async {
-    await push.unregisterBeforeLogout();
+    final voipService = voip;
+    // Cancel background membership discovery first, then let CallController
+    // synchronously release any active, starting or accepting call while the
+    // current Matrix/push credentials are still valid.
+    voipService?.pauseStaleMembershipCleanupForAccountTransition();
+    await call.terminateForAccountTransition();
+    try {
+      await push.unregisterBeforeLogout();
+    } catch (_) {
+      voipService?.resumeStaleMembershipCleanupAfterFailedAccountTransition();
+      rethrow;
+    }
     try {
       await client.logout();
     } catch (_) {
       push.resumeAfterFailedLogout();
+      voipService?.resumeStaleMembershipCleanupAfterFailedAccountTransition();
       rethrow;
     }
     _emitChange();

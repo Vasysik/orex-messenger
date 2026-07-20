@@ -51,6 +51,16 @@ bool orexIsCallStartRequestCancelled({
   required int currentGeneration,
 }) => disposed || capturedGeneration != currentGeneration;
 
+/// Logout and an externally expired Matrix session use the same local teardown
+/// path.  An incoming accept can still be waiting before it creates media, so
+/// it is part of call ownership just like an active or starting session.
+bool orexShouldTerminateCallForAccountTransition({
+  required bool active,
+  required bool starting,
+  required bool acceptingIncoming,
+  required bool hasSystemCall,
+}) => active || starting || acceptingIncoming || hasSystemCall;
+
 bool orexShouldNotifyEndedForSystemTermination({
   required bool rejected,
   required bool acceptedInProgress,

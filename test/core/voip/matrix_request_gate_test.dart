@@ -77,30 +77,41 @@ void main() {
       expect(calls, 2);
     });
 
-    test('a stuck cleanup write does not poison the serialized queue', () async {
+    test('a timed-out write keeps later writes behind its request', () async {
       final gate = OrexMatrixRequestGate(minimumSpacing: Duration.zero);
       final stuck = Completer<void>();
+      final order = <String>[];
 
       await expectLater(
         gate.run<void>(
           operationName: 'stale-leave',
           operationTimeout: const Duration(milliseconds: 10),
-          operation: () => stuck.future,
+          operation: () async {
+            await stuck.future;
+            order.add('stale-leave');
+          },
         ),
         throwsA(isA<TimeoutException>()),
       );
 
-      final next = await gate.run<String>(
+      var nextStarted = false;
+      final next = gate.run<String>(
         operationName: 'membership-cleanup',
-        operation: () async => 'released',
+        operation: () async {
+          nextStarted = true;
+          order.add('membership-cleanup');
+          return 'released';
+        },
       );
-      expect(next, 'released');
+      await Future<void>.delayed(Duration.zero);
+      expect(nextStarted, isFalse);
 
       stuck.complete();
-      await stuck.future;
+      expect(await next, 'released');
+      expect(order, ['stale-leave', 'membership-cleanup']);
     });
 
-    test('default operation timeout releases the queue', () async {
+    test('default operation timeout also preserves write ordering', () async {
       final gate = OrexMatrixRequestGate(
         minimumSpacing: Duration.zero,
         defaultOperationTimeout: const Duration(milliseconds: 10),
@@ -115,14 +126,19 @@ void main() {
         throwsA(isA<TimeoutException>()),
       );
 
-      expect(
-        await gate.run<String>(
-          operationName: 'replacement-membership',
-          operation: () async => 'started',
-        ),
-        'started',
+      var nextStarted = false;
+      final next = gate.run<String>(
+        operationName: 'replacement-membership',
+        operation: () async {
+          nextStarted = true;
+          return 'started';
+        },
       );
+      await Future<void>.delayed(Duration.zero);
+      expect(nextStarted, isFalse);
+
       stuck.complete();
+      expect(await next, 'started');
     });
 
     test('does not replay an unknown write failure', () async {

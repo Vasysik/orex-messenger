@@ -37,6 +37,54 @@ void main() {
     );
   });
 
+  test('account transition tears down every form of local call ownership', () {
+    expect(
+      orexShouldTerminateCallForAccountTransition(
+        active: true,
+        starting: false,
+        acceptingIncoming: false,
+        hasSystemCall: false,
+      ),
+      isTrue,
+    );
+    expect(
+      orexShouldTerminateCallForAccountTransition(
+        active: false,
+        starting: true,
+        acceptingIncoming: false,
+        hasSystemCall: false,
+      ),
+      isTrue,
+    );
+    expect(
+      orexShouldTerminateCallForAccountTransition(
+        active: false,
+        starting: false,
+        acceptingIncoming: true,
+        hasSystemCall: false,
+      ),
+      isTrue,
+    );
+    expect(
+      orexShouldTerminateCallForAccountTransition(
+        active: false,
+        starting: false,
+        acceptingIncoming: false,
+        hasSystemCall: true,
+      ),
+      isTrue,
+    );
+    expect(
+      orexShouldTerminateCallForAccountTransition(
+        active: false,
+        starting: false,
+        acceptingIncoming: false,
+        hasSystemCall: false,
+      ),
+      isFalse,
+    );
+  });
+
   test('fresh cold-answer descriptor survives bridge dispatch races', () {
     expect(
       orexShouldKeepRecoverableAnswerBootstrap(

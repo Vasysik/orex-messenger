@@ -123,7 +123,19 @@ object OrexAndroidTelecomManager {
         }
     }
 
-    fun handleNotificationAction(intent: Intent) {
+    /**
+     * Handles an action raised by a system-owned call surface.
+     *
+     * [answerBootstrapAlreadyStarted] is only used when an app-owned action
+     * has already started the foreground service and persisted the Dart
+     * handoff before asking Core-Telecom to accept the same call.  In that
+     * case Telecom must still answer its [CallControlScope], but must not
+     * enqueue a second Flutter "answer" command.
+     */
+    fun handleNotificationAction(
+        intent: Intent,
+        answerBootstrapAlreadyStarted: Boolean = false,
+    ) {
         val callId = intent.getStringExtra(EXTRA_CALL_ID)?.trim().orEmpty()
         val ringEventId = normalizeRingEventId(intent.getStringExtra(EXTRA_RING_EVENT_ID))
         if (callId.isEmpty()) return
@@ -132,11 +144,15 @@ object OrexAndroidTelecomManager {
                 val call = current?.takeIf {
                     sameCallAttempt(it.callId, it.ringEventId, callId, ringEventId)
                 } ?: return@launch
-                val accepted = emitActionAndAwait(
-                    call,
-                    "answer",
-                    mapOf("video" to call.video),
-                )
+                val accepted = if (answerBootstrapAlreadyStarted) {
+                    true
+                } else {
+                    emitActionAndAwait(
+                        call,
+                        "answer",
+                        mapOf("video" to call.video),
+                    )
+                }
                 if (!accepted) {
                     disconnectInternal(call, DisconnectCause.ERROR)
                     return@launch
