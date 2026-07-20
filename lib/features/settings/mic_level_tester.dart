@@ -52,7 +52,7 @@ class _RecordMicLevelRecorder implements OrexMicLevelRecorder {
 }
 
 class OrexMicLevelTester extends StatefulWidget {
-  OrexMicLevelTester({
+  const OrexMicLevelTester({
     super.key,
     required this.matrix,
     required this.inputDeviceId,

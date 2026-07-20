@@ -1,5 +1,11 @@
 include: package:flutter_lints/flutter.yaml
 
+analyzer:
+  exclude:
+    # Cargokit generates an isolated helper package under build/windows.
+    # It is build output, not Orex source, and has no project package config.
+    - build/**
+
 linter:
   rules:
     prefer_const_constructors: true
