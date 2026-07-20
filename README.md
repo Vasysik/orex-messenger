@@ -4,7 +4,7 @@
 сквозным шифрованием сообщений через **vodozemac** и нативными звонками Orex на
 стеке **MatrixRTC / LiveKit**. Единая кодовая база: **Web · Android · Windows**.
 
-Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+14**: это
+Orex сейчас находится в стадии **cross-platform prerelease 0.4.2+5**: это
 исходный release candidate для dogfood с системными Android-звонками,
 killed-process push, MatrixRTC/LiveKit media E2EE и обязательным release quality
 gate. После обновления зависимостей сборки должны быть заново подтверждены на
@@ -40,11 +40,6 @@ Flutter-запуск и авторизация используют единый
   временной белочки-маскота;
 - источник оформления один — `OrexBrandHeader`, поэтому splash и auth-экраны
   не смогут разъехаться при следующем изменении брендинга.
-
-В `0.4.0+9` Android-only оформление native launch surface удалено. На Android
-12+ системный splash остаётся пустым и не рисует launcher icon: прежняя попытка
-дублировать бренд до первого Flutter frame обрезала adaptive icon квадратом и
-визуально конфликтовала с настоящим Flutter splash.
 
 Сообщения защищаются на Matrix-слое:
 
