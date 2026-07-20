@@ -391,7 +391,6 @@ Release-инструкции разделены по платформам:
 Короткий локальный quality gate перед release candidate:
 
 ```powershell
-flutter clean
 flutter pub get
 flutter analyze --no-pub
 flutter test --no-pub
