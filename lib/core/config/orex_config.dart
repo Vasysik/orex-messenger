@@ -318,7 +318,7 @@ class OrexConfig {
   }
 
   static Uri get updateFeedUri =>
-      updateBaseUri.resolve('${updateChannel}/latest.json');
+      updateBaseUri.resolve('$updateChannel/latest.json');
 
   static Uri get homeserverUri => current.homeserverUri;
   static Uri get jwtServiceUri => current.jwtServiceUri;

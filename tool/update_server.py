@@ -94,11 +94,14 @@ def latest_payload(channel: str) -> dict[str, object] | None:
     release = discover_latest(channel)
     if release is None:
         return None
-    prefix = f"/updates/{quote(channel)}/{quote(release.folder_name)}"
+    # A plus is part of the public `<version>+<build>` release identifier.
+    # Keep it literal so the generated URLs match the update feed contract
+    # consumed by the client (rather than emitting `%2B`).
+    prefix = f"/updates/{quote(channel)}/{quote(release.folder_name, safe='+')}"
     artifacts: dict[str, dict[str, object]] = {}
     for key, path in release.known_artifacts().items():
         artifacts[key] = {
-            "url": f"{prefix}/{quote(path.name)}",
+            "url": f"{prefix}/{quote(path.name, safe='+')}",
             "size_bytes": path.stat().st_size,
         }
     payload: dict[str, object] = {

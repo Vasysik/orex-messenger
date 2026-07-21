@@ -21,10 +21,7 @@ Future<void> showOrexUpdateDialog(
 }
 
 class OrexUpdateDialog extends StatefulWidget {
-  const OrexUpdateDialog({
-    super.key,
-    required this.controller,
-  });
+  const OrexUpdateDialog({super.key, required this.controller});
 
   final OrexUpdateController controller;
 
@@ -71,11 +68,7 @@ class _OrexUpdateDialogState extends State<OrexUpdateDialog> {
         _downloadedPath = downloadedPath;
       }
       token.throwIfCancelled();
-      final installerPath = downloadedPath;
-      if (installerPath == null) {
-        throw StateError('Установщик не был загружен');
-      }
-      await widget.controller.launchInstaller(installerPath);
+      await widget.controller.launchInstaller(downloadedPath);
       _downloadedPath = null;
       if (mounted) Navigator.of(context).pop();
     } on OrexUpdateCancelled {
@@ -144,107 +137,102 @@ class _OrexUpdateDialogState extends State<OrexUpdateDialog> {
     return PopScope(
       canPop: _state == _UpdateDialogState.information,
       child: AlertDialog(
-        title: Text(
-          switch (_state) {
-            _UpdateDialogState.information => 'Доступна новая версия',
-            _UpdateDialogState.downloading => 'Скачивание обновления',
-            _UpdateDialogState.error => 'Не удалось обновить приложение',
-          },
-        ),
+        title: Text(switch (_state) {
+          _UpdateDialogState.information => 'Доступна новая версия',
+          _UpdateDialogState.downloading => 'Скачивание обновления',
+          _UpdateDialogState.error => 'Не удалось обновить приложение',
+        }),
         content: SizedBox(
           width: 480,
           child: switch (_state) {
             _UpdateDialogState.information => SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '${widget.controller.platformLabel} · ${_formatBytes(artifact.sizeBytes)}',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      '${OrexConfig.appDisplayName} ${release.version} '
-                      '(сборка ${release.build})',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Установлено: ${widget.controller.currentVersion.version} '
-                      '(сборка ${widget.controller.currentVersion.buildNumber})',
-                    ),
-                    const SizedBox(height: 18),
-                    Text(
-                      'Что нового',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w700,
-                          ),
-                    ),
-                    const SizedBox(height: 8),
-                    SelectableText(
-                      release.notes ??
-                          'Описание изменений для этой версии не добавлено.',
-                    ),
-                  ],
-                ),
-              ),
-            _UpdateDialogState.downloading => Column(
+              child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  LinearProgressIndicator(
-                    value: progress,
-                    color: OrexColors.copper,
+                  Text(
+                    '${widget.controller.platformLabel} · ${_formatBytes(artifact.sizeBytes)}',
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    total == null
-                        ? 'Скачано ${_formatBytes(_receivedBytes)}'
-                        : 'Скачано ${_formatBytes(_receivedBytes)} из '
-                            '${_formatBytes(total)}',
+                    '${OrexConfig.appDisplayName} ${release.version} '
+                    '(сборка ${release.build})',
+                    style: Theme.of(context).textTheme.titleMedium,
                   ),
-                  if (progress != null) ...[
-                    const SizedBox(height: 4),
-                    Text('${(progress * 100).round()}%'),
-                  ],
+                  const SizedBox(height: 4),
+                  Text(
+                    'Установлено: ${widget.controller.currentVersion.version} '
+                    '(сборка ${widget.controller.currentVersion.buildNumber})',
+                  ),
+                  const SizedBox(height: 18),
+                  Text(
+                    'Что нового',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SelectableText(
+                    release.notes ??
+                        'Описание изменений для этой версии не добавлено.',
+                  ),
                 ],
               ),
+            ),
+            _UpdateDialogState.downloading => Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                LinearProgressIndicator(
+                  value: progress,
+                  color: OrexColors.copper,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  total == null
+                      ? 'Скачано ${_formatBytes(_receivedBytes)}'
+                      : 'Скачано ${_formatBytes(_receivedBytes)} из '
+                            '${_formatBytes(total)}',
+                ),
+                if (progress != null) ...[
+                  const SizedBox(height: 4),
+                  Text('${(progress * 100).round()}%'),
+                ],
+              ],
+            ),
             _UpdateDialogState.error => Text(
-                _errorMessage ?? 'Не удалось выполнить обновление.',
-              ),
+              _errorMessage ?? 'Не удалось выполнить обновление.',
+            ),
           },
         ),
         actions: switch (_state) {
           _UpdateDialogState.information => [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Отмена'),
-              ),
-              FilledButton.icon(
-                onPressed: _startDownload,
-                icon: const Icon(Icons.download),
-                label: const Text('Установить'),
-              ),
-            ],
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Отмена'),
+            ),
+            FilledButton.icon(
+              onPressed: _startDownload,
+              icon: const Icon(Icons.download),
+              label: const Text('Установить'),
+            ),
+          ],
           _UpdateDialogState.downloading => [
-              TextButton(
-                onPressed: _cancelDownload,
-                child: const Text('Отменить загрузку'),
-              ),
-            ],
+            TextButton(
+              onPressed: _cancelDownload,
+              child: const Text('Отменить загрузку'),
+            ),
+          ],
           _UpdateDialogState.error => [
-              TextButton(
-                onPressed: _closeDialog,
-                child: const Text('Закрыть'),
+            TextButton(onPressed: _closeDialog, child: const Text('Закрыть')),
+            FilledButton(
+              onPressed: _startDownload,
+              child: Text(
+                _installPermissionRequired ? 'Установить' : 'Повторить',
               ),
-              FilledButton(
-                onPressed: _startDownload,
-                child: Text(
-                  _installPermissionRequired ? 'Установить' : 'Повторить',
-                ),
-              ),
-            ],
+            ),
+          ],
         },
       ),
     );

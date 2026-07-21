@@ -26,12 +26,10 @@ class OrexUpdateController extends ChangeNotifier {
     required this.currentVersion,
     required this.updateBaseUri,
     required this.channel,
-    required SharedPreferences preferences,
-    required http.Client client,
-    required OrexUpdatePlatform platform,
-  })  : _preferences = preferences,
-        _client = client,
-        _platform = platform;
+    required this._preferences,
+    required this._client,
+    required this._platform,
+  });
 
   static const Duration automaticCheckInterval = Duration(hours: 6);
   static const int _maximumFeedBytes = 128 * 1024;
@@ -289,10 +287,7 @@ class OrexUpdateController extends ChangeNotifier {
       }
       builder.add(chunk);
     }
-    return (
-      statusCode: response.statusCode,
-      bodyBytes: builder.takeBytes(),
-    );
+    return (statusCode: response.statusCode, bodyBytes: builder.takeBytes());
   }
 
   Future<void> _recordSuccessfulCheck() async {

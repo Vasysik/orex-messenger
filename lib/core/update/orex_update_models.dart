@@ -42,12 +42,12 @@ class OrexUpdateRelease {
   OrexUpdateArtifact? artifactFor(String key) => artifacts[key];
 
   OrexUpdateRelease copyWithNotes(String? value) => OrexUpdateRelease(
-        version: version,
-        build: build,
-        artifacts: artifacts,
-        notesUri: notesUri,
-        notes: value,
-      );
+    version: version,
+    build: build,
+    artifacts: artifacts,
+    notesUri: notesUri,
+    notes: value,
+  );
 
   static OrexUpdateRelease parse(
     String body, {
@@ -66,8 +66,7 @@ class OrexUpdateRelease {
 
     final version = decoded['version'];
     final build = decoded['build'];
-    if (version is! String ||
-        !RegExp(r'^\d+\.\d+\.\d+$').hasMatch(version)) {
+    if (version is! String || !RegExp(r'^\d+\.\d+\.\d+$').hasMatch(version)) {
       throw const OrexUpdateFormatException(
         'version must use the numeric x.y.z format',
       );
@@ -106,11 +105,7 @@ class OrexUpdateRelease {
       }
       final rawSize = raw['size_bytes'];
       final size = rawSize is int && rawSize > 0 ? rawSize : null;
-      artifacts[key] = OrexUpdateArtifact(
-        key: key,
-        uri: uri,
-        sizeBytes: size,
-      );
+      artifacts[key] = OrexUpdateArtifact(key: key, uri: uri, sizeBytes: size);
     }
     if (artifacts.isEmpty) {
       throw const OrexUpdateFormatException(
@@ -166,9 +161,7 @@ class OrexUpdateRelease {
         uri.userInfo.isNotEmpty ||
         uri.hasQuery ||
         uri.hasFragment ||
-        uri.host != normalizedBase.host ||
-        uri.port != normalizedBase.port ||
-        !uri.path.startsWith(normalizedBase.path)) {
+        !_isInsideDirectory(uri, normalizedBase)) {
       throw OrexUpdateFormatException(
         '$field must stay inside ${normalizedBase.origin}${normalizedBase.path}',
       );
@@ -181,8 +174,14 @@ class OrexUpdateRelease {
     return uri.scheme == normalized.scheme &&
         uri.host == normalized.host &&
         uri.port == normalized.port &&
-        uri.path.startsWith(normalized.path);
+        _trustedPath(uri.path).startsWith(_trustedPath(normalized.path));
   }
+
+  /// Keeps a release directory written with `%2B` equivalent to one written
+  /// with a literal `+`, while leaving every other escaped path character
+  /// encoded for the trust-boundary comparison.
+  static String _trustedPath(String path) =>
+      path.replaceAll(RegExp(r'%2[bB]'), '+');
 
   static Uri _withTrailingSlash(Uri uri) {
     final path = uri.path.endsWith('/') ? uri.path : '${uri.path}/';
