@@ -194,6 +194,14 @@ class OrexConfig {
   static const _liveKitAllowedHosts = String.fromEnvironment(
     'OREX_LIVEKIT_ALLOWED_HOSTS',
   );
+  static const _updateBaseUrl = String.fromEnvironment(
+    'OREX_UPDATE_BASE_URL',
+    defaultValue: 'https://orex.vasys.ru/updates/',
+  );
+  static const _updateChannel = String.fromEnvironment(
+    'OREX_UPDATE_CHANNEL',
+    defaultValue: 'stable',
+  );
 
   static final OrexRuntimeConfig current = OrexRuntimeConfig.fromDefines(
     environmentName: _environmentName,
@@ -279,6 +287,39 @@ class OrexConfig {
   /// например 'https://call.vasys.ru'.
   static String get elementCallBase => current.elementCallBase;
 
+  /// Update feed selected at build time. Stable and debug installations use
+  /// separate channels so both applications can be installed side by side.
+  static String get updateChannel {
+    final channel = _updateChannel.trim().toLowerCase();
+    if (channel != 'stable' && channel != 'debug') {
+      throw StateError('OREX_UPDATE_CHANNEL must be stable or debug');
+    }
+    return channel;
+  }
+
+  static bool get isDebugDistribution => updateChannel == 'debug';
+
+  static String get appDisplayName =>
+      isDebugDistribution ? 'Orex Messenger Debug' : 'Orex Messenger';
+
+  static Uri get updateBaseUri {
+    final uri = Uri.parse(_updateBaseUrl.trim());
+    if (uri.scheme != 'https' ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasQuery ||
+        uri.hasFragment) {
+      throw StateError(
+        'OREX_UPDATE_BASE_URL must be a credential-free absolute https:// URL',
+      );
+    }
+    final path = uri.path.endsWith('/') ? uri.path : '${uri.path}/';
+    return uri.replace(path: path);
+  }
+
+  static Uri get updateFeedUri =>
+      updateBaseUri.resolve('${updateChannel}/latest.json');
+
   static Uri get homeserverUri => current.homeserverUri;
   static Uri get jwtServiceUri => current.jwtServiceUri;
   static Uri? get pushGatewayUri => current.pushGatewayUri;
@@ -290,5 +331,7 @@ class OrexConfig {
   static void validateSecurity() {
     current.validateSecurity();
     liveKitAllowedHosts;
+    updateChannel;
+    updateBaseUri;
   }
 }

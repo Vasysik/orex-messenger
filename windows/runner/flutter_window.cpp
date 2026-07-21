@@ -249,7 +249,11 @@ void FlutterWindow::ShowWindowsNotification(
         GetModuleHandle(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
         GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
         LR_DEFAULTCOLOR));
+#ifdef OREX_DEBUG_CHANNEL
+    wcscpy_s(notification_icon_.szTip, L"Orex Messenger Debug");
+#else
     wcscpy_s(notification_icon_.szTip, L"Orex Messenger");
+#endif
     notification_icon_added_ =
         Shell_NotifyIconW(NIM_ADD, &notification_icon_) == TRUE;
   }

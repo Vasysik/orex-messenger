@@ -3,10 +3,12 @@ import 'package:matrix/matrix.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../core/config/app_version.dart';
 import '../../core/logging/orex_logger.dart';
+import '../../core/update/orex_update_controller.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/theme/theme_controller.dart';
 import '../../shared/widgets/orex_loading_overlay.dart';
+import '../../shared/widgets/orex_update_dialog.dart';
 import '../../shared/widgets/orex_choice_sheet.dart';
 import '../../shared/widgets/orex_dialogs.dart';
 import '../../shared/widgets/squirrel_mascot.dart';
@@ -29,6 +31,7 @@ class HomeShell extends StatefulWidget {
     required this.matrix,
     required this.theme,
     required this.version,
+    required this.updates,
     this.pushRoomId,
     this.pushOpenGeneration = 0,
   });
@@ -36,6 +39,7 @@ class HomeShell extends StatefulWidget {
   final MatrixService matrix;
   final ThemeController theme;
   final OrexAppVersion version;
+  final OrexUpdateController updates;
   final String? pushRoomId;
   final int pushOpenGeneration;
 
@@ -145,6 +149,7 @@ class _HomeShellState extends State<HomeShell> {
           matrix: widget.matrix,
           theme: widget.theme,
           version: widget.version,
+          updates: widget.updates,
         ),
       ),
     );
@@ -430,16 +435,38 @@ class _HomeShellState extends State<HomeShell> {
                   listenable: Listenable.merge([
                     widget.matrix,
                     widget.matrix.call,
+                    widget.updates,
                   ]),
                   builder: (context, _) {
+                    final showVerification =
+                        widget.matrix.needsSessionVerification &&
+                            !_verifyBannerDismissed;
+                    final showUpdate = !showVerification &&
+                        widget.updates.shouldShowBanner &&
+                        !widget.matrix.call.isActive &&
+                        !widget.matrix.call.isStarting;
                     return Column(
                       children: [
-                        if (widget.matrix.needsSessionVerification &&
-                            !_verifyBannerDismissed)
-                          _VerifyBanner(
+                        if (showVerification)
+                          _OrexTopBanner(
+                            icon: Icons.gpp_maybe,
+                            title: 'Сессия не подтверждена',
+                            subtitle:
+                                'Нажмите, чтобы подтвердить с другого устройства',
                             onTap: _openVerifySession,
                             onClose: () =>
                                 setState(() => _verifyBannerDismissed = true),
+                          )
+                        else if (showUpdate)
+                          _OrexTopBanner(
+                            icon: Icons.system_update_alt,
+                            title: 'Доступна новая версия',
+                            subtitle: 'Нажмите, чтобы посмотреть изменения',
+                            onTap: () => showOrexUpdateDialog(
+                              context,
+                              controller: widget.updates,
+                            ),
+                            onClose: widget.updates.dismissAvailableBanner,
                           ),
                         Expanded(child: isWide ? _buildWide() : _buildNarrow()),
                       ],
@@ -599,10 +626,19 @@ class _HomeShellState extends State<HomeShell> {
   }
 }
 
-/// Полоска-предупреждение: эта сессия ещё не подтверждена кросс-подписью,
-/// поэтому другие клиенты считают владельца непроверенным.
-class _VerifyBanner extends StatelessWidget {
-  const _VerifyBanner({required this.onTap, required this.onClose});
+/// Единая верхняя плашка для verification и доступного обновления.
+class _OrexTopBanner extends StatelessWidget {
+  const _OrexTopBanner({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+    required this.onClose,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
   final VoidCallback onTap;
   final VoidCallback onClose;
 
@@ -623,22 +659,25 @@ class _VerifyBanner extends StatelessWidget {
             ),
             child: Row(
               children: [
-                const Icon(Icons.gpp_maybe, color: OrexColors.cream),
+                Icon(icon, color: OrexColors.cream),
                 const SizedBox(width: 12),
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Сессия не подтверждена',
-                        style: TextStyle(
+                        title,
+                        style: const TextStyle(
                           color: OrexColors.cream,
                           fontWeight: FontWeight.w700,
                         ),
                       ),
                       Text(
-                        'Нажмите, чтобы подтвердить с другого устройства',
-                        style: TextStyle(color: OrexColors.cream, fontSize: 12),
+                        subtitle,
+                        style: const TextStyle(
+                          color: OrexColors.cream,
+                          fontSize: 12,
+                        ),
                       ),
                     ],
                   ),

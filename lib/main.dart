@@ -11,6 +11,7 @@ import 'core/bootstrap_failure.dart';
 import 'core/config/orex_config.dart';
 import 'core/config/app_version.dart';
 import 'core/storage/database.dart';
+import 'core/update/orex_update_controller.dart';
 import 'core/matrix/matrix_service.dart';
 import 'core/push/push_background_resolver.dart';
 import 'core/push/push_platform_bridge.dart';
@@ -46,10 +47,11 @@ class OrexScrollBehavior extends MaterialScrollBehavior {
 }
 
 class _Services {
-  _Services(this.matrix, this.theme, this.version);
+  _Services(this.matrix, this.theme, this.version, this.updates);
   final MatrixService matrix;
   final ThemeController theme;
   final OrexAppVersion version;
+  final OrexUpdateController updates;
 }
 
 class OrexBootstrap extends StatefulWidget {
@@ -107,8 +109,9 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
         return service;
       },
     );
+    final updates = await OrexUpdateController.create(version);
     await minimumSplash;
-    return _Services(matrix, theme, version);
+    return _Services(matrix, theme, version, updates);
   }
 
   Future<T> _runStartupStage<T>(
@@ -152,6 +155,7 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
           matrix: snap.data!.matrix,
           theme: snap.data!.theme,
           version: snap.data!.version,
+          updates: snap.data!.updates,
         );
       },
     );
@@ -264,10 +268,12 @@ class OrexApp extends StatefulWidget {
     required this.matrix,
     required this.theme,
     required this.version,
+    required this.updates,
   });
   final MatrixService matrix;
   final ThemeController theme;
   final OrexAppVersion version;
+  final OrexUpdateController updates;
 
   @override
   State<OrexApp> createState() => _OrexAppState();
@@ -430,6 +436,9 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
           in widget.matrix.voip?.visibleIncomingCalls() ??
               const <OrexIncomingCall>[]) {
         _showIncomingCall(incoming);
+      }
+      if (widget.matrix.isLoggedIn) {
+        unawaited(widget.updates.checkIfDue());
       }
     });
   }
@@ -920,6 +929,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !widget.matrix.isLoggedIn) return;
         unawaited(widget.matrix.push.ensurePermissionRequested());
+        unawaited(widget.updates.checkIfDue());
       });
     }
     _wasLoggedIn = isLoggedIn;
@@ -939,6 +949,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     _pushOpenSub?.cancel();
     widget.matrix.removeListener(_onChanged);
     widget.theme.removeListener(_onChanged);
+    widget.updates.dispose();
     super.dispose();
   }
 
@@ -957,6 +968,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
               matrix: widget.matrix,
               theme: widget.theme,
               version: widget.version,
+              updates: widget.updates,
               pushRoomId: _pushRoomId,
               pushOpenGeneration: _pushOpenGeneration,
             )

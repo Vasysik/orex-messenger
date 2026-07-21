@@ -59,6 +59,9 @@ web/e2ee.worker.dart.js*
 *.ipr
 *.iws
 
+# --- Release artifacts served outside the source tree ---
+/updates/
+
 # --- Прочее ---
 .DS_Store
 *.log

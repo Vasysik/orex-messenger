@@ -1,6 +1,6 @@
-# Orex Windows Release
+# Выпуск Orex для Windows
 
-Перед сборкой версия сверяется с `pubspec.yaml`, затем запускается локальный quality gate:
+Перед сборкой запустите локальную проверку:
 
 ```powershell
 flutter pub get
@@ -8,43 +8,103 @@ flutter analyze --no-pub
 flutter test --no-pub
 ```
 
-## Windows production build для тестировщиков
+## Версия берётся только из `pubspec.yaml`
 
-Windows временно использует совместимую связку `sqlite3 2.9.x`,
-`sqflite_common_ffi 2.3.x` и `sqlcipher_flutter_libs 0.6.8`. Matrix 8.1.0
-ограничивает `sqlite3` веткой 2.x, поэтому переход на native build hooks
-`sqlite3 3.x` отложен до обновления ограничения в Matrix SDK.
+Единственный источник версии приложения — строка `version:` в `pubspec.yaml`:
 
-`sqlcipher_flutter_libs 0.6.8` поставляет SQLCipher 4.10.0. Orex дополнительно
-проверяет `PRAGMA cipher_version`, поэтому случайная загрузка обычного SQLite
-завершает запуск fail-closed.
+```yaml
+version: <version>+<build>
+```
 
-Сборка:
+`flutter build windows` автоматически записывает эти значения в метаданные
+приложения. Передавать `--build-name` и `--build-number` в release-командах не
+нужно: это создало бы второй источник версии и риск рассинхронизации с именем
+установщика и папкой на сервере.
+
+Для Inno Setup и имён файлов версия читается из того же `pubspec.yaml`:
 
 ```powershell
+$VersionMatch = [regex]::Match(
+  (Get-Content pubspec.yaml -Raw),
+  '(?m)^version:\s*(\d+)\.(\d+)\.(\d+)\+(\d+)\s*$'
+)
+if (-not $VersionMatch.Success) {
+  throw 'В pubspec.yaml ожидается version: X.Y.Z+N'
+}
+
+$VersionName = '{0}.{1}.{2}' -f `
+  $VersionMatch.Groups[1].Value, `
+  $VersionMatch.Groups[2].Value, `
+  $VersionMatch.Groups[3].Value
+$BuildNumber = $VersionMatch.Groups[4].Value
+$Release = "$VersionName+$BuildNumber"
+$VersionInfo = "$VersionName.$BuildNumber"
+```
+
+После изменения версии в `pubspec.yaml` заново выполните `flutter pub get`, чтобы
+Flutter обновил служебные файлы проекта.
+
+## Stable и Debug устанавливаются параллельно
+
+Оба канала собираются в Flutter `--release`. Отличаются идентичность
+Windows-приложения, каталог Inno Setup и канал обновлений:
+
+| Канал | EXE | Каталог установки | Канал обновлений |
+| --- | --- | --- | --- |
+| stable | `orex_messenger.exe` | `Orex Messenger` | `/updates/stable/` |
+| debug | `orex_messenger_debug.exe` | `Orex Messenger Debug` | `/updates/debug/` |
+
+Перед переключением канала выполняйте `flutter clean`: CMake кэширует имя
+исполняемого файла. Скопируйте готовый установщик в папку релиза до следующего
+`flutter clean`.
+
+Windows временно использует совместимую связку `sqlite3 2.9.x`,
+`sqflite_common_ffi 2.3.x` и `sqlcipher_flutter_libs 0.6.8`. Orex проверяет
+`PRAGMA cipher_version` и останавливает запуск, если вместо SQLCipher загрузился
+обычный SQLite.
+
+### Stable-сборка
+
+```powershell
+flutter clean
+$env:OREX_WINDOWS_CHANNEL = 'stable'
+flutter pub get
 flutter build windows --release --no-pub `
   --dart-define=OREX_ENV=production `
+  --dart-define=OREX_UPDATE_CHANNEL=stable `
   --dart-define=OREX_DEBUG_LOGS=false
 ```
 
-Артефакт:
+Артефакт приложения:
 
 ```text
 build\windows\x64\runner\Release\orex_messenger.exe
 ```
 
-Тестировщику передаётся вся папка:
+### Параллельная Debug-сборка
 
-```text
-build\windows\x64\runner\Release\
+```powershell
+flutter clean
+$env:OREX_WINDOWS_CHANNEL = 'debug'
+flutter pub get
+flutter build windows --release --no-pub `
+  --dart-define=OREX_ENV=production `
+  --dart-define=OREX_UPDATE_CHANNEL=debug `
+  --dart-define=OREX_DEBUG_LOGS=true
 ```
 
-а не один `.exe`, потому что рядом лежат Flutter runtime-файлы и
-`sqlite3.dll`, поставляемая SQLCipher-плагином.
+Артефакт приложения:
 
-### Windows installer вместо zip
+```text
+build\windows\x64\runner\Release\orex_messenger_debug.exe
+```
 
-Для нормального `.exe` установщика используется Inno Setup:
+`OREX_WINDOWS_CHANNEL` меняет native-имя бинарника. `OREX_UPDATE_CHANNEL` меняет
+название внутри Flutter и адрес update feed. Значения должны совпадать.
+
+## Сборка установщика Inno Setup
+
+Установите Inno Setup один раз:
 
 ```powershell
 winget install --id JRSoftware.InnoSetup -e `
@@ -52,21 +112,12 @@ winget install --id JRSoftware.InnoSetup -e `
   --accept-source-agreements
 ```
 
-После успешной Windows release-сборки версия читается из `pubspec.yaml` и
-передаётся в Inno Setup:
+В том же PowerShell-сеансе сначала выполните блок чтения версии из
+`pubspec.yaml`, приведённый выше, затем выберите канал и соберите установщик:
 
 ```powershell
-$VersionLine = (Select-String -Path pubspec.yaml -Pattern '^version:\s*(\d+)\.(\d+)\.(\d+)\+(\d+)\s*$').Matches[0]
-$Version = '{0}.{1}.{2}+{3}' -f `
-  $VersionLine.Groups[1].Value, `
-  $VersionLine.Groups[2].Value, `
-  $VersionLine.Groups[3].Value, `
-  $VersionLine.Groups[4].Value
-$VersionInfo = '{0}.{1}.{2}.{3}' -f `
-  $VersionLine.Groups[1].Value, `
-  $VersionLine.Groups[2].Value, `
-  $VersionLine.Groups[3].Value, `
-  $VersionLine.Groups[4].Value
+$Channel = 'debug' # stable или debug
+$OrexDebug = if ($Channel -eq 'debug') { 1 } else { 0 }
 
 $Iscc = @(
   "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
@@ -74,21 +125,38 @@ $Iscc = @(
   "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
+if (-not $Iscc) {
+  throw 'Inno Setup 6 не найден'
+}
+
 & $Iscc `
-  "/DMyAppVersion=$Version" `
+  "/DOrexDebug=$OrexDebug" `
+  "/DMyAppVersion=$Release" `
   "/DMyAppVersionInfo=$VersionInfo" `
   windows\installer\orex.iss
 ```
 
-Артефакт:
+Результат:
 
-```text
-build\windows\x64\installer\Orex-Setup-<version-from-pubspec>.exe
+```powershell
+$Installer = "build\windows\x64\installer\$Channel\Orex-Setup-$Release.exe"
+Test-Path $Installer
 ```
 
-Именно этот `.exe` используется как основной артефакт для тестировщиков вместо zip. Он ставит Orex в
-user-level папку `%LOCALAPPDATA%\Programs\Orex Messenger`, не требует админских
-прав и забирает все DLL из `build\windows\x64\runner\Release\`.
+Inno Setup использует разные `AppId`, ярлыки и пользовательские каталоги,
+поэтому stable и debug не заменяют друг друга. Во время обновления установщик
+попросит закрыть запущенный экземпляр нужного канала и после установки предложит
+запустить его снова.
+
+Загрузите установщик в папку версии того же канала:
+
+```powershell
+$Destination = "updates\$Channel\$Release"
+New-Item -ItemType Directory -Force $Destination
+Copy-Item $Installer $Destination
+```
+
+Полная серверная схема описана в `docs/release-updates.md`.
 
 Windows-БД создаётся как новое поколение:
 
@@ -105,7 +173,7 @@ Matrix-кэш создаётся заново.
 
 `OREX_ALLOW_INSECURE_DESKTOP_CACHE=true` для Windows release больше не нужен.
 
-
 ## Windows smoke
 
-Проверьте установку/обновление, запуск с SQLCipher-backed БД, login/restore session, отправку сообщений, вложения и обычный/видео звонок.
+Проверьте установку и обновление обоих каналов, запуск с SQLCipher-backed БД,
+login/restore session, отправку сообщений, вложения и обычный/видеозвонок.

@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../../core/config/app_version.dart';
+import '../../core/config/orex_config.dart';
 import '../theme/orex_theme.dart';
 
-const String orexAppName = 'Orex Messenger';
+String get orexAppName => OrexConfig.appDisplayName;
 const String orexAppSlogan = 'Тепло. Быстро. Децентрализованно.';
 const String orexAppIconAsset = 'assets/icon/app_icon.png';
 
@@ -25,7 +26,7 @@ class OrexAppIcon extends StatelessWidget {
 
     return Semantics(
       image: true,
-      label: 'Иконка приложения Orex Messenger',
+      label: 'Иконка приложения $orexAppName',
       child: Container(
         width: size,
         height: size,

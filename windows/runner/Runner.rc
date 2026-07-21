@@ -3,6 +3,18 @@
 #pragma code_page(65001)
 #include "resource.h"
 
+#ifdef OREX_DEBUG_CHANNEL
+#define OREX_FILE_DESCRIPTION "Orex Messenger Debug"
+#define OREX_INTERNAL_NAME "OrexMessengerDebug"
+#define OREX_ORIGINAL_FILENAME "orex_messenger_debug.exe"
+#define OREX_PRODUCT_NAME "Orex Messenger Debug"
+#else
+#define OREX_FILE_DESCRIPTION "Orex Messenger"
+#define OREX_INTERNAL_NAME "OrexMessenger"
+#define OREX_ORIGINAL_FILENAME "orex_messenger.exe"
+#define OREX_PRODUCT_NAME "Orex Messenger"
+#endif
+
 #define APSTUDIO_READONLY_SYMBOLS
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -90,12 +102,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "Orex" "\0"
-            VALUE "FileDescription", "Orex Messenger" "\0"
+            VALUE "FileDescription", OREX_FILE_DESCRIPTION "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "OrexMessenger" "\0"
+            VALUE "InternalName", OREX_INTERNAL_NAME "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 Orex. All rights reserved." "\0"
-            VALUE "OriginalFilename", "orex_messenger.exe" "\0"
-            VALUE "ProductName", "Orex Messenger" "\0"
+            VALUE "OriginalFilename", OREX_ORIGINAL_FILENAME "\0"
+            VALUE "ProductName", OREX_PRODUCT_NAME "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

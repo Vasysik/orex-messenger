@@ -4,16 +4,20 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import android.view.ViewGroup
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
 class MainActivity : FlutterActivity() {
     override fun provideFlutterEngine(context: Context): FlutterEngine =
@@ -255,6 +259,20 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         OrexAndroidTelecomManager.attach(this, flutterEngine.dartExecutor.binaryMessenger)
         OrexPushBridge.attach(this, flutterEngine.dartExecutor.binaryMessenger)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "orex/update")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getPrimaryAbi" -> result.success(Build.SUPPORTED_ABIS.firstOrNull())
+                    "getDistribution" -> result.success(
+                        if (packageName.endsWith(".debug")) "debug" else "stable",
+                    )
+                    "installApk" -> installApk(
+                        call.argument<String>("path"),
+                        result,
+                    )
+                    else -> result.notImplemented()
+                }
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -303,6 +321,55 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    private fun installApk(
+        rawPath: String?,
+        result: MethodChannel.Result,
+    ) {
+        val file = rawPath
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let(::File)
+        if (file == null || !file.isFile || !file.name.endsWith(".apk", ignoreCase = true)) {
+            result.error("invalid_apk", "Downloaded APK is missing or invalid", null)
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !packageManager.canRequestPackageInstalls()
+        ) {
+            try {
+                val settingsIntent = Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:$packageName"),
+                )
+                startActivity(settingsIntent)
+                result.success("permission_required")
+            } catch (error: Exception) {
+                Log.e("OrexUpdate", "Unable to open unknown-app-source settings", error)
+                result.error("permission_settings_failed", error.message, null)
+            }
+            return
+        }
+
+        try {
+            val uri = FileProvider.getUriForFile(
+                this,
+                "$packageName.orex_update_files",
+                file,
+            )
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(installIntent)
+            result.success("launched")
+        } catch (error: Exception) {
+            Log.e("OrexUpdate", "Unable to launch APK installer", error)
+            result.error("installer_failed", error.message, null)
+        }
     }
 
     private fun installScoBroadcastCrashGuard() {

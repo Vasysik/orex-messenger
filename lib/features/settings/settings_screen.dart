@@ -5,12 +5,15 @@ import 'package:matrix/matrix.dart';
 import '../../core/logging/orex_logger.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../core/config/app_version.dart';
+import '../../core/config/orex_config.dart';
+import '../../core/update/orex_update_controller.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/theme/theme_controller.dart';
 import '../../shared/widgets/orex_dialogs.dart';
 import '../../shared/widgets/orex_profile_card.dart';
 import '../../shared/widgets/orex_settings_components.dart';
+import '../../shared/widgets/orex_update_dialog.dart';
 import 'audio_devices_screen.dart';
 import 'devices_screen.dart';
 import 'key_storage_screen.dart';
@@ -22,11 +25,13 @@ class SettingsScreen extends StatefulWidget {
     required this.matrix,
     required this.theme,
     required this.version,
+    required this.updates,
   });
 
   final MatrixService matrix;
   final ThemeController theme;
   final OrexAppVersion version;
+  final OrexUpdateController updates;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -39,7 +44,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    widget.updates.addListener(_onUpdatesChanged);
     _loadProfile();
+  }
+
+  void _onUpdatesChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    widget.updates.removeListener(_onUpdatesChanged);
+    super.dispose();
   }
 
   Future<void> _loadProfile({bool fresh = false}) async {
@@ -244,6 +260,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
   }
 
+  Future<void> _handleUpdateTap() async {
+    if (widget.updates.availableRelease == null) {
+      await widget.updates.check(manual: true);
+    }
+    if (!mounted) return;
+    if (widget.updates.availableRelease != null &&
+        widget.updates.selectedArtifact != null) {
+      await showOrexUpdateDialog(context, controller: widget.updates);
+      return;
+    }
+    final message = switch (widget.updates.state) {
+      OrexUpdateCheckState.upToDate => 'Установлена последняя версия Orex',
+      OrexUpdateCheckState.unsupported =>
+        'Web-версия обновляется после перезагрузки страницы',
+      OrexUpdateCheckState.error =>
+        widget.updates.errorMessage ?? 'Не удалось проверить обновления',
+      _ => null,
+    };
+    if (message != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return AmbientBackground(
@@ -359,8 +400,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 OrexSettingsTile(
                   icon: Icons.info_outline,
-                  title: 'Orex Messenger',
+                  title: OrexConfig.appDisplayName,
                   subtitle: widget.version.settingsSubtitle,
+                ),
+                OrexSettingsTile(
+                  icon: Icons.system_update_alt,
+                  title: widget.updates.settingsTitle,
+                  subtitle: widget.updates.settingsSubtitle,
+                  onTap: widget.updates.supportsInstall &&
+                          !widget.updates.isChecking
+                      ? _handleUpdateTap
+                      : null,
                 ),
               ],
             ),

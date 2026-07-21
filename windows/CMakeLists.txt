@@ -2,9 +2,21 @@
 cmake_minimum_required(VERSION 3.14)
 project(orex_messenger LANGUAGES CXX)
 
-# The name of the executable created for the application. Change this to change
-# the on-disk name of your application.
-set(BINARY_NAME "orex_messenger")
+# Stable and debug update channels must be installable side by side. The
+# channel is selected only for release packaging through OREX_WINDOWS_CHANNEL;
+# the default remains the production/stable executable.
+set(OREX_WINDOWS_CHANNEL "$ENV{OREX_WINDOWS_CHANNEL}")
+if(NOT OREX_WINDOWS_CHANNEL)
+  set(OREX_WINDOWS_CHANNEL "stable")
+endif()
+string(TOLOWER "${OREX_WINDOWS_CHANNEL}" OREX_WINDOWS_CHANNEL)
+if(OREX_WINDOWS_CHANNEL STREQUAL "debug")
+  set(BINARY_NAME "orex_messenger_debug")
+elseif(OREX_WINDOWS_CHANNEL STREQUAL "stable")
+  set(BINARY_NAME "orex_messenger")
+else()
+  message(FATAL_ERROR "OREX_WINDOWS_CHANNEL must be stable or debug")
+endif()
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.

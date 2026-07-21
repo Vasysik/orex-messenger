@@ -37,6 +37,28 @@ val allowUnsignedRelease = System.getenv("OREX_ALLOW_UNSIGNED_ANDROID_RELEASE")
     ?.trim()
     ?.equals("true", ignoreCase = true) == true
 
+val orexDistribution = System.getenv("OREX_ANDROID_DISTRIBUTION")
+    ?.trim()
+    ?.lowercase()
+    ?.takeIf { it.isNotEmpty() }
+    ?: "stable"
+if (orexDistribution != "stable" && orexDistribution != "debug") {
+    throw GradleException(
+        "OREX_ANDROID_DISTRIBUTION must be stable or debug, got: $orexDistribution",
+    )
+}
+
+val orexApplicationId = if (orexDistribution == "debug") {
+    "ru.orex.messenger.debug"
+} else {
+    "ru.orex.messenger"
+}
+val orexAppLabel = if (orexDistribution == "debug") {
+    "Orex Messenger Debug"
+} else {
+    "Мессенджер Orex"
+}
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -73,7 +95,8 @@ android {
     }
 
     defaultConfig {
-        applicationId = "ru.orex.messenger"
+        applicationId = orexApplicationId
+        manifestPlaceholders["orexAppLabel"] = orexAppLabel
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         // flutter_webrtc / livekit_client требуют minSdk >= 23 (звонки).
@@ -133,7 +156,7 @@ gradle.taskGraph.whenReady {
         throw GradleException(
             "Android release cannot be built without push configuration: " +
                 "android/app/google-services.json is missing. Download the Firebase Android " +
-                "config for applicationId ru.orex.messenger. For an explicit compile-only CI " +
+                "config for applicationId $orexApplicationId. For an explicit compile-only CI " +
                 "check (not a distributable Orex build), set " +
                 "OREX_ALLOW_ANDROID_RELEASE_WITHOUT_PUSH=true."
         )

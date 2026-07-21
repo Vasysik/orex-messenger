@@ -36,6 +36,32 @@ services:
       - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cache-Control=no-cache"
       - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.X-Robots-Tag=noindex, nofollow, noarchive"
 
+
+  orex-updates:
+    image: python:3.13-alpine
+    container_name: orex-updates
+    restart: unless-stopped
+    command: ["python", "/app/update_server.py"]
+    environment:
+      OREX_UPDATES_ROOT: /srv/updates
+      OREX_UPDATES_PORT: "8080"
+    volumes:
+      - ./tool/update_server.py:/app/update_server.py:ro
+      - ${OREX_UPDATES_DIR:-./updates}:/srv/updates:ro
+    networks:
+      - traefik-proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-proxy"
+      - "traefik.http.routers.orex-updates.rule=Host(`orex.vasys.ru`) && PathPrefix(`/updates/`)"
+      - "traefik.http.routers.orex-updates.priority=100"
+      - "traefik.http.routers.orex-updates.entrypoints=websecure"
+      - "traefik.http.routers.orex-updates.tls=true"
+      - "traefik.http.routers.orex-updates.tls.certresolver=myresolver"
+      - "traefik.http.routers.orex-updates.service=orex-updates"
+      - "traefik.http.routers.orex-updates.middlewares=orex-web-compress"
+      - "traefik.http.services.orex-updates.loadbalancer.server.port=8080"
+
 networks:
   traefik-proxy:
     external: true
