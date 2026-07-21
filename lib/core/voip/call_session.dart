@@ -155,6 +155,9 @@ class CallSession extends ChangeNotifier {
            credentialsClient ?? const OrexLiveKitCredentialsClient() {
     _micRequestedOn = initialMicOn;
     speakerMuted = initialSpeakerMuted;
+    _screenShare.onStateChanged = () {
+      if (!_disposed) notifyListeners();
+    };
     _voiceStates = OrexVoiceStateRepository(
       localUserIdProvider: () => client.userID,
       readContent: (userId) => client
@@ -1198,9 +1201,7 @@ class CallSession extends ChangeNotifier {
 
   String? _normalizedInitialAudioOutputDeviceId() {
     return orexInitialAudioOutputDeviceId(
-      orexPreferredWebAudioOutputDeviceId(
-        audioOutputDeviceIdProvider?.call(),
-      ),
+      orexPreferredWebAudioOutputDeviceId(audioOutputDeviceIdProvider?.call()),
     );
   }
 

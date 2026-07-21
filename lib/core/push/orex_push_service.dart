@@ -5,13 +5,13 @@ import 'package:matrix/matrix.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../logging/orex_logger.dart';
+import '../media/orex_avatar_cache.dart';
 import 'push_background_resolver.dart';
 import 'push_platform_bridge.dart';
 import 'push_registration_service.dart';
 
-typedef OrexIncomingCallAnswerHandler = Future<void> Function(
-  OrexPushOpen open,
-);
+typedef OrexIncomingCallAnswerHandler =
+    Future<void> Function(OrexPushOpen open);
 
 class OrexPushService {
   OrexPushService({
@@ -65,6 +65,9 @@ class OrexPushService {
 
   Stream<OrexPushOpen> get onNotificationOpened => _openController.stream;
 
+  Stream<bool> get desktopWindowVisibilityChanges =>
+      _platform.desktopWindowVisibilityChanges;
+
   bool get isConfigured => gateway != null;
 
   /// Native pending-open state has been loaded for this Dart isolate.
@@ -99,10 +102,7 @@ class OrexPushService {
       open.kind == 'incoming_call' &&
       (open.action == 'answer' || open.action == 'answer_video');
 
-  bool hasPendingIncomingAnswer(
-    String roomId, {
-    String? ringEventId,
-  }) {
+  bool hasPendingIncomingAnswer(String roomId, {String? ringEventId}) {
     final pending = _pendingIncomingAnswer;
     if (pending == null ||
         pending.kind != 'incoming_call' ||
@@ -282,6 +282,7 @@ class OrexPushService {
   Future<void> showSyncedMatrixNotification({
     required String roomId,
     String? eventId,
+    String? avatarCacheKey,
   }) async {
     if (_disposed || !_client.isLogged()) return;
     final normalizedRoomId = roomId.trim();
@@ -297,8 +298,17 @@ class OrexPushService {
     }
     final payload = resolveOrexSyncedMatrixNotification(event);
     if (payload == null) return;
+    final presentationPayload = Map<String, String>.of(payload);
+    final normalizedAvatarKey = avatarCacheKey?.trim();
+    if (normalizedAvatarKey != null && normalizedAvatarKey.isNotEmpty) {
+      presentationPayload['sender_avatar_key'] = normalizedAvatarKey;
+      final avatarPath = await OrexAvatarCache.pathForKey(normalizedAvatarKey);
+      if (avatarPath != null) {
+        presentationPayload['sender_avatar_path'] = avatarPath;
+      }
+    }
     try {
-      await _platform.showLocalMatrixNotification(payload);
+      await _platform.showLocalMatrixNotification(presentationPayload);
     } catch (error) {
       OrexLog.d('Push', 'local Matrix notification failed', error);
     }

@@ -239,7 +239,12 @@ Android 8+: входящий -> системная карточка -> прин�
 Android 8+: активный звонок -> завершить из системного UI / гарнитуры
 Android 8+: system mute / hold -> микрофон и входящий звук восстанавливаются
 Android 8+: speaker / earpiece / wired / Bluetooth route без конфликта AudioManager
-Android: не показывается неработающая кнопка screen share до MediaProjection flow
+Android: screen share -> системное MediaProjection-разрешение -> foreground-индикатор
+Android: screen share -> свернуть приложение -> foreground-индикатор и публикация сохраняются
+Android: screen share -> Stop из foreground-уведомления -> track снят, индикатор исчез
+Android: screen share -> системный Stop/status chip или блокировка экрана -> track снят,
+UI возвращается в выключенное состояние; после разблокировки новый share запрашивает
+новое системное разрешение
 Android 13+: permission на уведомления появляется после основного UI, не на splash
 FCM token -> Matrix pusher зарегистрирован на homeserver
 ротация FCM token -> старый pushkey удалён, новый зарегистрирован

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orex_messenger/core/voip/screen_share_controller.dart';
 
@@ -51,6 +52,16 @@ void main() {
         OrexScreenShareController.isDesktopScreenSource('window'),
         isFalse,
       );
+    });
+
+    test('enables Android sharing without a desktop source picker', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() {
+        debugDefaultTargetPlatformOverride = null;
+      });
+
+      expect(OrexScreenShareController.isSupported, isTrue);
+      expect(OrexScreenShareController.desktopNeedsExplicitSource, isFalse);
     });
   });
 }

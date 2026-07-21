@@ -19,11 +19,33 @@ class OrexAvatarCache {
   static const String _noAvatarMarker = '-';
   static const int _maxFileBytes = 8 * 1024 * 1024;
   static const int _maxCacheBytes = 64 * 1024 * 1024;
+  static final RegExp _cacheKeyPattern = RegExp(r'^[0-9a-f]{16}$');
 
   static Future<Directory>? _directoryFuture;
   static Future<void>? _trimFuture;
 
   static String keyFor(Uri mxc) => orexAvatarCacheKey(mxc);
+
+  /// Returns an existing immutable avatar file for a native presentation.
+  ///
+  /// Callers receive a path only for the fixed-width cache keys that this
+  /// class owns. This keeps the Windows runner from having to reimplement the
+  /// platform-specific application-support directory lookup.
+  static Future<String?> pathForKey(String? rawKey) async {
+    final key = rawKey?.trim().toLowerCase();
+    if (key == null || !_cacheKeyPattern.hasMatch(key)) return null;
+    try {
+      final directory = await (_directoryFuture ??= _openDirectory());
+      final file = File(p.join(directory.path, key));
+      if (!await file.exists()) return null;
+      final stat = await file.stat();
+      if (stat.size <= 0 || stat.size > _maxFileBytes) return null;
+      _touch(file);
+      return file.path;
+    } catch (_) {
+      return null;
+    }
+  }
 
   static Future<Uint8List?> read(Uri mxc) async {
     if (mxc.scheme != 'mxc') return null;
@@ -200,10 +222,7 @@ class OrexAvatarCache {
   }
 
   static void _touch(File file) {
-    file.setLastModified(DateTime.now()).then<void>(
-      (_) {},
-      onError: (_) {},
-    );
+    file.setLastModified(DateTime.now()).then<void>((_) {}, onError: (_) {});
   }
 
   static void _scheduleTrim() {

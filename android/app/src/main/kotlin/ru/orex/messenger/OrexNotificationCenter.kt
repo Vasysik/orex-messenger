@@ -31,9 +31,11 @@ import kotlin.math.absoluteValue
 object OrexNotificationCenter {
     const val INCOMING_CALL_NOTIFICATION_ID = 4040
     const val ONGOING_CALL_NOTIFICATION_ID = 4041
+    const val SCREEN_SHARE_NOTIFICATION_ID = 4042
     const val MESSAGE_CHANNEL_ID = "orex_messages_v3"
     const val INCOMING_CALL_CHANNEL_ID = "orex_calls_incoming_v4"
     const val ONGOING_CALL_CHANNEL_ID = "orex_calls_ongoing_v2"
+    const val SCREEN_SHARE_CHANNEL_ID = "orex_screen_share_v1"
 
     private const val TAG = "OrexNotifications"
     private const val MESSAGE_GROUP_KEY = "orex_messages"
@@ -429,6 +431,36 @@ object OrexNotificationCenter {
 
     fun cancelCallNotification(context: Context) {
         notificationManager(context).cancel(INCOMING_CALL_NOTIFICATION_ID)
+    }
+
+    fun buildScreenShareForeground(
+        context: Context,
+        stop: PendingIntent,
+    ): Notification {
+        ensureChannels(context)
+        return callBuilder(context, SCREEN_SHARE_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_orex)
+            .setColor(context.getColor(R.color.orex_launch_icon_background))
+            .setContentTitle("Orex демонстрирует экран")
+            .setContentText("Демонстрация экрана активна")
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setForegroundServiceBehavior(
+                NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE,
+            )
+            .addAction(R.drawable.ic_call_end, "Остановить", stop)
+            .build()
+            .apply {
+                flags = flags or Notification.FLAG_ONGOING_EVENT or Notification.FLAG_NO_CLEAR
+            }
+    }
+
+    fun cancelScreenShareNotification(context: Context) {
+        notificationManager(context).cancel(SCREEN_SHARE_NOTIFICATION_ID)
     }
 
     /**
@@ -1049,6 +1081,16 @@ object OrexNotificationCenter {
                 ).apply {
                     description = "Текущий звонок Orex"
                     lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                    enableVibration(false)
+                    setSound(null, null)
+                },
+                NotificationChannel(
+                    SCREEN_SHARE_CHANNEL_ID,
+                    "Демонстрация экрана Orex",
+                    NotificationManager.IMPORTANCE_LOW,
+                ).apply {
+                    description = "Системный индикатор активной демонстрации экрана"
+                    lockscreenVisibility = Notification.VISIBILITY_PRIVATE
                     enableVibration(false)
                     setSound(null, null)
                 },

@@ -45,6 +45,32 @@ const _kLastBackup = 'orex_last_backup_ms';
 const _kAutoBackup = 'orex_auto_backup';
 const _kBackupDisabledByUser = 'orex_backup_disabled_by_user';
 
+/// Decides whether a newly unread room should reach the native notification
+/// bridge. A selected conversation is quiet only while the application is
+/// actually visible; once the window is minimized or hidden, it needs the
+/// same system notification as every other room.
+@visibleForTesting
+bool orexShouldPublishSyncedMatrixNotification({
+  required bool notificationSnapshotReady,
+  required int previousCount,
+  required int currentCount,
+  required String roomId,
+  required String? foregroundRoomId,
+  required bool appIsBackgrounded,
+}) =>
+    notificationSnapshotReady &&
+    currentCount > previousCount &&
+    (roomId != foregroundRoomId || appIsBackgrounded);
+
+@visibleForTesting
+bool orexIsBackgroundedForNotification({
+  required AppLifecycleState? lifecycle,
+  required bool isWindows,
+  required bool desktopWindowVisible,
+}) =>
+    (lifecycle != null && lifecycle != AppLifecycleState.resumed) ||
+    (isWindows && !desktopWindowVisible);
+
 /// Тонкая обёртка над Famedly Matrix Dart SDK.
 ///
 /// Отвечает за: инициализацию клиента с локальной БД (ради «мгновенного»
@@ -127,6 +153,8 @@ class MatrixService extends ChangeNotifier {
   StreamSubscription? _syncSub;
   StreamSubscription? _loginStateSub;
   StreamSubscription? _userProfileSub;
+  StreamSubscription<bool>? _desktopWindowVisibilitySub;
+  bool _desktopWindowVisible = true;
   final Map<String, Future<void>> _incomingCallAnswerBootstraps = {};
   Future<void>? _avatarWarmupFuture;
   bool _avatarWarmupRequestedAfterCurrent = false;
@@ -176,6 +204,10 @@ class MatrixService extends ChangeNotifier {
     // not from a widget listener, so CallController can create its local
     // session immediately and queue the later UI handoff safely.
     push.setIncomingCallAnswerHandler(_handleIncomingCallAnswer);
+
+    _desktopWindowVisibilitySub = push.desktopWindowVisibilityChanges.listen(
+      (visible) => _desktopWindowVisible = visible,
+    );
 
     _syncSub = client.onSync.stream.listen((_) {
       _playNotificationCueIfNeeded();
@@ -457,15 +489,26 @@ class MatrixService extends ChangeNotifier {
   void _playNotificationCueIfNeeded() {
     if (!client.isLogged()) return;
     final increasedRooms = <Room>[];
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    final appIsBackgrounded = orexIsBackgroundedForNotification(
+      lifecycle: lifecycle,
+      isWindows: !kIsWeb && defaultTargetPlatform == TargetPlatform.windows,
+      desktopWindowVisible: _desktopWindowVisible,
+    );
     for (final room in client.rooms) {
       final count = room.notificationCount;
       final previous = _notificationCounts[room.id] ?? 0;
       if (_notificationSnapshotReady && previous > 0 && count == 0) {
         unawaited(push.dismissRoomNotifications(room.id));
       }
-      if (_notificationSnapshotReady &&
-          count > previous &&
-          room.id != _foregroundRoomId) {
+      if (orexShouldPublishSyncedMatrixNotification(
+        notificationSnapshotReady: _notificationSnapshotReady,
+        previousCount: previous,
+        currentCount: count,
+        roomId: room.id,
+        foregroundRoomId: _foregroundRoomId,
+        appIsBackgrounded: appIsBackgrounded,
+      )) {
         final rtcNotification = room.lastEvent
             ?.tryParseRtcNotificationContent();
         if (rtcNotification?.notificationType != RtcNotificationType.ring) {
@@ -477,9 +520,6 @@ class MatrixService extends ChangeNotifier {
     _notificationSnapshotReady = true;
     if (increasedRooms.isEmpty) return;
 
-    final lifecycle = WidgetsBinding.instance.lifecycleState;
-    final appIsBackgrounded =
-        lifecycle != null && lifecycle != AppLifecycleState.resumed;
     final nativeLocalNotifications =
         !kIsWeb &&
         (defaultTargetPlatform == TargetPlatform.android ||
@@ -491,12 +531,7 @@ class MatrixService extends ChangeNotifier {
       // текущего Matrix sync. Windows всегда использует свой native runner.
       if (appIsBackgrounded && push.ownsBackgroundNotifications) return;
       for (final room in increasedRooms) {
-        unawaited(
-          push.showSyncedMatrixNotification(
-            roomId: room.id,
-            eventId: room.lastEvent?.eventId,
-          ),
-        );
+        unawaited(_showSyncedMatrixNotification(room));
       }
       return;
     }
@@ -504,6 +539,27 @@ class MatrixService extends ChangeNotifier {
     // У платформ без собственного notification bridge остаётся только
     // внутриприложенный звуковой cue.
     audio.playNotification();
+  }
+
+  Future<void> _showSyncedMatrixNotification(Room room) async {
+    final event = room.lastEvent;
+    if (event == null) return;
+    String? avatarCacheKey;
+    final senderAvatar = event.senderFromMemoryOrFallback.avatarUrl;
+    if (senderAvatar?.scheme == 'mxc') {
+      try {
+        avatarCacheKey = await ensureAvatarCached(
+          senderAvatar,
+        ).timeout(const Duration(seconds: 2));
+      } catch (_) {
+        // The notification itself is more important than an avatar download.
+      }
+    }
+    await push.showSyncedMatrixNotification(
+      roomId: room.id,
+      eventId: event.eventId,
+      avatarCacheKey: avatarCacheKey,
+    );
   }
 
   void setForegroundRoomId(String? roomId) {
@@ -555,6 +611,7 @@ class MatrixService extends ChangeNotifier {
     _syncSub?.cancel();
     _loginStateSub?.cancel();
     _userProfileSub?.cancel();
+    _desktopWindowVisibilitySub?.cancel();
     push.setIncomingCallAnswerHandler(null);
     _incomingCallAnswerBootstraps.clear();
     final voipService = voip;

@@ -35,6 +35,10 @@ object OrexFlutterEngineOwner {
                 appContext,
                 created.dartExecutor.binaryMessenger,
             )
+            OrexScreenShareBridge.attach(
+                appContext,
+                created.dartExecutor.binaryMessenger,
+            )
             OrexPushBridge.attachEngine(
                 appContext,
                 created.dartExecutor.binaryMessenger,

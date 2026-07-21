@@ -69,6 +69,11 @@ abstract interface class OrexPushPlatform {
 
   Stream<OrexPushOpen> get notificationOpens;
 
+  /// Visibility changes from the Windows host window. Other platforms expose
+  /// an empty stream, so native notification policy can distinguish a hidden
+  /// tray host from a still-visible selected conversation.
+  Stream<bool> get desktopWindowVisibilityChanges;
+
   Future<OrexPushOpen?> takeInitialNotification();
 
   Future<void> acknowledgeNotification(OrexPushOpen open);
@@ -127,6 +132,8 @@ class OrexNativePushPlatform implements OrexPushPlatform {
       StreamController<String>.broadcast();
   final StreamController<OrexPushOpen> _notificationOpens =
       StreamController<OrexPushOpen>.broadcast();
+  final StreamController<bool> _desktopWindowVisibilityChanges =
+      StreamController<bool>.broadcast();
   bool _initialized = false;
   bool _disposed = false;
 
@@ -147,6 +154,10 @@ class OrexNativePushPlatform implements OrexPushPlatform {
   Stream<OrexPushOpen> get notificationOpens => _notificationOpens.stream;
 
   @override
+  Stream<bool> get desktopWindowVisibilityChanges =>
+      _desktopWindowVisibilityChanges.stream;
+
+  @override
   Future<void> initialize() async {
     if (_initialized || _disposed || !_hasNativeBridge) return;
     _initialized = true;
@@ -165,6 +176,10 @@ class OrexNativePushPlatform implements OrexPushPlatform {
       case 'onNotificationOpened':
         final data = _stringMap(call.arguments);
         if (data.isNotEmpty) _notificationOpens.add(OrexPushOpen(data));
+        return true;
+      case 'onDesktopWindowVisibilityChanged':
+        final visible = call.arguments;
+        if (visible is bool) _desktopWindowVisibilityChanges.add(visible);
         return true;
       case 'resolvePush':
         final resolver = _pushResolver;
@@ -397,5 +412,6 @@ class OrexNativePushPlatform implements OrexPushPlatform {
     }
     unawaited(_tokenChanges.close());
     unawaited(_notificationOpens.close());
+    unawaited(_desktopWindowVisibilityChanges.close());
   }
 }

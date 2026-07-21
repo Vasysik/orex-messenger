@@ -7,6 +7,8 @@ class OrexAvatarCache {
 
   static String keyFor(Uri mxc) => orexAvatarCacheKey(mxc);
 
+  static Future<String?> pathForKey(String? rawKey) async => null;
+
   static Future<Uint8List?> read(Uri mxc) async => null;
 
   static Future<String?> write(Uri mxc, Uint8List bytes) async => null;
