@@ -16,6 +16,7 @@ import '../../shared/widgets/orex_settings_components.dart';
 import '../../shared/widgets/orex_update_dialog.dart';
 import 'audio_devices_screen.dart';
 import 'devices_screen.dart';
+import 'email_settings_screen.dart';
 import 'key_storage_screen.dart';
 import 'verify_session_screen.dart';
 
@@ -422,6 +423,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   icon: Icons.alternate_email,
                   title: 'Matrix ID',
                   subtitle: widget.matrix.userId,
+                ),
+                OrexSettingsTile(
+                  icon: widget.matrix.hasAccountEmail
+                      ? Icons.mark_email_read_outlined
+                      : Icons.mark_email_unread_outlined,
+                  title: 'Почта',
+                  subtitle: widget.matrix.accountEmailsLoadFailed &&
+                          !widget.matrix.accountEmailsLoaded
+                      ? 'Не удалось проверить привязанный адрес'
+                      : !widget.matrix.accountEmailsLoaded
+                          ? 'Проверяем привязанный адрес…'
+                          : widget.matrix.hasAccountEmail
+                              ? widget.matrix.accountEmails.join(', ')
+                              : 'Не привязана — восстановление пароля недоступно',
+                  onTap: () => Navigator.of(context)
+                      .push(
+                        MaterialPageRoute(
+                          builder: (_) => EmailSettingsScreen(
+                            matrix: widget.matrix,
+                          ),
+                        ),
+                      )
+                      .then((_) {
+                        if (mounted) setState(() {});
+                      }),
                 ),
                 OrexSettingsTile(
                   icon: Icons.lock_person,

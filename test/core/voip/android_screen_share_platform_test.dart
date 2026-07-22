@@ -47,9 +47,10 @@ void main() {
           webRtcEventChannel,
           (_) async => codec.encodeSuccessEnvelope(null),
         );
-    final OrexAndroidScreenShareStopHandler stopHandler = (reason) async {
+    void stopHandler(String reason) {
       receivedReasons.add(reason);
-    };
+    }
+
     OrexAndroidScreenSharePlatform.setStopHandler(stopHandler);
     OrexAndroidScreenSharePlatform.armStopHandling();
     addTearDown(() {

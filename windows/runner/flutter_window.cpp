@@ -742,8 +742,34 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // A close initiated by the user (title-bar X, Alt+F4 or the system menu)
+  // arrives as SC_CLOSE. Keep that familiar action mapped to the tray.
+  // Installers and Windows Restart Manager, on the other hand, send
+  // WM_QUERYENDSESSION/WM_ENDSESSION or WM_CLOSE directly and must be able to
+  // terminate the process instead of watching it disappear into the tray.
+  if (message == WM_QUERYENDSESSION) {
+    external_shutdown_requested_ = true;
+    return TRUE;
+  }
+  if (message == WM_ENDSESSION) {
+    if (wparam != FALSE) {
+      RequestQuit();
+      return 0;
+    }
+    external_shutdown_requested_ = false;
+  }
+  if (message == WM_SYSCOMMAND &&
+      (wparam & 0xFFF0) == SC_CLOSE) {
+    if (external_shutdown_requested_) {
+      RequestQuit();
+    } else if (!HideToTray()) {
+      RequestQuit();
+    }
+    return 0;
+  }
   if (message == WM_CLOSE) {
-    if (HideToTray()) return 0;
+    RequestQuit();
+    return 0;
   }
   if (message == WM_SIZE) {
     if (wparam == SIZE_MINIMIZED) {

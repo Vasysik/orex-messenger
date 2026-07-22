@@ -147,6 +147,13 @@ class MatrixService extends ChangeNotifier {
   /// может на короткое время выглядеть включённым из кэша SDK.
   bool _backupDisabledByUser = false;
 
+  /// Подтверждённые почтовые адреса аккаунта. Состояние загружается отдельно
+  /// от /sync через account/3pid и поэтому имеет собственный флаг готовности.
+  List<String> _accountEmails = const <String>[];
+  bool _accountEmailsLoaded = false;
+  bool _accountEmailsLoadFailed = false;
+  Future<List<String>>? _accountEmailsRefresh;
+
   final Map<String, bool> _roomPublicOverrides = {};
 
   /// Optimistic metadata для child-комнат супергруппы. Matrix state/event sync
@@ -238,7 +245,12 @@ class MatrixService extends ChangeNotifier {
         // A successful login may reuse this MatrixService after a previous
         // logout. Its first /sync will schedule cleanup for the new account.
         voip?.resumeStaleMembershipCleanupForLoggedInAccount();
+        unawaited(refreshAccountEmails(force: true));
       } else {
+        _accountEmails = const <String>[];
+        _accountEmailsLoaded = false;
+        _accountEmailsLoadFailed = false;
+        _accountEmailsRefresh = null;
         // Session expiry and remote logout bypass MatrixAuthApi.logout().
         // Latch local call cancellation before the asynchronous cleanup starts.
         voip?.pauseStaleMembershipCleanupForAccountTransition();
@@ -272,6 +284,9 @@ class MatrixService extends ChangeNotifier {
     _scheduleAvatarCacheWarmup(force: true);
 
     await _loadBackupPrefs();
+    if (client.isLogged()) {
+      unawaited(refreshAccountEmails(force: true));
+    }
 
     // Push не должен ломать запуск Matrix-клиента: отсутствие Firebase config
     // или gateway оставляет приложение в обычном foreground-sync режиме.

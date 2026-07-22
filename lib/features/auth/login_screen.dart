@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:matrix/matrix.dart';
 
 import '../../core/config/app_version.dart';
 import '../../core/logging/orex_logger.dart';
@@ -30,6 +31,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _inviteToken = TextEditingController();
   bool _isRegistering = false;
   bool _busy = false;
+  bool _showPasswordRecovery = false;
   String? _error;
 
   @override
@@ -87,6 +89,7 @@ class _LoginScreenState extends State<LoginScreen> {
       widget.onLoggedIn();
     } catch (e) {
       final details = e.toString();
+      final errcode = e is MatrixException ? e.errcode : null;
       OrexLog.d(
         'Auth',
         _isRegistering ? 'registration failed' : 'login failed',
@@ -95,22 +98,33 @@ class _LoginScreenState extends State<LoginScreen> {
       String msg = _isRegistering
           ? 'Не удалось создать аккаунт. Попробуйте ещё раз.'
           : 'Не удалось войти. Попробуйте ещё раз.';
-      if (details.contains('M_USER_IN_USE')) {
+      var revealPasswordRecovery = false;
+      if (errcode == 'M_USER_IN_USE' || details.contains('M_USER_IN_USE')) {
         msg = 'Это имя пользователя уже занято';
-      } else if (details.contains('M_INVALID_USERNAME')) {
+      } else if (errcode == 'M_INVALID_USERNAME' ||
+          details.contains('M_INVALID_USERNAME')) {
         msg = 'Недопустимое имя пользователя (только латиница, цифры, _, -, .)';
-      } else if (details.contains('M_FORBIDDEN')) {
+      } else if (errcode == 'M_FORBIDDEN' ||
+          details.contains('M_FORBIDDEN')) {
         msg = _isRegistering
             ? 'Неверный или истёкший код приглашения'
             : 'Неверный логин или пароль';
-      } else if (details.contains('M_UNKNOWN_TOKEN') ||
+        revealPasswordRecovery = !_isRegistering;
+      } else if (errcode == 'M_UNKNOWN_TOKEN' ||
+          errcode == 'M_MISSING_TOKEN' ||
+          details.contains('M_UNKNOWN_TOKEN') ||
           details.contains('M_MISSING_TOKEN')) {
         msg = 'Недействительный токен приглашения';
       } else if (details.contains('SocketException') ||
           details.contains('Connection refused')) {
         msg = 'Нет подключения к серверу. Проверьте интернет.';
       }
-      if (mounted) setState(() => _error = msg);
+      if (mounted) {
+        setState(() {
+          _error = msg;
+          if (revealPasswordRecovery) _showPasswordRecovery = true;
+        });
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -158,6 +172,12 @@ class _LoginScreenState extends State<LoginScreen> {
                           controller: _pass,
                           hint: 'Пароль',
                           obscure: true,
+                          suffixIcon: !_isRegistering && _showPasswordRecovery
+                              ? _PasswordRecoveryButton(
+                                  enabled: !_busy,
+                                  onPressed: _recoverPassword,
+                                )
+                              : null,
                           autofillHints: _isRegistering
                               ? const [AutofillHints.newPassword]
                               : const [AutofillHints.password],
@@ -168,17 +188,6 @@ class _LoginScreenState extends State<LoginScreen> {
                               ? null
                               : (_) => _submit(),
                         ),
-                        if (!_isRegistering)
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: TextButton(
-                              onPressed: _busy ? null : _recoverPassword,
-                              child: const Text(
-                                'Забыли пароль?',
-                                style: TextStyle(color: OrexColors.copper),
-                              ),
-                            ),
-                          ),
                         if (_isRegistering) ...[
                           const SizedBox(height: 12),
                           _Field(
@@ -230,6 +239,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               : () {
                                   setState(() {
                                     _isRegistering = !_isRegistering;
+                                    _showPasswordRecovery = false;
                                     _error = null;
                                   });
                                 },
@@ -259,6 +269,7 @@ class _Field extends StatelessWidget {
     required this.controller,
     required this.hint,
     this.obscure = false,
+    this.suffixIcon,
     this.autofillHints,
     this.textInputAction,
     this.onSubmitted,
@@ -267,6 +278,7 @@ class _Field extends StatelessWidget {
   final TextEditingController controller;
   final String hint;
   final bool obscure;
+  final Widget? suffixIcon;
   final Iterable<String>? autofillHints;
   final TextInputAction? textInputAction;
   final ValueChanged<String>? onSubmitted;
@@ -283,6 +295,10 @@ class _Field extends StatelessWidget {
       enableSuggestions: !obscure,
       decoration: InputDecoration(
         hintText: hint,
+        suffixIcon: suffixIcon,
+        suffixIconConstraints: suffixIcon == null
+            ? null
+            : const BoxConstraints(minWidth: 54, minHeight: 48),
         filled: true,
         fillColor: Colors.white.withValues(alpha: 0.12),
         border: OutlineInputBorder(
@@ -296,6 +312,40 @@ class _Field extends StatelessWidget {
           borderSide: BorderSide(
             color: OrexColors.copper.withValues(alpha: 0.25),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PasswordRecoveryButton extends StatelessWidget {
+  const _PasswordRecoveryButton({
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(7),
+      child: Tooltip(
+        message: 'Восстановить пароль',
+        child: IconButton(
+          onPressed: enabled ? onPressed : null,
+          style: IconButton.styleFrom(
+            fixedSize: const Size.square(34),
+            minimumSize: const Size.square(34),
+            padding: EdgeInsets.zero,
+            shape: const CircleBorder(),
+            backgroundColor: OrexColors.copper.withValues(alpha: 0.16),
+            foregroundColor: OrexColors.copper,
+            disabledBackgroundColor:
+                OrexColors.copper.withValues(alpha: 0.07),
+          ),
+          icon: const Icon(Icons.question_mark, size: 18),
         ),
       ),
     );

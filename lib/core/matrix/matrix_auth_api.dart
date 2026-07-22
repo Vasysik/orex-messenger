@@ -116,9 +116,10 @@ class OrexAuthProtocolException implements Exception {
 
   @override
   String toString() {
+    final status = statusCode == null ? null : 'HTTP $statusCode';
     final details = <String>[
-      if (code != null) code!,
-      if (statusCode != null) 'HTTP $statusCode',
+      ?code,
+      ?status,
     ];
     return details.isEmpty ? message : '${details.join(' / ')}: $message';
   }
@@ -406,7 +407,7 @@ OrexMasCapabilities orexParseMasCapabilities(
   for (final endpoint in <Uri>[
     issuer,
     tokenEndpoint,
-    if (deviceEndpoint != null) deviceEndpoint,
+    ?deviceEndpoint,
   ]) {
     if (!orexMasEndpointMatches(endpoint, configuredBase)) {
       throw const OrexAuthProtocolException(
@@ -443,7 +444,7 @@ OrexDeviceAuthorizationSession orexParseDeviceAuthorizationSession(
 
   for (final uri in <Uri>[
     verificationUri,
-    if (verificationUriComplete != null) verificationUriComplete,
+    ?verificationUriComplete,
   ]) {
     if (!orexMasEndpointMatches(uri, configuredBase)) {
       throw const OrexAuthProtocolException(

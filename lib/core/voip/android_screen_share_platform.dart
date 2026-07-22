@@ -6,6 +6,10 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 // flutter_webrtc 1.5.2 exposes one process-wide broadcast stream here. Orex's
 // Android source overlay emits onScreenCaptureStopped into that existing stream
 // rather than opening a competing EventChannel subscription.
+// flutter_webrtc 1.5.2 does not export this process-wide channel from its
+// public library. Keep the dependency isolated here until the package exposes
+// an equivalent public API.
+// ignore: implementation_imports
 import 'package:flutter_webrtc/src/native/event_channel.dart'
     show FlutterWebRTCEventChannel;
 

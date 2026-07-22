@@ -65,6 +65,7 @@ class FlutterWindow : public Win32Window {
   bool tray_icon_added_ = false;
   bool hidden_to_tray_ = false;
   bool desktop_window_visible_ = true;
+  bool external_shutdown_requested_ = false;
   bool destroyed_ = false;
 };
 

@@ -104,7 +104,7 @@ if (-not (Test-Path $Installer)) {
 
 Copy-Item `
     $Installer `
-    "OrexSetup-$Release.exe" `
+    "Orex-Setup-$Release.exe" `
     -Force
 
 Write-Host ""
@@ -114,5 +114,5 @@ Write-Host ""
 Write-Host "Artifacts:"
 Write-Host "  app-arm64-v8a-$Release.apk"
 Write-Host "  app-armeabi-v7a-$Release.apk"
-Write-Host "  OrexSetup-$Release.exe"
+Write-Host "  Orex-Setup-$Release.exe"
 Write-Host "========================================"
