@@ -283,6 +283,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
   StreamSubscription? _verificationSub;
   StreamSubscription<OrexIncomingCall>? _incomingCallSub;
+  StreamSubscription<OrexIncomingCallDismissal>? _incomingCallDismissSub;
   StreamSubscription<OrexCallInstancePromotion>? _callInstancePromotionSub;
   StreamSubscription<OrexCallInstance>? _acceptedCallUiSub;
   StreamSubscription<OrexPushOpen>? _pushOpenSub;
@@ -297,11 +298,15 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
   final Map<String, Object> _pendingCallActionAttempts = <String, Object>{};
   final Map<String, OrexCallInstance> _callInstanceAliases =
       <String, OrexCallInstance>{};
+  final Set<String> _nativeIncomingCallNotifications = <String>{};
   AppLifecycleState _lifecycleState =
       WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
   DateTime? _backgroundedAt;
 
   bool get _isForeground => _lifecycleState == AppLifecycleState.resumed;
+
+  bool get _isWindowsHost =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
 
   bool get _isDesktopHost =>
       !kIsWeb &&
@@ -398,6 +403,47 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     if (_acceptedCallUiCandidate?.routeKey == previousKey) {
       _acceptedCallUiCandidate = promotion.current;
     }
+    if (_nativeIncomingCallNotifications.remove(previousKey)) {
+      _nativeIncomingCallNotifications.add(promotion.current.routeKey);
+    }
+  }
+
+  Future<void> _showWindowsIncomingCallNotification(
+    OrexIncomingCall incoming,
+  ) async {
+    if (!_isWindowsHost) return;
+    final instance = _canonicalCallInstance(incoming.instance);
+    if (!_nativeIncomingCallNotifications.add(instance.routeKey)) return;
+
+    if (!mounted ||
+        !(widget.matrix.voip?.isIncomingCallVisible(instance) ?? false)) {
+      _nativeIncomingCallNotifications.remove(instance.routeKey);
+      return;
+    }
+    // Do not put avatar I/O on the ringing path: Windows must surface the call
+    // immediately, even when the Matrix media cache is cold or unavailable.
+    final displayName = incoming.room.getLocalizedDisplayname().trim();
+    await widget.matrix.push.showIncomingCallNotification(
+      roomId: incoming.room.id,
+      ringEventId: instance.ringEventId,
+      title: displayName.isEmpty ? 'Orex' : displayName,
+      body: 'Входящий звонок',
+    );
+  }
+
+  void _handleIncomingCallDismissal(OrexIncomingCallDismissal dismissal) {
+    _nativeIncomingCallNotifications.removeWhere(
+      (key) =>
+          key == dismissal.routeKey ||
+          (dismissal.ringEventId == null &&
+              key.startsWith('${dismissal.roomId}\u001f')),
+    );
+    unawaited(
+      widget.matrix.push.dismissIncomingCallNotification(
+        dismissal.roomId,
+        ringEventId: dismissal.ringEventId,
+      ),
+    );
   }
 
   @override
@@ -419,6 +465,9 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
         .listen(_handleCallInstancePromotion);
     _incomingCallSub = widget.matrix.voip?.onIncomingCall.listen(
       _showIncomingCall,
+    );
+    _incomingCallDismissSub = widget.matrix.voip?.onDismissIncoming.listen(
+      _handleIncomingCallDismissal,
     );
     _acceptedCallUiSub = widget.matrix.call.onAcceptedIncomingCallUiRequested
         .listen(_handleAcceptedCallUiRequest);
@@ -690,16 +739,16 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     if (!isVisible()) return;
     if (call.isAcceptingIncomingInstance(currentInstance())) return;
     if (_attemptMapContains(_pendingCallActionAttempts, sourceInstance)) return;
+    unawaited(_showWindowsIncomingCallNotification(incoming));
     if (!_canPresentIncomingCallUi) {
       if (!call.isActive) {
         unawaited(call.prepareIncoming(room, instance: currentInstance()));
       }
       return;
     }
-    if (_isDesktopHost && !_isForeground) {
-      // Desktop lifecycle can be inactive merely because the window is minimized
-      // or another application owns focus. Restore the host and still enqueue the
-      // Answer/Decline surface; do not require an outgoing call to warm it first.
+    if (_isWindowsHost) {
+      // Flutter's lifecycle can remain `resumed` while the Win32 host is hidden
+      // in tray. Always restore/focus it before enqueueing the incoming route.
       unawaited(widget.matrix.push.activateIncomingCallWindow());
     }
     final routeOwner = _claimAttempt(_incomingCallDialogs, sourceInstance);
@@ -944,6 +993,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _verificationSub?.cancel();
     _incomingCallSub?.cancel();
+    _incomingCallDismissSub?.cancel();
     _callInstancePromotionSub?.cancel();
     _acceptedCallUiSub?.cancel();
     _pushOpenSub?.cancel();

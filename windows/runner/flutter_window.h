@@ -28,9 +28,14 @@ class FlutterWindow : public Win32Window {
 
  private:
   bool EnsureTrayIcon();
+  void RefreshTrayIcon();
+  void UpdateTrayUnreadCount(int unread_count);
   void RemoveTrayIcon();
   void ShowWindowsNotification(const flutter::EncodableMap& payload);
+  void ClearCurrentNotification();
   void DismissWindowsNotification(const std::string& room_id);
+  void DismissIncomingCallNotification(const std::string& room_id,
+                                       const std::string& event_id);
   void ClearNotificationAvatarIcon();
   bool HideToTray();
   void NotifyWindowVisibility(bool visible);
@@ -50,10 +55,16 @@ class FlutterWindow : public Win32Window {
   NOTIFYICONDATAW tray_icon_{};
   flutter::EncodableMap notification_payload_;
   std::string notification_room_id_;
+  std::string notification_event_id_;
+  std::string notification_kind_;
+  HICON tray_base_icon_ = nullptr;
+  HICON tray_badged_icon_ = nullptr;
   HICON notification_avatar_icon_ = nullptr;
   UINT taskbar_created_message_ = 0;
+  int unread_count_ = 0;
   bool tray_icon_added_ = false;
   bool hidden_to_tray_ = false;
+  bool desktop_window_visible_ = true;
   bool destroyed_ = false;
 };
 

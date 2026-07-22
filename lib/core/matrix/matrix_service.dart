@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' hide Visibility;
+import 'package:http/http.dart' as http;
 import 'package:matrix/matrix.dart';
 import 'package:matrix/encryption/utils/key_verification.dart';
 import 'package:matrix/encryption/utils/bootstrap.dart';
@@ -70,6 +73,12 @@ bool orexIsBackgroundedForNotification({
 }) =>
     (lifecycle != null && lifecycle != AppLifecycleState.resumed) ||
     (isWindows && !desktopWindowVisible);
+
+@visibleForTesting
+int orexTotalUnreadCount(Iterable<int> counts) => counts.fold<int>(
+  0,
+  (total, count) => total + (count < 0 ? 0 : count),
+);
 
 /// Тонкая обёртка над Famedly Matrix Dart SDK.
 ///
@@ -242,6 +251,7 @@ class MatrixService extends ChangeNotifier {
       _backupDisabledByUser = false;
       _notificationCounts.clear();
       _notificationSnapshotReady = false;
+      unawaited(push.updateDesktopUnreadCount(0));
       _lastAvatarWarmup = null;
       await _loadBackupPrefs();
       push.handleLoginStateChanged();
@@ -517,6 +527,15 @@ class MatrixService extends ChangeNotifier {
       }
       _notificationCounts[room.id] = count;
     }
+    final activeRoomIds = client.rooms.map((room) => room.id).toSet();
+    _notificationCounts.removeWhere(
+      (roomId, _) => !activeRoomIds.contains(roomId),
+    );
+    unawaited(
+      push.updateDesktopUnreadCount(
+        orexTotalUnreadCount(_notificationCounts.values),
+      ),
+    );
     _notificationSnapshotReady = true;
     if (increasedRooms.isEmpty) return;
 

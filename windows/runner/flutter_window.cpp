@@ -8,7 +8,10 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <string>
 #include <variant>
@@ -50,6 +53,106 @@ std::string MapString(const flutter::EncodableMap& map, const char* key) {
   if (it == map.end()) return std::string();
   const auto* value = std::get_if<std::string>(&it->second);
   return value == nullptr ? std::string() : *value;
+}
+
+int MapInt(const flutter::EncodableMap& map, const char* key) {
+  const auto it = map.find(flutter::EncodableValue(key));
+  if (it == map.end()) return 0;
+  if (const auto* value = std::get_if<int32_t>(&it->second)) {
+    return std::max(0, *value);
+  }
+  if (const auto* value = std::get_if<int64_t>(&it->second)) {
+    return static_cast<int>(std::clamp<int64_t>(
+        *value, 0, std::numeric_limits<int>::max()));
+  }
+  return 0;
+}
+
+HICON CreateBadgedTrayIcon(HICON base_icon) {
+  if (base_icon == nullptr) return nullptr;
+  const int width = std::max(16, GetSystemMetrics(SM_CXSMICON));
+  const int height = std::max(16, GetSystemMetrics(SM_CYSMICON));
+
+  BITMAPV5HEADER bitmap_info{};
+  bitmap_info.bV5Size = sizeof(bitmap_info);
+  bitmap_info.bV5Width = width;
+  bitmap_info.bV5Height = -height;
+  bitmap_info.bV5Planes = 1;
+  bitmap_info.bV5BitCount = 32;
+  bitmap_info.bV5Compression = BI_BITFIELDS;
+  bitmap_info.bV5RedMask = 0x00FF0000;
+  bitmap_info.bV5GreenMask = 0x0000FF00;
+  bitmap_info.bV5BlueMask = 0x000000FF;
+  bitmap_info.bV5AlphaMask = 0xFF000000;
+
+  void* raw_pixels = nullptr;
+  HDC screen = GetDC(nullptr);
+  HBITMAP color = CreateDIBSection(
+      screen, reinterpret_cast<BITMAPINFO*>(&bitmap_info), DIB_RGB_COLORS,
+      &raw_pixels, nullptr, 0);
+  HDC canvas = CreateCompatibleDC(screen);
+  if (screen != nullptr) ReleaseDC(nullptr, screen);
+  if (color == nullptr || raw_pixels == nullptr || canvas == nullptr) {
+    if (canvas != nullptr) DeleteDC(canvas);
+    if (color != nullptr) DeleteObject(color);
+    return nullptr;
+  }
+
+  HGDIOBJ previous = SelectObject(canvas, color);
+  std::memset(raw_pixels, 0,
+              static_cast<size_t>(width) * height * sizeof(uint32_t));
+  DrawIconEx(canvas, 0, 0, base_icon, width, height, 0, nullptr, DI_NORMAL);
+  SelectObject(canvas, previous);
+  DeleteDC(canvas);
+
+  auto* pixels = static_cast<uint32_t*>(raw_pixels);
+  const int radius = std::max(3, std::min(width, height) / 4);
+  const int center_x = width - radius;
+  const int center_y = height - radius;
+  const int border_radius_squared = radius * radius;
+  const int inner_radius = std::max(1, radius - 1);
+  const int inner_radius_squared = inner_radius * inner_radius;
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const int dx = x - center_x;
+      const int dy = y - center_y;
+      const int distance_squared = dx * dx + dy * dy;
+      if (distance_squared > border_radius_squared) continue;
+      pixels[y * width + x] = distance_squared > inner_radius_squared
+                                  ? 0xFFFFFFFFu
+                                  : 0xFFC47A44u;
+    }
+  }
+
+  const size_t mask_stride = ((static_cast<size_t>(width) + 15) / 16) * 2;
+  std::vector<BYTE> mask_pixels(mask_stride * height, 0);
+  HBITMAP mask = CreateBitmap(width, height, 1, 1, mask_pixels.data());
+  if (mask == nullptr) {
+    DeleteObject(color);
+    return nullptr;
+  }
+  ICONINFO icon_info{};
+  icon_info.fIcon = TRUE;
+  icon_info.hbmColor = color;
+  icon_info.hbmMask = mask;
+  HICON icon = CreateIconIndirect(&icon_info);
+  DeleteObject(mask);
+  DeleteObject(color);
+  return icon;
+}
+
+std::wstring TrayTooltip(int unread_count) {
+#ifdef OREX_DEBUG_CHANNEL
+  std::wstring tooltip = L"Orex Messenger Debug";
+#else
+  std::wstring tooltip = L"Orex Messenger";
+#endif
+  if (unread_count > 0) {
+    tooltip += L" \u2014 ";
+    tooltip += std::to_wstring(unread_count);
+    tooltip += L" \u043d\u0435\u043f\u0440\u043e\u0447\u0438\u0442\u0430\u043d\u043d\u044b\u0445";
+  }
+  return tooltip;
 }
 
 bool IsAvatarCacheFileName(const std::wstring& name) {
@@ -313,7 +416,8 @@ bool FlutterWindow::OnCreate() {
             call.arguments() == nullptr
                 ? nullptr
                 : std::get_if<flutter::EncodableMap>(call.arguments());
-        if (call.method_name() == "showLocalMatrixNotification") {
+        if (call.method_name() == "showLocalMatrixNotification" ||
+            call.method_name() == "showIncomingCallNotification") {
           if (arguments == nullptr) {
             result->Success(flutter::EncodableValue(false));
             return;
@@ -325,6 +429,22 @@ bool FlutterWindow::OnCreate() {
         if (call.method_name() == "dismissRoomNotifications") {
           if (arguments != nullptr) {
             DismissWindowsNotification(MapString(*arguments, "roomId"));
+          }
+          result->Success(flutter::EncodableValue(true));
+          return;
+        }
+        if (call.method_name() == "dismissIncomingCallNotification") {
+          if (arguments != nullptr) {
+            DismissIncomingCallNotification(
+                MapString(*arguments, "roomId"),
+                MapString(*arguments, "ringEventId"));
+          }
+          result->Success(flutter::EncodableValue(true));
+          return;
+        }
+        if (call.method_name() == "updateTrayUnreadCount") {
+          if (arguments != nullptr) {
+            UpdateTrayUnreadCount(MapInt(*arguments, "count"));
           }
           result->Success(flutter::EncodableValue(true));
           return;
@@ -361,6 +481,8 @@ void FlutterWindow::OnDestroy() {
   destroyed_ = true;
   notification_payload_.clear();
   notification_room_id_.clear();
+  notification_event_id_.clear();
+  notification_kind_.clear();
   RemoveTrayIcon();
   push_channel_ = nullptr;
   audio_devices_channel_ = nullptr;
@@ -375,26 +497,32 @@ bool FlutterWindow::EnsureTrayIcon() {
   if (tray_icon_added_) return true;
   if (GetHandle() == nullptr) return false;
 
-  ClearNotificationAvatarIcon();
-  if (tray_icon_.hIcon != nullptr) {
-    DestroyIcon(tray_icon_.hIcon);
-    tray_icon_.hIcon = nullptr;
+  if (tray_base_icon_ == nullptr) {
+    tray_base_icon_ = static_cast<HICON>(LoadImageW(
+        GetModuleHandle(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR));
   }
+  if (tray_base_icon_ == nullptr) return false;
+
+  if (tray_badged_icon_ != nullptr) {
+    DestroyIcon(tray_badged_icon_);
+    tray_badged_icon_ = nullptr;
+  }
+  if (unread_count_ > 0) {
+    tray_badged_icon_ = CreateBadgedTrayIcon(tray_base_icon_);
+  }
+
   tray_icon_ = {};
   tray_icon_.cbSize = sizeof(NOTIFYICONDATAW);
   tray_icon_.hWnd = GetHandle();
   tray_icon_.uID = kNotificationIconId;
   tray_icon_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
   tray_icon_.uCallbackMessage = kNotificationCallbackMessage;
-  tray_icon_.hIcon = static_cast<HICON>(LoadImageW(
-      GetModuleHandle(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
-      GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
-      LR_DEFAULTCOLOR));
-#ifdef OREX_DEBUG_CHANNEL
-  wcscpy_s(tray_icon_.szTip, L"Orex Messenger Debug");
-#else
-  wcscpy_s(tray_icon_.szTip, L"Orex Messenger");
-#endif
+  tray_icon_.hIcon = tray_badged_icon_ != nullptr ? tray_badged_icon_
+                                                   : tray_base_icon_;
+  const std::wstring tooltip = TrayTooltip(unread_count_);
+  wcsncpy_s(tray_icon_.szTip, tooltip.c_str(), _TRUNCATE);
   tray_icon_added_ = Shell_NotifyIconW(NIM_ADD, &tray_icon_) == TRUE;
   if (tray_icon_added_) {
     tray_icon_.uVersion = NOTIFYICON_VERSION_4;
@@ -403,16 +531,53 @@ bool FlutterWindow::EnsureTrayIcon() {
   return tray_icon_added_;
 }
 
+void FlutterWindow::RefreshTrayIcon() {
+  if (tray_base_icon_ == nullptr) return;
+
+  HICON next_badged_icon = nullptr;
+  if (unread_count_ > 0) {
+    next_badged_icon = CreateBadgedTrayIcon(tray_base_icon_);
+  }
+  const HICON previous_badged_icon = tray_badged_icon_;
+  tray_badged_icon_ = next_badged_icon;
+  tray_icon_.hIcon = tray_badged_icon_ != nullptr ? tray_badged_icon_
+                                                   : tray_base_icon_;
+  const std::wstring tooltip = TrayTooltip(unread_count_);
+  wcsncpy_s(tray_icon_.szTip, tooltip.c_str(), _TRUNCATE);
+  if (tray_icon_added_) {
+    tray_icon_.uFlags = NIF_ICON | NIF_TIP;
+    Shell_NotifyIconW(NIM_MODIFY, &tray_icon_);
+  }
+  // Shell_NotifyIcon copies the icon, so the previous generated handle can be
+  // released only after the replacement has been submitted.
+  if (previous_badged_icon != nullptr) {
+    DestroyIcon(previous_badged_icon);
+  }
+}
+
+void FlutterWindow::UpdateTrayUnreadCount(int unread_count) {
+  const int normalized = std::max(0, unread_count);
+  if (normalized == unread_count_) return;
+  unread_count_ = normalized;
+  if (!EnsureTrayIcon()) return;
+  RefreshTrayIcon();
+}
+
 void FlutterWindow::RemoveTrayIcon() {
   if (tray_icon_added_) {
     Shell_NotifyIconW(NIM_DELETE, &tray_icon_);
     tray_icon_added_ = false;
   }
   ClearNotificationAvatarIcon();
-  if (tray_icon_.hIcon != nullptr) {
-    DestroyIcon(tray_icon_.hIcon);
-    tray_icon_.hIcon = nullptr;
+  if (tray_badged_icon_ != nullptr) {
+    DestroyIcon(tray_badged_icon_);
+    tray_badged_icon_ = nullptr;
   }
+  if (tray_base_icon_ != nullptr) {
+    DestroyIcon(tray_base_icon_);
+    tray_base_icon_ = nullptr;
+  }
+  tray_icon_.hIcon = nullptr;
 }
 
 void FlutterWindow::ClearNotificationAvatarIcon() {
@@ -428,25 +593,35 @@ void FlutterWindow::ShowWindowsNotification(
   const std::string title = MapString(payload, "title");
   const std::string body = MapString(payload, "body");
   const std::string room_id = MapString(payload, "room_id");
+  const std::string event_id = MapString(payload, "event_id");
+  std::string kind = MapString(payload, "orex_kind");
+  if (kind.empty()) kind = "matrix_event";
+  const bool incoming_call = kind == "incoming_call";
   if (title.empty() || body.empty() || room_id.empty() ||
       GetHandle() == nullptr) {
     return;
   }
   if (!EnsureTrayIcon()) return;
-  DismissWindowsNotification(notification_room_id_);
+
+  // A ringing call owns the transient shell surface until it is answered,
+  // rejected or remotely dismissed. A later unread message must never replace
+  // it with a stale conversation balloon.
+  if (!incoming_call && notification_kind_ == "incoming_call") return;
+  ClearCurrentNotification();
 
   const std::wstring wide_title = Utf8ToWide(title);
   const std::wstring wide_body = Utf8ToWide(body);
-  ClearNotificationAvatarIcon();
   notification_avatar_icon_ =
       LoadAvatarIcon(MapString(payload, "sender_avatar_path"));
   tray_icon_.hBalloonIcon = notification_avatar_icon_;
   wcsncpy_s(tray_icon_.szInfoTitle, wide_title.c_str(), _TRUNCATE);
   wcsncpy_s(tray_icon_.szInfo, wide_body.c_str(), _TRUNCATE);
+  const DWORD icon_flags =
+      notification_avatar_icon_ != nullptr ? NIIF_USER | NIIF_LARGE_ICON
+                                           : (incoming_call ? NIIF_WARNING
+                                                            : NIIF_INFO);
   tray_icon_.dwInfoFlags =
-      (notification_avatar_icon_ != nullptr ? NIIF_USER | NIIF_LARGE_ICON
-                                             : NIIF_INFO) |
-      NIIF_RESPECT_QUIET_TIME;
+      icon_flags | (incoming_call ? 0 : NIIF_RESPECT_QUIET_TIME);
   tray_icon_.uFlags = NIF_INFO;
   if (Shell_NotifyIconW(NIM_MODIFY, &tray_icon_) != TRUE) {
     ClearNotificationAvatarIcon();
@@ -455,12 +630,15 @@ void FlutterWindow::ShowWindowsNotification(
 
   notification_payload_ = payload;
   notification_room_id_ = room_id;
+  notification_event_id_ = event_id;
+  notification_kind_ = kind;
 }
 
-void FlutterWindow::DismissWindowsNotification(const std::string& room_id) {
-  if (!room_id.empty() && room_id != notification_room_id_) return;
+void FlutterWindow::ClearCurrentNotification() {
   notification_payload_.clear();
   notification_room_id_.clear();
+  notification_event_id_.clear();
+  notification_kind_.clear();
   if (tray_icon_added_) {
     tray_icon_.szInfoTitle[0] = L'\0';
     tray_icon_.szInfo[0] = L'\0';
@@ -470,6 +648,23 @@ void FlutterWindow::DismissWindowsNotification(const std::string& room_id) {
     Shell_NotifyIconW(NIM_MODIFY, &tray_icon_);
   }
   ClearNotificationAvatarIcon();
+}
+
+void FlutterWindow::DismissWindowsNotification(const std::string& room_id) {
+  if (notification_kind_ == "incoming_call") return;
+  if (!room_id.empty() && room_id != notification_room_id_) return;
+  ClearCurrentNotification();
+}
+
+void FlutterWindow::DismissIncomingCallNotification(
+    const std::string& room_id, const std::string& event_id) {
+  if (notification_kind_ != "incoming_call") return;
+  if (!room_id.empty() && room_id != notification_room_id_) return;
+  if (!event_id.empty() && !notification_event_id_.empty() &&
+      event_id != notification_event_id_) {
+    return;
+  }
+  ClearCurrentNotification();
 }
 
 bool FlutterWindow::HideToTray() {
@@ -482,6 +677,8 @@ bool FlutterWindow::HideToTray() {
 }
 
 void FlutterWindow::NotifyWindowVisibility(bool visible) {
+  if (desktop_window_visible_ == visible) return;
+  desktop_window_visible_ = visible;
   if (push_channel_) {
     push_channel_->InvokeMethod(
         "onDesktopWindowVisibilityChanged",
@@ -492,14 +689,15 @@ void FlutterWindow::NotifyWindowVisibility(bool visible) {
 void FlutterWindow::ActivateWindow() {
   HWND handle = GetHandle();
   if (handle != nullptr) {
-    const bool was_hidden = hidden_to_tray_ || !IsWindowVisible(handle);
-    if (was_hidden) {
+    if (hidden_to_tray_ || !IsWindowVisible(handle)) {
       ShowWindow(handle, SW_SHOW);
     }
-    ShowWindow(handle, SW_RESTORE);
+    if (IsIconic(handle)) {
+      ShowWindow(handle, SW_RESTORE);
+    }
     SetForegroundWindow(handle);
     hidden_to_tray_ = false;
-    if (was_hidden) NotifyWindowVisibility(true);
+    NotifyWindowVisibility(true);
   }
 }
 
@@ -510,7 +708,7 @@ void FlutterWindow::ActivateNotification() {
         "onNotificationOpened",
         std::make_unique<flutter::EncodableValue>(notification_payload_));
   }
-  DismissWindowsNotification(notification_room_id_);
+  ClearCurrentNotification();
 }
 
 void FlutterWindow::ShowTrayMenu() {
@@ -518,9 +716,11 @@ void FlutterWindow::ShowTrayMenu() {
   if (handle == nullptr) return;
   HMENU menu = CreatePopupMenu();
   if (menu == nullptr) return;
-  AppendMenuW(menu, MF_STRING, kTrayOpenCommand, L"Открыть Orex");
+  AppendMenuW(menu, MF_STRING, kTrayOpenCommand,
+              L"\u041e\u0442\u043a\u0440\u044b\u0442\u044c Orex");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING, kTrayExitCommand, L"Выйти");
+  AppendMenuW(menu, MF_STRING, kTrayExitCommand,
+              L"\u0412\u044b\u0439\u0442\u0438");
   POINT point{};
   GetCursorPos(&point);
   SetForegroundWindow(handle);
@@ -542,10 +742,17 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
-  if (message == WM_CLOSE ||
-      (message == WM_SYSCOMMAND && (wparam & 0xFFF0) == SC_MINIMIZE) ||
-      (message == WM_SIZE && wparam == SIZE_MINIMIZED)) {
+  if (message == WM_CLOSE) {
     if (HideToTray()) return 0;
+  }
+  if (message == WM_SIZE) {
+    if (wparam == SIZE_MINIMIZED) {
+      hidden_to_tray_ = false;
+      NotifyWindowVisibility(false);
+    } else if (wparam == SIZE_RESTORED || wparam == SIZE_MAXIMIZED) {
+      hidden_to_tray_ = false;
+      NotifyWindowVisibility(true);
+    }
   }
   if (message == WM_COMMAND) {
     switch (LOWORD(wparam)) {
@@ -584,6 +791,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       } else if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) {
         ShowTrayMenu();
       } else if (event == NIN_BALLOONHIDE || event == NIN_BALLOONTIMEOUT) {
+        // Shell timeout only removes the visual balloon. Keep an incoming call
+        // as the current high-priority notification until call lifecycle code
+        // explicitly dismisses it; ordinary message state can be released.
         DismissWindowsNotification(notification_room_id_);
       }
       return 0;

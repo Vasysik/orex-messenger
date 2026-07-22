@@ -108,6 +108,12 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   @override
   void dispose() {
     _ringTimeout?.cancel();
+    unawaited(
+      widget.matrix.push.dismissIncomingCallNotification(
+        room.id,
+        ringEventId: _instance.ringEventId,
+      ),
+    );
     widget.matrix.audio.stopIncomingRingtone();
     _dismissSub?.cancel();
     _promotionSub?.cancel();

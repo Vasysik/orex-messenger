@@ -61,6 +61,10 @@ void main() {
     },
   );
 
+  test('sums unread counts for the Windows tray badge', () {
+    expect(orexTotalUnreadCount(<int>[2, 0, 3, -7]), 5);
+  });
+
   test('does not turn the initial unread snapshot into notifications', () {
     expect(
       shouldNotify(

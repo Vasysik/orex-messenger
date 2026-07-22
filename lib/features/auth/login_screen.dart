@@ -6,6 +6,7 @@ import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/orex_app_brand.dart';
+import 'password_recovery_dialog.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({
@@ -37,6 +38,18 @@ class _LoginScreenState extends State<LoginScreen> {
     _pass.dispose();
     _inviteToken.dispose();
     super.dispose();
+  }
+
+  Future<void> _recoverPassword() async {
+    if (_busy) return;
+    final changed = await showOrexPasswordRecoveryDialog(
+      context,
+      matrix: widget.matrix,
+    );
+    if (!mounted || !changed) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Пароль изменён. Теперь можно войти.')),
+    );
   }
 
   Future<void> _submit() async {
@@ -155,6 +168,17 @@ class _LoginScreenState extends State<LoginScreen> {
                               ? null
                               : (_) => _submit(),
                         ),
+                        if (!_isRegistering)
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: TextButton(
+                              onPressed: _busy ? null : _recoverPassword,
+                              child: const Text(
+                                'Забыли пароль?',
+                                style: TextStyle(color: OrexColors.copper),
+                              ),
+                            ),
+                          ),
                         if (_isRegistering) ...[
                           const SizedBox(height: 12),
                           _Field(
