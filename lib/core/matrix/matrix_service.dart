@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:matrix/matrix.dart';
 import 'package:matrix/encryption/utils/key_verification.dart';
 import 'package:matrix/encryption/utils/bootstrap.dart';
+import 'package:pointycastle/export.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../audio/audio_cue_service.dart';
@@ -24,6 +25,7 @@ import '../voip/voice_participant_state.dart';
 export '../../domain/rooms/room_metadata.dart';
 
 part 'matrix_auth_api.dart';
+part 'matrix_qr_login_api.dart';
 part 'matrix_rooms_api.dart';
 part 'matrix_room_reference_api.dart';
 part 'matrix_room_discovery_api.dart';

@@ -245,6 +245,11 @@ class OrexConfig {
     'OREX_UPDATE_CHANNEL',
     defaultValue: 'stable',
   );
+  static const _qrRendezvousUrl = String.fromEnvironment(
+    'OREX_QR_RENDEZVOUS_URL',
+    defaultValue:
+        'https://vasys.ru/_synapse/client/ru.orex.qr/rendezvous',
+  );
 
   static final OrexRuntimeConfig current = OrexRuntimeConfig.fromDefines(
     environmentName: _environmentName,
@@ -369,6 +374,25 @@ class OrexConfig {
   static Uri get updateFeedUri =>
       updateBaseUri.resolve('$updateChannel/latest.json');
 
+  /// Временный rendezvous для направления «новое устройство показывает QR».
+  /// Он хранит только зашифрованный одноразовый конверт; ключ передаётся
+  /// напрямую между устройствами внутри QR-кода.
+  static Uri get qrRendezvousUri {
+    final uri = Uri.parse(_qrRendezvousUrl.trim());
+    if (uri.scheme != 'https' ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        uri.path.isEmpty ||
+        uri.path == '/' ||
+        uri.hasQuery ||
+        uri.hasFragment) {
+      throw StateError(
+        'OREX_QR_RENDEZVOUS_URL must be a credential-free absolute https:// URL',
+      );
+    }
+    return uri;
+  }
+
   static Uri get homeserverUri => current.homeserverUri;
   static Uri get authUri => current.authUri;
   static Uri get masDiscoveryUri => current.masDiscoveryUri;
@@ -384,5 +408,6 @@ class OrexConfig {
     liveKitAllowedHosts;
     updateChannel;
     updateBaseUri;
+    qrRendezvousUri;
   }
 }

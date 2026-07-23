@@ -254,25 +254,37 @@ extension MatrixAccountApi on MatrixService {
   Stream<KeyVerification> get incomingVerifications =>
       client.onKeyVerificationRequest.stream;
 
-  /// Удаляет устройство. Эта операция защищена User-Interactive Auth, поэтому
-  /// требует пароль пользователя (паттерн повторяет сам SDK для changePassword).
-  Future<void> deleteDevice(String deviceId, String password) async {
+  /// Удаляет одну или несколько сессий одним UIA-подтверждением.
+  /// Текущее устройство всегда отфильтровывается на уровне API, даже если
+  /// вызывающий экран по ошибке передал его ID.
+  Future<void> deleteDevices(Iterable<String> deviceIds, String password) async {
     final userID = client.userID!;
+    final currentDeviceId = client.deviceID;
+    final ids = deviceIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty && id != currentDeviceId)
+        .toSet()
+        .toList(growable: false);
+    if (ids.isEmpty) return;
+
     try {
-      await client.deleteDevice(deviceId);
-    } on MatrixException catch (e) {
-      if (!e.requireAdditionalAuthentication) rethrow;
-      await client.deleteDevice(
-        deviceId,
+      await client.deleteDevices(ids);
+    } on MatrixException catch (error) {
+      if (!error.requireAdditionalAuthentication) rethrow;
+      await client.deleteDevices(
+        ids,
         auth: AuthenticationPassword(
           identifier: AuthenticationUserIdentifier(user: userID),
           password: password,
-          session: e.session,
+          session: error.session,
         ),
       );
     }
     _emitChange();
   }
+
+  Future<void> deleteDevice(String deviceId, String password) =>
+      deleteDevices(<String>[deviceId], password);
 
   /// Изменение пароля аккаунта с поддержкой User-Interactive Auth.
   Future<void> changePassword({

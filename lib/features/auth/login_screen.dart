@@ -8,6 +8,7 @@ import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/orex_app_brand.dart';
 import 'password_recovery_dialog.dart';
+import 'qr_login_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({
@@ -40,6 +41,19 @@ class _LoginScreenState extends State<LoginScreen> {
     _pass.dispose();
     _inviteToken.dispose();
     super.dispose();
+  }
+
+  Future<void> _openQrLogin() async {
+    if (_busy) return;
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => QrLoginScreen(
+          matrix: widget.matrix,
+          authenticated: false,
+          onLoggedIn: widget.onLoggedIn,
+        ),
+      ),
+    );
   }
 
   Future<void> _recoverPassword() async {
@@ -164,6 +178,11 @@ class _LoginScreenState extends State<LoginScreen> {
                         _Field(
                           controller: _user,
                           hint: 'Имя пользователя',
+                          suffixIcon: _QrLoginSlot(
+                            visible: !_isRegistering,
+                            enabled: !_busy,
+                            onPressed: _openQrLogin,
+                          ),
                           autofillHints: const [AutofillHints.username],
                           textInputAction: TextInputAction.next,
                         ),
@@ -350,6 +369,45 @@ class _PasswordRecoverySlot extends StatelessWidget {
                 foregroundColor: OrexColors.copper,
               ),
               icon: const Icon(Icons.help_outline, size: 22),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _QrLoginSlot extends StatelessWidget {
+  const _QrLoginSlot({
+    required this.visible,
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  final bool visible;
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return ExcludeSemantics(
+      excluding: !visible,
+      child: IgnorePointer(
+        ignoring: !visible,
+        child: AnimatedOpacity(
+          opacity: visible ? 1 : 0,
+          duration: const Duration(milliseconds: 160),
+          child: Tooltip(
+            message: 'Войти по QR-коду',
+            child: IconButton(
+              onPressed: enabled ? onPressed : null,
+              style: IconButton.styleFrom(
+                fixedSize: const Size.square(42),
+                minimumSize: const Size.square(42),
+                padding: EdgeInsets.zero,
+                foregroundColor: OrexColors.copper,
+              ),
+              icon: const Icon(Icons.qr_code_scanner, size: 22),
             ),
           ),
         ),

@@ -14,6 +14,7 @@ import '../../shared/widgets/orex_dialogs.dart';
 import '../../shared/widgets/orex_profile_card.dart';
 import '../../shared/widgets/orex_settings_components.dart';
 import '../../shared/widgets/orex_update_dialog.dart';
+import '../auth/qr_login_screen.dart';
 import 'audio_devices_screen.dart';
 import 'devices_screen.dart';
 import 'email_settings_screen.dart';
@@ -261,6 +262,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
   }
 
+  Future<void> _openQrLogin() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => QrLoginScreen(
+          matrix: widget.matrix,
+          authenticated: true,
+        ),
+      ),
+    );
+  }
+
   Future<void> _handleUpdateTap() async {
     if (widget.updates.availableRelease == null) {
       await widget.updates.check(manual: true);
@@ -288,11 +300,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final canPop = Navigator.of(context).canPop();
     return AmbientBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
         appBar: AppBar(
           backgroundColor: Colors.transparent,
+          automaticallyImplyLeading: false,
+          leadingWidth: canPop ? 104 : 56,
+          leading: Row(
+            children: [
+              if (canPop) const BackButton(),
+              IconButton(
+                tooltip: 'QR-вход',
+                onPressed: _openQrLogin,
+                icon: const Icon(Icons.qr_code_scanner),
+              ),
+            ],
+          ),
           title: const Text('Настройки'),
         ),
         body: ListView(
