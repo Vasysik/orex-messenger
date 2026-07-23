@@ -232,6 +232,8 @@ class OrexQrRendezvousSession {
   String? claimId;
   bool responseSent;
   bool consumed;
+  Map<String, Object?>? _pendingLoginResponse;
+  bool _loginCompleted = false;
 
   bool get isExpired => !DateTime.now().toUtc().isBefore(expiresAt);
 }
@@ -413,9 +415,9 @@ extension MatrixQrLoginApi on MatrixService {
 
   /// Один poll rendezvous-сессии.
   ///
-  /// Успешный вход завершается явным [consumed]-подтверждением от нового
-  /// устройства. До этого момента владелец QR не удаляет rendezvous-запись и
-  /// продолжает показывать состояние ожидания.
+  /// После фактического Matrix login новое устройство возвращает [loggedIn] и
+  /// отдельно отправляет [consumed]-подтверждение. Владелец QR продолжает ждать
+  /// этот ACK, прежде чем показать terminal-state и удалить rendezvous-запись.
   Future<OrexQrRendezvousPollResult> pollQrRendezvous(
     OrexQrRendezvousSession session,
   ) async {
@@ -424,11 +426,19 @@ extension MatrixQrLoginApi on MatrixService {
         OrexQrRendezvousPollState.used,
       );
     }
+    if (session._loginCompleted) {
+      return const OrexQrRendezvousPollResult(
+        OrexQrRendezvousPollState.loggedIn,
+      );
+    }
     if (session.isExpired) {
       throw const OrexAuthProtocolException(
         code: 'OREX_QR_EXPIRED',
         message: 'Срок действия QR-кода истёк',
       );
+    }
+    if (!session.localAuthenticated && session._pendingLoginResponse != null) {
+      return _orexCompletePendingQrLogin(session);
     }
     _orexValidateRendezvousOrigin(session.sessionUri);
     final response = await http
@@ -521,11 +531,12 @@ extension MatrixQrLoginApi on MatrixService {
           message: 'Получен неожиданный ответ QR-сессии',
         );
       }
-      await _orexLoginFromResponse(decoded, session: session);
-      await _orexAcknowledgeConsumed(session);
-      return const OrexQrRendezvousPollResult(
-        OrexQrRendezvousPollState.loggedIn,
-      );
+      // Сохраняем уже прочитанный response до успешного Matrix login. Иначе
+      // transient M_LIMIT_EXCEEDED/timeout оставляет новый ETag в session, а
+      // следующий conditional GET получает 304 и больше никогда не повторяет
+      // вход по одноразовому токену.
+      session._pendingLoginResponse = decoded;
+      return _orexCompletePendingQrLogin(session);
     }
 
     if (kind == _orexQrConsumedKind) {
@@ -905,6 +916,33 @@ extension MatrixQrLoginApi on MatrixService {
     // Вход уже выполнен, поэтому ошибка ACK не должна разлогинивать новое
     // устройство. Старая сторона просто дождётся TTL вместо зелёного статуса.
     OrexLog.d('QR', 'consumed acknowledgement failed', lastError);
+  }
+
+  Future<OrexQrRendezvousPollResult> _orexCompletePendingQrLogin(
+    OrexQrRendezvousSession session,
+  ) async {
+    final response = session._pendingLoginResponse;
+    if (response == null) {
+      throw const OrexAuthProtocolException(
+        code: 'OREX_QR_RENDEZVOUS_PROTOCOL',
+        message: 'Ответ QR-входа потерян до завершения авторизации',
+      );
+    }
+
+    if (!client.isLogged()) {
+      await _orexLoginFromResponse(response, session: session);
+    }
+    session
+      .._pendingLoginResponse = null
+      .._loginCompleted = true;
+
+    // Login уже завершён и должен немедленно убрать QR-route. ACK нужен другой
+    // стороне для зелёного terminal-state, но сетевой retry ACK не должен
+    // удерживать новый клиент на экране входа.
+    unawaited(_orexAcknowledgeConsumed(session));
+    return const OrexQrRendezvousPollResult(
+      OrexQrRendezvousPollState.loggedIn,
+    );
   }
 
   Future<void> _orexLoginFromResponse(

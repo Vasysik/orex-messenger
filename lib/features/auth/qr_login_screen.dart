@@ -9,6 +9,7 @@ import 'package:qr/qr.dart';
 
 import '../../core/logging/orex_logger.dart';
 import '../../core/matrix/matrix_service.dart';
+import '../../core/voip/matrix_request_gate.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/orex_dialogs.dart';
@@ -16,6 +17,8 @@ import '../../shared/widgets/orex_dialogs.dart';
 enum _QrMode { scan, show }
 
 enum _QrTerminalState { none, used, expired, rejected }
+
+const _qrPollInterval = Duration(milliseconds: 2500);
 
 class QrLoginScreen extends StatefulWidget {
   const QrLoginScreen({
@@ -43,8 +46,10 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
   bool _handlingScan = false;
   int? _secondsLeft;
   Timer? _countdown;
+  StreamSubscription? _loginStateSubscription;
   int _displayGeneration = 0;
   _QrTerminalState _terminalState = _QrTerminalState.none;
+  bool _loginCompleted = false;
 
   bool get _waitingForLoginCompletion =>
       _activeSession?.responseSent == true;
@@ -57,6 +62,21 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
       TargetPlatform.macOS => true,
       _ => false,
     };
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    if (!widget.authenticated) {
+      _loginStateSubscription = widget
+          .matrix
+          .client
+          .onLoginStateChanged
+          .stream
+          .listen((_) {
+            if (widget.matrix.client.isLogged()) _completeLogin();
+          });
+    }
   }
 
   @override
@@ -78,6 +98,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
 
   @override
   void dispose() {
+    _loginStateSubscription?.cancel();
     _countdown?.cancel();
     _displayGeneration++;
     final session = _activeSession;
@@ -86,6 +107,30 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
       unawaited(widget.matrix.cancelQrRendezvous(session));
     }
     super.dispose();
+  }
+
+  void _completeLogin() {
+    if (!mounted || _loginCompleted) return;
+    _loginCompleted = true;
+    _displayGeneration++;
+    _countdown?.cancel();
+    _activeSession = null;
+    setState(() {
+      _qrData = null;
+      _secondsLeft = null;
+      _busy = false;
+      _handlingScan = false;
+      _terminalState = _QrTerminalState.none;
+      _status = 'Вход выполнен';
+      _error = null;
+    });
+
+    // Сначала закрываем QR-route, затем перестраиваем корневой экран. Иначе
+    // MaterialApp успевает заменить LoginScreen на HomeShell под всё ещё
+    // открытым QR-route, и пользователь видит уже ненужный код поверх аккаунта.
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) navigator.pop(true);
+    widget.onLoggedIn?.call();
   }
 
   void _setMode(_QrMode mode) {
@@ -199,7 +244,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
         generation == _displayGeneration &&
         _mode == _QrMode.show &&
         !session.isExpired) {
-      await Future<void>.delayed(const Duration(milliseconds: 900));
+      await Future<void>.delayed(_qrPollInterval);
       if (!mounted || generation != _displayGeneration) return;
       try {
         final result = await widget.matrix.pollQrRendezvous(session);
@@ -218,19 +263,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
             if (_activeSession == null) return;
             continue;
           case OrexQrRendezvousPollState.loggedIn:
-            _activeSession = null;
-            _countdown?.cancel();
-            setState(() {
-              _qrData = null;
-              _secondsLeft = null;
-              _busy = false;
-              _status = 'Вход выполнен';
-              _error = null;
-            });
-            widget.onLoggedIn?.call();
-            if (mounted && Navigator.of(context).canPop()) {
-              Navigator.of(context).pop(true);
-            }
+            _completeLogin();
             return;
           case OrexQrRendezvousPollState.used:
             _activeSession = null;
@@ -258,22 +291,30 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
             return;
         }
       } catch (error) {
-        OrexLog.d('QR', 'poll rendezvous failed', error);
         if (!mounted || generation != _displayGeneration) return;
         if (_isTransientQrFailure(error) && !session.isExpired) {
           transientFailures++;
+          if (transientFailures == 1) {
+            OrexLog.d('QR', 'poll rendezvous temporarily failed', error);
+          }
           setState(() {
             // Не оставляем экран в вечном spinner-state после временного
             // сетевого сбоя. Polling продолжает работать до TTL сессии.
             _busy = false;
             _error = null;
-            _status = session.responseSent
-                ? 'Связь с сервером нестабильна. Продолжаем ждать завершения…'
-                : 'Связь с сервером нестабильна. Повторяем проверку…';
+            _status = _isQrRateLimited(error)
+                ? 'Сервер ограничил частые запросы. Ждём и повторяем…'
+                : session.responseSent
+                    ? 'Связь с сервером нестабильна. '
+                        'Продолжаем ждать завершения…'
+                    : 'Связь с сервером нестабильна. Повторяем проверку…';
           });
-          await Future<void>.delayed(_qrRetryDelay(transientFailures));
+          await Future<void>.delayed(
+            _qrRetryDelay(error, transientFailures),
+          );
           continue;
         }
+        OrexLog.d('QR', 'poll rendezvous failed', error);
         _activeSession = null;
         _countdown?.cancel();
         setState(() {
@@ -442,7 +483,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
     while (mounted &&
         generation == _displayGeneration &&
         !session.isExpired) {
-      await Future<void>.delayed(const Duration(milliseconds: 900));
+      await Future<void>.delayed(_qrPollInterval);
       if (!mounted || generation != _displayGeneration) return;
       try {
         final result = await widget.matrix.pollQrRendezvous(session);
@@ -452,16 +493,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
           case OrexQrRendezvousPollState.waiting:
             continue;
           case OrexQrRendezvousPollState.loggedIn:
-            _activeSession = null;
-            setState(() {
-              _handlingScan = false;
-              _status = 'Вход выполнен';
-              _error = null;
-            });
-            widget.onLoggedIn?.call();
-            if (mounted && Navigator.of(context).canPop()) {
-              Navigator.of(context).pop(true);
-            }
+            _completeLogin();
             return;
           case OrexQrRendezvousPollState.rejected:
             throw const OrexAuthProtocolException(
@@ -483,27 +515,25 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
         // Если Matrix login завершился, но последующий ACK/HTTP-ответ потерялся,
         // не показываем пользователю ложную ошибку входа.
         if (widget.matrix.client.isLogged()) {
-          _activeSession = null;
           if (!mounted || generation != _displayGeneration) return;
-          setState(() {
-            _handlingScan = false;
-            _status = 'Вход выполнен';
-            _error = null;
-          });
-          widget.onLoggedIn?.call();
-          if (mounted && Navigator.of(context).canPop()) {
-            Navigator.of(context).pop(true);
-          }
+          _completeLogin();
           return;
         }
         if (_isTransientQrFailure(error) && !session.isExpired) {
           transientFailures++;
           if (!mounted || generation != _displayGeneration) return;
+          if (transientFailures == 1) {
+            OrexLog.d('QR', 'claimed login temporarily failed', error);
+          }
           setState(() {
             _error = null;
-            _status = 'Связь с сервером нестабильна. Повторяем проверку…';
+            _status = _isQrRateLimited(error)
+                ? 'Сервер ограничил частые попытки входа. Ждём и повторяем…'
+                : 'Связь с сервером нестабильна. Повторяем проверку…';
           });
-          await Future<void>.delayed(_qrRetryDelay(transientFailures));
+          await Future<void>.delayed(
+            _qrRetryDelay(error, transientFailures),
+          );
           continue;
         }
         rethrow;
@@ -517,6 +547,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
 
   bool _isTransientQrFailure(Object error) {
     if (error is TimeoutException) return true;
+    if (_isQrRateLimited(error)) return true;
     if (error is OrexAuthProtocolException) {
       final status = error.statusCode;
       return status == 408 ||
@@ -531,17 +562,41 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
         details.contains('Connection closed');
   }
 
-  Duration _qrRetryDelay(int failures) {
+  Duration _qrRetryDelay(Object error, int failures) {
+    final rateLimit = orexMatrixRateLimitInfo(error);
+    if (rateLimit.isRateLimited) {
+      const fallbacks = <Duration>[
+        Duration(seconds: 4),
+        Duration(seconds: 7),
+        Duration(seconds: 11),
+        Duration(seconds: 16),
+      ];
+      final fallback = fallbacks[
+        math.min(failures - 1, fallbacks.length - 1)
+      ];
+      final milliseconds = (rateLimit.retryAfter ?? fallback)
+          .inMilliseconds
+          .clamp(4000, 30000)
+          .toInt();
+      return Duration(milliseconds: milliseconds);
+    }
+
     const delays = <Duration>[
-      Duration(milliseconds: 350),
-      Duration(milliseconds: 700),
-      Duration(milliseconds: 1200),
-      Duration(milliseconds: 1800),
+      Duration(milliseconds: 750),
+      Duration(milliseconds: 1500),
+      Duration(seconds: 3),
+      Duration(seconds: 5),
     ];
     return delays[math.min(failures - 1, delays.length - 1)];
   }
 
+  bool _isQrRateLimited(Object error) => orexIsMatrixRateLimitError(error);
+
   String _messageFor(Object error) {
+    if (_isQrRateLimited(error)) {
+      return 'Слишком много попыток входа. Подождите несколько секунд '
+          'и повторите.';
+    }
     if (error is OrexAuthProtocolException) return error.message;
     if (error is MatrixException) {
       if (error.errcode == 'M_FORBIDDEN') {
@@ -802,7 +857,7 @@ class _OrexQrCard extends StatelessWidget {
     } catch (error) {
       OrexLog.d('QR', 'render QR failed', error);
       return const SizedBox.square(
-        dimension: 280,
+        dimension: 312,
         child: Center(
           child: Icon(
             Icons.qr_code_2,
@@ -817,11 +872,12 @@ class _OrexQrCard extends StatelessWidget {
       image: true,
       label: 'Защищённый QR-код входа Orex',
       child: Container(
-        padding: const EdgeInsets.all(16),
+        width: 312,
+        height: 312,
+        clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
           color: qrPaper,
           borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: OrexColors.copperDeep, width: 2),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: 0.18),
@@ -830,54 +886,36 @@ class _OrexQrCard extends StatelessWidget {
             ),
           ],
         ),
-        child: SizedBox.square(
-          dimension: 280,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              RepaintBoundary(
-                child: CustomPaint(
-                  size: const Size.square(280),
-                  painter: _OrexLineQrPainter(
-                    image: qrImage,
-                    ink: qrInk,
-                    paper: qrPaper,
-                  ),
+        foregroundDecoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: OrexColors.copperDeep, width: 2),
+        ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            RepaintBoundary(
+              child: CustomPaint(
+                size: const Size.square(312),
+                painter: _OrexLineQrPainter(
+                  image: qrImage,
+                  ink: qrInk,
+                  paper: qrPaper,
                 ),
               ),
-              Container(
-                width: 60,
-                height: 60,
-                padding: const EdgeInsets.all(7),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: OrexColors.copperDeep.withValues(alpha: 0.35),
-                    width: 2,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.14),
-                      blurRadius: 9,
-                    ),
-                  ],
-                ),
-                child: ClipOval(
-                  child: Image.asset(
-                    'assets/mascot/squirrel.png',
-                    fit: BoxFit.contain,
-                    filterQuality: FilterQuality.high,
-                    errorBuilder: (_, _, _) => const Icon(
-                      Icons.eco_outlined,
-                      color: OrexColors.copperDeep,
-                      size: 34,
-                    ),
-                  ),
-                ),
+            ),
+            Image.asset(
+              'assets/mascot/squirrel.png',
+              width: 72,
+              height: 72,
+              fit: BoxFit.contain,
+              filterQuality: FilterQuality.high,
+              errorBuilder: (_, _, _) => const Icon(
+                Icons.eco_outlined,
+                color: OrexColors.copperDeep,
+                size: 44,
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
