@@ -3,7 +3,9 @@ param(
     [ValidateSet("debug", "stable")]
     [string]$Channel,
 
-    [switch]$DebugLogs
+    [switch]$DebugLogs,
+
+    [switch]$ReuseFlutterBuilds
 )
 
 Set-StrictMode -Version 2.0
@@ -64,38 +66,61 @@ try {
     $Release = "{0}+{1}" -f $VersionName, $BuildNumber
     $OutputDir = Join-Path $RepoRoot ("updates\{0}\{1}" -f $Channel, $Release)
     $DebugLogsValue = if ($DebugLogs.IsPresent) { "true" } else { "false" }
-    $OrexDebug = if ($Channel -eq "debug") { 1 } else { 0 }
 
     Write-Host ("Version: {0}" -f $Release)
     Write-Host ("Channel: {0}" -f $Channel)
     Write-Host ("Output: {0}" -f $OutputDir)
 
-    Write-Host ""
-    Write-Host "=== Building Android APKs ==="
-    $env:OREX_ANDROID_DISTRIBUTION = $Channel
-    Invoke-NativeCommand -FilePath "flutter" -ArgumentList @(
-        "build",
-        "apk",
-        "--release",
-        "--split-per-abi",
-        "--no-pub",
-        "--dart-define=OREX_ENV=production",
-        "--dart-define=OREX_UPDATE_CHANNEL=$Channel",
-        "--dart-define=OREX_DEBUG_LOGS=$DebugLogsValue"
-    )
+    $AndroidArm64 = Join-Path $RepoRoot "build\app\outputs\flutter-apk\app-arm64-v8a-release.apk"
+    $AndroidArmV7 = Join-Path $RepoRoot "build\app\outputs\flutter-apk\app-armeabi-v7a-release.apk"
+    $WindowsExeName = if ($Channel -eq "debug") {
+        "orex_messenger_debug.exe"
+    }
+    else {
+        "orex_messenger.exe"
+    }
+    $WindowsExe = Join-Path $RepoRoot ("build\windows\x64\runner\Release\{0}" -f $WindowsExeName)
 
-    Write-Host ""
-    Write-Host "=== Building Windows application ==="
-    $env:OREX_WINDOWS_CHANNEL = $Channel
-    Invoke-NativeCommand -FilePath "flutter" -ArgumentList @(
-        "build",
-        "windows",
-        "--release",
-        "--no-pub",
-        "--dart-define=OREX_ENV=production",
-        "--dart-define=OREX_UPDATE_CHANNEL=$Channel",
-        "--dart-define=OREX_DEBUG_LOGS=$DebugLogsValue"
-    )
+    if ($ReuseFlutterBuilds.IsPresent) {
+        Write-Host ""
+        Write-Host "=== Reusing existing Flutter artifacts ==="
+
+        foreach ($ArtifactPath in @($AndroidArm64, $AndroidArmV7, $WindowsExe)) {
+            if (-not (Test-Path $ArtifactPath)) {
+                throw ("Reusable artifact was not found: {0}" -f $ArtifactPath)
+            }
+
+            Write-Host ("  {0}" -f $ArtifactPath)
+        }
+    }
+    else {
+        Write-Host ""
+        Write-Host "=== Building Android APKs ==="
+        $env:OREX_ANDROID_DISTRIBUTION = $Channel
+        Invoke-NativeCommand -FilePath "flutter" -ArgumentList @(
+            "build",
+            "apk",
+            "--release",
+            "--split-per-abi",
+            "--no-pub",
+            "--dart-define=OREX_ENV=production",
+            "--dart-define=OREX_UPDATE_CHANNEL=$Channel",
+            "--dart-define=OREX_DEBUG_LOGS=$DebugLogsValue"
+        )
+
+        Write-Host ""
+        Write-Host "=== Building Windows application ==="
+        $env:OREX_WINDOWS_CHANNEL = $Channel
+        Invoke-NativeCommand -FilePath "flutter" -ArgumentList @(
+            "build",
+            "windows",
+            "--release",
+            "--no-pub",
+            "--dart-define=OREX_ENV=production",
+            "--dart-define=OREX_UPDATE_CHANNEL=$Channel",
+            "--dart-define=OREX_DEBUG_LOGS=$DebugLogsValue"
+        )
+    }
 
     Write-Host ""
     Write-Host "=== Building Windows installer ==="
@@ -110,12 +135,26 @@ try {
         throw "Inno Setup 6 was not found"
     }
 
-    Invoke-NativeCommand -FilePath $Iscc -ArgumentList @(
-        "/DOrexDebug=$OrexDebug",
+    $InstallerOutputDir = Join-Path $RepoRoot ("build\windows\x64\installer\{0}" -f $Channel)
+    $InstallerPath = Join-Path $InstallerOutputDir ("Orex-Setup-{0}.exe" -f $Release)
+    New-Item -ItemType Directory -Path $InstallerOutputDir -Force | Out-Null
+    Remove-Item -Path $InstallerPath -Force -ErrorAction SilentlyContinue
+
+    $IsccArguments = @(
         "/DMyAppVersion=$Release",
         "/DMyAppVersionInfo=$VersionName",
         "windows\installer\orex.iss"
     )
+
+    if ($Channel -eq "debug") {
+        $IsccArguments = @("/DOrexDebug") + $IsccArguments
+    }
+
+    Invoke-NativeCommand -FilePath $Iscc -ArgumentList $IsccArguments
+
+    if (-not (Test-Path $InstallerPath)) {
+        throw ("Installer was not created for channel '{0}': {1}" -f $Channel, $InstallerPath)
+    }
 
     Write-Host ""
     Write-Host "=== Publishing artifacts ==="
@@ -123,15 +162,15 @@ try {
 
     $Artifacts = @(
         @{
-            Source = Join-Path $RepoRoot "build\app\outputs\flutter-apk\app-arm64-v8a-release.apk"
+            Source = $AndroidArm64
             Target = "app-arm64-v8a-$Release.apk"
         },
         @{
-            Source = Join-Path $RepoRoot "build\app\outputs\flutter-apk\app-armeabi-v7a-release.apk"
+            Source = $AndroidArmV7
             Target = "app-armeabi-v7a-$Release.apk"
         },
         @{
-            Source = Join-Path $RepoRoot "build\windows\x64\installer\$Channel\Orex-Setup-$Release.exe"
+            Source = $InstallerPath
             Target = "Orex-Setup-$Release.exe"
         }
     )

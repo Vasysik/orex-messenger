@@ -79,7 +79,14 @@ https://orex.vasys.ru/updates/<channel>/latest.json
 
 # updates/stable/<version>+<build>/
 .\tool\build_release.ps1
+
+# Повторно собрать только installer и опубликовать уже готовые Flutter-артефакты
+.\tool\build_release.ps1 -ReuseFlutterBuilds
 ```
+
+`-ReuseFlutterBuilds` проверяет наличие APK и Windows runner нужного канала,
+не запускает повторную Flutter-сборку, но всегда пересобирает installer и заново
+публикует комплект. Это удобно после ошибки на финальном этапе публикации.
 
 Общая логика находится в `tool/build_channel.ps1`. Перед сборкой выполняется
 `flutter pub get`, поэтому добавленные Flutter-зависимости и lock-файл

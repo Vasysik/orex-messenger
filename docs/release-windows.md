@@ -117,7 +117,6 @@ winget install --id JRSoftware.InnoSetup -e `
 
 ```powershell
 $Channel = 'debug' # stable или debug
-$OrexDebug = if ($Channel -eq 'debug') { 1 } else { 0 }
 
 $Iscc = @(
   "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
@@ -129,11 +128,17 @@ if (-not $Iscc) {
   throw 'Inno Setup 6 не найден'
 }
 
-& $Iscc `
-  "/DOrexDebug=$OrexDebug" `
-  "/DMyAppVersion=$Release" `
-  "/DMyAppVersionInfo=$VersionInfo" `
-  windows\installer\orex.iss
+$IsccArguments = @(
+  "/DMyAppVersion=$Release",
+  "/DMyAppVersionInfo=$VersionInfo",
+  "windows\installer\orex.iss"
+)
+
+if ($Channel -eq 'debug') {
+  $IsccArguments = @('/DOrexDebug') + $IsccArguments
+}
+
+& $Iscc @IsccArguments
 ```
 
 Результат:

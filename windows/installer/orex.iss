@@ -1,8 +1,4 @@
-#ifndef OrexDebug
-  #define OrexDebug 0
-#endif
-
-#if OrexDebug
+#ifdef OrexDebug
   #define OrexChannel "debug"
   #define MyAppName "Orex Messenger Debug"
   #define MyAppExeName "orex_messenger_debug.exe"
