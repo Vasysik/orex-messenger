@@ -36,7 +36,14 @@ class QrLoginScreen extends StatefulWidget {
   State<QrLoginScreen> createState() => _QrLoginScreenState();
 }
 
-class _QrLoginScreenState extends State<QrLoginScreen> {
+class _QrLoginScreenState extends State<QrLoginScreen>
+    with WidgetsBindingObserver {
+  late final MobileScannerController _scannerController;
+  Future<void> _scannerLifecycle = Future<void>.value();
+  bool _scannerWanted = false;
+  bool _scannerShuttingDown = false;
+  bool _scannerControllerDisposed = false;
+
   _QrMode? _mode;
   OrexQrRendezvousSession? _activeSession;
   String? _qrData;
@@ -67,6 +74,11 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _scannerController = MobileScannerController(
+      autoStart: false,
+      formats: const [BarcodeFormat.qrCode],
+    );
     if (!widget.authenticated) {
       _loginStateSubscription = widget
           .matrix
@@ -76,6 +88,65 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
           .listen((_) {
             if (widget.matrix.client.isLogged()) _completeLogin();
           });
+    }
+  }
+
+  void _requestScanner(bool wanted) {
+    _scannerWanted = wanted;
+    _scannerLifecycle = _scannerLifecycle.then((_) => _applyScannerState());
+  }
+
+  Future<void> _applyScannerState() async {
+    if (_scannerControllerDisposed) return;
+    final shouldRun =
+        _scannerWanted &&
+        !_scannerShuttingDown &&
+        mounted &&
+        _mode == _QrMode.scan &&
+        !_handlingScan &&
+        !_busy;
+    try {
+      if (shouldRun) {
+        await _scannerController.start();
+      } else {
+        await _scannerController.stop();
+      }
+    } catch (error) {
+      if (!_scannerShuttingDown) {
+        OrexLog.d('QR', 'scanner lifecycle failed', error);
+      }
+    }
+  }
+
+  void _scheduleScannerStart() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _requestScanner(true);
+    });
+  }
+
+  Future<void> _disposeScanner() async {
+    _requestScanner(false);
+    await _scannerLifecycle;
+    if (_scannerControllerDisposed) return;
+    _scannerControllerDisposed = true;
+    try {
+      await _scannerController.dispose();
+    } catch (error) {
+      OrexLog.d('QR', 'scanner dispose failed', error);
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_mode != _QrMode.scan || _scannerShuttingDown) return;
+    switch (state) {
+      case AppLifecycleState.resumed:
+        _scheduleScannerStart();
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        _requestScanner(false);
     }
   }
 
@@ -93,11 +164,16 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
     _mode = startsWithScanner ? _QrMode.scan : _QrMode.show;
     if (_mode == _QrMode.show) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _prepareDisplay());
+    } else {
+      _scheduleScannerStart();
     }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _scannerShuttingDown = true;
+    unawaited(_disposeScanner());
     _loginStateSubscription?.cancel();
     _countdown?.cancel();
     _displayGeneration++;
@@ -112,6 +188,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
   void _completeLogin() {
     if (!mounted || _loginCompleted) return;
     _loginCompleted = true;
+    _requestScanner(false);
     _displayGeneration++;
     _countdown?.cancel();
     _activeSession = null;
@@ -137,6 +214,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
     if (_waitingForLoginCompletion) return;
     if (mode == _QrMode.scan && !_scannerModeAvailable) return;
     if (_mode == mode) return;
+    if (mode == _QrMode.show) _requestScanner(false);
     _countdown?.cancel();
     _displayGeneration++;
     final session = _activeSession;
@@ -154,7 +232,11 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
       _handlingScan = false;
       _terminalState = _QrTerminalState.none;
     });
-    if (mode == _QrMode.show) _prepareDisplay();
+    if (mode == _QrMode.show) {
+      unawaited(_prepareDisplay());
+    } else {
+      _scheduleScannerStart();
+    }
   }
 
   Future<void> _prepareDisplay() async {
@@ -410,6 +492,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
       _status = 'Проверяем QR-код…';
       _terminalState = _QrTerminalState.none;
     });
+    _requestScanner(false);
     try {
       final payload = OrexQrLoginPayload.parse(raw);
       if (!payload.isRendezvous) {
@@ -441,6 +524,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
             _status = 'Вход отклонён.';
             _error = null;
           });
+          _scheduleScannerStart();
           return;
         }
         await widget.matrix.approveQrRendezvous(approval);
@@ -472,6 +556,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
         _status = null;
         _error = _messageFor(error);
       });
+      _scheduleScannerStart();
     }
   }
 
@@ -717,6 +802,8 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
           fit: StackFit.expand,
           children: [
             MobileScanner(
+              controller: _scannerController,
+              useAppLifecycleState: false,
               onDetect: (capture) {
                 if (capture.barcodes.isEmpty) return;
                 final value = capture.barcodes.first.rawValue;
