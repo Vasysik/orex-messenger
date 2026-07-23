@@ -528,10 +528,15 @@ class _HomeShellState extends State<HomeShell> {
                       updateAvailable: widget.updates.shouldShowBanner,
                       recommendKeyBackup:
                           _recommendationPreferencesLoaded &&
-                              widget.matrix.encryptionEnabled &&
-                              widget.matrix.keyBackupStatusKnown &&
-                              !widget.matrix.keyBackupDisabledByUser &&
-                              !widget.matrix.keyBackupEnabled &&
+                              shouldRecommendOrexKeyBackup(
+                                encryptionEnabled:
+                                    widget.matrix.encryptionEnabled,
+                                statusKnown:
+                                    widget.matrix.keyBackupStatusKnown,
+                                keyBackupEnabled:
+                                    widget.matrix.keyBackupEnabled,
+                                autoBackupEnabled: widget.matrix.autoBackup,
+                              ) &&
                               !_historyBannerDismissed,
                       recommendAccountEmail:
                           _recommendationPreferencesLoaded &&
@@ -562,12 +567,17 @@ class _HomeShellState extends State<HomeShell> {
                         onClose: widget.updates.dismissAvailableBanner,
                       );
                     } else if (noticeKind == OrexHomeNoticeKind.keyBackup) {
+                      final hasKeyStorage = widget.matrix.keyBackupEnabled;
                       notice = _OrexTopBanner(
                         icon: Icons.history_toggle_off,
-                        title: 'Защитите историю сообщений',
-                        subtitle:
-                            'Включите автобэкап ключей, чтобы читать '
-                            'зашифрованную историю на новых устройствах',
+                        title: hasKeyStorage
+                            ? 'Автобэкап ключей выключен'
+                            : 'Защитите историю сообщений',
+                        subtitle: hasKeyStorage
+                            ? 'Включите автобэкап, чтобы новые ключи не '
+                                'остались только на этом устройстве'
+                            : 'Создайте хранилище ключей и включите автобэкап, '
+                                'чтобы не потерять зашифрованную историю',
                         onTap: _openKeyStorage,
                         onClose: () =>
                             _dismissRecommendation('key-backup'),

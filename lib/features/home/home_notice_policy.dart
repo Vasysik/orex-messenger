@@ -1,3 +1,18 @@
+/// Показывает предупреждение, если серверное хранилище ключей отсутствует
+/// или автоматическая отправка новых ключей выключена.
+///
+/// Ручное отключение не скрывает предупреждение: в этом состоянии история
+/// зашифрованных сообщений может не восстановиться на новом устройстве.
+bool shouldRecommendOrexKeyBackup({
+  required bool encryptionEnabled,
+  required bool statusKnown,
+  required bool keyBackupEnabled,
+  required bool autoBackupEnabled,
+}) =>
+    encryptionEnabled &&
+    statusKnown &&
+    (!keyBackupEnabled || !autoBackupEnabled);
+
 /// Приоритет единой верхней системной плашки Orex.
 enum OrexHomeNoticeKind {
   verification,

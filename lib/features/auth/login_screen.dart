@@ -172,12 +172,13 @@ class _LoginScreenState extends State<LoginScreen> {
                           controller: _pass,
                           hint: 'Пароль',
                           obscure: true,
-                          suffixIcon: !_isRegistering && _showPasswordRecovery
-                              ? _PasswordRecoveryButton(
+                          suffixIcon: _isRegistering
+                              ? null
+                              : _PasswordRecoverySlot(
+                                  visible: _showPasswordRecovery,
                                   enabled: !_busy,
                                   onPressed: _recoverPassword,
-                                )
-                              : null,
+                                ),
                           autofillHints: _isRegistering
                               ? const [AutofillHints.newPassword]
                               : const [AutofillHints.password],
@@ -318,34 +319,39 @@ class _Field extends StatelessWidget {
   }
 }
 
-class _PasswordRecoveryButton extends StatelessWidget {
-  const _PasswordRecoveryButton({
+class _PasswordRecoverySlot extends StatelessWidget {
+  const _PasswordRecoverySlot({
+    required this.visible,
     required this.enabled,
     required this.onPressed,
   });
 
+  final bool visible;
   final bool enabled;
   final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(7),
-      child: Tooltip(
-        message: 'Восстановить пароль',
-        child: IconButton(
-          onPressed: enabled ? onPressed : null,
-          style: IconButton.styleFrom(
-            fixedSize: const Size.square(34),
-            minimumSize: const Size.square(34),
-            padding: EdgeInsets.zero,
-            shape: const CircleBorder(),
-            backgroundColor: OrexColors.copper.withValues(alpha: 0.16),
-            foregroundColor: OrexColors.copper,
-            disabledBackgroundColor:
-                OrexColors.copper.withValues(alpha: 0.07),
+    return ExcludeSemantics(
+      excluding: !visible,
+      child: IgnorePointer(
+        ignoring: !visible,
+        child: AnimatedOpacity(
+          opacity: visible ? 1 : 0,
+          duration: const Duration(milliseconds: 160),
+          child: Tooltip(
+            message: 'Восстановить пароль',
+            child: IconButton(
+              onPressed: enabled ? onPressed : null,
+              style: IconButton.styleFrom(
+                fixedSize: const Size.square(42),
+                minimumSize: const Size.square(42),
+                padding: EdgeInsets.zero,
+                foregroundColor: OrexColors.copper,
+              ),
+              icon: const Icon(Icons.help_outline, size: 22),
+            ),
           ),
-          icon: const Icon(Icons.question_mark, size: 18),
         ),
       ),
     );
