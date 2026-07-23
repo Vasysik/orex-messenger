@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:matrix/matrix.dart';
 
 import '../../core/config/app_version.dart';
 import '../../core/logging/orex_logger.dart';
@@ -6,6 +7,8 @@ import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/orex_app_brand.dart';
+import 'password_recovery_dialog.dart';
+import 'qr_login_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({
@@ -29,6 +32,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _inviteToken = TextEditingController();
   bool _isRegistering = false;
   bool _busy = false;
+  bool _showPasswordRecovery = false;
   String? _error;
 
   @override
@@ -37,6 +41,31 @@ class _LoginScreenState extends State<LoginScreen> {
     _pass.dispose();
     _inviteToken.dispose();
     super.dispose();
+  }
+
+  Future<void> _openQrLogin() async {
+    if (_busy) return;
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => QrLoginScreen(
+          matrix: widget.matrix,
+          authenticated: false,
+          onLoggedIn: widget.onLoggedIn,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _recoverPassword() async {
+    if (_busy) return;
+    final changed = await showOrexPasswordRecoveryDialog(
+      context,
+      matrix: widget.matrix,
+    );
+    if (!mounted || !changed) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Пароль изменён. Теперь можно войти.')),
+    );
   }
 
   Future<void> _submit() async {
@@ -74,6 +103,7 @@ class _LoginScreenState extends State<LoginScreen> {
       widget.onLoggedIn();
     } catch (e) {
       final details = e.toString();
+      final errcode = e is MatrixException ? e.errcode : null;
       OrexLog.d(
         'Auth',
         _isRegistering ? 'registration failed' : 'login failed',
@@ -82,22 +112,33 @@ class _LoginScreenState extends State<LoginScreen> {
       String msg = _isRegistering
           ? 'Не удалось создать аккаунт. Попробуйте ещё раз.'
           : 'Не удалось войти. Попробуйте ещё раз.';
-      if (details.contains('M_USER_IN_USE')) {
+      var revealPasswordRecovery = false;
+      if (errcode == 'M_USER_IN_USE' || details.contains('M_USER_IN_USE')) {
         msg = 'Это имя пользователя уже занято';
-      } else if (details.contains('M_INVALID_USERNAME')) {
+      } else if (errcode == 'M_INVALID_USERNAME' ||
+          details.contains('M_INVALID_USERNAME')) {
         msg = 'Недопустимое имя пользователя (только латиница, цифры, _, -, .)';
-      } else if (details.contains('M_FORBIDDEN')) {
+      } else if (errcode == 'M_FORBIDDEN' ||
+          details.contains('M_FORBIDDEN')) {
         msg = _isRegistering
             ? 'Неверный или истёкший код приглашения'
             : 'Неверный логин или пароль';
-      } else if (details.contains('M_UNKNOWN_TOKEN') ||
+        revealPasswordRecovery = !_isRegistering;
+      } else if (errcode == 'M_UNKNOWN_TOKEN' ||
+          errcode == 'M_MISSING_TOKEN' ||
+          details.contains('M_UNKNOWN_TOKEN') ||
           details.contains('M_MISSING_TOKEN')) {
         msg = 'Недействительный токен приглашения';
       } else if (details.contains('SocketException') ||
           details.contains('Connection refused')) {
         msg = 'Нет подключения к серверу. Проверьте интернет.';
       }
-      if (mounted) setState(() => _error = msg);
+      if (mounted) {
+        setState(() {
+          _error = msg;
+          if (revealPasswordRecovery) _showPasswordRecovery = true;
+        });
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -137,6 +178,11 @@ class _LoginScreenState extends State<LoginScreen> {
                         _Field(
                           controller: _user,
                           hint: 'Имя пользователя',
+                          suffixIcon: _QrLoginSlot(
+                            visible: !_isRegistering,
+                            enabled: !_busy,
+                            onPressed: _openQrLogin,
+                          ),
                           autofillHints: const [AutofillHints.username],
                           textInputAction: TextInputAction.next,
                         ),
@@ -145,6 +191,13 @@ class _LoginScreenState extends State<LoginScreen> {
                           controller: _pass,
                           hint: 'Пароль',
                           obscure: true,
+                          suffixIcon: _isRegistering
+                              ? null
+                              : _PasswordRecoverySlot(
+                                  visible: _showPasswordRecovery,
+                                  enabled: !_busy,
+                                  onPressed: _recoverPassword,
+                                ),
                           autofillHints: _isRegistering
                               ? const [AutofillHints.newPassword]
                               : const [AutofillHints.password],
@@ -206,6 +259,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               : () {
                                   setState(() {
                                     _isRegistering = !_isRegistering;
+                                    _showPasswordRecovery = false;
                                     _error = null;
                                   });
                                 },
@@ -235,6 +289,7 @@ class _Field extends StatelessWidget {
     required this.controller,
     required this.hint,
     this.obscure = false,
+    this.suffixIcon,
     this.autofillHints,
     this.textInputAction,
     this.onSubmitted,
@@ -243,6 +298,7 @@ class _Field extends StatelessWidget {
   final TextEditingController controller;
   final String hint;
   final bool obscure;
+  final Widget? suffixIcon;
   final Iterable<String>? autofillHints;
   final TextInputAction? textInputAction;
   final ValueChanged<String>? onSubmitted;
@@ -259,6 +315,10 @@ class _Field extends StatelessWidget {
       enableSuggestions: !obscure,
       decoration: InputDecoration(
         hintText: hint,
+        suffixIcon: suffixIcon,
+        suffixIconConstraints: suffixIcon == null
+            ? null
+            : const BoxConstraints(minWidth: 54, minHeight: 48),
         filled: true,
         fillColor: Colors.white.withValues(alpha: 0.12),
         border: OutlineInputBorder(
@@ -271,6 +331,84 @@ class _Field extends StatelessWidget {
           borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide(
             color: OrexColors.copper.withValues(alpha: 0.25),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PasswordRecoverySlot extends StatelessWidget {
+  const _PasswordRecoverySlot({
+    required this.visible,
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  final bool visible;
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return ExcludeSemantics(
+      excluding: !visible,
+      child: IgnorePointer(
+        ignoring: !visible,
+        child: AnimatedOpacity(
+          opacity: visible ? 1 : 0,
+          duration: const Duration(milliseconds: 160),
+          child: Tooltip(
+            message: 'Восстановить пароль',
+            child: IconButton(
+              onPressed: enabled ? onPressed : null,
+              style: IconButton.styleFrom(
+                fixedSize: const Size.square(42),
+                minimumSize: const Size.square(42),
+                padding: EdgeInsets.zero,
+                foregroundColor: OrexColors.copper,
+              ),
+              icon: const Icon(Icons.help_outline, size: 22),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _QrLoginSlot extends StatelessWidget {
+  const _QrLoginSlot({
+    required this.visible,
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  final bool visible;
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return ExcludeSemantics(
+      excluding: !visible,
+      child: IgnorePointer(
+        ignoring: !visible,
+        child: AnimatedOpacity(
+          opacity: visible ? 1 : 0,
+          duration: const Duration(milliseconds: 160),
+          child: Tooltip(
+            message: 'Войти по QR-коду',
+            child: IconButton(
+              onPressed: enabled ? onPressed : null,
+              style: IconButton.styleFrom(
+                fixedSize: const Size.square(42),
+                minimumSize: const Size.square(42),
+                padding: EdgeInsets.zero,
+                foregroundColor: OrexColors.copper,
+              ),
+              icon: const Icon(Icons.qr_code_scanner, size: 22),
+            ),
           ),
         ),
       ),

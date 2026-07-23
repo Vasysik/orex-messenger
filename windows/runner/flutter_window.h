@@ -27,10 +27,22 @@ class FlutterWindow : public Win32Window {
                          LPARAM const lparam) noexcept override;
 
  private:
+  bool EnsureTrayIcon();
+  void RefreshTrayIcon();
+  void UpdateTrayUnreadCount(int unread_count);
+  void RemoveTrayIcon();
   void ShowWindowsNotification(const flutter::EncodableMap& payload);
+  void ClearCurrentNotification();
   void DismissWindowsNotification(const std::string& room_id);
+  void DismissIncomingCallNotification(const std::string& room_id,
+                                       const std::string& event_id);
+  void ClearNotificationAvatarIcon();
+  bool HideToTray();
+  void NotifyWindowVisibility(bool visible);
   void ActivateWindow();
   void ActivateNotification();
+  void ShowTrayMenu();
+  void RequestQuit();
 
   // The project to run.
   flutter::DartProject project_;
@@ -40,10 +52,21 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       audio_devices_channel_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> push_channel_;
-  NOTIFYICONDATAW notification_icon_{};
+  NOTIFYICONDATAW tray_icon_{};
   flutter::EncodableMap notification_payload_;
   std::string notification_room_id_;
-  bool notification_icon_added_ = false;
+  std::string notification_event_id_;
+  std::string notification_kind_;
+  HICON tray_base_icon_ = nullptr;
+  HICON tray_badged_icon_ = nullptr;
+  HICON notification_avatar_icon_ = nullptr;
+  UINT taskbar_created_message_ = 0;
+  int unread_count_ = 0;
+  bool tray_icon_added_ = false;
+  bool hidden_to_tray_ = false;
+  bool desktop_window_visible_ = true;
+  bool external_shutdown_requested_ = false;
+  bool destroyed_ = false;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

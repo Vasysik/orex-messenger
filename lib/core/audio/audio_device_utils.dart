@@ -10,6 +10,9 @@ const _androidOutputPrefix = 'orex://android/audio-output/';
 bool get orexIsAndroidNativePlatform =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
+bool get orexIsWindowsNativePlatform =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+
 bool get orexIsMobileNativePlatform {
   if (kIsWeb) return false;
   return defaultTargetPlatform == TargetPlatform.android ||
@@ -55,13 +58,17 @@ class OrexAudioDevice {
   bool get isInput => kind == 'audioinput';
   bool get isOutput => kind == 'audiooutput';
 
-  bool get isBluetooth => category == 'bluetooth';
+  bool get isBluetooth =>
+      category == 'bluetooth' || category == 'bluetooth_hands_free';
+  bool get isBluetoothHandsFree => category == 'bluetooth_hands_free';
   bool get isHeadphones =>
       isBluetooth || category == 'headphones' || category == 'usb';
 }
 
 List<OrexAudioDevice> _lastNonEmptyDevices = const [];
 List<OrexAudioDevice> _lastNonEmptyCallDevices = const [];
+List<OrexAudioDevice> _lastEnumeratedWebDevices = const [];
+String? _lastWebDefaultAudioOutputLabel;
 
 /// Returns audio devices that are actually useful to the settings UI.
 ///
@@ -71,21 +78,38 @@ List<OrexAudioDevice> _lastNonEmptyCallDevices = const [];
 Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
   bool requestPermission = false,
   bool includeCallRoutes = false,
+  String? preferredInputDeviceId,
 }) async {
   rtc.MediaStream? permissionStream;
-  if (requestPermission) {
-    try {
-      permissionStream = await rtc.navigator.mediaDevices.getUserMedia({
-        'audio': true,
-        'video': false,
-      });
-    } catch (e) {
-      OrexLog.d('AudioDevices', 'permission unlock failed', e);
-    }
-  }
 
   try {
-    final rawDevices = await _enumerateWebRtcDevices();
+    var rawDevices = await _enumerateWebRtcDevices();
+
+    // On web, opening an unconstrained default input can open a Bluetooth
+    // headset's Hands-Free endpoint even when the call itself uses another
+    // microphone. That makes Windows switch the headset from stereo/A2DP to
+    // HFP. Device labels remain available after permission has been granted,
+    // so do not make a second default capture merely to enumerate them.
+    final needsPermissionCapture = orexShouldRequestAudioPermission(
+      requestPermission: requestPermission,
+      isWeb: kIsWeb,
+      rawDevices: rawDevices,
+    );
+    if (needsPermissionCapture) {
+      try {
+        permissionStream = await rtc.navigator.mediaDevices.getUserMedia({
+          'audio': orexAudioPermissionConstraint(preferredInputDeviceId),
+          'video': false,
+        });
+        rawDevices = await _enumerateWebRtcDevices();
+      } catch (e) {
+        OrexLog.d('AudioDevices', 'permission unlock failed', e);
+      }
+    }
+    if (kIsWeb) {
+      _lastWebDefaultAudioOutputLabel = orexDefaultAudioOutputLabel(rawDevices);
+    }
+
     final nativeDevices = orexCanUseNativeAudioDevices
         ? _nativeDevicesFromMaps(
             await OrexNativeAudioDevices.enumerate(
@@ -128,7 +152,14 @@ Future<List<OrexAudioDevice>> enumerateOrexAudioDevices({
       addDevice(device);
     }
 
-    final result = byKey.values.toList()
+    final allDevices = byKey.values.toList();
+    if (kIsWeb && allDevices.isNotEmpty) {
+      _lastEnumeratedWebDevices = allDevices;
+    }
+    final result = (kIsWeb
+            ? orexFilterRedundantWebHandsFreeOutputs(allDevices)
+            : allDevices)
+        .toList()
       ..sort((a, b) {
         final byKind = a.kind.compareTo(b.kind);
         if (byKind != 0) return byKind;
@@ -175,7 +206,55 @@ Future<List<dynamic>> _enumerateWebRtcDevices() async {
   }
 }
 
+/// Whether browser device enumeration already exposes a usable microphone
+/// label. Once this is true, another permission-only getUserMedia call is
+/// unnecessary and may activate a Bluetooth headset's Hands-Free profile.
+@visibleForTesting
+bool orexHasReadableAudioInputLabels(List<dynamic> rawDevices) {
+  for (final raw in rawDevices) {
+    if (_normalizeKind(_readString(raw, 'kind')) != 'audioinput') continue;
+    if (_cleanLabel(_readString(raw, 'label')).isNotEmpty) return true;
+  }
+  return false;
+}
 
+/// Decides whether the label-unlock stream is needed. Native platforms retain
+/// their established permission-request behavior; web avoids reopening a
+/// default input after access was already granted.
+@visibleForTesting
+bool orexShouldRequestAudioPermission({
+  required bool requestPermission,
+  required bool isWeb,
+  required List<dynamic> rawDevices,
+}) {
+  return requestPermission &&
+      (!isWeb || !orexHasReadableAudioInputLabels(rawDevices));
+}
+
+/// Constraints used only for the short permission/label-unlock stream.
+///
+/// A selected web microphone must be mandatory here: merely preferring it
+/// allows the browser to pick the Bluetooth Hands-Free microphone instead.
+@visibleForTesting
+dynamic orexAudioPermissionConstraint(
+  String? preferredInputDeviceId, {
+  bool? isWeb,
+}) {
+  final normalized = preferredInputDeviceId?.trim();
+  if (!(isWeb ?? kIsWeb) ||
+      normalized == null ||
+      normalized.isEmpty ||
+      normalized == 'default') {
+    return true;
+  }
+
+  // Do not silently fall back to a Bluetooth/default microphone. A stale
+  // persisted device id fails the short label-unlock request safely; the user
+  // can then choose a currently available input.
+  return <String, dynamic>{
+    'deviceId': <String, String>{'exact': normalized},
+  };
+}
 
 String? orexResolveCurrentDeviceId(
   List<OrexAudioDevice> devices, {
@@ -223,6 +302,7 @@ int _currentDefaultRank(OrexAudioDevice device) {
 
   return switch (device.category) {
     'bluetooth' => 0,
+    'bluetooth_hands_free' => 6,
     'headphones' || 'usb' => 1,
     'front_camera' => 0,
     'back_camera' => 1,
@@ -283,6 +363,7 @@ int _deviceSortRank(OrexAudioDevice device) {
   return switch (device.category) {
     'bluetooth' => 0,
     'headphones' || 'usb' => 1,
+    'bluetooth_hands_free' => 7,
     'speaker' => 8,
     'earpiece' => 9,
     _ => 5,
@@ -295,6 +376,9 @@ String _inferCategory({
   required String label,
 }) {
   final value = '$id $label'.toLowerCase();
+  if (kind == 'audiooutput' && orexLooksLikeBluetoothHandsFreeOutput(value)) {
+    return 'bluetooth_hands_free';
+  }
   final bluetooth = value.contains('bluetooth') ||
       value.contains('bt-') ||
       value.contains('airpods') ||
@@ -325,6 +409,162 @@ String _inferCategory({
     return 'speaker';
   }
   return '';
+}
+
+/// Identifies the low-bandwidth Windows Bluetooth telephony endpoint.
+///
+/// Browsers expose the stereo/A2DP and Hands-Free/HFP endpoints as separate
+/// output devices. Selecting the latter forces the headset into a mono call
+/// profile even when another microphone is used.
+@visibleForTesting
+bool orexLooksLikeBluetoothHandsFreeOutput(String value) {
+  final normalized = value.toLowerCase();
+  return normalized.contains('hands-free') ||
+      normalized.contains('handsfree') ||
+      normalized.contains('hands free') ||
+      normalized.contains('ag audio') ||
+      RegExp(r'(^|[^a-z0-9])hfp([^a-z0-9]|$)').hasMatch(normalized) ||
+      normalized.contains('headset earphone');
+}
+
+/// Hides a Hands-Free output only when the same Bluetooth headset also has a
+/// stereo endpoint. A standalone HFP device remains visible so routing is not
+/// silently broken on hardware that exposes no A2DP alternative.
+@visibleForTesting
+List<OrexAudioDevice> orexFilterRedundantWebHandsFreeOutputs(
+  List<OrexAudioDevice> devices,
+) {
+  final stereoFingerprints = <String>{
+    for (final device in devices)
+      if (device.isOutput &&
+          device.isHeadphones &&
+          !device.isBluetoothHandsFree)
+        _bluetoothEndpointFingerprint(device.label),
+  }..remove('');
+
+  return <OrexAudioDevice>[
+    for (final device in devices)
+      if (!device.isOutput ||
+          !device.isBluetoothHandsFree ||
+          !stereoFingerprints.contains(
+            _bluetoothEndpointFingerprint(device.label),
+          ))
+        device,
+  ];
+}
+
+/// Replaces a persisted HFP endpoint with the matching stereo endpoint.
+///
+/// This is intentionally conservative: no match means the original id is
+/// retained instead of guessing another physical output device.
+@visibleForTesting
+String? orexResolvePreferredWebAudioOutputId(
+  List<OrexAudioDevice> devices, {
+  required String? selectedId,
+  String? defaultOutputLabel,
+}) {
+  final normalized = selectedId?.trim();
+  if (normalized == null || normalized.isEmpty || normalized == 'default') {
+    final defaultFingerprint = _bluetoothEndpointFingerprint(
+      defaultOutputLabel ?? '',
+    );
+    if (defaultFingerprint.isEmpty) return null;
+    OrexAudioDevice? handsFreeFallback;
+    for (final device in devices) {
+      if (!device.isOutput || !device.isHeadphones) continue;
+      if (_bluetoothEndpointFingerprint(device.label) != defaultFingerprint) {
+        continue;
+      }
+      if (!device.isBluetoothHandsFree) return device.id;
+      handsFreeFallback = device;
+    }
+    return handsFreeFallback?.id;
+  }
+
+  OrexAudioDevice? selected;
+  for (final device in devices) {
+    if (device.isOutput && device.id == normalized) {
+      selected = device;
+      break;
+    }
+  }
+  if (selected == null || !selected.isBluetoothHandsFree) return normalized;
+
+  final fingerprint = _bluetoothEndpointFingerprint(selected.label);
+  if (fingerprint.isEmpty) return normalized;
+  for (final device in devices) {
+    if (!device.isOutput ||
+        !device.isHeadphones ||
+        device.isBluetoothHandsFree) {
+      continue;
+    }
+    if (_bluetoothEndpointFingerprint(device.label) == fingerprint) {
+      return device.id;
+    }
+  }
+  return normalized;
+}
+
+String? orexPreferredWebAudioOutputDeviceId(String? selectedId) {
+  final normalized = selectedId?.trim();
+  if (!kIsWeb) {
+    return normalized == null || normalized.isEmpty || normalized == 'default'
+        ? null
+        : normalized;
+  }
+  return orexResolvePreferredWebAudioOutputId(
+    _lastEnumeratedWebDevices,
+    selectedId: normalized,
+    defaultOutputLabel: _lastWebDefaultAudioOutputLabel,
+  );
+}
+
+@visibleForTesting
+String? orexDefaultAudioOutputLabel(List<dynamic> rawDevices) {
+  for (final raw in rawDevices) {
+    if (_normalizeKind(_readString(raw, 'kind')) != 'audiooutput') continue;
+    if (_readString(raw, 'deviceId').trim().toLowerCase() != 'default') {
+      continue;
+    }
+    final label = _cleanLabel(_readString(raw, 'label'));
+    if (label.isNotEmpty) return label;
+  }
+  return null;
+}
+
+String _bluetoothEndpointFingerprint(String label) {
+  var value = label.toLowerCase();
+  for (final token in const <String>[
+    'hands-free',
+    'handsfree',
+    'hands free',
+    'ag audio',
+    'hfp',
+    'stereo',
+    'bluetooth',
+    'headphones',
+    'headphone',
+    'headset',
+    'earphones',
+    'earphone',
+    'speakers',
+    'speaker',
+    'audio',
+    'наушники',
+    'наушник',
+    'гарнитура',
+    'стерео',
+    'аудио',
+    'default',
+    'communications',
+    'по умолчанию',
+  ]) {
+    value = value.replaceAll(token, ' ');
+  }
+  return value
+      .replaceAll(RegExp(r'[^a-zа-яё0-9]+'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
 }
 
 String _friendlyLabel({
@@ -480,7 +720,7 @@ int _cameraSortRank(OrexAudioDevice device) => switch (device.category) {
 
 IconData orexInputDeviceIcon(OrexAudioDevice device) {
   return switch (device.category) {
-    'bluetooth' => Icons.headset_mic,
+    'bluetooth' || 'bluetooth_hands_free' => Icons.headset_mic,
     'headphones' => Icons.headset_mic,
     'usb' => Icons.usb,
     _ => Icons.mic,
@@ -489,7 +729,7 @@ IconData orexInputDeviceIcon(OrexAudioDevice device) {
 
 IconData orexOutputDeviceIcon(OrexAudioDevice device) {
   return switch (device.category) {
-    'bluetooth' => Icons.headset_mic,
+    'bluetooth' || 'bluetooth_hands_free' => Icons.headset_mic,
     'headphones' => Icons.headphones,
     'usb' => Icons.usb,
     'earpiece' => Icons.phone_in_talk,

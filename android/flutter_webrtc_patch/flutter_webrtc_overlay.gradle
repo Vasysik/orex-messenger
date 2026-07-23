@@ -1,0 +1,61 @@
+def upstreamPubspec = file("$projectDir/../pubspec.yaml")
+if (!upstreamPubspec.isFile() || !upstreamPubspec.getText('UTF-8').contains('version: 1.5.2')) {
+    throw new GradleException(
+        'Orex MediaProjection overlay supports exactly flutter_webrtc 1.5.2. ' +
+            'Update android/flutter_webrtc_patch before changing that dependency.',
+    )
+}
+
+def upstreamCapturer = file(
+    "$projectDir/src/main/java/com/cloudwebrtc/webrtc/OrientationAwareScreenCapturer.java",
+)
+def expectedCapturerHash = '80153F03024D3D7ADC4444DBF5257DB2E34DF9CDBD0FC5F5D186FE72C439A214'
+if (!upstreamCapturer.isFile()) {
+    throw new GradleException(
+        'flutter_webrtc OrientationAwareScreenCapturer.java is missing. ' +
+            'Review the Orex MediaProjection overlay before building.',
+    )
+}
+def actualCapturerHash = java.security.MessageDigest.getInstance('SHA-256')
+    .digest(upstreamCapturer.bytes)
+    .encodeHex()
+    .toString()
+    .toUpperCase(java.util.Locale.ROOT)
+if (actualCapturerHash != expectedCapturerHash) {
+    throw new GradleException(
+        'flutter_webrtc OrientationAwareScreenCapturer.java changed. ' +
+            'Review the Orex MediaProjection overlay before building.',
+    )
+}
+
+def overlaySource = rootProject.file(
+    'flutter_webrtc_patch/src/main/java/orex_overlay/OrientationAwareScreenCapturer.java',
+)
+if (!overlaySource.isFile()) {
+    throw new GradleException("Missing Orex MediaProjection overlay: $overlaySource")
+}
+
+def stagedJavaRoot = layout.buildDirectory.dir('generated/orex_flutter_webrtc_overlay/java')
+def stageOrexScreenCapturer = tasks.register('stageOrexScreenCapturer', Sync) {
+    from(file("$projectDir/src/main/java")) {
+        exclude 'com/cloudwebrtc/webrtc/OrientationAwareScreenCapturer.java'
+    }
+    from(overlaySource) {
+        into 'com/cloudwebrtc/webrtc'
+        rename { 'OrientationAwareScreenCapturer.java' }
+    }
+    into stagedJavaRoot
+}
+
+afterEvaluate {
+    // Stage the complete Java/Kotlin tree rather than adding a second source
+    // root. SourceDirectorySet exclusions are shared by all roots and could
+    // otherwise accidentally exclude the replacement class as well.
+    android.sourceSets.main.java.setSrcDirs([stagedJavaRoot.get().asFile])
+    tasks.configureEach { task ->
+        if (task.name.startsWith('compile') &&
+            (task.name.contains('Java') || task.name.contains('Kotlin'))) {
+            task.dependsOn(stageOrexScreenCapturer)
+        }
+    }
+}

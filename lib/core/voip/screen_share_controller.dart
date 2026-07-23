@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
 
+import 'android_screen_share_platform.dart';
 import '../logging/orex_logger.dart';
 
 final class OrexScreenShareResult {
@@ -13,6 +14,17 @@ final class OrexScreenShareController {
   bool isOn = false;
   bool isBusy = false;
   lk.LocalVideoTrack? _track;
+  lk.LocalParticipant? _androidParticipant;
+  bool _androidForegroundStarted = false;
+  bool _androidStopRequested = false;
+  bool _androidStopInProgress = false;
+
+  /// Used when Android ends capture from the status chip, notification or lock
+  /// screen while the Flutter call controls are not currently visible.
+  void Function()? onStateChanged;
+
+  late final OrexAndroidScreenShareStopHandler _androidStopHandler =
+      _handleAndroidStopRequest;
 
   Future<OrexScreenShareResult> toggle({
     required lk.LocalParticipant participant,
@@ -21,7 +33,9 @@ final class OrexScreenShareController {
     String? sourceName,
     String? sourceType,
   }) async {
-    if (isBusy) return const OrexScreenShareResult(error: null);
+    if (isBusy || _androidStopInProgress) {
+      return const OrexScreenShareResult(error: null);
+    }
     isBusy = true;
     try {
       if (!canPublishMedia) {
@@ -31,7 +45,7 @@ final class OrexScreenShareController {
       }
       if (!isSupported) {
         return const OrexScreenShareResult(
-          error: 'Трансляция экрана на Android будет реализована позже',
+          error: 'Трансляция экрана на этой платформе недоступна',
         );
       }
 
@@ -43,6 +57,27 @@ final class OrexScreenShareController {
 
       if (sourceId == null && desktopNeedsExplicitSource) {
         return const OrexScreenShareResult(error: 'Выберите источник экрана');
+      }
+
+      if (OrexAndroidScreenSharePlatform.isAndroid) {
+        _androidStopRequested = false;
+        final permissionGranted =
+            await OrexAndroidScreenSharePlatform.requestCapturePermission();
+        if (!permissionGranted) return const OrexScreenShareResult();
+
+        // Android 14 requires this foreground owner after the consent result,
+        // but before flutter_webrtc turns that token into a MediaProjection.
+        final foregroundReady =
+            await OrexAndroidScreenSharePlatform.startForeground();
+        if (!foregroundReady) {
+          return const OrexScreenShareResult(
+            error: 'Не удалось подготовить системную демонстрацию экрана',
+          );
+        }
+        _androidForegroundStarted = true;
+        _androidParticipant = participant;
+        OrexAndroidScreenSharePlatform.setStopHandler(_androidStopHandler);
+        OrexAndroidScreenSharePlatform.armStopHandling();
       }
 
       await _start(
@@ -68,6 +103,7 @@ final class OrexScreenShareController {
       );
     } finally {
       isBusy = false;
+      await _drainAndroidStopRequest(participant);
     }
   }
 
@@ -96,6 +132,11 @@ final class OrexScreenShareController {
       return;
     }
 
+    if (OrexAndroidScreenSharePlatform.isAndroid) {
+      await _startAndroid(participant: participant, sourceLabel: sourceLabel);
+      return;
+    }
+
     final options = captureOptions(sourceId);
     await participant.setScreenShareEnabled(
       true,
@@ -106,6 +147,24 @@ final class OrexScreenShareController {
       'Call',
       'screen share started via setScreenShareEnabled sourceId=$sourceId',
     );
+  }
+
+  Future<void> _startAndroid({
+    required lk.LocalParticipant participant,
+    required String sourceLabel,
+  }) async {
+    await _publishTrack(
+      participant: participant,
+      options: captureOptions(null),
+      sourceId: null,
+      sourceType: 'screen',
+      sourceLabel: sourceLabel,
+    );
+    final track = _track;
+    final trackId = track?.mediaStreamTrack.id;
+    if (trackId != null) {
+      OrexAndroidScreenSharePlatform.trackProjection(trackId);
+    }
   }
 
   Future<void> _startDesktop({
@@ -207,8 +266,11 @@ final class OrexScreenShareController {
     required String sourceLabel,
   }) async {
     final track = await lk.LocalVideoTrack.createScreenShareTrack(options);
-    await participant.publishVideoTrack(track);
+    // Retain the native capturer before the publish await. If signalling or
+    // LiveKit publishing fails, the caller's cleanup must still stop the
+    // MediaProjection and release its foreground owner.
     _track = track;
+    await participant.publishVideoTrack(track);
     isOn = true;
     OrexLog.d(
       'Call',
@@ -230,6 +292,16 @@ final class OrexScreenShareController {
   }
 
   Future<void> cleanupLocals() async {
+    final androidForegroundStarted = _androidForegroundStarted;
+    _androidForegroundStarted = false;
+    _androidStopRequested = false;
+    _androidParticipant = null;
+    if (androidForegroundStarted) {
+      // Prevent explicit track disposal from being reported as a system revoke.
+      OrexAndroidScreenSharePlatform.clearTrackedProjection();
+      OrexAndroidScreenSharePlatform.clearStopHandler(_androidStopHandler);
+    }
+
     final track = _track;
     _track = null;
     try {
@@ -241,6 +313,46 @@ final class OrexScreenShareController {
       await track?.dispose();
     } catch (e) {
       OrexLog.d('Call', 'screen share track dispose failed', e);
+    }
+    if (androidForegroundStarted) {
+      await OrexAndroidScreenSharePlatform.stopForeground();
+    }
+  }
+
+  Future<void> _handleAndroidStopRequest(String reason) async {
+    if (_androidForegroundStarted == false && !isOn) return;
+    if (isBusy) {
+      _androidStopRequested = true;
+      return;
+    }
+    await _stopFromAndroid(reason, _androidParticipant);
+  }
+
+  /// Drains a stop received while capture/publish was awaiting the platform.
+  ///
+  /// The flag is examined only after [isBusy] transitions to false. That
+  /// avoids losing a revoke delivered just after the last await in start-up.
+  Future<void> _drainAndroidStopRequest(lk.LocalParticipant participant) async {
+    if (!_androidStopRequested) return;
+    _androidStopRequested = false;
+    await _stopFromAndroid(
+      'deferred_system_stop',
+      _androidParticipant ?? participant,
+    );
+  }
+
+  Future<void> _stopFromAndroid(
+    String reason,
+    lk.LocalParticipant? participant,
+  ) async {
+    if (_androidStopInProgress) return;
+    _androidStopInProgress = true;
+    OrexLog.d('Call', 'Android stopped screen share reason=$reason');
+    try {
+      await stop(participant: participant);
+      onStateChanged?.call();
+    } finally {
+      _androidStopInProgress = false;
     }
   }
 
@@ -297,7 +409,7 @@ final class OrexScreenShareController {
 
   static bool get isSupported {
     if (kIsWeb) return true;
-    return defaultTargetPlatform != TargetPlatform.android;
+    return true;
   }
 
   static bool get desktopNeedsExplicitSource {

@@ -42,12 +42,34 @@ jobs:
       - name: Test
         run: flutter test --no-pub
 
-      # Run only Orex app tests. The unqualified Gradle task also executes
-      # unit tests shipped by every Flutter plugin subproject, which are not
-      # part of the Orex test contract and may depend on runner-specific I/O.
+      # local.properties is intentionally machine-specific and ignored. Create
+      # it explicitly because the standalone Gradle invocation below does not
+      # go through `flutter build` first.
+      - name: Configure Android local properties
+        shell: pwsh
+        run: |
+          if (-not $env:FLUTTER_ROOT) { throw "FLUTTER_ROOT is not set." }
+          $androidSdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { $env:ANDROID_SDK_ROOT }
+          if (-not $androidSdk) { throw "ANDROID_HOME or ANDROID_SDK_ROOT is not set." }
+          $flutterSdk = $env:FLUTTER_ROOT -replace '\\', '/'
+          $androidSdk = $androidSdk -replace '\\', '/'
+          @(
+            "sdk.dir=$androidSdk"
+            "flutter.sdk=$flutterSdk"
+          ) | Set-Content -LiteralPath android/local.properties -Encoding utf8
+
+      # The Android wrapper scripts/JAR are intentionally not stored in this
+      # repository. Install the version pinned by gradle-wrapper.properties and
+      # run only Orex app tests, not plugin-subproject test tasks.
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6.2.0
+        with:
+          gradle-version: '8.14'
+          cache-provider: basic
+
       - name: Android app unit tests (Kotlin/JUnit)
-        working-directory: android
-        run: .\gradlew.bat :app:testDebugUnitTest --no-daemon --stacktrace
+        shell: pwsh
+        run: gradle -p android :app:testDebugUnitTest --no-daemon --stacktrace
 
       - name: Build LiveKit E2EE worker
         shell: bash
@@ -81,6 +103,7 @@ jobs:
         run: >
           flutter build web --no-pub --no-web-resources-cdn
           --dart-define=OREX_ENV=production
+          --dart-define=OREX_UPDATE_CHANNEL=stable
           --dart-define=OREX_DEBUG_LOGS=false
 
       - name: Android debug build
@@ -88,15 +111,20 @@ jobs:
 
       - name: Android release build
         env:
+          OREX_ANDROID_DISTRIBUTION: stable
           OREX_ALLOW_UNSIGNED_ANDROID_RELEASE: "true"
           OREX_ALLOW_ANDROID_RELEASE_WITHOUT_PUSH: "true"
         run: >
           flutter build apk --release --split-per-abi --no-pub
           --dart-define=OREX_ENV=production
+          --dart-define=OREX_UPDATE_CHANNEL=stable
           --dart-define=OREX_DEBUG_LOGS=false
 
       - name: Windows release build
+        env:
+          OREX_WINDOWS_CHANNEL: stable
         run: >
           flutter build windows --release --no-pub
           --dart-define=OREX_ENV=production
+          --dart-define=OREX_UPDATE_CHANNEL=stable
           --dart-define=OREX_DEBUG_LOGS=false

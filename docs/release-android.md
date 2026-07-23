@@ -1,6 +1,6 @@
-# Orex Android Release
+# Выпуск Orex для Android
 
-Перед сборкой версия сверяется с `pubspec.yaml`, затем запускается локальный quality gate:
+Перед сборкой версия сверяется с `pubspec.yaml`, затем запускается локальная проверка:
 
 ```powershell
 flutter pub get
@@ -57,8 +57,10 @@ OREX_ANDROID_KEY_PASSWORD
 
 ### 3. Настроить Android push
 
-Для реальной background-доставки нужен Firebase Android app с package id
-`ru.orex.messenger`. Его `google-services.json` размещается по пути:
+Для реальной background-доставки stable-сборке нужен Firebase Android app с
+package id `ru.orex.messenger`. Параллельная debug-сборка использует
+`ru.orex.messenger.debug`; если в ней тоже нужен push, добавьте этот Android app
+в тот же Firebase project. `google-services.json` размещается по пути:
 
 ```text
 android/app/google-services.json
@@ -70,8 +72,8 @@ android/app/google-services.json
 поэтому Matrix pusher вообще не регистрировался и Sygnal оставался без запросов.
 
 `google-services.json` должен быть скачан из того же Firebase-проекта, чей
-`project_id` и service account использует Sygnal. Firebase Android app должен
-иметь package id ровно `ru.orex.messenger`.
+`project_id` и service account использует Sygnal. Firebase-конфигурация должна содержать client для собираемого application ID:
+`ru.orex.messenger` либо `ru.orex.messenger.debug`.
 
 Production Orex Push Gateway уже задан в клиенте и не требует `--dart-define`:
 
@@ -116,11 +118,49 @@ $env:OREX_ALLOW_ANDROID_RELEASE_WITHOUT_PUSH = "true"
 
 В обычной Orex release-сборке эта переменная не задаётся.
 
-### 4. Собрать APK
+### 4. Версия и имена релизных файлов
+
+Единственный источник версии — строка `version:` в `pubspec.yaml`:
+
+```yaml
+version: <version>+<build>
+```
+
+Flutter автоматически использует её для `versionName` и `versionCode`. В
+release-командах не передавайте `--build-name` и `--build-number`: иначе имя
+папки на сервере, package metadata и версия внутри приложения могут разойтись.
+
+Для переименования APK прочитайте то же значение из `pubspec.yaml`:
 
 ```powershell
+$VersionMatch = [regex]::Match(
+  (Get-Content pubspec.yaml -Raw),
+  '(?m)^version:\s*(\d+)\.(\d+)\.(\d+)\+(\d+)\s*$'
+)
+if (-not $VersionMatch.Success) {
+  throw 'В pubspec.yaml ожидается version: X.Y.Z+N'
+}
+
+$VersionName = '{0}.{1}.{2}' -f `
+  $VersionMatch.Groups[1].Value, `
+  $VersionMatch.Groups[2].Value, `
+  $VersionMatch.Groups[3].Value
+$BuildNumber = $VersionMatch.Groups[4].Value
+$Release = "$VersionName+$BuildNumber"
+```
+
+После изменения версии выполните `flutter pub get`.
+
+### 5. Собрать stable APK
+
+Stable и debug — это каналы приложения, а не Git-ветки. Stable использует
+application ID `ru.orex.messenger` и проверяет `/updates/stable/latest.json`.
+
+```powershell
+$env:OREX_ANDROID_DISTRIBUTION = 'stable'
 flutter build apk --release --split-per-abi --no-pub `
   --dart-define=OREX_ENV=production `
+  --dart-define=OREX_UPDATE_CHANNEL=stable `
   --dart-define=OREX_DEBUG_LOGS=false
 ```
 
@@ -132,16 +172,54 @@ build\app\outputs\flutter-apk\app-arm64-v8a-release.apk
 build\app\outputs\flutter-apk\app-x86_64-release.apk
 ```
 
-Для большинства современных Android-устройств используется `app-arm64-v8a-release.apk`.
-Распространяемый fat APK без `--split-per-abi` не используется: он включает native
-библиотеки сразу для всех ABI и заметно увеличивает размер установщика.
+Переименуйте нужные APK значением `$Release`, прочитанным из `pubspec.yaml`:
 
-Если Gradle пишет `Android release signing is not configured`, значит
-`android/key.properties` не найден, путь к keystore неправильный или не заданы
-env-переменные.
+```powershell
+Copy-Item build\app\outputs\flutter-apk\app-arm64-v8a-release.apk `
+  "app-arm64-v8a-$Release.apk"
+Copy-Item build\app\outputs\flutter-apk\app-armeabi-v7a-release.apk `
+  "app-armeabi-v7a-$Release.apk"
+```
 
-`OREX_ALLOW_UNSIGNED_ANDROID_RELEASE=true` используется только для CI
-compile-check. Такой APK нельзя отдавать как релизный артефакт.
+### 6. Собрать параллельный Orex Debug
+
+Это тоже оптимизированная `--release` сборка, но с другим application ID,
+названием `Orex Messenger Debug` и каналом `/updates/debug/latest.json`. Она
+устанавливается рядом со stable и имеет отдельные Android data/keystore.
+
+```powershell
+$env:OREX_ANDROID_DISTRIBUTION = 'debug'
+flutter build apk --release --split-per-abi --no-pub `
+  --dart-define=OREX_ENV=production `
+  --dart-define=OREX_UPDATE_CHANNEL=debug `
+  --dart-define=OREX_DEBUG_LOGS=true
+```
+
+`OREX_ANDROID_DISTRIBUTION` меняет native application ID на
+`ru.orex.messenger.debug`, а `OREX_UPDATE_CHANNEL=debug` выбирает debug-feed и
+название внутри Flutter. Значения должны совпадать. Отдельный flavor и отдельная
+команда Gradle не нужны.
+
+Для проверки updater не переопределяйте версию параметрами команды. Соберите и
+установите Orex Debug с текущим `version:` из `pubspec.yaml`, затем увеличьте
+`build` в `pubspec.yaml`, повторите сборку и опубликуйте её в
+`updates/debug/$Release/`. Это сохраняет один источник истины для package
+metadata, имени APK и папки релиза.
+
+Для обновляемой debug-сборки нужен постоянный signing key. Используйте тот же
+настроенный release keystore либо отдельный, но не меняйте его между debug
+релизами. Обычный Flutter debug key для такого теста не используется.
+
+Для большинства современных устройств нужен `arm64-v8a`. Fat APK без
+`--split-per-abi` не используется. При первом обновлении из APK Android может
+попросить разрешить установку приложений из конкретного Orex-канала. После
+выдачи разрешения вернитесь в окно обновления и снова нажмите `Установить` —
+повторно скачивать APK не потребуется.
+
+`OREX_ALLOW_UNSIGNED_ANDROID_RELEASE=true` остаётся только для CI compile-check
+и не подходит для updater.
+
+Полная серверная схема описана в `docs/release-updates.md`.
 
 
 ## Android smoke
@@ -161,7 +239,12 @@ Android 8+: входящий -> системная карточка -> прин�
 Android 8+: активный звонок -> завершить из системного UI / гарнитуры
 Android 8+: system mute / hold -> микрофон и входящий звук восстанавливаются
 Android 8+: speaker / earpiece / wired / Bluetooth route без конфликта AudioManager
-Android: не показывается неработающая кнопка screen share до MediaProjection flow
+Android: screen share -> системное MediaProjection-разрешение -> foreground-индикатор
+Android: screen share -> свернуть приложение -> foreground-индикатор и публикация сохраняются
+Android: screen share -> Stop из foreground-уведомления -> track снят, индикатор исчез
+Android: screen share -> системный Stop/status chip или блокировка экрана -> track снят,
+UI возвращается в выключенное состояние; после разблокировки новый share запрашивает
+новое системное разрешение
 Android 13+: permission на уведомления появляется после основного UI, не на splash
 FCM token -> Matrix pusher зарегистрирован на homeserver
 ротация FCM token -> старый pushkey удалён, новый зарегистрирован

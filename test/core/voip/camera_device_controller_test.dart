@@ -130,6 +130,23 @@ void main() {
       );
     });
 
+    test('can disable semantic front/back for exact Windows device ids', () {
+      expect(
+        OrexCameraDeviceController.cameraPositionForPlatformCategory(
+          'front_camera',
+          useSemanticPosition: true,
+        ),
+        lk.CameraPosition.front,
+      );
+      expect(
+        OrexCameraDeviceController.cameraPositionForPlatformCategory(
+          'front_camera',
+          useSemanticPosition: false,
+        ),
+        isNull,
+      );
+    });
+
     test('serializes rapid camera cycle requests', () async {
       String? configured = 'camera-a';
       final persisted = <String?>[];

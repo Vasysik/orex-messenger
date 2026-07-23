@@ -92,9 +92,9 @@ class OrexAudioDeviceSettingsActions {
     } catch (e) {
       OrexLog.d('Audio', 'microphone permission/test failed', e);
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Микрофон недоступен')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Микрофон недоступен')));
     }
   }
 }
@@ -140,6 +140,7 @@ class OrexAudioDeviceSettingsController extends ChangeNotifier {
       final nextDevices = await enumerateOrexAudioDevices(
         requestPermission: requestPermission,
         includeCallRoutes: includeCallRoutes,
+        preferredInputDeviceId: inputId,
       );
       final nextCameras = await enumerateOrexCameraDevices(
         requestPermission: requestPermission,

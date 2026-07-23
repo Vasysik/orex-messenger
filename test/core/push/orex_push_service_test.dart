@@ -107,6 +107,115 @@ void main() {
     expect(calls.map((call) => call.method), ['activateIncomingCallWindow']);
   });
 
+  test(
+    'Windows host visibility event reaches the notification policy',
+    () async {
+      const channel = MethodChannel('orex/test_windows_visibility');
+      final values = <bool>[];
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      final platform = OrexNativePushPlatform(channel: channel);
+      final subscription = platform.desktopWindowVisibilityChanges.listen(
+        values.add,
+      );
+      addTearDown(() async {
+        await subscription.cancel();
+        platform.dispose();
+        debugDefaultTargetPlatformOverride = null;
+      });
+
+      await platform.initialize();
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .handlePlatformMessage(
+            channel.name,
+            const StandardMethodCodec().encodeMethodCall(
+              const MethodCall('onDesktopWindowVisibilityChanged', false),
+            ),
+            null,
+          );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(values, [false]);
+    },
+  );
+
+  test('Windows call and tray state use dedicated native methods', () async {
+    const channel = MethodChannel('orex/test_windows_call_notification');
+    final calls = <MethodCall>[];
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return true;
+        });
+    final platform = OrexNativePushPlatform(channel: channel);
+    addTearDown(() {
+      platform.dispose();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    await platform.showIncomingCallNotification(<String, String>{
+      'orex_kind': 'incoming_call',
+      'room_id': '!call:example.org',
+      'event_id': r'$ring-event',
+      'title': 'Alice',
+      'body': 'Входящий звонок',
+    });
+    await platform.dismissIncomingCallNotification(
+      '!call:example.org',
+      ringEventId: r'$ring-event',
+    );
+    await platform.updateDesktopUnreadCount(4);
+
+    expect(calls.map((call) => call.method), <String>[
+      'showIncomingCallNotification',
+      'dismissIncomingCallNotification',
+      'updateTrayUnreadCount',
+    ]);
+    expect(calls[1].arguments, <String, Object?>{
+      'roomId': '!call:example.org',
+      'ringEventId': r'$ring-event',
+    });
+    expect(calls[2].arguments, <String, Object?>{'count': 4});
+  });
+
+  test('Windows local notification forwards the cached avatar path', () async {
+    const channel = MethodChannel('orex/test_windows_local_notification');
+    final calls = <MethodCall>[];
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return true;
+        });
+    final platform = OrexNativePushPlatform(channel: channel);
+    addTearDown(() {
+      platform.dispose();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    await platform.showLocalMatrixNotification(<String, String>{
+      'room_id': '!room:example.org',
+      'title': 'Alice',
+      'body': 'Hello',
+      'sender_avatar_key': '8b68b6f0b003bf67',
+      'sender_avatar_path': r'C:\Orex\orex_avatar_cache_v2\8b68b6f0b003bf67',
+    });
+
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'showLocalMatrixNotification');
+    expect(calls.single.arguments, <String, String>{
+      'room_id': '!room:example.org',
+      'title': 'Alice',
+      'body': 'Hello',
+      'sender_avatar_key': '8b68b6f0b003bf67',
+      'sender_avatar_path': r'C:\Orex\orex_avatar_cache_v2\8b68b6f0b003bf67',
+    });
+  });
+
   test('cold-start open is held until a UI listener receives it', () async {
     const open = OrexPushOpen(<String, String>{
       'room_id': '!room:example.org',
@@ -143,110 +252,117 @@ void main() {
     await client.dispose(closeDatabase: false);
   });
 
-  test('delivered native answer suppresses duplicate ringing until consumed', () async {
-    final platform = _FakePushPlatform();
-    final client = Client(
-      'OrexPushPendingAnswerTest',
-      database: MatrixSdkDatabase.buildWithoutOpen('OrexPushPendingAnswerTest'),
-    );
-    final service = OrexPushService(
-      client: client,
-      gateway: null,
-      platform: platform,
-      tokenStore: _MemoryTokenStore(),
-    );
-    await service.start();
+  test(
+    'delivered native answer suppresses duplicate ringing until consumed',
+    () async {
+      final platform = _FakePushPlatform();
+      final client = Client(
+        'OrexPushPendingAnswerTest',
+        database: MatrixSdkDatabase.buildWithoutOpen(
+          'OrexPushPendingAnswerTest',
+        ),
+      );
+      final service = OrexPushService(
+        client: client,
+        gateway: null,
+        platform: platform,
+        tokenStore: _MemoryTokenStore(),
+      );
+      await service.start();
 
-    const answer = OrexPushOpen(<String, String>{
-      'orex_kind': 'incoming_call',
-      'room_id': '!call:example.org',
-      'event_id': r'$ring-answer',
-      'orex_action': 'answer',
-      'orex_delivery_id': 'answer-delivery',
-    });
-    platform.emitOpen(answer);
-    await Future<void>.delayed(Duration.zero);
+      const answer = OrexPushOpen(<String, String>{
+        'orex_kind': 'incoming_call',
+        'room_id': '!call:example.org',
+        'event_id': r'$ring-answer',
+        'orex_action': 'answer',
+        'orex_delivery_id': 'answer-delivery',
+      });
+      platform.emitOpen(answer);
+      await Future<void>.delayed(Duration.zero);
 
-    expect(
-      service.hasPendingIncomingAnswer(
-        '!call:example.org',
-        ringEventId: r'$ring-answer',
-      ),
-      isTrue,
-    );
-    expect(
-      service.hasPendingIncomingAnswer(
-        '!call:example.org',
-        ringEventId: r'$other-ring',
-      ),
-      isFalse,
-    );
-    // An accepted cold-start command remains persisted until a process-level
-    // call coordinator has actually claimed it.
-    expect(platform.acknowledged, isEmpty);
+      expect(
+        service.hasPendingIncomingAnswer(
+          '!call:example.org',
+          ringEventId: r'$ring-answer',
+        ),
+        isTrue,
+      );
+      expect(
+        service.hasPendingIncomingAnswer(
+          '!call:example.org',
+          ringEventId: r'$other-ring',
+        ),
+        isFalse,
+      );
+      // An accepted cold-start command remains persisted until a process-level
+      // call coordinator has actually claimed it.
+      expect(platform.acknowledged, isEmpty);
 
-    service.consumePendingIncomingAnswer(answer);
-    await Future<void>.delayed(Duration.zero);
-    expect(
-      service.hasPendingIncomingAnswer(
-        '!call:example.org',
-        ringEventId: r'$ring-answer',
-      ),
-      isFalse,
-    );
-    expect(platform.acknowledged, ['answer-delivery']);
+      service.consumePendingIncomingAnswer(answer);
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        service.hasPendingIncomingAnswer(
+          '!call:example.org',
+          ringEventId: r'$ring-answer',
+        ),
+        isFalse,
+      );
+      expect(platform.acknowledged, ['answer-delivery']);
 
-    await service.dispose();
-    await client.dispose(closeDatabase: false);
-  });
+      await service.dispose();
+      await client.dispose(closeDatabase: false);
+    },
+  );
 
-  test('bootstrap handler claims a cold native answer before UI construction',
-      () async {
-    const answer = OrexPushOpen(<String, String>{
-      'orex_kind': 'incoming_call',
-      'room_id': '!call:example.org',
-      'event_id': r'$ring-answer',
-      'orex_action': 'answer',
-      'orex_delivery_id': 'answer-delivery',
-    });
-    final platform = _FakePushPlatform(initialOpen: answer);
-    final client = Client(
-      'OrexPushBootstrapAnswerTest',
-      database: MatrixSdkDatabase.buildWithoutOpen(
+  test(
+    'bootstrap handler claims a cold native answer before UI construction',
+    () async {
+      const answer = OrexPushOpen(<String, String>{
+        'orex_kind': 'incoming_call',
+        'room_id': '!call:example.org',
+        'event_id': r'$ring-answer',
+        'orex_action': 'answer',
+        'orex_delivery_id': 'answer-delivery',
+      });
+      final platform = _FakePushPlatform(initialOpen: answer);
+      final client = Client(
         'OrexPushBootstrapAnswerTest',
-      ),
-    );
-    final service = OrexPushService(
-      client: client,
-      gateway: null,
-      platform: platform,
-      tokenStore: _MemoryTokenStore(),
-    );
-    final handled = Completer<OrexPushOpen>();
-    service.setIncomingCallAnswerHandler((open) async {
-      if (!handled.isCompleted) handled.complete(open);
-    });
+        database: MatrixSdkDatabase.buildWithoutOpen(
+          'OrexPushBootstrapAnswerTest',
+        ),
+      );
+      final service = OrexPushService(
+        client: client,
+        gateway: null,
+        platform: platform,
+        tokenStore: _MemoryTokenStore(),
+      );
+      final handled = Completer<OrexPushOpen>();
+      service.setIncomingCallAnswerHandler((open) async {
+        if (!handled.isCompleted) handled.complete(open);
+      });
 
-    await service.start();
-    final received = await handled.future;
+      await service.start();
+      final received = await handled.future;
 
-    expect(received, same(answer));
-    expect(platform.acknowledged, isEmpty);
-    expect(
-      service.hasPendingIncomingAnswer(
-        '!call:example.org',
-        ringEventId: r'$ring-answer',
-      ),
-      isTrue,
-    );
+      expect(received, same(answer));
+      expect(platform.acknowledged, isEmpty);
+      expect(
+        service.hasPendingIncomingAnswer(
+          '!call:example.org',
+          ringEventId: r'$ring-answer',
+        ),
+        isTrue,
+      );
 
-    service.consumePendingIncomingAnswer(answer);
-    await Future<void>.delayed(Duration.zero);
-    expect(platform.acknowledged, ['answer-delivery']);
+      service.consumePendingIncomingAnswer(answer);
+      await Future<void>.delayed(Duration.zero);
+      expect(platform.acknowledged, ['answer-delivery']);
 
-    await service.dispose();
-    await client.dispose(closeDatabase: false);
-  });
+      await service.dispose();
+      await client.dispose(closeDatabase: false);
+    },
+  );
 
   test('does not surface local sync notifications while logged out', () async {
     final platform = _FakePushPlatform();
@@ -270,6 +386,51 @@ void main() {
 
     // Logged-out clients must not surface stale local sync notifications.
     expect(platform.localNotifications, isEmpty);
+
+    await service.dispose();
+    await client.dispose(closeDatabase: false);
+  });
+
+  test('forwards incoming-call notification lifecycle and tray count', () async {
+    final platform = _FakePushPlatform();
+    final client = Client(
+      'OrexPushWindowsNotificationTest',
+      database: MatrixSdkDatabase.buildWithoutOpen(
+        'OrexPushWindowsNotificationTest',
+      ),
+    );
+    final service = OrexPushService(
+      client: client,
+      gateway: null,
+      platform: platform,
+      tokenStore: _MemoryTokenStore(),
+    );
+
+    await service.showIncomingCallNotification(
+      roomId: '!call:example.org',
+      ringEventId: r'$ring-event',
+      title: 'Alice',
+      body: 'Входящий звонок',
+    );
+    await service.dismissIncomingCallNotification(
+      '!call:example.org',
+      ringEventId: r'$ring-event',
+    );
+    await service.updateDesktopUnreadCount(7);
+
+    expect(platform.incomingCallNotifications.single, <String, String>{
+      'orex_kind': 'incoming_call',
+      'room_id': '!call:example.org',
+      'title': 'Alice',
+      'body': 'Входящий звонок',
+      'orex_video': 'false',
+      'event_id': r'$ring-event',
+    });
+    expect(
+      platform.dismissedIncomingCalls,
+      <String>['!call:example.org|\$ring-event'],
+    );
+    expect(platform.desktopUnreadCounts, <int>[7]);
 
     await service.dispose();
     await client.dispose(closeDatabase: false);
@@ -343,9 +504,15 @@ class _FakePushPlatform implements OrexPushPlatform {
   final StreamController<String> _tokens = StreamController<String>.broadcast();
   final StreamController<OrexPushOpen> _opens =
       StreamController<OrexPushOpen>.broadcast();
+  final StreamController<bool> _desktopWindowVisibility =
+      StreamController<bool>.broadcast();
   final List<String> acknowledged = <String>[];
   final List<Map<String, String>> localNotifications = <Map<String, String>>[];
+  final List<Map<String, String>> incomingCallNotifications =
+      <Map<String, String>>[];
   final List<String> dismissedRooms = <String>[];
+  final List<String> dismissedIncomingCalls = <String>[];
+  final List<int> desktopUnreadCounts = <int>[];
   final Completer<void> firstAcknowledgement = Completer<void>();
 
   void emitOpen(OrexPushOpen open) => _opens.add(open);
@@ -365,6 +532,7 @@ class _FakePushPlatform implements OrexPushPlatform {
   void dispose() {
     unawaited(_tokens.close());
     unawaited(_opens.close());
+    unawaited(_desktopWindowVisibility.close());
   }
 
   @override
@@ -375,6 +543,10 @@ class _FakePushPlatform implements OrexPushPlatform {
 
   @override
   Stream<OrexPushOpen> get notificationOpens => _opens.stream;
+
+  @override
+  Stream<bool> get desktopWindowVisibilityChanges =>
+      _desktopWindowVisibility.stream;
 
   @override
   Future<void> notifyCallAnswering(
@@ -397,8 +569,28 @@ class _FakePushPlatform implements OrexPushPlatform {
   }
 
   @override
+  Future<void> showIncomingCallNotification(
+    Map<String, String> payload,
+  ) async {
+    incomingCallNotifications.add(Map<String, String>.of(payload));
+  }
+
+  @override
+  Future<void> dismissIncomingCallNotification(
+    String roomId, {
+    String? ringEventId,
+  }) async {
+    dismissedIncomingCalls.add('$roomId|${ringEventId ?? ''}');
+  }
+
+  @override
   Future<void> dismissRoomNotifications(String roomId) async {
     dismissedRooms.add(roomId);
+  }
+
+  @override
+  Future<void> updateDesktopUnreadCount(int count) async {
+    desktopUnreadCounts.add(count);
   }
 
   @override

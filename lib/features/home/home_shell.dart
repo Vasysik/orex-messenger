@@ -1,12 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../../core/matrix/matrix_service.dart';
 import '../../core/config/app_version.dart';
 import '../../core/logging/orex_logger.dart';
+import '../../core/update/orex_update_controller.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/theme/theme_controller.dart';
 import '../../shared/widgets/orex_loading_overlay.dart';
+import '../../shared/widgets/orex_update_dialog.dart';
 import '../../shared/widgets/orex_choice_sheet.dart';
 import '../../shared/widgets/orex_dialogs.dart';
 import '../../shared/widgets/squirrel_mascot.dart';
@@ -17,9 +23,12 @@ import '../chats/conversation/chat_view.dart';
 import '../chats/conversation/conversation_preview_view.dart';
 import '../chats/sidebar/chat_folder_controller.dart';
 import '../chats/sidebar/chat_list_panel.dart';
+import '../settings/email_settings_screen.dart';
+import '../settings/key_storage_screen.dart';
 import '../settings/settings_screen.dart';
 import '../settings/verify_session_screen.dart';
 import 'home_conversation_coordinator.dart';
+import 'home_notice_policy.dart';
 
 /// Главный экран. На широком экране (web/desktop) — две панели рядом,
 /// как в Telegram Desktop. На узком (телефон) — стек с навигацией.
@@ -29,6 +38,7 @@ class HomeShell extends StatefulWidget {
     required this.matrix,
     required this.theme,
     required this.version,
+    required this.updates,
     this.pushRoomId,
     this.pushOpenGeneration = 0,
   });
@@ -36,6 +46,7 @@ class HomeShell extends StatefulWidget {
   final MatrixService matrix;
   final ThemeController theme;
   final OrexAppVersion version;
+  final OrexUpdateController updates;
   final String? pushRoomId;
   final int pushOpenGeneration;
 
@@ -47,6 +58,9 @@ enum _CreateRoomKind { group, channel, supergroup }
 
 class _HomeShellState extends State<HomeShell> {
   bool _verifyBannerDismissed = false;
+  bool _historyBannerDismissed = false;
+  bool _emailBannerDismissed = false;
+  bool _recommendationPreferencesLoaded = false;
   double _chatListWidth = 360; // ширина левой колонки (можно тянуть мышью)
   late final ChatFolderController _folders;
   late final OrexHomeConversationCoordinator _conversation;
@@ -67,6 +81,7 @@ class _HomeShellState extends State<HomeShell> {
     _folders.load();
     widget.matrix.addListener(_onMatrixChanged);
     _conversation.syncForeground();
+    unawaited(_loadRecommendationPreferences());
     WidgetsBinding.instance.addPostFrameCallback((_) => _tryApplyPushOpen());
   }
 
@@ -138,16 +153,68 @@ class _HomeShellState extends State<HomeShell> {
     super.dispose();
   }
 
-  void _openSettings() {
-    Navigator.of(context).push(
+  String _recommendationPreferenceKey(String notice) {
+    final rawUser = widget.matrix.userId.trim();
+    final rawDevice = widget.matrix.deviceId?.trim();
+    final user = rawUser.isEmpty ? 'unknown-user' : rawUser;
+    final device = rawDevice == null || rawDevice.isEmpty
+        ? 'unknown-device'
+        : rawDevice;
+    return 'orex_home_notice_${notice}_${Uri.encodeComponent(user)}_'
+        '${Uri.encodeComponent(device)}';
+  }
+
+  Future<void> _loadRecommendationPreferences() async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final history = preferences.getBool(
+            _recommendationPreferenceKey('key-backup'),
+          ) ??
+          false;
+      final email = preferences.getBool(
+            _recommendationPreferenceKey('account-email'),
+          ) ??
+          false;
+      if (!mounted) return;
+      setState(() {
+        _historyBannerDismissed = history;
+        _emailBannerDismissed = email;
+        _recommendationPreferencesLoaded = true;
+      });
+    } catch (error) {
+      OrexLog.d('Home', 'load notice preferences failed', error);
+      if (mounted) {
+        setState(() => _recommendationPreferencesLoaded = true);
+      }
+    }
+  }
+
+  Future<void> _dismissRecommendation(String notice) async {
+    if (notice == 'key-backup') {
+      setState(() => _historyBannerDismissed = true);
+    } else if (notice == 'account-email') {
+      setState(() => _emailBannerDismissed = true);
+    }
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.setBool(_recommendationPreferenceKey(notice), true);
+    } catch (error) {
+      OrexLog.d('Home', 'save notice dismissal failed', error);
+    }
+  }
+
+  Future<void> _openSettings() async {
+    await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => SettingsScreen(
           matrix: widget.matrix,
           theme: widget.theme,
           version: widget.version,
+          updates: widget.updates,
         ),
       ),
     );
+    await widget.matrix.refreshAccountEmails(force: true);
   }
 
   Future<void> _openNewChat() async {
@@ -352,6 +419,24 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
+  Future<void> _openKeyStorage() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => KeyStorageScreen(matrix: widget.matrix),
+      ),
+    );
+    await widget.matrix.updateServerBackupVersion();
+  }
+
+  Future<void> _openEmailSettings() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => EmailSettingsScreen(matrix: widget.matrix),
+      ),
+    );
+    await widget.matrix.refreshAccountEmails(force: true);
+  }
+
   /// Развернуть звонок на весь экран (кнопка «развернуть» в панели).
   void _openCallFullScreen() {
     widget.matrix.call.expand();
@@ -430,17 +515,89 @@ class _HomeShellState extends State<HomeShell> {
                   listenable: Listenable.merge([
                     widget.matrix,
                     widget.matrix.call,
+                    widget.updates,
                   ]),
                   builder: (context, _) {
+                    final callIsBusy = widget.matrix.call.isActive ||
+                        widget.matrix.call.isStarting;
+                    final noticeKind = selectOrexHomeNotice(
+                      callIsBusy: callIsBusy,
+                      needsVerification:
+                          widget.matrix.needsSessionVerification &&
+                              !_verifyBannerDismissed,
+                      updateAvailable: widget.updates.shouldShowBanner,
+                      recommendKeyBackup:
+                          _recommendationPreferencesLoaded &&
+                              shouldRecommendOrexKeyBackup(
+                                encryptionEnabled:
+                                    widget.matrix.encryptionEnabled,
+                                statusKnown:
+                                    widget.matrix.keyBackupStatusKnown,
+                                keyBackupEnabled:
+                                    widget.matrix.keyBackupEnabled,
+                                autoBackupEnabled: widget.matrix.autoBackup,
+                              ) &&
+                              !_historyBannerDismissed,
+                      recommendAccountEmail:
+                          _recommendationPreferencesLoaded &&
+                              widget.matrix.accountEmailsLoaded &&
+                              !widget.matrix.hasAccountEmail &&
+                              !_emailBannerDismissed,
+                    );
+                    Widget? notice;
+                    if (noticeKind == OrexHomeNoticeKind.verification) {
+                      notice = _OrexTopBanner(
+                        icon: Icons.gpp_maybe,
+                        title: 'Сессия не подтверждена',
+                        subtitle:
+                            'Нажмите, чтобы подтвердить с другого устройства',
+                        onTap: _openVerifySession,
+                        onClose: () =>
+                            setState(() => _verifyBannerDismissed = true),
+                      );
+                    } else if (noticeKind == OrexHomeNoticeKind.update) {
+                      notice = _OrexTopBanner(
+                        icon: Icons.system_update_alt,
+                        title: 'Доступна новая версия',
+                        subtitle: 'Нажмите, чтобы посмотреть изменения',
+                        onTap: () => showOrexUpdateDialog(
+                          context,
+                          controller: widget.updates,
+                        ),
+                        onClose: widget.updates.dismissAvailableBanner,
+                      );
+                    } else if (noticeKind == OrexHomeNoticeKind.keyBackup) {
+                      final hasKeyStorage = widget.matrix.keyBackupEnabled;
+                      notice = _OrexTopBanner(
+                        icon: Icons.history_toggle_off,
+                        title: hasKeyStorage
+                            ? 'Автобэкап ключей выключен'
+                            : 'Защитите историю сообщений',
+                        subtitle: hasKeyStorage
+                            ? 'Включите автобэкап, чтобы новые ключи не '
+                                'остались только на этом устройстве'
+                            : 'Создайте хранилище ключей и включите автобэкап, '
+                                'чтобы не потерять зашифрованную историю',
+                        onTap: _openKeyStorage,
+                        onClose: () =>
+                            _dismissRecommendation('key-backup'),
+                      );
+                    } else if (noticeKind == OrexHomeNoticeKind.accountEmail) {
+                      notice = _OrexTopBanner(
+                        icon: Icons.mark_email_unread_outlined,
+                        title: 'Привяжите почту к аккаунту',
+                        subtitle:
+                            'Она нужна, чтобы восстановить доступ, если вы '
+                            'забудете пароль',
+                        onTap: _openEmailSettings,
+                        onClose: () =>
+                            _dismissRecommendation('account-email'),
+                      );
+                    }
+
                     return Column(
                       children: [
-                        if (widget.matrix.needsSessionVerification &&
-                            !_verifyBannerDismissed)
-                          _VerifyBanner(
-                            onTap: _openVerifySession,
-                            onClose: () =>
-                                setState(() => _verifyBannerDismissed = true),
-                          ),
+                        ?notice,
                         Expanded(child: isWide ? _buildWide() : _buildNarrow()),
                       ],
                     );
@@ -599,10 +756,19 @@ class _HomeShellState extends State<HomeShell> {
   }
 }
 
-/// Полоска-предупреждение: эта сессия ещё не подтверждена кросс-подписью,
-/// поэтому другие клиенты считают владельца непроверенным.
-class _VerifyBanner extends StatelessWidget {
-  const _VerifyBanner({required this.onTap, required this.onClose});
+/// Общий стиль верхних плашек безопасности и обновлений.
+class _OrexTopBanner extends StatelessWidget {
+  const _OrexTopBanner({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+    required this.onClose,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
   final VoidCallback onTap;
   final VoidCallback onClose;
 
@@ -623,22 +789,25 @@ class _VerifyBanner extends StatelessWidget {
             ),
             child: Row(
               children: [
-                const Icon(Icons.gpp_maybe, color: OrexColors.cream),
+                Icon(icon, color: OrexColors.cream),
                 const SizedBox(width: 12),
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Сессия не подтверждена',
-                        style: TextStyle(
+                        title,
+                        style: const TextStyle(
                           color: OrexColors.cream,
                           fontWeight: FontWeight.w700,
                         ),
                       ),
                       Text(
-                        'Нажмите, чтобы подтвердить с другого устройства',
-                        style: TextStyle(color: OrexColors.cream, fontSize: 12),
+                        subtitle,
+                        style: const TextStyle(
+                          color: OrexColors.cream,
+                          fontSize: 12,
+                        ),
                       ),
                     ],
                   ),

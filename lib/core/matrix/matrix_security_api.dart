@@ -21,6 +21,15 @@ extension MatrixSecurityApi on MatrixService {
       _serverBackupVersion != null &&
       !_backupDisabledByUser;
 
+  /// Не показываем предупреждение о защите истории, пока серверный статус
+  /// бэкапа ещё не был получен: иначе при старте будет ложная вспышка плашки.
+  bool get keyBackupStatusKnown =>
+      _checkedServerBackup || _backupDisabledByUser;
+
+  /// Пользователь явно отключил серверное хранилище ключей. В этом состоянии
+  /// рекомендация не должна появляться снова сразу после осознанного действия.
+  bool get keyBackupDisabledByUser => _backupDisabledByUser;
+
   /// Загрузка актуальной версии бэкапа с сервера.
   /// Вызывается при старте и после операций включения/выключения бэкапа.
   Future<void> updateServerBackupVersion() async {

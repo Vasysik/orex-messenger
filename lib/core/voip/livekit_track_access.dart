@@ -134,6 +134,59 @@ final class OrexLiveKitTrackAccess {
     } catch (_) {}
   }
 
+  static Iterable<dynamic> localPublications(
+    lk.LocalParticipant participant,
+  ) sync* {
+    final dynamic dynamicParticipant = participant;
+    final seen = <Object>{};
+
+    for (final getter in const <String>[
+      'audioTrackPublications',
+      'videoTrackPublications',
+      'trackPublications',
+    ]) {
+      try {
+        final dynamic publications = switch (getter) {
+          'audioTrackPublications' =>
+            dynamicParticipant.audioTrackPublications,
+          'videoTrackPublications' =>
+            dynamicParticipant.videoTrackPublications,
+          'trackPublications' => dynamicParticipant.trackPublications,
+          _ => null,
+        };
+        for (final dynamic publication in dynamicValues(publications)) {
+          if (publication is Object && !seen.add(publication)) continue;
+          yield publication;
+        }
+      } catch (_) {}
+    }
+  }
+
+  /// Stops local camera and microphone tracks without waiting for signaling.
+  /// This is used during web teardown so browser capture indicators disappear
+  /// immediately even if disconnect/reconnect futures are still draining.
+  static Future<int> stopLocalCaptureTracks(
+    lk.LocalParticipant? participant,
+  ) async {
+    if (participant == null) return 0;
+    final seenTracks = <Object>{};
+    var stopped = 0;
+    for (final publication in localPublications(participant)) {
+      final source = readDynamic(publication, 'source');
+      if (source != lk.TrackSource.camera &&
+          source != lk.TrackSource.microphone) {
+        continue;
+      }
+      final track = readDynamic(publication, 'track');
+      if (track is! lk.LocalTrack || !seenTracks.add(track)) continue;
+      try {
+        await track.stop().timeout(const Duration(seconds: 2));
+        stopped += 1;
+      } catch (_) {}
+    }
+    return stopped;
+  }
+
   static Iterable<dynamic> dynamicValues(dynamic value) sync* {
     if (value == null) return;
     if (value is Map) {

@@ -69,6 +69,11 @@ abstract interface class OrexPushPlatform {
 
   Stream<OrexPushOpen> get notificationOpens;
 
+  /// Visibility changes from the Windows host window. Other platforms expose
+  /// an empty stream, so native notification policy can distinguish a hidden
+  /// tray host from a still-visible selected conversation.
+  Stream<bool> get desktopWindowVisibilityChanges;
+
   Future<OrexPushOpen?> takeInitialNotification();
 
   Future<void> acknowledgeNotification(OrexPushOpen open);
@@ -90,9 +95,22 @@ abstract interface class OrexPushPlatform {
   /// обнаружил живой Matrix sync, пока Flutter UI находится в фоне.
   Future<void> showLocalMatrixNotification(Map<String, String> payload);
 
+  /// Высокоприоритетное Windows-уведомление о входящем звонке. Пока оно
+  /// активно, обычные сообщения не имеют права заменить его старым balloon.
+  Future<void> showIncomingCallNotification(Map<String, String> payload);
+
+  /// Убирает только совпадающий входящий вызов.
+  Future<void> dismissIncomingCallNotification(
+    String roomId, {
+    String? ringEventId,
+  });
+
   /// Убирает системные уведомления конкретной комнаты, не затрагивая другие
   /// conversation notifications и активный звонок.
   Future<void> dismissRoomNotifications(String roomId);
+
+  /// Обновляет badge/dot и tooltip иконки Windows tray.
+  Future<void> updateDesktopUnreadCount(int count);
 
   /// Restores and focuses the desktop host before presenting incoming-call UI.
   Future<void> activateIncomingCallWindow();
@@ -127,6 +145,8 @@ class OrexNativePushPlatform implements OrexPushPlatform {
       StreamController<String>.broadcast();
   final StreamController<OrexPushOpen> _notificationOpens =
       StreamController<OrexPushOpen>.broadcast();
+  final StreamController<bool> _desktopWindowVisibilityChanges =
+      StreamController<bool>.broadcast();
   bool _initialized = false;
   bool _disposed = false;
 
@@ -147,6 +167,10 @@ class OrexNativePushPlatform implements OrexPushPlatform {
   Stream<OrexPushOpen> get notificationOpens => _notificationOpens.stream;
 
   @override
+  Stream<bool> get desktopWindowVisibilityChanges =>
+      _desktopWindowVisibilityChanges.stream;
+
+  @override
   Future<void> initialize() async {
     if (_initialized || _disposed || !_hasNativeBridge) return;
     _initialized = true;
@@ -165,6 +189,10 @@ class OrexNativePushPlatform implements OrexPushPlatform {
       case 'onNotificationOpened':
         final data = _stringMap(call.arguments);
         if (data.isNotEmpty) _notificationOpens.add(OrexPushOpen(data));
+        return true;
+      case 'onDesktopWindowVisibilityChanged':
+        final visible = call.arguments;
+        if (visible is bool) _desktopWindowVisibilityChanges.add(visible);
         return true;
       case 'resolvePush':
         final resolver = _pushResolver;
@@ -329,6 +357,56 @@ class OrexNativePushPlatform implements OrexPushPlatform {
   }
 
   @override
+  Future<void> showIncomingCallNotification(
+    Map<String, String> payload,
+  ) async {
+    if (!_isWindows) return;
+    final roomId = payload['room_id']?.trim();
+    final title = payload['title']?.trim();
+    final body = payload['body']?.trim();
+    if (roomId == null ||
+        roomId.isEmpty ||
+        title == null ||
+        title.isEmpty ||
+        body == null ||
+        body.isEmpty) {
+      return;
+    }
+    await initialize();
+    try {
+      await _channel.invokeMethod<void>('showIncomingCallNotification', payload);
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  @override
+  Future<void> dismissIncomingCallNotification(
+    String roomId, {
+    String? ringEventId,
+  }) async {
+    if (!_isWindows) return;
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) return;
+    await initialize();
+    try {
+      await _channel.invokeMethod<void>(
+        'dismissIncomingCallNotification',
+        <String, Object?>{
+          'roomId': normalizedRoomId,
+          'ringEventId': ?_nonEmpty(ringEventId),
+        },
+      );
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  @override
   Future<void> dismissRoomNotifications(String roomId) async {
     if (!_hasNativeBridge) return;
     final normalizedRoomId = roomId.trim();
@@ -338,6 +416,22 @@ class OrexNativePushPlatform implements OrexPushPlatform {
       await _channel.invokeMethod<void>(
         'dismissRoomNotifications',
         <String, Object?>{'roomId': normalizedRoomId},
+      );
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  @override
+  Future<void> updateDesktopUnreadCount(int count) async {
+    if (!_isWindows) return;
+    await initialize();
+    try {
+      await _channel.invokeMethod<void>(
+        'updateTrayUnreadCount',
+        <String, Object?>{'count': count < 0 ? 0 : count},
       );
     } on MissingPluginException {
       return;
@@ -397,5 +491,6 @@ class OrexNativePushPlatform implements OrexPushPlatform {
     }
     unawaited(_tokenChanges.close());
     unawaited(_notificationOpens.close());
+    unawaited(_desktopWindowVisibilityChanges.close());
   }
 }

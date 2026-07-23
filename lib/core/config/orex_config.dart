@@ -26,6 +26,8 @@ class OrexRuntimeConfig {
   const OrexRuntimeConfig({
     required this.environment,
     required this.homeserver,
+    required this.authUrl,
+    required this.oidcClientId,
     required this.jwtService,
     required this.elementCallBase,
     required this.pushGateway,
@@ -36,6 +38,7 @@ class OrexRuntimeConfig {
   });
 
   static const productionHomeserver = 'https://vasys.ru';
+  static const productionAuthUrl = 'https://vasys.ru/auth';
   static const productionJwtService = 'https://jwt.vasys.ru';
   static const productionPushGateway =
       'http://sygnal:5000/_matrix/push/v1/notify';
@@ -43,6 +46,8 @@ class OrexRuntimeConfig {
 
   final OrexEnvironment environment;
   final String homeserver;
+  final String authUrl;
+  final String oidcClientId;
   final String jwtService;
   final String elementCallBase;
   final String pushGateway;
@@ -54,6 +59,8 @@ class OrexRuntimeConfig {
   factory OrexRuntimeConfig.fromDefines({
     String environmentName = 'production',
     String homeserver = '',
+    String authUrl = '',
+    String oidcClientId = '',
     String jwtService = '',
     String elementCallBase = '',
     String pushGateway = '',
@@ -67,6 +74,10 @@ class OrexRuntimeConfig {
       homeserver,
       environment.isProduction ? productionHomeserver : '',
     );
+    final resolvedAuthUrl = _definedOrDefault(
+      authUrl,
+      environment.isProduction ? productionAuthUrl : '',
+    );
     final resolvedJwtService = _definedOrDefault(
       jwtService,
       environment.isProduction ? productionJwtService : '',
@@ -79,6 +90,8 @@ class OrexRuntimeConfig {
     return OrexRuntimeConfig(
       environment: environment,
       homeserver: resolvedHomeserver,
+      authUrl: resolvedAuthUrl,
+      oidcClientId: oidcClientId.trim(),
       jwtService: resolvedJwtService,
       elementCallBase: _definedOrDefault(
         elementCallBase,
@@ -93,6 +106,32 @@ class OrexRuntimeConfig {
   }
 
   Uri get homeserverUri => _httpsUri(homeserver, 'OREX_HOMESERVER');
+
+  Uri get authUri {
+    final value = authUrl.trim();
+    if (value.isEmpty) {
+      throw StateError('OREX_AUTH_URL is required');
+    }
+    final uri = _httpsUri(value, 'OREX_AUTH_URL');
+    if (uri.userInfo.isNotEmpty || uri.hasQuery || uri.hasFragment) {
+      throw StateError(
+        'OREX_AUTH_URL must not contain credentials, query or fragment',
+      );
+    }
+    return uri;
+  }
+
+  Uri get masDiscoveryUri {
+    final base = authUri;
+    final basePath = base.path.endsWith('/')
+        ? base.path.substring(0, base.path.length - 1)
+        : base.path;
+    return base.replace(
+      path: '$basePath/.well-known/openid-configuration',
+      query: null,
+      fragment: null,
+    );
+  }
 
   Uri get jwtServiceUri => _httpsUri(jwtService, 'OREX_JWT_SERVICE');
 
@@ -133,9 +172,11 @@ class OrexRuntimeConfig {
   void validateSecurity() {
     if (!environment.isProduction) {
       _requireExplicitEndpoint(homeserver, 'OREX_HOMESERVER');
+      _requireExplicitEndpoint(authUrl, 'OREX_AUTH_URL');
       _requireExplicitEndpoint(jwtService, 'OREX_JWT_SERVICE');
     }
     homeserverUri;
+    authUri;
     jwtServiceUri;
     elementCallBaseUri;
     pushGatewayUri;
@@ -170,6 +211,8 @@ class OrexConfig {
     defaultValue: 'production',
   );
   static const _homeserver = String.fromEnvironment('OREX_HOMESERVER');
+  static const _authUrl = String.fromEnvironment('OREX_AUTH_URL');
+  static const _oidcClientId = String.fromEnvironment('OREX_OIDC_CLIENT_ID');
   static const _jwtService = String.fromEnvironment('OREX_JWT_SERVICE');
   static const _elementCallBase = String.fromEnvironment(
     'OREX_ELEMENT_CALL_BASE',
@@ -194,10 +237,25 @@ class OrexConfig {
   static const _liveKitAllowedHosts = String.fromEnvironment(
     'OREX_LIVEKIT_ALLOWED_HOSTS',
   );
+  static const _updateBaseUrl = String.fromEnvironment(
+    'OREX_UPDATE_BASE_URL',
+    defaultValue: 'https://orex.vasys.ru/updates/',
+  );
+  static const _updateChannel = String.fromEnvironment(
+    'OREX_UPDATE_CHANNEL',
+    defaultValue: 'stable',
+  );
+  static const _qrRendezvousUrl = String.fromEnvironment(
+    'OREX_QR_RENDEZVOUS_URL',
+    defaultValue:
+        'https://vasys.ru/_synapse/client/org.matrix.msc3886/rendezvous',
+  );
 
   static final OrexRuntimeConfig current = OrexRuntimeConfig.fromDefines(
     environmentName: _environmentName,
     homeserver: _homeserver,
+    authUrl: _authUrl,
+    oidcClientId: _oidcClientId,
     jwtService: _jwtService,
     elementCallBase: _elementCallBase,
     pushGateway: _pushGateway,
@@ -210,6 +268,10 @@ class OrexConfig {
   static OrexEnvironment get environment => current.environment;
 
   static String get homeserver => current.homeserver;
+
+  static String get authUrl => current.authUrl;
+
+  static String get oidcClientId => current.oidcClientId;
 
   static String get jwtService => current.jwtService;
 
@@ -279,7 +341,61 @@ class OrexConfig {
   /// например 'https://call.vasys.ru'.
   static String get elementCallBase => current.elementCallBase;
 
+  /// Update feed selected at build time. Stable and debug installations use
+  /// separate channels so both applications can be installed side by side.
+  static String get updateChannel {
+    final channel = _updateChannel.trim().toLowerCase();
+    if (channel != 'stable' && channel != 'debug') {
+      throw StateError('OREX_UPDATE_CHANNEL must be stable or debug');
+    }
+    return channel;
+  }
+
+  static bool get isDebugDistribution => updateChannel == 'debug';
+
+  static String get appDisplayName =>
+      isDebugDistribution ? 'Orex Messenger Debug' : 'Orex Messenger';
+
+  static Uri get updateBaseUri {
+    final uri = Uri.parse(_updateBaseUrl.trim());
+    if (uri.scheme != 'https' ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasQuery ||
+        uri.hasFragment) {
+      throw StateError(
+        'OREX_UPDATE_BASE_URL must be a credential-free absolute https:// URL',
+      );
+    }
+    final path = uri.path.endsWith('/') ? uri.path : '${uri.path}/';
+    return uri.replace(path: path);
+  }
+
+  static Uri get updateFeedUri =>
+      updateBaseUri.resolve('$updateChannel/latest.json');
+
+  /// Временный rendezvous для направления «новое устройство показывает QR».
+  /// Он хранит только зашифрованный одноразовый конверт; ключ передаётся
+  /// напрямую между устройствами внутри QR-кода.
+  static Uri get qrRendezvousUri {
+    final uri = Uri.parse(_qrRendezvousUrl.trim());
+    if (uri.scheme != 'https' ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        uri.path.isEmpty ||
+        uri.path == '/' ||
+        uri.hasQuery ||
+        uri.hasFragment) {
+      throw StateError(
+        'OREX_QR_RENDEZVOUS_URL must be a credential-free absolute https:// URL',
+      );
+    }
+    return uri;
+  }
+
   static Uri get homeserverUri => current.homeserverUri;
+  static Uri get authUri => current.authUri;
+  static Uri get masDiscoveryUri => current.masDiscoveryUri;
   static Uri get jwtServiceUri => current.jwtServiceUri;
   static Uri? get pushGatewayUri => current.pushGatewayUri;
 
@@ -290,5 +406,8 @@ class OrexConfig {
   static void validateSecurity() {
     current.validateSecurity();
     liveKitAllowedHosts;
+    updateChannel;
+    updateBaseUri;
+    qrRendezvousUri;
   }
 }

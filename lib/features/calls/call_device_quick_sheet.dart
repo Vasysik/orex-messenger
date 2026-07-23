@@ -12,9 +12,8 @@ Future<void> showOrexInputQuickSheet(
   final devices = (await enumerateOrexAudioDevices(
     requestPermission: true,
     includeCallRoutes: true,
-  ))
-      .where((d) => d.isInput)
-      .toList();
+    preferredInputDeviceId: matrix.audio.inputDeviceId,
+  )).where((d) => d.isInput).toList();
   if (!context.mounted) return;
   final selectedId = orexResolveCurrentDeviceId(
     devices,
@@ -42,9 +41,9 @@ Future<void> showOrexOutputQuickSheet(
   BuildContext context, {
   required MatrixService matrix,
 }) async {
-  final devices = (await enumerateOrexAudioDevices(includeCallRoutes: true))
-      .where((d) => d.isOutput)
-      .toList();
+  final devices = (await enumerateOrexAudioDevices(
+    includeCallRoutes: true,
+  )).where((d) => d.isOutput).toList();
   if (!context.mounted) return;
   final selectedId = orexResolveCurrentDeviceId(
     devices,
@@ -109,10 +108,7 @@ Future<void> showOrexCameraQuickSheet(
         break;
       }
     }
-    await session.selectCameraDevice(
-      picked,
-      deviceCategory: pickedCategory,
-    );
+    await session.selectCameraDevice(picked, deviceCategory: pickedCategory);
   } else {
     await matrix.audio.setCameraDeviceId(picked);
   }

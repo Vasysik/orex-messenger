@@ -23,8 +23,16 @@ void main() {
 
       expect(config.environment, OrexEnvironment.production);
       expect(config.homeserver, OrexRuntimeConfig.productionHomeserver);
+      expect(config.authUrl, OrexRuntimeConfig.productionAuthUrl);
       expect(config.jwtService, OrexRuntimeConfig.productionJwtService);
       expect(config.homeserverUri, Uri.parse('https://vasys.ru'));
+      expect(config.authUri, Uri.parse('https://vasys.ru/auth'));
+      expect(
+        config.masDiscoveryUri,
+        Uri.parse(
+          'https://vasys.ru/auth/.well-known/openid-configuration',
+        ),
+      );
       expect(config.jwtServiceUri, Uri.parse('https://jwt.vasys.ru'));
       expect(
         config.pushGatewayUri,
@@ -39,11 +47,15 @@ void main() {
     test('allows explicit production endpoint overrides', () {
       final config = OrexRuntimeConfig.fromDefines(
         homeserver: 'https://matrix.example.org',
+        authUrl: 'https://id.example.org/auth',
+        oidcClientId: 'orex-native',
         jwtService: 'https://jwt.example.org',
         elementCallBase: 'https://call.example.org',
       );
 
       expect(config.homeserverUri.host, 'matrix.example.org');
+      expect(config.authUri.host, 'id.example.org');
+      expect(config.oidcClientId, 'orex-native');
       expect(config.jwtServiceUri.host, 'jwt.example.org');
       expect(config.elementCallBaseUri.host, 'call.example.org');
     });
@@ -68,6 +80,20 @@ void main() {
           isA<StateError>().having(
             (e) => e.message,
             'message',
+            contains('OREX_AUTH_URL'),
+          ),
+        ),
+      );
+      expect(
+        () => OrexRuntimeConfig.fromDefines(
+          environmentName: 'staging',
+          homeserver: 'https://matrix.staging.example.org',
+          authUrl: 'https://id.staging.example.org/auth',
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
             contains('OREX_JWT_SERVICE'),
           ),
         ),
@@ -78,12 +104,28 @@ void main() {
       final config = OrexRuntimeConfig.fromDefines(
         environmentName: 'dev',
         homeserver: 'https://matrix.dev.example.org',
+        authUrl: 'https://id.dev.example.org/auth',
         jwtService: 'https://jwt.dev.example.org',
       );
 
       expect(config.environment, OrexEnvironment.dev);
       expect(config.homeserverUri.host, 'matrix.dev.example.org');
+      expect(config.authUri.host, 'id.dev.example.org');
       expect(config.jwtServiceUri.host, 'jwt.dev.example.org');
+    });
+
+    test('rejects unsafe MAS endpoints', () {
+      for (final endpoint in <String>[
+        'http://vasys.ru/auth',
+        'https://user:secret@vasys.ru/auth',
+        'https://vasys.ru/auth?tenant=orex',
+        'https://vasys.ru/auth#callback',
+      ]) {
+        expect(
+          () => OrexRuntimeConfig.fromDefines(authUrl: endpoint),
+          throwsA(isA<StateError>()),
+        );
+      }
     });
 
     test('accepts a standard Matrix push gateway endpoint', () {
@@ -101,6 +143,7 @@ void main() {
       final config = OrexRuntimeConfig.fromDefines(
         environmentName: 'dev',
         homeserver: 'https://matrix.dev.example.org',
+        authUrl: 'https://id.dev.example.org/auth',
         jwtService: 'https://jwt.dev.example.org',
       );
 
@@ -133,6 +176,7 @@ void main() {
         () => OrexRuntimeConfig.fromDefines(
           environmentName: 'dev',
           homeserver: 'https://matrix.dev.example.org',
+          authUrl: 'https://id.dev.example.org/auth',
           jwtService: 'https://jwt.dev.example.org',
           pushGateway: OrexRuntimeConfig.productionPushGateway,
         ),

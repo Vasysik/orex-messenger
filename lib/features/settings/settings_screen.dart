@@ -5,14 +5,19 @@ import 'package:matrix/matrix.dart';
 import '../../core/logging/orex_logger.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../core/config/app_version.dart';
+import '../../core/config/orex_config.dart';
+import '../../core/update/orex_update_controller.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/theme/theme_controller.dart';
 import '../../shared/widgets/orex_dialogs.dart';
 import '../../shared/widgets/orex_profile_card.dart';
 import '../../shared/widgets/orex_settings_components.dart';
+import '../../shared/widgets/orex_update_dialog.dart';
+import '../auth/qr_login_screen.dart';
 import 'audio_devices_screen.dart';
 import 'devices_screen.dart';
+import 'email_settings_screen.dart';
 import 'key_storage_screen.dart';
 import 'verify_session_screen.dart';
 
@@ -22,11 +27,13 @@ class SettingsScreen extends StatefulWidget {
     required this.matrix,
     required this.theme,
     required this.version,
+    required this.updates,
   });
 
   final MatrixService matrix;
   final ThemeController theme;
   final OrexAppVersion version;
+  final OrexUpdateController updates;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -39,7 +46,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    widget.updates.addListener(_onUpdatesChanged);
     _loadProfile();
+  }
+
+  void _onUpdatesChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    widget.updates.removeListener(_onUpdatesChanged);
+    super.dispose();
   }
 
   Future<void> _loadProfile({bool fresh = false}) async {
@@ -244,14 +262,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
   }
 
+  Future<void> _openQrLogin() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => QrLoginScreen(
+          matrix: widget.matrix,
+          authenticated: true,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _handleUpdateTap() async {
+    if (widget.updates.availableRelease == null) {
+      await widget.updates.check(manual: true);
+    }
+    if (!mounted) return;
+    if (widget.updates.availableRelease != null &&
+        widget.updates.selectedArtifact != null) {
+      await showOrexUpdateDialog(context, controller: widget.updates);
+      return;
+    }
+    final message = switch (widget.updates.state) {
+      OrexUpdateCheckState.upToDate => 'Установлена последняя версия Orex',
+      OrexUpdateCheckState.unsupported =>
+        'Web-версия обновляется после перезагрузки страницы',
+      OrexUpdateCheckState.error =>
+        widget.updates.errorMessage ?? 'Не удалось проверить обновления',
+      _ => null,
+    };
+    if (message != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final canPop = Navigator.of(context).canPop();
     return AmbientBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
         appBar: AppBar(
           backgroundColor: Colors.transparent,
+          automaticallyImplyLeading: false,
+          leading: canPop ? const BackButton() : null,
           title: const Text('Настройки'),
+          actionsPadding: const EdgeInsets.only(right: 8),
+          actions: [
+            IconButton(
+              tooltip: 'QR-вход',
+              onPressed: _openQrLogin,
+              icon: const Icon(Icons.qr_code_scanner),
+            ),
+          ],
         ),
         body: ListView(
           padding: const EdgeInsets.all(16),
@@ -359,8 +424,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 OrexSettingsTile(
                   icon: Icons.info_outline,
-                  title: 'Orex Messenger',
+                  title: OrexConfig.appDisplayName,
                   subtitle: widget.version.settingsSubtitle,
+                ),
+                OrexSettingsTile(
+                  icon: Icons.system_update_alt,
+                  title: widget.updates.settingsTitle,
+                  subtitle: widget.updates.settingsSubtitle,
+                  onTap: widget.updates.supportsInstall &&
+                          !widget.updates.isChecking
+                      ? _handleUpdateTap
+                      : null,
                 ),
               ],
             ),
@@ -372,6 +446,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   icon: Icons.alternate_email,
                   title: 'Matrix ID',
                   subtitle: widget.matrix.userId,
+                ),
+                OrexSettingsTile(
+                  icon: widget.matrix.hasAccountEmail
+                      ? Icons.mark_email_read_outlined
+                      : Icons.mark_email_unread_outlined,
+                  title: 'Почта',
+                  subtitle: widget.matrix.accountEmailsLoadFailed &&
+                          !widget.matrix.accountEmailsLoaded
+                      ? 'Не удалось проверить привязанный адрес'
+                      : !widget.matrix.accountEmailsLoaded
+                          ? 'Проверяем привязанный адрес…'
+                          : widget.matrix.hasAccountEmail
+                              ? widget.matrix.accountEmails.join(', ')
+                              : 'Не привязана — восстановление пароля недоступно',
+                  onTap: () => Navigator.of(context)
+                      .push(
+                        MaterialPageRoute(
+                          builder: (_) => EmailSettingsScreen(
+                            matrix: widget.matrix,
+                          ),
+                        ),
+                      )
+                      .then((_) {
+                        if (mounted) setState(() {});
+                      }),
                 ),
                 OrexSettingsTile(
                   icon: Icons.lock_person,

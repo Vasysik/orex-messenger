@@ -6,7 +6,6 @@ import 'package:livekit_client/livekit_client.dart' as lk;
 import '../audio/audio_device_utils.dart';
 import '../logging/orex_logger.dart';
 import 'livekit_track_access.dart';
-import 'screen_share_controller.dart';
 
 final class OrexCameraDeviceResult {
   const OrexCameraDeviceResult._({required this.changed, this.error});
@@ -87,7 +86,10 @@ final class OrexCameraDeviceController {
     String? deviceCategory,
   }) => _serialize(() async {
         final normalized = normalizeSelectedDeviceId(deviceId);
-        final position = cameraPositionForCategory(deviceCategory);
+        final position = cameraPositionForPlatformCategory(
+          deviceCategory,
+          useSemanticPosition: !orexIsWindowsNativePlatform,
+        );
         _lastRequestedCameraPosition = position;
         await _saveCameraDeviceId(normalized);
         if (participant == null || !canPublishMedia) {
@@ -135,7 +137,10 @@ final class OrexCameraDeviceController {
             break;
           }
         }
-        final nextPosition = cameraPositionForCategory(nextDevice?.category);
+        final nextPosition = cameraPositionForPlatformCategory(
+          nextDevice?.category,
+          useSemanticPosition: !orexIsWindowsNativePlatform,
+        );
         _lastRequestedCameraPosition = nextPosition;
         await _saveCameraDeviceId(next);
 
@@ -256,7 +261,6 @@ final class OrexCameraDeviceController {
     String deviceId, {
     required lk.CameraPosition? cameraPosition,
   }) async {
-    if (OrexScreenShareController.desktopNeedsExplicitSource) return false;
     if (!participant.isCameraEnabled()) return false;
     final track = _localCameraTrack(participant);
     if (track == null) return false;
@@ -270,8 +274,12 @@ final class OrexCameraDeviceController {
         await lk.LocalVideoTrackExt(track).setCameraPosition(cameraPosition);
       } else {
         // External/unknown cameras still need exact device selection. Keep
-        // fastSwitch disabled: the regular restart path stops the old capture
-        // before opening the new one.
+        // fastSwitch disabled: on Windows it is not implemented by
+        // flutter_webrtc, while the regular restart path opens the requested
+        // source and replaces the media track on the existing LiveKit sender.
+        // Keeping that sender is important: setCameraEnabled(false/true)
+        // only mutes/unmutes an existing publication and therefore does not
+        // apply new capture options on desktop.
         await lk.LocalVideoTrackExt(
           track,
         ).switchCamera(deviceId, fastSwitch: false);
@@ -362,6 +370,18 @@ final class OrexCameraDeviceController {
       'back_camera' => lk.CameraPosition.back,
       _ => null,
     };
+  }
+
+  /// Windows camera labels can contain "front" or "back" (for example on
+  /// tablets), but passing only CameraPosition there discards the exact device
+  /// id and can reopen the same camera. Other platforms retain their existing
+  /// semantic front/back behavior.
+  @visibleForTesting
+  static lk.CameraPosition? cameraPositionForPlatformCategory(
+    String? category, {
+    required bool useSemanticPosition,
+  }) {
+    return useSemanticPosition ? cameraPositionForCategory(category) : null;
   }
 
   @visibleForTesting
