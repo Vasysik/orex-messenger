@@ -730,9 +730,9 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
 
   Widget _buildTerminalState() {
     if (_terminalState == _QrTerminalState.used) {
-      return const Semantics(
+      return Semantics(
         label: 'QR-код использован, временная сессия закрыта',
-        child: Icon(
+        child: const Icon(
           Icons.qr_code_2,
           size: 96,
           color: OrexColors.online,
@@ -868,7 +868,7 @@ class _OrexQrCard extends StatelessWidget {
                     'assets/mascot/squirrel.png',
                     fit: BoxFit.contain,
                     filterQuality: FilterQuality.high,
-                    errorBuilder: (_, __, ___) => const Icon(
+                    errorBuilder: (_, _, _) => const Icon(
                       Icons.eco_outlined,
                       color: OrexColors.copperDeep,
                       size: 34,

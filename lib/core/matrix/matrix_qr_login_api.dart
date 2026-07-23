@@ -808,7 +808,7 @@ extension MatrixQrLoginApi on MatrixService {
     }
 
     if (lastError is OrexAuthProtocolException) throw lastError;
-    throw OrexAuthProtocolException(
+    throw const OrexAuthProtocolException(
       code: 'OREX_QR_RENDEZVOUS_WRITE',
       message: 'Не удалось передать разрешение на вход. Повторите попытку.',
     );
