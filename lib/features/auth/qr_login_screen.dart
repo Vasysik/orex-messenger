@@ -14,6 +14,8 @@ import '../../shared/widgets/orex_dialogs.dart';
 
 enum _QrMode { scan, show }
 
+enum _QrTerminalState { none, used, expired, rejected }
+
 class QrLoginScreen extends StatefulWidget {
   const QrLoginScreen({
     super.key,
@@ -32,6 +34,7 @@ class QrLoginScreen extends StatefulWidget {
 
 class _QrLoginScreenState extends State<QrLoginScreen> {
   _QrMode? _mode;
+  OrexQrRendezvousSession? _activeSession;
   String? _qrData;
   String? _status;
   String? _error;
@@ -40,6 +43,10 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
   int? _secondsLeft;
   Timer? _countdown;
   int _displayGeneration = 0;
+  _QrTerminalState _terminalState = _QrTerminalState.none;
+
+  bool get _waitingForLoginCompletion =>
+      _activeSession?.responseSent == true;
 
   bool get _scannerModeAvailable {
     if (kIsWeb) return true;
@@ -72,14 +79,25 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
   void dispose() {
     _countdown?.cancel();
     _displayGeneration++;
+    final session = _activeSession;
+    _activeSession = null;
+    if (session != null && !session.responseSent) {
+      unawaited(widget.matrix.cancelQrRendezvous(session));
+    }
     super.dispose();
   }
 
   void _setMode(_QrMode mode) {
+    if (_waitingForLoginCompletion) return;
     if (mode == _QrMode.scan && !_scannerModeAvailable) return;
     if (_mode == mode) return;
     _countdown?.cancel();
     _displayGeneration++;
+    final session = _activeSession;
+    _activeSession = null;
+    if (session != null && !session.responseSent) {
+      unawaited(widget.matrix.cancelQrRendezvous(session));
+    }
     setState(() {
       _mode = mode;
       _qrData = null;
@@ -88,6 +106,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
       _error = null;
       _busy = false;
       _handlingScan = false;
+      _terminalState = _QrTerminalState.none;
     });
     if (mode == _QrMode.show) _prepareDisplay();
   }
@@ -96,7 +115,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
     if (!mounted || _mode != _QrMode.show || _busy) return;
     if (widget.authenticated) {
       setState(() {
-        _status = 'Создайте одноразовый QR-код для нового устройства.';
+        _status = 'Создайте защищённый QR-код для нового устройства.';
         _error = null;
       });
       return;
@@ -105,24 +124,60 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
   }
 
   Future<void> _createRendezvous() async {
+    if (_busy) return;
+    if (_waitingForLoginCompletion) {
+      setState(() {
+        _status = 'Дождитесь завершения уже разрешённого входа.';
+        _error = null;
+      });
+      return;
+    }
     final generation = ++_displayGeneration;
+    final previous = _activeSession;
+    _activeSession = null;
     _countdown?.cancel();
     setState(() {
       _busy = true;
       _qrData = null;
+      _secondsLeft = null;
       _error = null;
-      _status = 'Создаём защищённую QR-сессию…';
+      _terminalState = _QrTerminalState.none;
+      _status = previous == null
+          ? 'Создаём защищённую QR-сессию…'
+          : 'Отзываем старый QR-код…';
     });
     try {
-      final session = await widget.matrix.createQrRendezvous();
+      if (previous != null) {
+        final cancelled = await widget.matrix.cancelQrRendezvous(previous);
+        if (!cancelled) {
+          throw const OrexAuthProtocolException(
+            code: 'OREX_QR_REVOKE_FAILED',
+            message: 'Не удалось отозвать предыдущий QR-код. '
+                'Проверьте соединение и повторите попытку.',
+          );
+        }
+      }
       if (!mounted || generation != _displayGeneration) return;
+      setState(() => _status = 'Создаём защищённую QR-сессию…');
+
+      final session = await widget.matrix.createQrRendezvous(
+        authenticatedOwner: widget.authenticated,
+      );
+      if (!mounted || generation != _displayGeneration) {
+        unawaited(widget.matrix.cancelQrRendezvous(session));
+        return;
+      }
+      _activeSession = session;
       setState(() {
         _qrData = session.qrData;
-        _status = 'Отсканируйте код на уже авторизованном устройстве.';
+        _status = widget.authenticated
+            ? 'Покажите код новому устройству. После сканирования '
+                'подтвердите вход здесь.'
+            : 'Отсканируйте код на уже авторизованном устройстве.';
         _busy = false;
       });
       _startCountdown(session.expiresAt);
-      unawaited(_pollRendezvous(session, generation));
+      unawaited(_pollDisplayedRendezvous(session, generation));
     } catch (error) {
       OrexLog.d('QR', 'create rendezvous failed', error);
       if (!mounted || generation != _displayGeneration) return;
@@ -134,7 +189,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
     }
   }
 
-  Future<void> _pollRendezvous(
+  Future<void> _pollDisplayedRendezvous(
     OrexQrRendezvousSession session,
     int generation,
   ) async {
@@ -142,25 +197,58 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
         generation == _displayGeneration &&
         _mode == _QrMode.show &&
         !session.isExpired) {
-      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      await Future<void>.delayed(const Duration(milliseconds: 900));
       if (!mounted || generation != _displayGeneration) return;
       try {
-        final loggedIn = await widget.matrix.pollQrRendezvous(session);
-        if (!loggedIn) continue;
+        final result = await widget.matrix.pollQrRendezvous(session);
         if (!mounted || generation != _displayGeneration) return;
-        setState(() {
-          _status = 'Вход выполнен';
-          _error = null;
-        });
-        widget.onLoggedIn?.call();
-        if (mounted && Navigator.of(context).canPop()) {
-          Navigator.of(context).pop(true);
+        switch (result.state) {
+          case OrexQrRendezvousPollState.waiting:
+            continue;
+          case OrexQrRendezvousPollState.approvalRequested:
+            await _approveDisplayedRequest(
+              session,
+              generation,
+              result.deviceName,
+            );
+            if (!mounted || generation != _displayGeneration) return;
+            if (_activeSession == null) return;
+            continue;
+          case OrexQrRendezvousPollState.loggedIn:
+            _activeSession = null;
+            _countdown?.cancel();
+            setState(() {
+              _qrData = null;
+              _secondsLeft = null;
+              _status = 'Вход выполнен';
+              _error = null;
+            });
+            widget.onLoggedIn?.call();
+            if (mounted && Navigator.of(context).canPop()) {
+              Navigator.of(context).pop(true);
+            }
+            return;
+          case OrexQrRendezvousPollState.used:
+            _activeSession = null;
+            _countdown?.cancel();
+            setState(() {
+              _qrData = null;
+              _secondsLeft = null;
+              _busy = false;
+              _terminalState = _QrTerminalState.used;
+              _status = 'QR-код использован. Временная сессия закрыта.';
+              _error = null;
+            });
+            return;
         }
-        return;
       } catch (error) {
         OrexLog.d('QR', 'poll rendezvous failed', error);
         if (!mounted || generation != _displayGeneration) return;
+        _activeSession = null;
+        _countdown?.cancel();
         setState(() {
+          _qrData = null;
+          _secondsLeft = null;
           _error = _messageFor(error);
           _status = null;
         });
@@ -168,50 +256,67 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
       }
     }
     if (!mounted || generation != _displayGeneration) return;
+    _activeSession = null;
+    _countdown?.cancel();
     setState(() {
-      _error = 'Срок действия QR-кода истёк';
-      _status = null;
-      _secondsLeft = 0;
+      _qrData = null;
+      _secondsLeft = null;
+      _terminalState = _QrTerminalState.expired;
+      _status = 'Срок действия QR-кода истёк.';
+      _error = null;
     });
   }
 
-  Future<void> _createDirectQr() async {
+  Future<void> _approveDisplayedRequest(
+    OrexQrRendezvousSession session,
+    int generation,
+    String? deviceName,
+  ) async {
+    setState(() {
+      _qrData = null;
+      _status = 'Новое устройство ожидает вашего решения.';
+      _error = null;
+    });
     final confirmed = await showOrexConfirmDialog(
       context,
-      title: 'Подключить новое устройство?',
-      message: 'QR-код даёт новому устройству полный доступ к аккаунту. '
-          'Создавайте его только когда ваше новое устройство находится рядом.',
-      confirmLabel: 'Создать QR',
+      title: 'Разрешить вход?',
+      message: '${deviceName ?? 'Новое устройство Orex'} получит полный '
+          'доступ к аккаунту ${widget.matrix.client.userID ?? ''}. '
+          'Разрешайте вход только если это ваше устройство.',
+      confirmLabel: 'Разрешить',
+      cancelLabel: 'Отклонить',
+      barrierDismissible: false,
     );
-    if (!confirmed || !mounted) return;
+    if (!mounted || generation != _displayGeneration) return;
+    if (!confirmed) {
+      final rejected = await widget.matrix.cancelQrRendezvous(session);
+      if (!mounted || generation != _displayGeneration) return;
+      _activeSession = null;
+      _countdown?.cancel();
+      setState(() {
+        _qrData = null;
+        _secondsLeft = null;
+        _terminalState = _QrTerminalState.rejected;
+        _status = rejected
+            ? 'Вход отклонён. QR-код больше не действует.'
+            : null;
+        _error = rejected
+            ? null
+            : 'Не удалось закрыть QR-сессию. Повторите попытку.';
+      });
+      return;
+    }
 
-    final generation = ++_displayGeneration;
-    _countdown?.cancel();
     setState(() {
       _busy = true;
-      _error = null;
-      _status = 'Получаем одноразовый токен…';
-      _qrData = null;
+      _status = 'Разрешаем вход…';
     });
-    try {
-      final qr = await widget.matrix.createDirectQrLogin();
-      final payload = OrexQrLoginPayload.parse(qr);
-      if (!mounted || generation != _displayGeneration) return;
-      setState(() {
-        _busy = false;
-        _qrData = qr;
-        _status = 'Отсканируйте код на новом устройстве.';
-      });
-      _startCountdown(payload.expiresAt!);
-    } catch (error) {
-      OrexLog.d('QR', 'create direct login token failed', error);
-      if (!mounted || generation != _displayGeneration) return;
-      setState(() {
-        _busy = false;
-        _error = _messageFor(error);
-        _status = null;
-      });
-    }
+    await widget.matrix.approveDisplayedQrRendezvous(session);
+    if (!mounted || generation != _displayGeneration) return;
+    setState(() {
+      _busy = false;
+      _status = 'Вход разрешён. Ожидаем завершения на новом устройстве…';
+    });
   }
 
   void _startCountdown(DateTime expiresAt) {
@@ -236,52 +341,60 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
     });
     try {
       final payload = OrexQrLoginPayload.parse(raw);
+      if (!payload.isRendezvous) {
+        throw const OrexAuthProtocolException(
+          code: 'OREX_QR_LEGACY_TOKEN',
+          message: 'Этот QR-код создан старой версией Orex. Создайте новый код.',
+        );
+      }
+
       if (widget.authenticated) {
-        if (!payload.isRendezvous) {
-          throw const OrexAuthProtocolException(
-            code: 'OREX_QR_WRONG_MODE',
-            message: 'Покажите этот QR новому устройству, а не сканируйте здесь',
-          );
-        }
+        final approval = await widget.matrix.inspectQrRendezvous(raw);
+        if (!mounted) return;
         final confirmed = await showOrexConfirmDialog(
           context,
           title: 'Разрешить вход?',
-          message: 'Новое устройство получит полный доступ к аккаунту '
+          message: '${approval.deviceName} получит полный доступ к аккаунту '
               '${widget.matrix.client.userID ?? ''}. Продолжайте только если '
-              'это ваше устройство и QR-код открыт на нём прямо сейчас.',
+              'это ваше устройство.',
           confirmLabel: 'Разрешить',
+          cancelLabel: 'Отклонить',
+          barrierDismissible: false,
         );
+        if (!mounted) return;
         if (!confirmed) {
-          if (mounted) {
-            setState(() {
-              _handlingScan = false;
-              _status = null;
-            });
-          }
+          final rejected = await widget.matrix.rejectQrRendezvous(approval);
+          if (!mounted) return;
+          setState(() {
+            _handlingScan = false;
+            _status = rejected ? 'Вход отклонён' : null;
+            _error = rejected
+                ? null
+                : 'Не удалось закрыть QR-сессию нового устройства';
+          });
           return;
         }
-        await widget.matrix.approveQrRendezvous(qrData: raw);
+        await widget.matrix.approveQrRendezvous(approval);
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Новое устройство авторизовано')),
+          const SnackBar(content: Text('Вход разрешён новому устройству')),
         );
         Navigator.of(context).pop(true);
         return;
       }
 
-      if (!payload.isLoginToken) {
-        throw const OrexAuthProtocolException(
-          code: 'OREX_QR_WRONG_MODE',
-          message: 'Этот QR должен сканировать уже авторизованный телефон',
-        );
+      final generation = ++_displayGeneration;
+      final session = await widget.matrix.claimQrRendezvous(raw);
+      if (!mounted || generation != _displayGeneration) {
+        unawaited(widget.matrix.cancelQrRendezvous(session));
+        return;
       }
-      await widget.matrix.loginWithQrData(raw);
-      if (!mounted) return;
-      setState(() => _status = 'Вход выполнен');
-      widget.onLoggedIn?.call();
-      if (mounted && Navigator.of(context).canPop()) {
-        Navigator.of(context).pop(true);
-      }
+      _activeSession = session;
+      setState(() {
+        _status = 'Запрос отправлен. Подтвердите вход на устройстве, '
+            'которое показывает QR-код.';
+      });
+      await _waitForClaimedLogin(session, generation);
     } catch (error) {
       OrexLog.d('QR', 'scan failed', error);
       if (!mounted) return;
@@ -291,6 +404,41 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
         _error = _messageFor(error);
       });
     }
+  }
+
+  Future<void> _waitForClaimedLogin(
+    OrexQrRendezvousSession session,
+    int generation,
+  ) async {
+    while (mounted &&
+        generation == _displayGeneration &&
+        !session.isExpired) {
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+      if (!mounted || generation != _displayGeneration) return;
+      final result = await widget.matrix.pollQrRendezvous(session);
+      if (result.state == OrexQrRendezvousPollState.waiting) continue;
+      if (result.state != OrexQrRendezvousPollState.loggedIn) {
+        throw const OrexAuthProtocolException(
+          code: 'OREX_QR_RENDEZVOUS_PROTOCOL',
+          message: 'Получено неожиданное состояние QR-сессии',
+        );
+      }
+      _activeSession = null;
+      if (!mounted || generation != _displayGeneration) return;
+      setState(() {
+        _status = 'Вход выполнен';
+        _error = null;
+      });
+      widget.onLoggedIn?.call();
+      if (mounted && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop(true);
+      }
+      return;
+    }
+    throw const OrexAuthProtocolException(
+      code: 'OREX_QR_EXPIRED',
+      message: 'Срок действия QR-кода истёк',
+    );
   }
 
   String _messageFor(Object error) {
@@ -349,7 +497,9 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
                             ),
                           ],
                           selected: {mode},
-                          onSelectionChanged: _busy
+                          onSelectionChanged: _busy ||
+                                  _handlingScan ||
+                                  _waitingForLoginCompletion
                               ? null
                               : (selection) => _setMode(selection.first),
                         ),
@@ -445,46 +595,151 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
 
   Widget _buildQrDisplay() {
     final data = _qrData;
+    final waitingForCompletion = _waitingForLoginCompletion;
     return Column(
       key: const ValueKey('qr-display'),
       children: [
         if (data != null)
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: QrImageView(
-              data: data,
-              version: QrVersions.auto,
-              size: 280,
-              padding: EdgeInsets.zero,
-              backgroundColor: Colors.white,
-              semanticsLabel: 'QR-код входа Orex',
-            ),
-          )
+          _OrexQrCard(key: ValueKey(data), data: data)
         else if (_busy)
           const SizedBox.square(
             dimension: 72,
             child: CircularProgressIndicator(),
           )
+        else if (_terminalState != _QrTerminalState.none)
+          _buildTerminalState()
         else
           const Icon(Icons.qr_code_2, size: 96, color: OrexColors.copper),
         const SizedBox(height: 16),
-        if (widget.authenticated)
-          ElevatedButton.icon(
-            onPressed: _busy ? null : _createDirectQr,
-            icon: const Icon(Icons.refresh),
-            label: Text(data == null ? 'Создать QR-код' : 'Обновить QR-код'),
-          )
-        else if (data == null && !_busy)
-          ElevatedButton.icon(
-            onPressed: _createRendezvous,
-            icon: const Icon(Icons.refresh),
-            label: const Text('Создать новый QR-код'),
+        ElevatedButton.icon(
+          onPressed: _busy || waitingForCompletion ? null : _createRendezvous,
+          icon: Icon(
+            waitingForCompletion ? Icons.hourglass_top : Icons.refresh,
           ),
+          label: Text(
+            waitingForCompletion
+                ? 'Ожидаем завершения входа'
+                : data == null
+                    ? 'Создать QR-код'
+                    : 'Обновить QR-код',
+          ),
+        ),
       ],
+    );
+  }
+
+  Widget _buildTerminalState() {
+    final (icon, label, color) = switch (_terminalState) {
+      _QrTerminalState.used => (
+          Icons.check_circle_outline,
+          'QR использован',
+          OrexColors.online,
+        ),
+      _QrTerminalState.expired => (
+          Icons.timer_off_outlined,
+          'QR истёк',
+          OrexColors.copper,
+        ),
+      _QrTerminalState.rejected => (
+          Icons.block_outlined,
+          'Вход отклонён',
+          const Color(0xFFCF6679),
+        ),
+      _QrTerminalState.none => (
+          Icons.qr_code_2,
+          '',
+          OrexColors.copper,
+        ),
+    };
+    return Container(
+      width: 280,
+      height: 280,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: color.withValues(alpha: 0.65), width: 2),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 72, color: color),
+          const SizedBox(height: 14),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OrexQrCard extends StatelessWidget {
+  const _OrexQrCard({super.key, required this.data});
+
+  final String data;
+
+  @override
+  Widget build(BuildContext context) {
+    const qrInk = Color(0xFF5E2D13);
+    const qrPaper = Color(0xFFFFF8EF);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+      decoration: BoxDecoration(
+        color: qrPaper,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: OrexColors.copperDeep, width: 2),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.18),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          QrImageView(
+            data: data,
+            version: QrVersions.auto,
+            errorCorrectionLevel: QrErrorCorrectLevel.Q,
+            size: 280,
+            padding: EdgeInsets.zero,
+            backgroundColor: qrPaper,
+            gapless: true,
+            eyeStyle: const QrEyeStyle(
+              eyeShape: QrEyeShape.square,
+              color: OrexColors.copperDeep,
+            ),
+            dataModuleStyle: const QrDataModuleStyle(
+              dataModuleShape: QrDataModuleShape.circle,
+              color: qrInk,
+            ),
+            semanticsLabel: 'Защищённый QR-код входа Orex',
+          ),
+          const SizedBox(height: 8),
+          const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.lock_outline, size: 15, color: OrexColors.copperDeep),
+              SizedBox(width: 6),
+              Text(
+                'OREX · ЗАЩИЩЁННЫЙ ВХОД',
+                style: TextStyle(
+                  color: OrexColors.copperDeep,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.8,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

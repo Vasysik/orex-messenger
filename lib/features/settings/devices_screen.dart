@@ -185,6 +185,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
           title: Text(
             _selectionMode ? 'Выбрано: ${_selected.length}' : 'Устройства',
           ),
+          actionsPadding: const EdgeInsets.only(right: 8),
           actions: [
             if (!_selectionMode)
               IconButton(

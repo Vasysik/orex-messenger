@@ -309,6 +309,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           automaticallyImplyLeading: false,
           leading: canPop ? const BackButton() : null,
           title: const Text('Настройки'),
+          actionsPadding: const EdgeInsets.only(right: 8),
           actions: [
             IconButton(
               tooltip: 'QR-вход',

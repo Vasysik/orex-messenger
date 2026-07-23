@@ -126,6 +126,7 @@ class _EmailSettingsScreenState extends State<EmailSettingsScreen> {
         appBar: AppBar(
           backgroundColor: Colors.transparent,
           title: const Text('Почта'),
+          actionsPadding: const EdgeInsets.only(right: 8),
           actions: [
             IconButton(
               tooltip: 'Обновить',

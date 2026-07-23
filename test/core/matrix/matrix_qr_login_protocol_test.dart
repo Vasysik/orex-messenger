@@ -13,7 +13,7 @@ void main() {
           isUtc: true,
         );
 
-    test('round-trips a direct login token', () {
+    test('parses a legacy direct login token', () {
       final expiresAt = freshExpiry();
       final encoded = OrexQrLoginPayload.loginToken(
         homeserver: Uri.parse('https://vasys.ru'),
@@ -34,7 +34,7 @@ void main() {
       final encoded = OrexQrLoginPayload.rendezvous(
         homeserver: Uri.parse('https://vasys.ru'),
         rendezvousUri: Uri.parse(
-          'https://vasys.ru/_synapse/client/ru.orex.qr/rendezvous/session',
+          'https://vasys.ru/_synapse/client/org.matrix.msc3886/rendezvous/session',
         ),
         secret: secret,
         challenge: 'challenge',
@@ -49,7 +49,7 @@ void main() {
       expect(
         parsed.rendezvousUri,
         Uri.parse(
-          'https://vasys.ru/_synapse/client/ru.orex.qr/rendezvous/session',
+          'https://vasys.ru/_synapse/client/org.matrix.msc3886/rendezvous/session',
         ),
       );
     });
