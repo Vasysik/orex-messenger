@@ -139,10 +139,6 @@ try {
             Target = "app-armeabi-v7a-$Release.apk"
         },
         @{
-            Source = Join-Path $RepoRoot "build\app\outputs\flutter-apk\app-x86_64-release.apk"
-            Target = "app-x86_64-$Release.apk"
-        },
-        @{
             Source = Join-Path $RepoRoot "build\windows\x64\installer\$Channel\Orex-Setup-$Release.exe"
             Target = "Orex-Setup-$Release.exe"
         }

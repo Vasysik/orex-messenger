@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -42,7 +41,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
   Timer? _countdown;
   int _displayGeneration = 0;
 
-  bool get _cameraScannerSupported {
+  bool get _scannerModeAvailable {
     if (kIsWeb) return true;
     return switch (defaultTargetPlatform) {
       TargetPlatform.android ||
@@ -57,11 +56,13 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
     super.didChangeDependencies();
     if (_mode != null) return;
     final compact = MediaQuery.sizeOf(context).shortestSide < 600;
-    final mobile = compact &&
+    final startsWithScanner =
+        _scannerModeAvailable &&
+        compact &&
         (kIsWeb ||
             defaultTargetPlatform == TargetPlatform.android ||
             defaultTargetPlatform == TargetPlatform.iOS);
-    _mode = mobile ? _QrMode.scan : _QrMode.show;
+    _mode = startsWithScanner ? _QrMode.scan : _QrMode.show;
     if (_mode == _QrMode.show) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _prepareDisplay());
     }
@@ -75,6 +76,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
   }
 
   void _setMode(_QrMode mode) {
+    if (mode == _QrMode.scan && !_scannerModeAvailable) return;
     if (_mode == mode) return;
     _countdown?.cancel();
     _displayGeneration++;
@@ -174,16 +176,14 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
   }
 
   Future<void> _createDirectQr() async {
-    final password = await showOrexTextInputDialog(
+    final confirmed = await showOrexConfirmDialog(
       context,
-      title: 'Подключить новое устройство',
+      title: 'Подключить новое устройство?',
       message: 'QR-код даёт новому устройству полный доступ к аккаунту. '
           'Создавайте его только когда ваше новое устройство находится рядом.',
-      labelText: 'Текущий пароль',
       confirmLabel: 'Создать QR',
-      obscureText: true,
     );
-    if (password == null || password.isEmpty || !mounted) return;
+    if (!confirmed || !mounted) return;
 
     final generation = ++_displayGeneration;
     _countdown?.cancel();
@@ -194,9 +194,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
       _qrData = null;
     });
     try {
-      final qr = await widget.matrix.createDirectQrLogin(
-        currentPassword: password,
-      );
+      final qr = await widget.matrix.createDirectQrLogin();
       final payload = OrexQrLoginPayload.parse(qr);
       if (!mounted || generation != _displayGeneration) return;
       setState(() {
@@ -245,17 +243,15 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
             message: 'Покажите этот QR новому устройству, а не сканируйте здесь',
           );
         }
-        final password = await showOrexTextInputDialog(
+        final confirmed = await showOrexConfirmDialog(
           context,
           title: 'Разрешить вход?',
           message: 'Новое устройство получит полный доступ к аккаунту '
               '${widget.matrix.client.userID ?? ''}. Продолжайте только если '
               'это ваше устройство и QR-код открыт на нём прямо сейчас.',
-          labelText: 'Текущий пароль',
           confirmLabel: 'Разрешить',
-          obscureText: true,
         );
-        if (password == null || password.isEmpty) {
+        if (!confirmed) {
           if (mounted) {
             setState(() {
               _handlingScan = false;
@@ -264,10 +260,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
           }
           return;
         }
-        await widget.matrix.approveQrRendezvous(
-          qrData: raw,
-          currentPassword: password,
-        );
+        await widget.matrix.approveQrRendezvous(qrData: raw);
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Новое устройство авторизовано')),
@@ -300,21 +293,11 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
     }
   }
 
-  Future<void> _pasteQr() async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    final text = data?.text?.trim();
-    if (text == null || text.isEmpty) {
-      if (mounted) setState(() => _error = 'В буфере обмена нет QR-данных');
-      return;
-    }
-    await _handleScanned(text);
-  }
-
   String _messageFor(Object error) {
     if (error is OrexAuthProtocolException) return error.message;
     if (error is MatrixException) {
       if (error.errcode == 'M_FORBIDDEN') {
-        return 'Неверный пароль или QR-код уже недействителен';
+        return 'Сервер запретил создание одноразовой QR-сессии';
       }
       if (error.errcode == 'M_UNKNOWN_TOKEN') return 'QR-код уже использован';
       if (error.errcode == 'M_UNRECOGNIZED') {
@@ -351,25 +334,27 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      SegmentedButton<_QrMode>(
-                        segments: const [
-                          ButtonSegment(
-                            value: _QrMode.scan,
-                            icon: Icon(Icons.qr_code_scanner),
-                            label: Text('Сканировать'),
-                          ),
-                          ButtonSegment(
-                            value: _QrMode.show,
-                            icon: Icon(Icons.qr_code_2),
-                            label: Text('Показать код'),
-                          ),
-                        ],
-                        selected: {mode},
-                        onSelectionChanged: _busy
-                            ? null
-                            : (selection) => _setMode(selection.first),
-                      ),
-                      const SizedBox(height: 20),
+                      if (_scannerModeAvailable) ...[
+                        SegmentedButton<_QrMode>(
+                          segments: const [
+                            ButtonSegment(
+                              value: _QrMode.scan,
+                              icon: Icon(Icons.qr_code_scanner),
+                              label: Text('Сканировать'),
+                            ),
+                            ButtonSegment(
+                              value: _QrMode.show,
+                              icon: Icon(Icons.qr_code_2),
+                              label: Text('Показать код'),
+                            ),
+                          ],
+                          selected: {mode},
+                          onSelectionChanged: _busy
+                              ? null
+                              : (selection) => _setMode(selection.first),
+                        ),
+                        const SizedBox(height: 20),
+                      ],
                       AnimatedSwitcher(
                         duration: const Duration(milliseconds: 180),
                         child: mode == _QrMode.scan
@@ -416,26 +401,7 @@ class _QrLoginScreenState extends State<QrLoginScreen> {
   }
 
   Widget _buildScanner() {
-    if (!_cameraScannerSupported) {
-      return Column(
-        key: const ValueKey('manual-scanner'),
-        children: [
-          const Icon(Icons.desktop_windows, size: 58, color: OrexColors.copper),
-          const SizedBox(height: 14),
-          const Text(
-            'На Windows камера-сканер недоступна. Скопируйте содержимое QR-кода '
-            'и вставьте его из буфера обмена.',
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 16),
-          OutlinedButton.icon(
-            onPressed: _handlingScan ? null : _pasteQr,
-            icon: const Icon(Icons.content_paste),
-            label: const Text('Вставить QR-данные'),
-          ),
-        ],
-      );
-    }
+    if (!_scannerModeAvailable) return const SizedBox.shrink();
 
     return ClipRRect(
       key: const ValueKey('camera-scanner'),

@@ -13,8 +13,8 @@ QR-вход использует встроенный Synapse endpoint `/_matrix
    Конверт шифруется AES-256-GCM; ключ передаётся только внутри QR, поэтому relay
    не видит Matrix token.
 
-На телефонах экран по умолчанию открывается в режиме сканирования, на desktop —
-в режиме показа. Режим всегда можно переключить вручную.
+Сканер доступен на Android, iOS, macOS и в web. На нативных Windows
+и Linux переключатель сканирования скрыт: экран сразу показывает QR-код.
 
 ## Synapse: обязательная часть
 
@@ -23,12 +23,15 @@ QR-вход использует встроенный Synapse endpoint `/_matrix
 ```yaml
 login_via_existing_session:
   enabled: true
-  require_ui_auth: true
+  require_ui_auth: false
   token_timeout: "2m"
 ```
 
-`require_ui_auth` оставлен включённым: перед выдачей новой сессии пользователь
-подтверждает действие текущим паролем.
+`require_ui_auth: false` позволяет подтверждать создание новой сессии внутри
+Orex без повторного ввода пароля. Клиент всё равно показывает явный диалог
+подтверждения. Компромисс: украденный действующий access token также сможет
+запросить одноразовый login token, поэтому особенно важны короткий TTL, защита
+локального хранилища токена и возможность быстро завершать сессии.
 
 Проверьте поддержку после перезапуска:
 
@@ -87,14 +90,14 @@ environment:
 modules:
   - module: matrix_http_rendezvous_synapse.SynapseRendezvousModule
     config:
-      prefix: /_synapse/client/ru.orex.qr/rendezvous
+      prefix: /_synapse/client/org.matrix.msc3886/rendezvous
       ttl: 2m
       # В актуальной сборке поле ожидает целое число байт, не строку `16KiB`.
       max_bytes: 4096
       max_entries: 1000
 
 experimental_features:
-  msc3886_endpoint: /_synapse/client/ru.orex.qr/rendezvous
+  msc3886_endpoint: /_synapse/client/org.matrix.msc3886/rendezvous
 ```
 
 `4096` байт достаточно для Orex-конверта и уменьшает верхнюю границу памяти и
@@ -114,7 +117,7 @@ docker logs matrix-synapse --since 5m
 curl -i -X POST \
   -H 'Content-Type: application/octet-stream' \
   --data-binary 'test' \
-  https://vasys.ru/_synapse/client/ru.orex.qr/rendezvous
+  https://vasys.ru/_synapse/client/org.matrix.msc3886/rendezvous
 ```
 
 Ожидается `201 Created`, а в заголовках — `Location` и `ETag`. Тест создаёт
@@ -129,7 +132,7 @@ Production URL уже задан в `OrexConfig`. Для другого адре
 сборке:
 
 ```text
---dart-define=OREX_QR_RENDEZVOUS_URL=https://example.org/_synapse/client/ru.orex.qr/rendezvous
+--dart-define=OREX_QR_RENDEZVOUS_URL=https://example.org/_synapse/client/org.matrix.msc3886/rendezvous
 ```
 
 URL обязан быть HTTPS. Клиент принимает session URL только с того же origin и
@@ -150,9 +153,8 @@ URL обязан быть HTTPS. Клиент принимает session URL т�
   проверенной схемой привязки устройств; критичные развёртывания должны считать
   desktop → phone режим экспериментальным.
 - Rendezvous хранит только AES-GCM ciphertext; ключ находится в QR.
-- Сканирование камерой поддерживается на Android, iOS, macOS и web.
-- На Windows экран сканирования предлагает вставить QR-данные из буфера;
-  основной Windows-сценарий — показать QR и подтвердить его телефоном.
+- Камера-сканер доступна на Android, iOS, macOS и в web через HTTPS.
+- Нативные Windows и Linux только показывают QR; его подтверждает телефон.
 - После входа E2EE-ключи восстанавливаются обычным механизмом Orex: проверка
   устройства и key backup остаются отдельным этапом.
 - При недоступном rendezvous прямое направление phone/старое устройство → новое

@@ -210,8 +210,8 @@ class OrexQrRendezvousSession {
 
 extension MatrixQrLoginApi on MatrixService {
   /// Создаёт QR, который сканирует новое устройство.
-  Future<String> createDirectQrLogin({required String currentPassword}) async {
-    final response = await _orexGenerateLoginToken(currentPassword);
+  Future<String> createDirectQrLogin() async {
+    final response = await _orexGenerateLoginToken();
     final payload = OrexQrLoginPayload.loginToken(
       homeserver: homeserver,
       loginToken: response.loginToken,
@@ -273,10 +273,14 @@ extension MatrixQrLoginApi on MatrixService {
         )
         .timeout(_orexQrRequestTimeout);
     if (response.statusCode != 201) {
+      final message = response.statusCode == 404
+          ? 'Rendezvous endpoint не найден. Проверьте, что Synapse-модуль '
+                'загружен и prefix совпадает с OREX_QR_RENDEZVOUS_URL.'
+          : 'Сервер не создал временную QR-сессию';
       throw OrexAuthProtocolException(
         code: 'OREX_QR_RENDEZVOUS_CREATE',
         statusCode: response.statusCode,
-        message: 'Сервер не создал временную QR-сессию',
+        message: message,
       );
     }
 
@@ -367,10 +371,7 @@ extension MatrixQrLoginApi on MatrixService {
   }
 
   /// Авторизованное устройство подтверждает QR, показанный новым клиентом.
-  Future<void> approveQrRendezvous({
-    required String qrData,
-    required String currentPassword,
-  }) async {
+  Future<void> approveQrRendezvous({required String qrData}) async {
     final payload = OrexQrLoginPayload.parse(qrData);
     if (!payload.isRendezvous) {
       throw const OrexAuthProtocolException(
@@ -416,7 +417,7 @@ extension MatrixQrLoginApi on MatrixService {
       );
     }
 
-    final token = await _orexGenerateLoginToken(currentPassword);
+    final token = await _orexGenerateLoginToken();
     final responseEnvelope = <String, Object?>{
       'v': 1,
       'kind': _orexQrResponseKind,
@@ -452,9 +453,7 @@ extension MatrixQrLoginApi on MatrixService {
     }
   }
 
-  Future<GenerateLoginTokenResponse> _orexGenerateLoginToken(
-    String currentPassword,
-  ) async {
+  Future<GenerateLoginTokenResponse> _orexGenerateLoginToken() async {
     final userId = client.userID;
     if (userId == null || userId.isEmpty) {
       throw StateError('Нет активной Matrix-сессии');
@@ -463,18 +462,11 @@ extension MatrixQrLoginApi on MatrixService {
       return await client.generateLoginToken();
     } on MatrixException catch (error) {
       if (!error.requireAdditionalAuthentication) rethrow;
-      if (currentPassword.isEmpty) {
-        throw const OrexAuthProtocolException(
-          code: 'OREX_PASSWORD_REQUIRED',
-          message: 'Введите текущий пароль для подтверждения QR-входа',
-        );
-      }
-      return client.generateLoginToken(
-        auth: AuthenticationPassword(
-          identifier: AuthenticationUserIdentifier(user: userId),
-          password: currentPassword,
-          session: error.session,
-        ),
+      throw const OrexAuthProtocolException(
+        code: 'OREX_QR_UIA_REQUIRED',
+        message: 'Сервер требует пароль для QR-входа. Установите '
+            'login_via_existing_session.require_ui_auth: false и '
+            'перезапустите Synapse.',
       );
     }
   }

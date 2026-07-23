@@ -248,7 +248,7 @@ class OrexConfig {
   static const _qrRendezvousUrl = String.fromEnvironment(
     'OREX_QR_RENDEZVOUS_URL',
     defaultValue:
-        'https://vasys.ru/_synapse/client/ru.orex.qr/rendezvous',
+        'https://vasys.ru/_synapse/client/org.matrix.msc3886/rendezvous',
   );
 
   static final OrexRuntimeConfig current = OrexRuntimeConfig.fromDefines(

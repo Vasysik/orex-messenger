@@ -307,18 +307,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         appBar: AppBar(
           backgroundColor: Colors.transparent,
           automaticallyImplyLeading: false,
-          leadingWidth: canPop ? 104 : 56,
-          leading: Row(
-            children: [
-              if (canPop) const BackButton(),
-              IconButton(
-                tooltip: 'QR-вход',
-                onPressed: _openQrLogin,
-                icon: const Icon(Icons.qr_code_scanner),
-              ),
-            ],
-          ),
+          leading: canPop ? const BackButton() : null,
           title: const Text('Настройки'),
+          actions: [
+            IconButton(
+              tooltip: 'QR-вход',
+              onPressed: _openQrLogin,
+              icon: const Icon(Icons.qr_code_scanner),
+            ),
+          ],
         ),
         body: ListView(
           padding: const EdgeInsets.all(16),
