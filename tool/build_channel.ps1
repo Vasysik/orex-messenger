@@ -71,14 +71,6 @@ try {
     Write-Host ("Output: {0}" -f $OutputDir)
 
     Write-Host ""
-    Write-Host "=== Resolving Flutter dependencies ==="
-    Invoke-NativeCommand -FilePath "flutter" -ArgumentList @("pub", "get")
-
-    Write-Host ""
-    Write-Host "=== Running Flutter analyzer ==="
-    Invoke-NativeCommand -FilePath "flutter" -ArgumentList @("analyze", "--no-pub")
-
-    Write-Host ""
     Write-Host "=== Building Android APKs ==="
     $env:OREX_ANDROID_DISTRIBUTION = $Channel
     Invoke-NativeCommand -FilePath "flutter" -ArgumentList @(

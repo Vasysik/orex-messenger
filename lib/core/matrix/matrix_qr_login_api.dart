@@ -9,6 +9,8 @@ const _orexQrRequestKind = 'request';
 const _orexQrOfferKind = 'offer';
 const _orexQrClaimKind = 'claim';
 const _orexQrResponseKind = 'response';
+const _orexQrConsumedKind = 'consumed';
+const _orexQrRejectedKind = 'rejected';
 const _orexQrRequestTimeout = Duration(seconds: 20);
 const _orexQrSessionLifetime = Duration(minutes: 2);
 
@@ -194,6 +196,7 @@ enum OrexQrRendezvousPollState {
   approvalRequested,
   loggedIn,
   used,
+  rejected,
 }
 
 class OrexQrRendezvousPollResult {
@@ -215,6 +218,7 @@ class OrexQrRendezvousSession {
     required this.localAuthenticated,
     this.claimId,
     this.responseSent = false,
+    this.consumed = false,
   });
 
   final Uri sessionUri;
@@ -227,6 +231,7 @@ class OrexQrRendezvousSession {
   String etag;
   String? claimId;
   bool responseSent;
+  bool consumed;
 
   bool get isExpired => !DateTime.now().toUtc().isBefore(expiresAt);
 }
@@ -407,9 +412,18 @@ extension MatrixQrLoginApi on MatrixService {
   }
 
   /// Один poll rendezvous-сессии.
+  ///
+  /// Успешный вход завершается явным [consumed]-подтверждением от нового
+  /// устройства. До этого момента владелец QR не удаляет rendezvous-запись и
+  /// продолжает показывать состояние ожидания.
   Future<OrexQrRendezvousPollResult> pollQrRendezvous(
     OrexQrRendezvousSession session,
   ) async {
+    if (session.consumed) {
+      return const OrexQrRendezvousPollResult(
+        OrexQrRendezvousPollState.used,
+      );
+    }
     if (session.isExpired) {
       throw const OrexAuthProtocolException(
         code: 'OREX_QR_EXPIRED',
@@ -432,6 +446,8 @@ extension MatrixQrLoginApi on MatrixService {
       );
     }
     if (response.statusCode == 404) {
+      // Совместимость с клиентами предыдущей версии, которые удаляли запись
+      // сразу после успешного login. Новые клиенты используют consumed ACK.
       if (session.responseSent) {
         return const OrexQrRendezvousPollResult(
           OrexQrRendezvousPollState.used,
@@ -506,9 +522,36 @@ extension MatrixQrLoginApi on MatrixService {
         );
       }
       await _orexLoginFromResponse(decoded, session: session);
-      await cancelQrRendezvous(session);
+      await _orexAcknowledgeConsumed(session);
       return const OrexQrRendezvousPollResult(
         OrexQrRendezvousPollState.loggedIn,
+      );
+    }
+
+    if (kind == _orexQrConsumedKind) {
+      _orexValidateSessionEnvelope(
+        decoded,
+        challenge: session.challenge,
+        expiresAt: session.expiresAt,
+      );
+      _orexValidateClaimId(decoded, session.claimId);
+      if (session.localAuthenticated && session.responseSent) {
+        unawaited(_orexDeleteRendezvous(session.sessionUri));
+      }
+      return const OrexQrRendezvousPollResult(
+        OrexQrRendezvousPollState.used,
+      );
+    }
+
+    if (kind == _orexQrRejectedKind) {
+      _orexValidateSessionEnvelope(
+        decoded,
+        challenge: session.challenge,
+        expiresAt: session.expiresAt,
+      );
+      _orexValidateClaimId(decoded, session.claimId);
+      return const OrexQrRendezvousPollResult(
+        OrexQrRendezvousPollState.rejected,
       );
     }
 
@@ -566,6 +609,7 @@ extension MatrixQrLoginApi on MatrixService {
       etag: approval.etag,
       secret: approval.secret,
       challenge: approval.challenge,
+      sessionExpiresAt: approval.expiresAt,
     );
   }
 
@@ -584,31 +628,71 @@ extension MatrixQrLoginApi on MatrixService {
         message: 'Нет ожидающего запроса на вход',
       );
     }
-    session.etag = await _orexWriteLoginResponse(
+    final result = await _orexWriteLoginResponse(
       sessionUri: session.sessionUri,
       etag: session.etag,
       secret: session.secret,
       challenge: session.challenge,
+      sessionExpiresAt: session.expiresAt,
       claimId: claimId,
     );
-    session.responseSent = true;
+    session
+      ..etag = result.etag
+      ..responseSent = true
+      ..consumed = result.consumed;
   }
 
-  Future<bool> rejectQrRendezvous(
+  /// Отклоняет QR-запрос видимым terminal-состоянием. Запись не удаляется
+  /// сразу, чтобы второе устройство гарантированно увидело отказ.
+  Future<void> rejectQrRendezvous(
     OrexQrRendezvousApproval approval,
-  ) =>
-      _orexDeleteRendezvous(approval.sessionUri);
+  ) async {
+    await _orexWriteTerminalState(
+      sessionUri: approval.sessionUri,
+      etag: approval.etag,
+      secret: approval.secret,
+      challenge: approval.challenge,
+      expiresAt: approval.expiresAt,
+      kind: _orexQrRejectedKind,
+    );
+  }
+
+  /// Отклоняет claim к QR, который показан на авторизованном устройстве.
+  Future<void> rejectDisplayedQrRendezvous(
+    OrexQrRendezvousSession session,
+  ) async {
+    final claimId = session.claimId;
+    if (claimId == null || claimId.isEmpty) {
+      throw const OrexAuthProtocolException(
+        code: 'OREX_QR_RENDEZVOUS_PROTOCOL',
+        message: 'Нет ожидающего запроса на вход',
+      );
+    }
+    session.etag = await _orexWriteTerminalState(
+      sessionUri: session.sessionUri,
+      etag: session.etag,
+      secret: session.secret,
+      challenge: session.challenge,
+      expiresAt: session.expiresAt,
+      kind: _orexQrRejectedKind,
+      claimId: claimId,
+    );
+  }
 
   Future<bool> cancelQrRendezvous(OrexQrRendezvousSession session) =>
       _orexDeleteRendezvous(session.sessionUri);
 
-  Future<String> _orexWriteLoginResponse({
+  Future<({String etag, bool consumed})> _orexWriteLoginResponse({
     required Uri sessionUri,
     required String etag,
     required Uint8List secret,
     required String challenge,
+    required DateTime sessionExpiresAt,
     String? claimId,
   }) async {
+    // Токен создаётся ровно один раз. Если PUT или его ответ потеряются по
+    // сети, повторно отправляется тот же зашифрованный envelope, а не
+    // выпускается второй действующий login token.
     final token = await _orexGenerateLoginToken();
     final responseEnvelope = <String, Object?>{
       'v': 1,
@@ -621,23 +705,206 @@ extension MatrixQrLoginApi on MatrixService {
           .add(Duration(milliseconds: token.expiresInMs))
           .millisecondsSinceEpoch,
     };
+    final encryptedResponse = _orexEncryptQrEnvelope(
+      jsonEncode(responseEnvelope),
+      secret: secret,
+      challenge: challenge,
+    );
+
+    var currentEtag = etag;
+    Object? lastError;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        final response = await _orexPutRendezvous(
+          sessionUri,
+          etag: currentEtag,
+          body: encryptedResponse,
+        );
+        if (response.statusCode != 412) {
+          _orexRequireSuccessfulWrite(response);
+          return (etag: _orexRequireEtag(response), consumed: false);
+        }
+        lastError = const OrexAuthProtocolException(
+          code: 'OREX_QR_STATE_CHANGED',
+          statusCode: 412,
+          message: 'QR-сессия изменилась во время подтверждения',
+        );
+      } catch (error) {
+        lastError = error;
+      }
+
+      // PUT мог сохраниться, а HTTP-ответ потеряться. Читаем текущее
+      // состояние и считаем операцию успешной только если на сервере лежит
+      // именно наш response (или уже последовавший consumed ACK).
+      try {
+        final current = await _orexReadRendezvous(
+          sessionUri,
+          secret: secret,
+          challenge: challenge,
+        );
+        final currentKind = current.envelope['kind'];
+        if (currentKind == _orexQrResponseKind) {
+          if (current.envelope['challenge'] == challenge &&
+              current.envelope['claim_id'] == claimId &&
+              current.envelope['login_token'] == token.loginToken) {
+            return (etag: current.etag, consumed: false);
+          }
+          throw const OrexAuthProtocolException(
+            code: 'OREX_QR_STATE_CHANGED',
+            message: 'QR-сессия уже подтверждена другим ответом',
+          );
+        }
+        if (currentKind == _orexQrConsumedKind) {
+          _orexValidateSessionEnvelope(
+            current.envelope,
+            challenge: challenge,
+            expiresAt: sessionExpiresAt,
+          );
+          _orexValidateClaimId(current.envelope, claimId);
+          return (etag: current.etag, consumed: true);
+        }
+        if (currentKind == _orexQrRejectedKind) {
+          throw const OrexAuthProtocolException(
+            code: 'OREX_QR_REJECTED',
+            message: 'QR-вход уже отклонён',
+          );
+        }
+
+        final isRetryableInitialState =
+            currentKind == _orexQrRequestKind ||
+                currentKind == _orexQrClaimKind;
+        if (isRetryableInitialState) {
+          _orexValidateSessionEnvelope(
+            current.envelope,
+            challenge: challenge,
+            expiresAt: sessionExpiresAt,
+          );
+        }
+        final canRetryRequest =
+            claimId == null && currentKind == _orexQrRequestKind;
+        final canRetryClaim = claimId != null &&
+            currentKind == _orexQrClaimKind &&
+            current.envelope['claim_id'] == claimId;
+        if (!canRetryRequest && !canRetryClaim) {
+          throw const OrexAuthProtocolException(
+            code: 'OREX_QR_STATE_CHANGED',
+            message: 'QR-сессия уже изменилась на другом устройстве',
+          );
+        }
+        currentEtag = current.etag;
+      } catch (error) {
+        lastError = error;
+        if (error is OrexAuthProtocolException &&
+            !_orexIsRetryableQrError(error)) {
+          rethrow;
+        }
+      }
+
+      if (attempt < 2) {
+        await Future<void>.delayed(
+          Duration(milliseconds: 300 * (attempt + 1)),
+        );
+      }
+    }
+
+    if (lastError is OrexAuthProtocolException) throw lastError;
+    throw OrexAuthProtocolException(
+      code: 'OREX_QR_RENDEZVOUS_WRITE',
+      message: 'Не удалось передать разрешение на вход. Повторите попытку.',
+    );
+  }
+
+
+  Future<String> _orexWriteTerminalState({
+    required Uri sessionUri,
+    required String etag,
+    required Uint8List secret,
+    required String challenge,
+    required DateTime expiresAt,
+    required String kind,
+    String? claimId,
+  }) async {
+    final envelope = <String, Object?>{
+      'v': 1,
+      'kind': kind,
+      'challenge': challenge,
+      'claim_id': ?claimId,
+      'homeserver': homeserver.toString(),
+      'expires': expiresAt.millisecondsSinceEpoch,
+    };
     final response = await _orexPutRendezvous(
       sessionUri,
       etag: etag,
       body: _orexEncryptQrEnvelope(
-        jsonEncode(responseEnvelope),
+        jsonEncode(envelope),
         secret: secret,
         challenge: challenge,
       ),
     );
     if (response.statusCode == 412) {
       throw const OrexAuthProtocolException(
-        code: 'OREX_QR_ALREADY_CLAIMED',
-        message: 'QR-сессия уже изменилась или была использована',
+        code: 'OREX_QR_STATE_CHANGED',
+        message: 'QR-сессия уже изменилась на другом устройстве',
       );
     }
     _orexRequireSuccessfulWrite(response);
     return _orexRequireEtag(response);
+  }
+
+  Future<void> _orexAcknowledgeConsumed(
+    OrexQrRendezvousSession session,
+  ) async {
+    Object? lastError;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        session.etag = await _orexWriteTerminalState(
+          sessionUri: session.sessionUri,
+          etag: session.etag,
+          secret: session.secret,
+          challenge: session.challenge,
+          expiresAt: session.expiresAt,
+          kind: _orexQrConsumedKind,
+          claimId: session.claimId,
+        );
+        return;
+      } catch (error) {
+        lastError = error;
+        // PUT мог успешно сохраниться, а ответ потеряться по сети. Проверяем
+        // текущее состояние, прежде чем повторять запись со старым ETag.
+        try {
+          final current = await _orexReadRendezvous(
+            session.sessionUri,
+            secret: session.secret,
+            challenge: session.challenge,
+          );
+          if (current.envelope['kind'] == _orexQrConsumedKind) {
+            _orexValidateSessionEnvelope(
+              current.envelope,
+              challenge: session.challenge,
+              expiresAt: session.expiresAt,
+            );
+            _orexValidateClaimId(current.envelope, session.claimId);
+            session.etag = current.etag;
+            return;
+          }
+          session.etag = current.etag;
+        } on OrexAuthProtocolException catch (readError) {
+          // Владелец мог уже увидеть ACK и удалить запись — это тоже успех.
+          if (readError.code == 'OREX_QR_GONE') return;
+          lastError = readError;
+        } catch (readError) {
+          lastError = readError;
+        }
+        if (attempt < 2) {
+          await Future<void>.delayed(
+            Duration(milliseconds: 250 * (attempt + 1)),
+          );
+        }
+      }
+    }
+    // Вход уже выполнен, поэтому ошибка ACK не должна разлогинивать новое
+    // устройство. Старая сторона просто дождётся TTL вместо зелёного статуса.
+    OrexLog.d('QR', 'consumed acknowledgement failed', lastError);
   }
 
   Future<void> _orexLoginFromResponse(
@@ -758,6 +1025,22 @@ extension MatrixQrLoginApi on MatrixService {
     return etag;
   }
 
+  void _orexValidateClaimId(
+    Map<String, Object?> envelope,
+    String? expectedClaimId,
+  ) {
+    final actualClaimId = envelope['claim_id'];
+    if (expectedClaimId == null || expectedClaimId.isEmpty) {
+      if (actualClaimId == null || actualClaimId == '') return;
+    } else if (actualClaimId == expectedClaimId) {
+      return;
+    }
+    throw const OrexAuthProtocolException(
+      code: 'OREX_QR_RENDEZVOUS_PROTOCOL',
+      message: 'QR-сессия относится к другому устройству',
+    );
+  }
+
   void _orexValidateSessionEnvelope(
     Map<String, Object?> envelope, {
     required String challenge,
@@ -839,6 +1122,21 @@ extension MatrixQrLoginApi on MatrixService {
       return false;
     }
   }
+}
+
+bool _orexIsRetryableQrError(Object error) {
+  if (error is TimeoutException || error is http.ClientException) return true;
+  if (error is OrexAuthProtocolException) {
+    final status = error.statusCode;
+    return status == 408 ||
+        status == 425 ||
+        status == 429 ||
+        (status != null && status >= 500);
+  }
+  final details = error.toString();
+  return details.contains('SocketException') ||
+      details.contains('Connection reset') ||
+      details.contains('Connection closed');
 }
 
 String _orexEnvelopeDeviceName(Map<String, Object?> envelope) {
