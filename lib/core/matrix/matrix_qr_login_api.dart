@@ -292,7 +292,15 @@ extension MatrixQrLoginApi on MatrixService {
         message: 'Rendezvous-сервер вернул неполный ответ',
       );
     }
-    final sessionUri = base.resolve(location);
+    // MSC3886 returns a relative resource id in Location (for example,
+    // `01ABC...`). Resolve it against the endpoint as a directory, not as a
+    // file; otherwise Uri.resolve replaces the final `rendezvous` segment.
+    final rendezvousDirectory = base.replace(
+      path: '${base.path.replaceAll(RegExp(r'/+$'), '')}/',
+      query: null,
+      fragment: null,
+    );
+    final sessionUri = rendezvousDirectory.resolve(location);
     _orexValidateRendezvousOrigin(sessionUri);
     final qrData = OrexQrLoginPayload.rendezvous(
       homeserver: homeserver,
