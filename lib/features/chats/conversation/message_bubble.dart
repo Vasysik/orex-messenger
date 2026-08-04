@@ -30,6 +30,7 @@ class MessageBubble extends StatelessWidget {
     this.onEdit,
     this.onDelete,
     this.onReply,
+    this.onForward,
     this.albumEvents,
     this.onCancelSend,
     this.onOpenRoomReference,
@@ -45,6 +46,7 @@ class MessageBubble extends StatelessWidget {
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
   final VoidCallback? onReply;
+  final VoidCallback? onForward;
   final List<Event>? albumEvents;
   final VoidCallback? onCancelSend;
   final ValueChanged<String>? onOpenRoomReference;
@@ -171,6 +173,14 @@ class MessageBubble extends StatelessWidget {
             value: 'reply',
             child: _MenuRow(icon: Icons.reply, label: 'Ответить'),
           ),
+        if (onForward != null &&
+            !_isCallSummary &&
+            !event.redacted &&
+            !isUnsent)
+          const PopupMenuItem(
+            value: 'forward',
+            child: _MenuRow(icon: Icons.forward, label: 'Переслать'),
+          ),
         if (!_isMedia && !isUnsent)
           const PopupMenuItem(
             value: 'copy',
@@ -201,6 +211,8 @@ class MessageBubble extends StatelessWidget {
       onReact?.call(selected.substring(6));
     } else if (selected == 'reply') {
       onReply?.call();
+    } else if (selected == 'forward') {
+      onForward?.call();
     } else if (selected == 'copy') {
       await Clipboard.setData(ClipboardData(text: body));
       if (context.mounted) {
@@ -263,6 +275,7 @@ class MessageBubble extends StatelessWidget {
         !redacted &&
         timeline != null &&
         event.hasAggregatedEvents(timeline!, RelationshipTypes.edit);
+    final forwarded = displayEvent.content['ru.orex.forwarded'] == true;
 
     final body = redacted
         ? ''
@@ -328,6 +341,29 @@ class MessageBubble extends StatelessWidget {
                           fontWeight: FontWeight.w700,
                           fontSize: 13,
                         ),
+                      ),
+                    ),
+                  if (forwarded && !redacted)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.forward,
+                            size: 14,
+                            color: textColor.withValues(alpha: 0.65),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Переслано',
+                            style: TextStyle(
+                              color: textColor.withValues(alpha: 0.65),
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   if (replied != null) _replyQuote(replied, textColor),

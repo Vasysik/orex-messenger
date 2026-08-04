@@ -69,6 +69,22 @@ flutter build web --release --no-pub --no-web-resources-cdn `
 build\web
 ```
 
+### Простая страница скачивания
+
+Исходники страницы лежат в `web/download/`. Обычный `flutter build web` копирует
+их в `build/web/download/`, поэтому отдельная сборка или отдельный frontend для
+неё не нужны. После публикации Web она доступна по адресу:
+
+```text
+https://orex.vasys.ru/download/
+```
+
+Страница не хранит версию и ссылки на установщики вручную. Она запрашивает
+`/updates/stable/latest.json`, показывает текущую stable-версию и активирует
+ссылки только на разрешённые update-server артефакты Windows x64 и Android
+ARM64/ARMv7. Если stable-релиза нет или feed временно недоступен, кнопки остаются
+неактивными и приложение Web по `/` продолжает работать независимо.
+
 ## Web smoke
 
 Перед публикацией проверьте login/restore session, E2EE сообщения и вложения, большие входящие файлы, Android ↔ Windows ↔ Web media-E2EE звонок, late join и reconnect.

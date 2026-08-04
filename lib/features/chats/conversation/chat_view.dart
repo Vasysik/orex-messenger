@@ -16,6 +16,7 @@ import 'chat_timeline_items.dart';
 import 'message_bubble.dart';
 import 'message_composer_controller.dart';
 import 'conversation_preview_view.dart';
+import 'forward_message_dialog.dart';
 import 'room_settings_screen.dart';
 import 'supergroup_child_picker.dart';
 
@@ -382,6 +383,54 @@ class _ChatViewState extends State<ChatView> {
   void _cancelReply() {
     setState(_composer.cancelReply);
     _focusNode.requestFocus();
+  }
+
+  Future<void> _forwardEvents(List<Event> events) async {
+    final sourceRoom = _room;
+    if (sourceRoom == null || events.isEmpty) return;
+
+    final targets = await showOrexForwardRoomPicker(
+      context,
+      matrix: widget.matrix,
+      sourceRoomId: sourceRoom.id,
+    );
+    if (!mounted || targets == null || targets.isEmpty) return;
+
+    final result = await showOrexForwardProgressDialog(
+      context,
+      matrix: widget.matrix,
+      events: events,
+      timeline: _timeline,
+      targets: targets,
+    );
+    if (!mounted || result == null) return;
+
+    final String message;
+    if (result.fatalError != null) {
+      message = result.fatalError!;
+    } else if (result.cancelled) {
+      message = result.sentMessages == 0
+          ? 'Пересылка отменена'
+          : 'Пересылка остановлена: отправлено ${result.sentMessages}';
+    } else if (result.failures.isNotEmpty) {
+      final first = result.failures.first;
+      final suffix = result.failures.length > 1
+          ? ' Ещё ошибок: ${result.failures.length - 1}.'
+          : '';
+      message = result.sentMessages == 0
+          ? 'Не удалось переслать в «${first.roomName}»: ${first.reason}$suffix'
+          : 'Переслано частично. «${first.roomName}»: ${first.reason}$suffix';
+    } else if (result.completedRooms == 1) {
+      message = events.length == 1
+          ? 'Сообщение переслано'
+          : 'Медиаальбом переслан';
+    } else {
+      message = 'Переслано в ${result.completedRooms} чатов';
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   static const _imgExts = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'};
@@ -826,6 +875,9 @@ class _ChatViewState extends State<ChatView> {
                       onReply: liveTimeline == null
                           ? null
                           : () => _startReply(item.leader),
+                      onForward: liveTimeline == null
+                          ? null
+                          : () => unawaited(_forwardEvents(item.events)),
                       onOpenRoomReference: _openRoomReference,
                       onCancelSend: () async {
                         try {
@@ -859,6 +911,9 @@ class _ChatViewState extends State<ChatView> {
                       onReply: liveTimeline == null
                           ? null
                           : () => _startReply(item.event),
+                      onForward: liveTimeline == null
+                          ? null
+                          : () => unawaited(_forwardEvents(<Event>[item.event])),
                       onOpenRoomReference: _openRoomReference,
                       onCancelSend: () async {
                         try {

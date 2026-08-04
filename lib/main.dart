@@ -10,6 +10,7 @@ import 'package:matrix/matrix.dart' show Room;
 import 'core/bootstrap_failure.dart';
 import 'core/config/orex_config.dart';
 import 'core/config/app_version.dart';
+import 'core/files/file_helper.dart';
 import 'core/storage/database.dart';
 import 'core/update/orex_update_controller.dart';
 import 'core/matrix/matrix_service.dart';
@@ -66,6 +67,7 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
   late final Future<_Services> _future = _init();
 
   Future<_Services> _init() async {
+    unawaited(FileHelper.cleanupTemporaryFiles());
     final minimumSplash = Future<void>.delayed(
       const Duration(milliseconds: 720),
     );
