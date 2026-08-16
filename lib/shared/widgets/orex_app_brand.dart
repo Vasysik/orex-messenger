@@ -8,6 +8,7 @@ import '../theme/orex_theme.dart';
 String get orexAppName => OrexConfig.appDisplayName;
 const String orexAppSlogan = 'Тепло. Быстро. Децентрализованно.';
 const String orexAppIconAsset = 'assets/icon/app_icon.png';
+const String orexWebAppIconUrl = '/icons/Icon-192.png';
 
 /// Фирменная иконка Orex с единым размером, скруглением и мягким медным glow.
 /// Используется на bootstrap/auth-поверхностях, чтобы splash и регистрация не
@@ -43,27 +44,48 @@ class OrexAppIcon extends StatelessWidget {
           ],
         ),
         clipBehavior: Clip.antiAlias,
-        child: Image.asset(
-          orexAppIconAsset,
-          fit: BoxFit.cover,
-          cacheWidth: kIsWeb ? null : decodeWidth,
-          filterQuality: FilterQuality.medium,
-          gaplessPlayback: true,
-          frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-            if (wasSynchronouslyLoaded) return child;
-            return AnimatedOpacity(
-              opacity: frame == null ? 0 : 1,
-              duration: const Duration(milliseconds: 140),
-              curve: Curves.easeOut,
-              child: child,
-            );
-          },
-          errorBuilder: (_, __, ___) => Icon(
-            Icons.eco_outlined,
-            color: OrexColors.cream,
-            size: size * 0.42,
-          ),
-        ),
+        child: kIsWeb
+            ? Image.network(
+                orexWebAppIconUrl,
+                fit: BoxFit.cover,
+                filterQuality: FilterQuality.medium,
+                gaplessPlayback: true,
+                frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                  if (wasSynchronouslyLoaded) return child;
+                  return AnimatedOpacity(
+                    opacity: frame == null ? 0 : 1,
+                    duration: const Duration(milliseconds: 140),
+                    curve: Curves.easeOut,
+                    child: child,
+                  );
+                },
+                errorBuilder: (_, _, _) => Icon(
+                  Icons.eco_outlined,
+                  color: OrexColors.cream,
+                  size: size * 0.42,
+                ),
+              )
+            : Image.asset(
+                orexAppIconAsset,
+                fit: BoxFit.cover,
+                cacheWidth: decodeWidth,
+                filterQuality: FilterQuality.medium,
+                gaplessPlayback: true,
+                frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                  if (wasSynchronouslyLoaded) return child;
+                  return AnimatedOpacity(
+                    opacity: frame == null ? 0 : 1,
+                    duration: const Duration(milliseconds: 140),
+                    curve: Curves.easeOut,
+                    child: child,
+                  );
+                },
+                errorBuilder: (_, _, _) => Icon(
+                  Icons.eco_outlined,
+                  color: OrexColors.cream,
+                  size: size * 0.42,
+                ),
+              ),
       ),
     );
   }

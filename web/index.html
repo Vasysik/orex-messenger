@@ -60,6 +60,20 @@
       pointer-events: none;
     }
 
+    .orex-asset-warmup {
+      position: fixed;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .orex-asset-warmup img {
+      width: 1px;
+      height: 1px;
+    }
+
     .orex-bootstrap-spinner {
       width: 42px;
       height: 42px;
@@ -89,6 +103,16 @@
   </style>
 </head>
 <body>
+  <!-- Start fetching the two brand images before Flutter/CanvasKit starts.
+       They are ordinary images rather than <link rel=preload>, so Chrome does
+       not warn if Flutter needs them slightly later. The URLs exactly match
+       the Web widgets below, allowing the normal browser HTTP cache to reuse
+       the response immediately. -->
+  <div class="orex-asset-warmup" aria-hidden="true">
+    <img src="icons/Icon-192.png" alt="" loading="eager" fetchpriority="high" decoding="async">
+    <img src="assets/assets/mascot/squirrel.png" alt="" loading="eager" fetchpriority="low" decoding="async">
+  </div>
+
   <div id="orex-bootstrap" aria-label="Orex загружается" role="status">
     <div class="orex-bootstrap-spinner" aria-hidden="true"></div>
   </div>

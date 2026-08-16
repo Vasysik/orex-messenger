@@ -606,7 +606,7 @@ class _HomeShellState extends State<HomeShell> {
                 ),
               ),
               const Positioned(
-                left: 18,
+                right: 18,
                 bottom: 18,
                 child: SafeArea(child: OrexDownloadCornerButton()),
               ),

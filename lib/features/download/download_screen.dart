@@ -296,7 +296,7 @@ class _DownloadTile extends StatelessWidget {
     final size = artifact?.sizeBytes;
     final detail = [
       if (size != null) _formatBytes(size),
-      if (subtitle != null) subtitle!,
+      ?subtitle,
     ].join(' · ');
 
     return Semantics(

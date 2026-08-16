@@ -283,7 +283,7 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             ),
             const Positioned(
-              left: 18,
+              right: 18,
               bottom: 18,
               child: SafeArea(child: OrexDownloadCornerButton()),
             ),

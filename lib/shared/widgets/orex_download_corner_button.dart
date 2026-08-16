@@ -24,10 +24,10 @@ class OrexDownloadCornerButton extends StatelessWidget {
           color: isDark ? OrexColors.walnutDeep : OrexColors.cream,
           shape: const CircleBorder(),
           clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            customBorder: const CircleBorder(),
+          child: const InkWell(
+            customBorder: CircleBorder(),
             onTap: openOrexDownloadPage,
-            child: const SizedBox.square(
+            child: SizedBox.square(
               dimension: 52,
               child: Icon(
                 Icons.download_rounded,
