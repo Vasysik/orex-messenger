@@ -76,10 +76,12 @@ class _Header extends StatelessWidget {
   const _Header({
     required this.onSearch,
     required this.onOpenSettings,
+    required this.onOpenDownload,
     required this.onNewChat,
   });
   final ValueChanged<String> onSearch;
   final VoidCallback onOpenSettings;
+  final VoidCallback? onOpenDownload;
   final VoidCallback onNewChat;
 
   @override
@@ -130,6 +132,13 @@ class _Header extends StatelessWidget {
             color: OrexColors.copper,
             tooltip: 'Новый чат',
           ),
+          if (onOpenDownload != null)
+            IconButton(
+              onPressed: onOpenDownload,
+              icon: const Icon(Icons.download_rounded),
+              color: OrexColors.copper,
+              tooltip: 'Скачать приложение',
+            ),
           IconButton(
             onPressed: onOpenSettings,
             icon: const Icon(Icons.settings),

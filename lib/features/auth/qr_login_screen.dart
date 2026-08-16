@@ -13,6 +13,7 @@ import '../../core/voip/matrix_request_gate.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/orex_dialogs.dart';
+import 'qr_scanner_camera_lease.dart';
 
 enum _QrMode { scan, show }
 
@@ -39,10 +40,16 @@ class QrLoginScreen extends StatefulWidget {
 class _QrLoginScreenState extends State<QrLoginScreen>
     with WidgetsBindingObserver {
   late final MobileScannerController _scannerController;
+  final OrexQrScannerCameraLease _scannerCameraLease =
+      OrexQrScannerCameraLease();
   Future<void> _scannerLifecycle = Future<void>.value();
   bool _scannerWanted = false;
   bool _scannerShuttingDown = false;
   bool _scannerControllerDisposed = false;
+  bool _scannerRunning = false;
+  bool _switchingMode = false;
+  bool _closeInProgress = false;
+  bool _allowPop = false;
 
   _QrMode? _mode;
   OrexQrRendezvousSession? _activeSession;
@@ -86,14 +93,17 @@ class _QrLoginScreenState extends State<QrLoginScreen>
           .onLoginStateChanged
           .stream
           .listen((_) {
-            if (widget.matrix.client.isLogged()) _completeLogin();
+            if (widget.matrix.client.isLogged()) {
+              unawaited(_completeLogin());
+            }
           });
     }
   }
 
-  void _requestScanner(bool wanted) {
+  Future<void> _requestScanner(bool wanted) {
     _scannerWanted = wanted;
     _scannerLifecycle = _scannerLifecycle.then((_) => _applyScannerState());
+    return _scannerLifecycle;
   }
 
   Future<void> _applyScannerState() async {
@@ -107,11 +117,27 @@ class _QrLoginScreenState extends State<QrLoginScreen>
         !_busy;
     try {
       if (shouldRun) {
-        await _scannerController.start();
+        if (_scannerRunning) return;
+        _scannerCameraLease.begin();
+        try {
+          await _scannerController.start();
+          _scannerRunning = true;
+          await _scannerCameraLease.capture();
+        } catch (_) {
+          _scannerCameraLease.abort();
+          rethrow;
+        }
       } else {
+        // Capture the exact scanner stream while its platform view is still in
+        // the DOM. mobile_scanner 7.4.0 stops decoding on Web but leaves the
+        // MediaStreamTrack alive, so controller.stop() alone is insufficient.
+        await _scannerCameraLease.capture();
         await _scannerController.stop();
+        _scannerRunning = false;
+        await _scannerCameraLease.release();
       }
     } catch (error) {
+      _scannerRunning = false;
       if (!_scannerShuttingDown) {
         OrexLog.d('QR', 'scanner lifecycle failed', error);
       }
@@ -185,10 +211,11 @@ class _QrLoginScreenState extends State<QrLoginScreen>
     super.dispose();
   }
 
-  void _completeLogin() {
+  Future<void> _completeLogin() async {
     if (!mounted || _loginCompleted) return;
     _loginCompleted = true;
-    _requestScanner(false);
+    await _requestScanner(false);
+    if (!mounted) return;
     _displayGeneration++;
     _countdown?.cancel();
     _activeSession = null;
@@ -205,16 +232,34 @@ class _QrLoginScreenState extends State<QrLoginScreen>
     // Сначала закрываем QR-route, затем перестраиваем корневой экран. Иначе
     // MaterialApp успевает заменить LoginScreen на HomeShell под всё ещё
     // открытым QR-route, и пользователь видит уже ненужный код поверх аккаунта.
-    final navigator = Navigator.of(context);
-    if (navigator.canPop()) navigator.pop(true);
+    await _closeScreen(true, scannerAlreadyStopped: true);
     widget.onLoggedIn?.call();
   }
 
-  void _setMode(_QrMode mode) {
-    if (_waitingForLoginCompletion) return;
+  Future<void> _closeScreen(
+    Object? result, {
+    bool scannerAlreadyStopped = false,
+  }) async {
+    if (_closeInProgress) return;
+    _closeInProgress = true;
+    if (!scannerAlreadyStopped) {
+      await _requestScanner(false);
+    }
+    if (!mounted) return;
+    setState(() => _allowPop = true);
+    Navigator.of(context).pop(result);
+  }
+
+  Future<void> _setMode(_QrMode mode) async {
+    if (_waitingForLoginCompletion || _switchingMode) return;
     if (mode == _QrMode.scan && !_scannerModeAvailable) return;
     if (_mode == mode) return;
-    if (mode == _QrMode.show) _requestScanner(false);
+    _switchingMode = true;
+    if (mounted) setState(() {});
+    if (mode == _QrMode.show) {
+      await _requestScanner(false);
+      if (!mounted) return;
+    }
     _countdown?.cancel();
     _displayGeneration++;
     final session = _activeSession;
@@ -231,6 +276,7 @@ class _QrLoginScreenState extends State<QrLoginScreen>
       _busy = false;
       _handlingScan = false;
       _terminalState = _QrTerminalState.none;
+      _switchingMode = false;
     });
     if (mode == _QrMode.show) {
       unawaited(_prepareDisplay());
@@ -345,7 +391,7 @@ class _QrLoginScreenState extends State<QrLoginScreen>
             if (_activeSession == null) return;
             continue;
           case OrexQrRendezvousPollState.loggedIn:
-            _completeLogin();
+            await _completeLogin();
             return;
           case OrexQrRendezvousPollState.used:
             _activeSession = null;
@@ -492,7 +538,8 @@ class _QrLoginScreenState extends State<QrLoginScreen>
       _status = 'Проверяем QR-код…';
       _terminalState = _QrTerminalState.none;
     });
-    _requestScanner(false);
+    await _requestScanner(false);
+    if (!mounted || generation != _displayGeneration) return;
     try {
       final payload = OrexQrLoginPayload.parse(raw);
       if (!payload.isRendezvous) {
@@ -532,7 +579,7 @@ class _QrLoginScreenState extends State<QrLoginScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Вход разрешён новому устройству')),
         );
-        Navigator.of(context).pop(true);
+        await _closeScreen(true, scannerAlreadyStopped: true);
         return;
       }
 
@@ -578,7 +625,7 @@ class _QrLoginScreenState extends State<QrLoginScreen>
           case OrexQrRendezvousPollState.waiting:
             continue;
           case OrexQrRendezvousPollState.loggedIn:
-            _completeLogin();
+            await _completeLogin();
             return;
           case OrexQrRendezvousPollState.rejected:
             throw const OrexAuthProtocolException(
@@ -601,7 +648,7 @@ class _QrLoginScreenState extends State<QrLoginScreen>
         // не показываем пользователю ложную ошибку входа.
         if (widget.matrix.client.isLogged()) {
           if (!mounted || generation != _displayGeneration) return;
-          _completeLogin();
+          await _completeLogin();
           return;
         }
         if (_isTransientQrFailure(error) && !session.isExpired) {
@@ -703,83 +750,93 @@ class _QrLoginScreenState extends State<QrLoginScreen>
   @override
   Widget build(BuildContext context) {
     final mode = _mode ?? _QrMode.show;
-    return AmbientBackground(
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        appBar: AppBar(
+    return PopScope(
+      canPop: _allowPop,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop || _closeInProgress) return;
+        unawaited(_closeScreen(result));
+      },
+      child: AmbientBackground(
+        child: Scaffold(
           backgroundColor: Colors.transparent,
-          title: const Text('Вход по QR'),
-        ),
-        body: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 520),
-                child: GlassPanel(
-                  borderRadius: 24,
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (_scannerModeAvailable) ...[
-                        SegmentedButton<_QrMode>(
-                          segments: const [
-                            ButtonSegment(
-                              value: _QrMode.scan,
-                              icon: Icon(Icons.qr_code_scanner),
-                              label: Text('Сканировать'),
-                            ),
-                            ButtonSegment(
-                              value: _QrMode.show,
-                              icon: Icon(Icons.qr_code_2),
-                              label: Text('Показать код'),
-                            ),
-                          ],
-                          selected: {mode},
-                          onSelectionChanged: _busy ||
-                                  _handlingScan ||
-                                  _waitingForLoginCompletion
-                              ? null
-                              : (selection) => _setMode(selection.first),
-                        ),
-                        const SizedBox(height: 20),
-                      ],
-                      AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 180),
-                        child: mode == _QrMode.scan
-                            ? _buildScanner()
-                            : _buildQrDisplay(),
-                      ),
-                      if (_status != null) ...[
-                        const SizedBox(height: 14),
-                        Semantics(
-                          liveRegion: true,
-                          child: Text(
-                            _status!,
-                            textAlign: TextAlign.center,
+          appBar: AppBar(
+            backgroundColor: Colors.transparent,
+            title: const Text('Вход по QR'),
+          ),
+          body: SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 520),
+                  child: GlassPanel(
+                    borderRadius: 24,
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_scannerModeAvailable) ...[
+                          SegmentedButton<_QrMode>(
+                            segments: const [
+                              ButtonSegment(
+                                value: _QrMode.scan,
+                                icon: Icon(Icons.qr_code_scanner),
+                                label: Text('Сканировать'),
+                              ),
+                              ButtonSegment(
+                                value: _QrMode.show,
+                                icon: Icon(Icons.qr_code_2),
+                                label: Text('Показать код'),
+                              ),
+                            ],
+                            selected: {mode},
+                            onSelectionChanged:
+                                _busy ||
+                                    _handlingScan ||
+                                    _switchingMode ||
+                                    _waitingForLoginCompletion
+                                ? null
+                                : (selection) =>
+                                      unawaited(_setMode(selection.first)),
                           ),
+                          const SizedBox(height: 20),
+                        ],
+                        AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 180),
+                          child: mode == _QrMode.scan
+                              ? _buildScanner()
+                              : _buildQrDisplay(),
                         ),
-                      ],
-                      if (_secondsLeft != null && _secondsLeft! > 0) ...[
-                        const SizedBox(height: 6),
-                        Text(
-                          'Код действует ещё $_secondsLeft сек.',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ],
-                      if (_error != null) ...[
-                        const SizedBox(height: 14),
-                        Semantics(
-                          liveRegion: true,
-                          child: Text(
-                            _error!,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(color: Color(0xFFCF6679)),
+                        if (_status != null) ...[
+                          const SizedBox(height: 14),
+                          Semantics(
+                            liveRegion: true,
+                            child: Text(
+                              _status!,
+                              textAlign: TextAlign.center,
+                            ),
                           ),
-                        ),
+                        ],
+                        if (_secondsLeft != null && _secondsLeft! > 0) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            'Код действует ещё $_secondsLeft сек.',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                        if (_error != null) ...[
+                          const SizedBox(height: 14),
+                          Semantics(
+                            liveRegion: true,
+                            child: Text(
+                              _error!,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Color(0xFFCF6679)),
+                            ),
+                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
               ),

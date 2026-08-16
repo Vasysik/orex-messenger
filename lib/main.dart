@@ -22,6 +22,7 @@ import 'core/vodozemac_initializer.dart';
 import 'features/auth/login_screen.dart';
 import 'features/calls/call_screen.dart';
 import 'features/calls/incoming_call_screen.dart';
+import 'features/download/download_screen.dart';
 import 'features/home/home_shell.dart';
 import 'features/settings/verification_screen.dart';
 import 'shared/theme/glass.dart';
@@ -35,7 +36,18 @@ Future<void> orexPushBackgroundMain() => runOrexPushBackgroundEntrypoint();
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   if (kIsWeb) BrowserContextMenu.disableContextMenu();
+  if (kIsWeb && _isDownloadRoute(Uri.base.path)) {
+    runApp(const OrexDownloadApp());
+    return;
+  }
   runApp(const OrexBootstrap());
+}
+
+bool _isDownloadRoute(String path) {
+  final normalized = path.endsWith('/') && path.length > 1
+      ? path.substring(0, path.length - 1)
+      : path;
+  return normalized == '/download';
 }
 
 class OrexScrollBehavior extends MaterialScrollBehavior {

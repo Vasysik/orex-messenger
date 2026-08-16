@@ -138,12 +138,12 @@ curl -fsS https://orex.vasys.ru/updates/debug/latest.json
 
 ### Публичная страница скачивания
 
-`web/download/` использует этот же stable feed как единственный источник
-актуального релиза. После Web-сборки страница публикуется как `/download/` и
-показывает прямые ссылки на `windows-x64`, `android-arm64-v8a` и
-`android-armeabi-v7a`. Поэтому при выпуске новой stable-сборки отдельно менять
-HTML или JavaScript не требуется: достаточно опубликовать полный релиз в
-`updates/stable/<version>+<build>/`.
+Flutter route `/download/` использует этот же stable feed как единственный
+источник актуального релиза и показывает `windows-x64`, `android-arm64-v8a` и
+`android-armeabi-v7a`. Отдельного download frontend больше нет: route обслуживает
+тот же Flutter bundle через SPA fallback в `web/nginx.conf`. Поэтому при выпуске
+новой stable-сборки менять страницу не требуется — достаточно опубликовать полный
+релиз в `updates/stable/<version>+<build>/`.
 
 Debug-канал на публичной странице намеренно не показывается.
 

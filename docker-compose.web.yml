@@ -5,6 +5,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./build/web:/usr/share/nginx/html:ro
+      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - traefik-proxy
     labels:
@@ -33,7 +34,6 @@ services:
       - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cross-Origin-Opener-Policy=same-origin"
       - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cross-Origin-Embedder-Policy=require-corp"
       - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cross-Origin-Resource-Policy=same-origin"
-      - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.Cache-Control=no-cache"
       - "traefik.http.middlewares.orex-web-headers.headers.customresponseheaders.X-Robots-Tag=noindex, nofollow, noarchive"
 
 

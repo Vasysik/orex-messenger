@@ -3,6 +3,7 @@ import 'package:matrix/matrix.dart';
 
 import '../../core/config/app_version.dart';
 import '../../core/logging/orex_logger.dart';
+import '../../core/platform/orex_download_page.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
@@ -271,6 +272,18 @@ class _LoginScreenState extends State<LoginScreen> {
                             style: const TextStyle(color: OrexColors.copper),
                           ),
                         ),
+                        if (orexDownloadPageAvailable) ...[
+                          const SizedBox(height: 2),
+                          TextButton.icon(
+                            onPressed: openOrexDownloadPage,
+                            icon: const Icon(Icons.download_rounded, size: 18),
+                            label: const Text('Скачать приложение'),
+                            style: TextButton.styleFrom(
+                              foregroundColor: OrexColors.copper,
+                              visualDensity: VisualDensity.compact,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
