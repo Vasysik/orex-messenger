@@ -28,8 +28,21 @@ class OrexAppIcon extends StatelessWidget {
     return Semantics(
       image: true,
       label: 'Иконка приложения $orexAppName',
-      child: SizedBox.square(
-        dimension: size,
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          gradient: OrexColors.copperGradient,
+          borderRadius: radius,
+          boxShadow: [
+            BoxShadow(
+              color: OrexColors.copper.withValues(alpha: 0.28),
+              blurRadius: size * 0.25,
+              offset: Offset(0, size * 0.08),
+            ),
+          ],
+        ),
+        clipBehavior: Clip.antiAlias,
         child: Image.asset(
           orexAppIconAsset,
           fit: BoxFit.cover,
@@ -37,31 +50,19 @@ class OrexAppIcon extends StatelessWidget {
           filterQuality: FilterQuality.medium,
           gaplessPlayback: true,
           frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-            final decorated = Container(
-              width: size,
-              height: size,
-              decoration: BoxDecoration(
-                borderRadius: radius,
-                boxShadow: [
-                  BoxShadow(
-                    color: OrexColors.copper.withValues(alpha: 0.28),
-                    blurRadius: size * 0.25,
-                    offset: Offset(0, size * 0.08),
-                  ),
-                ],
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: child,
-            );
-            if (wasSynchronouslyLoaded) return decorated;
+            if (wasSynchronouslyLoaded) return child;
             return AnimatedOpacity(
               opacity: frame == null ? 0 : 1,
               duration: const Duration(milliseconds: 140),
               curve: Curves.easeOut,
-              child: decorated,
+              child: child,
             );
           },
-          errorBuilder: (_, __, ___) => const SizedBox.expand(),
+          errorBuilder: (_, __, ___) => Icon(
+            Icons.eco_outlined,
+            color: OrexColors.cream,
+            size: size * 0.42,
+          ),
         ),
       ),
     );

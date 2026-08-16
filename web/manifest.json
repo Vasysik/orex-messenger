@@ -1,11 +1,11 @@
 {
-    "name": "orex_messenger",
-    "short_name": "orex_messenger",
+    "name": "Orex Messenger",
+    "short_name": "Orex",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#1C140E",
+    "theme_color": "#D47939",
+    "description": "Orex Messenger — тёплый ореховый мессенджер на Matrix.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

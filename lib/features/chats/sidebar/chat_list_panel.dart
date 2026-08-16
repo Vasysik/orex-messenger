@@ -26,7 +26,6 @@ class ChatListPanel extends StatefulWidget {
     required this.onSelect,
     required this.onOpenPreview,
     required this.onOpenSettings,
-    this.onOpenDownload,
     required this.onNewChat,
     required this.folders,
   });
@@ -36,7 +35,6 @@ class ChatListPanel extends StatefulWidget {
   final ValueChanged<String> onSelect;
   final ValueChanged<OrexConversationPreview> onOpenPreview;
   final VoidCallback onOpenSettings;
-  final VoidCallback? onOpenDownload;
   final VoidCallback onNewChat;
   final ChatFolderController folders;
 
@@ -230,7 +228,6 @@ class _ChatListPanelState extends State<ChatListPanel> {
             _Header(
               onSearch: _onSearch,
               onOpenSettings: widget.onOpenSettings,
-              onOpenDownload: widget.onOpenDownload,
               onNewChat: widget.onNewChat,
             ),
             _FolderTabs(

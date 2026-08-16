@@ -72,8 +72,10 @@ build\web
 ### Flutter-страница скачивания
 
 `/download/` — это route того же Flutter-приложения, а не отдельный HTML/CSS
-frontend. `web/nginx.conf` возвращает `index.html` для client-side routes, после
-чего bootstrap выбирает облегчённый download-screen без запуска Matrix-сессии.
+frontend. `web/nginx.conf` обрабатывает `/download`/`/download/` явно и возвращает
+`index.html`, после чего bootstrap выбирает облегчённый download-screen без
+запуска Matrix-сессии. Явный location нужен, чтобы случайная/stale директория
+`build/web/download` не превращала этот SPA route в nginx `403 Forbidden`.
 После публикации Web страница доступна по адресу:
 
 ```text
@@ -87,10 +89,22 @@ https://orex.vasys.ru/download/
 В Web переход встроен в экран входа и в шапку списка чатов; нативные сборки его
 не показывают.
 
-`web/nginx.conf` также разделяет cache policy: HTML/Flutter shell всегда
-revalidate, а bundled image assets и иконки кешируются браузером до суток. Это
-убирает повторную сетевую паузу брендовой иконки без риска надолго закрепить
-старый `index.html` после нового деплоя.
+`web/nginx.conf` и `web/flutter_bootstrap.js` разделяют cache policy по
+назначению. `index.html`, bootstrap и manifest всегда revalidate, а тяжёлые
+Flutter-файлы (`main.dart.js`, `assets/`, CanvasKit) в production запрашиваются
+через build-versioned namespace `/__orex_build/<build-id>/...` и получают
+`Cache-Control: public, max-age=31536000, immutable`. Build id берётся из
+`{{flutter_service_worker_version}}`, который Flutter подставляет при каждой
+сборке. Поэтому обычный reload того же релиза не перекачивает приложение, а
+после нового deploy свежий bootstrap сразу указывает на новый URL и старый кэш
+не мешает обновлению. Для `flutter run`/localhost используется обычный loader
+без production namespace.
+
+`index.html` также держит лёгкий HTML/CSS bootstrap-фон до первого кадра Flutter,
+поэтому даже при холодном старте между навигацией и canvas нет белой вспышки.
+Preload `app_icon.png` намеренно удалён: Flutter запрашивает ассет уже через свой
+versioned asset base, и отдельный preload только создавал предупреждение
+`preloaded ... but not used`.
 
 ## Web smoke
 
@@ -136,13 +150,17 @@ docker compose -f docker-compose.web.yml up -d --force-recreate orex-web
 
 ```bash
 curl -I https://orex.vasys.ru/
+curl -I https://orex.vasys.ru/download/
+curl -I https://orex.vasys.ru/flutter_bootstrap.js
 ```
 
 В ответе должны быть CSP, HSTS, `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, Permissions Policy,
 `Cross-Origin-Opener-Policy: same-origin`,
 `Cross-Origin-Embedder-Policy: require-corp`,
-`Cross-Origin-Resource-Policy: same-origin` и `Cache-Control: no-cache`. Эти
+`Cross-Origin-Resource-Policy: same-origin` и revalidation cache policy.
+`/download/` должен отвечать `200`, а не `403`; bootstrap должен иметь
+`Cache-Control: no-cache, must-revalidate`. Эти
 COOP/COEP-заголовки нужны `SharedArrayBuffer`/flutter_rust_bridge; обычный
 `flutter run -d chrome` их не выставляет и потому может печатать предупреждение,
 даже когда production deployment настроен правильно. Файл `web/_headers` остаётся декларацией тех же

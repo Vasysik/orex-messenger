@@ -1047,16 +1047,28 @@ class _OrexQrCard extends StatelessWidget {
                 ),
               ),
             ),
-            Image.asset(
-              'assets/mascot/squirrel.png',
-              width: 72,
-              height: 72,
-              fit: BoxFit.contain,
-              filterQuality: FilterQuality.high,
-              errorBuilder: (_, _, _) => const Icon(
-                Icons.eco_outlined,
-                color: OrexColors.copperDeep,
-                size: 44,
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: Container(
+                width: 72,
+                height: 72,
+                decoration: const BoxDecoration(
+                  gradient: OrexColors.copperGradient,
+                ),
+                alignment: Alignment.center,
+                child: Image.asset(
+                  'assets/mascot/squirrel.png',
+                  width: 72,
+                  height: 72,
+                  fit: BoxFit.cover,
+                  filterQuality: FilterQuality.high,
+                  gaplessPlayback: true,
+                  errorBuilder: (_, _, _) => const Icon(
+                    Icons.eco_outlined,
+                    color: OrexColors.cream,
+                    size: 42,
+                  ),
+                ),
               ),
             ),
           ],

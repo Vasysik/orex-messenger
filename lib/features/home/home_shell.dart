@@ -7,7 +7,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../core/config/app_version.dart';
 import '../../core/logging/orex_logger.dart';
-import '../../core/platform/orex_download_page.dart';
 import '../../core/update/orex_update_controller.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
@@ -16,6 +15,7 @@ import '../../shared/widgets/orex_loading_overlay.dart';
 import '../../shared/widgets/orex_update_dialog.dart';
 import '../../shared/widgets/orex_choice_sheet.dart';
 import '../../shared/widgets/orex_dialogs.dart';
+import '../../shared/widgets/orex_download_corner_button.dart';
 import '../../shared/widgets/squirrel_mascot.dart';
 import '../calls/call_screen.dart';
 import '../calls/call_launch_coordinator.dart';
@@ -605,6 +605,11 @@ class _HomeShellState extends State<HomeShell> {
                   },
                 ),
               ),
+              const Positioned(
+                left: 18,
+                bottom: 18,
+                child: SafeArea(child: OrexDownloadCornerButton()),
+              ),
               if (_creatingRoom) const OrexLoadingOverlay(),
             ],
           ),
@@ -646,7 +651,6 @@ class _HomeShellState extends State<HomeShell> {
     onSelect: (id) => _selectRoom(id, source: 'chat-list'),
     onOpenPreview: _openConversationPreview,
     onOpenSettings: _openSettings,
-    onOpenDownload: orexDownloadPageAvailable ? openOrexDownloadPage : null,
     onNewChat: _openNewChat,
     folders: _folders,
   );
