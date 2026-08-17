@@ -15,7 +15,6 @@ import '../../shared/widgets/orex_loading_overlay.dart';
 import '../../shared/widgets/orex_update_dialog.dart';
 import '../../shared/widgets/orex_choice_sheet.dart';
 import '../../shared/widgets/orex_dialogs.dart';
-import '../../shared/widgets/orex_download_corner_button.dart';
 import '../../shared/widgets/squirrel_mascot.dart';
 import '../calls/call_screen.dart';
 import '../calls/call_launch_coordinator.dart';
@@ -604,11 +603,6 @@ class _HomeShellState extends State<HomeShell> {
                     );
                   },
                 ),
-              ),
-              const Positioned(
-                right: 18,
-                bottom: 18,
-                child: SafeArea(child: OrexDownloadCornerButton()),
               ),
               if (_creatingRoom) const OrexLoadingOverlay(),
             ],

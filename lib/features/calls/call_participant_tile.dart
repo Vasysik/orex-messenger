@@ -50,6 +50,24 @@ class OrexCallParticipantTileStyle {
     showNameLabel: true,
   );
 
+  static const fullscreen = OrexCallParticipantTileStyle(
+    frameBorderRadius: 0,
+    clipBorderRadius: 0,
+    activeBlur: 0,
+    avatarSize: 132,
+    zoomAvatarSize: 160,
+    cornerButtonSize: 40,
+    cornerButtonRadius: 14,
+    cornerButtonIconSize: 19,
+    statusBadgeSize: 40,
+    statusBadgeRadius: 14,
+    statusBadgeIconSize: 19,
+    statusBadgeTextSize: 22,
+    badgeGap: 6,
+    nameFontSize: 13,
+    showNameLabel: true,
+  );
+
   static const minimized = OrexCallParticipantTileStyle(
     frameBorderRadius: 14,
     clipBorderRadius: 12,
@@ -98,6 +116,7 @@ class OrexCallParticipantTile extends StatelessWidget {
     required this.style,
     this.zoomable = false,
     this.onTap,
+    this.onDoubleTap,
     this.cornerIcon,
     this.cornerTooltip,
     this.onCornerTap,
@@ -115,6 +134,7 @@ class OrexCallParticipantTile extends StatelessWidget {
   final OrexCallParticipantTileStyle style;
   final bool zoomable;
   final VoidCallback? onTap;
+  final VoidCallback? onDoubleTap;
   final IconData? cornerIcon;
   final String? cornerTooltip;
   final VoidCallback? onCornerTap;
@@ -171,12 +191,14 @@ class OrexCallParticipantTile extends StatelessWidget {
       matrix: matrix,
       borderRadius: style.frameBorderRadius,
       activeBlur: style.activeBlur,
+      preserveChildSize: track != null,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(style.clipBorderRadius),
         child: Material(
           color: Colors.transparent,
           child: InkWell(
             onTap: onTap,
+            onDoubleTap: onDoubleTap,
             child: Stack(
               fit: StackFit.expand,
               children: [

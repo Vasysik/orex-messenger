@@ -7,7 +7,6 @@ import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/glass.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/orex_app_brand.dart';
-import '../../shared/widgets/orex_download_corner_button.dart';
 import 'password_recovery_dialog.dart';
 import 'qr_login_screen.dart';
 
@@ -281,11 +280,6 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
               ),
-            ),
-            const Positioned(
-              right: 18,
-              bottom: 18,
-              child: SafeArea(child: OrexDownloadCornerButton()),
             ),
           ],
         ),

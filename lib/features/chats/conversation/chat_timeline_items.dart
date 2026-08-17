@@ -21,6 +21,26 @@ class AlbumItem extends ChatItem {
   String get id => leader.eventId;
 }
 
+class DaySeparatorItem extends ChatItem {
+  DaySeparatorItem(DateTime date) : date = date.toLocal();
+
+  final DateTime date;
+
+  @override
+  String get id =>
+      'day:${date.year.toString().padLeft(4, '0')}-'
+      '${date.month.toString().padLeft(2, '0')}-'
+      '${date.day.toString().padLeft(2, '0')}';
+}
+
+bool orexSameCalendarDay(DateTime a, DateTime b) {
+  final left = a.toLocal();
+  final right = b.toLocal();
+  return left.year == right.year &&
+      left.month == right.month &&
+      left.day == right.day;
+}
+
 class OrexTimelineGroup<T> {
   const OrexTimelineGroup(this.items) : assert(items.length > 0);
 
@@ -61,6 +81,10 @@ class OrexTimelineGrouper {
         if (!isRedacted(next) &&
             isMedia(next) &&
             senderId(next) == senderId(current) &&
+            orexSameCalendarDay(
+              originServerTs(next),
+              originServerTs(current),
+            ) &&
             originServerTs(
                   next,
                 ).difference(originServerTs(current)).abs().inMinutes <
@@ -86,7 +110,7 @@ class OrexTimelineAdapter {
     List<Event> rawEvents, {
     required bool Function(Event event) isRenderable,
   }) {
-    return OrexTimelineGrouper.transform<Event>(
+    final messageItems = OrexTimelineGrouper.transform<Event>(
       rawEvents,
       isRenderable: isRenderable,
       isMedia: (event) =>
@@ -95,11 +119,37 @@ class OrexTimelineAdapter {
       isRedacted: (event) => event.redacted,
       senderId: (event) => event.senderId,
       originServerTs: (event) => event.originServerTs,
-    ).map((group) {
+    ).map<ChatItem>((group) {
       if (group.isAlbum) {
         return AlbumItem(leader: group.leader, events: group.items);
       }
       return SingleEventItem(group.leader);
     }).toList();
+
+    if (messageItems.length < 2) return messageItems;
+
+    final result = <ChatItem>[];
+    for (var i = 0; i < messageItems.length; i++) {
+      final current = messageItems[i];
+      result.add(current);
+      if (i + 1 >= messageItems.length) continue;
+
+      final next = messageItems[i + 1];
+      final currentDate = _originServerTs(current);
+      final nextDate = _originServerTs(next);
+      if (!orexSameCalendarDay(currentDate, nextDate)) {
+        // ListView у чата reverse=true. Разделитель идёт после более нового
+        // элемента в данных, поэтому визуально оказывается прямо над ним.
+        result.add(DaySeparatorItem(currentDate));
+      }
+    }
+    return result;
+  }
+
+  static DateTime _originServerTs(ChatItem item) {
+    if (item is SingleEventItem) return item.event.originServerTs;
+    if (item is AlbumItem) return item.leader.originServerTs;
+    if (item is DaySeparatorItem) return item.date;
+    throw StateError('Unknown timeline item ${item.runtimeType}');
   }
 }

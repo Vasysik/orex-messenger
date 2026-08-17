@@ -78,6 +78,7 @@ class OrexSpeakingFrame extends StatefulWidget {
     this.activePadding = 2,
     this.inactivePadding = 1,
     this.activeBlur = 18,
+    this.preserveChildSize = false,
   });
 
   final lk.Participant participant;
@@ -87,6 +88,7 @@ class OrexSpeakingFrame extends StatefulWidget {
   final double activePadding;
   final double inactivePadding;
   final double activeBlur;
+  final bool preserveChildSize;
 
   @override
   State<OrexSpeakingFrame> createState() => _OrexSpeakingFrameState();
@@ -137,28 +139,50 @@ class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
   @override
   Widget build(BuildContext context) {
     final active = _active;
+    final decoration = BoxDecoration(
+      borderRadius: BorderRadius.circular(widget.borderRadius),
+      border: Border.all(
+        color: active
+            ? OrexColors.copper.withValues(alpha: 0.95)
+            : Colors.white.withValues(alpha: 0.08),
+        width: active ? 2 : 1,
+      ),
+      boxShadow: active
+          ? [
+              BoxShadow(
+                color: OrexColors.copper.withValues(alpha: 0.28),
+                blurRadius: widget.activeBlur,
+                spreadRadius: 1,
+              ),
+            ]
+          : null,
+    );
+
+    if (widget.preserveChildSize) {
+      return Stack(
+        fit: StackFit.passthrough,
+        children: [
+          widget.child,
+          Positioned.fill(
+            child: IgnorePointer(
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 35),
+                curve: Curves.linear,
+                decoration: decoration,
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
     return AnimatedContainer(
       duration: const Duration(milliseconds: 35),
       curve: Curves.linear,
-      padding: EdgeInsets.all(active ? widget.activePadding : widget.inactivePadding),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(widget.borderRadius),
-        border: Border.all(
-          color: active
-              ? OrexColors.copper.withValues(alpha: 0.95)
-              : Colors.white.withValues(alpha: 0.08),
-          width: active ? 2 : 1,
-        ),
-        boxShadow: active
-            ? [
-                BoxShadow(
-                  color: OrexColors.copper.withValues(alpha: 0.28),
-                  blurRadius: widget.activeBlur,
-                  spreadRadius: 1,
-                ),
-              ]
-            : null,
+      padding: EdgeInsets.all(
+        active ? widget.activePadding : widget.inactivePadding,
       ),
+      decoration: decoration,
       child: widget.child,
     );
   }

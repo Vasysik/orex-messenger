@@ -29,6 +29,7 @@ import 'shared/theme/glass.dart';
 import 'shared/theme/orex_theme.dart';
 import 'shared/theme/theme_controller.dart';
 import 'shared/widgets/orex_app_brand.dart';
+import 'shared/widgets/orex_download_corner_button.dart';
 
 @pragma('vm:entry-point')
 Future<void> orexPushBackgroundMain() => runOrexPushBackgroundEntrypoint();
@@ -1027,6 +1028,16 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       theme: OrexTheme.light,
       darkTheme: OrexTheme.dark,
       themeMode: widget.theme.mode,
+      builder: (context, child) => Stack(
+        children: [
+          Positioned.fill(child: child ?? const SizedBox.shrink()),
+          const Positioned(
+            left: 16,
+            bottom: 16,
+            child: SafeArea(child: OrexDownloadCornerButton()),
+          ),
+        ],
+      ),
       home: widget.matrix.isLoggedIn
           ? HomeShell(
               matrix: widget.matrix,

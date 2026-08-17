@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import '../../core/platform/orex_download_page.dart';
 import '../theme/orex_theme.dart';
 
-/// Ненавязчивая Web-кнопка страницы загрузок. Она живёт поверх основного UI,
-/// чтобы ссылка на дистрибутивы не занимала место в формах/панелях приложения.
+/// Web-кнопка страницы загрузок в том же визуальном языке, что и кнопка
+/// отправки сообщения: медный градиент, кремовая пиктограмма и круглая форма.
+/// Она живёт поверх основного UI, чтобы ссылка на дистрибутивы не занимала
+/// место в формах и панелях приложения.
 class OrexDownloadCornerButton extends StatelessWidget {
   const OrexDownloadCornerButton({super.key});
 
@@ -12,26 +14,34 @@ class OrexDownloadCornerButton extends StatelessWidget {
   Widget build(BuildContext context) {
     if (!orexDownloadPageAvailable) return const SizedBox.shrink();
 
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Semantics(
       button: true,
       label: 'Скачать приложение',
-      child: Tooltip(
-        message: 'Скачать приложение',
-        child: Material(
-          elevation: 8,
-          shadowColor: Colors.black.withValues(alpha: 0.22),
-          color: isDark ? OrexColors.walnutDeep : OrexColors.cream,
-          shape: const CircleBorder(),
-          clipBehavior: Clip.antiAlias,
-          child: const InkWell(
-            customBorder: CircleBorder(),
+      child: Material(
+        elevation: 5,
+        shadowColor: Colors.black.withValues(alpha: 0.18),
+        color: Colors.transparent,
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: Ink(
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: OrexColors.copperGradient,
+            border: Border.fromBorderSide(
+              BorderSide(color: Color(0xCC5E3A1A), width: 1.5),
+            ),
+          ),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            mouseCursor: SystemMouseCursors.click,
+            hoverColor: OrexColors.cream.withValues(alpha: 0.08),
+            splashColor: OrexColors.cream.withValues(alpha: 0.14),
             onTap: openOrexDownloadPage,
-            child: SizedBox.square(
+            child: const SizedBox.square(
               dimension: 52,
               child: Icon(
                 Icons.download_rounded,
-                color: OrexColors.copper,
+                color: OrexColors.cream,
                 size: 25,
               ),
             ),

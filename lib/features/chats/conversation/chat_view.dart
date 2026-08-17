@@ -75,6 +75,17 @@ class _ChatViewState extends State<ChatView> {
   String? _lastReportedSupergroupChildId;
 
   List<ChatItem> _chatItems = [];
+  final GlobalKey _timelineViewportKey = GlobalKey();
+  final Map<String, _TimelineItemProbeState> _timelineProbes =
+      <String, _TimelineItemProbeState>{};
+  final ValueNotifier<_StickyTimelineOverlay?> _stickyTimelineOverlay =
+      ValueNotifier<_StickyTimelineOverlay?>(null);
+  final ValueNotifier<String?> _attachedTimelineSeparatorId =
+      ValueNotifier<String?>(null);
+  bool _stickyTimelineUpdateScheduled = false;
+
+  static const double _stickyTimelineTop = 6;
+  static const double _timelineSeparatorVerticalMargin = 8;
 
   @override
   void initState() {
@@ -135,9 +146,201 @@ class _ChatViewState extends State<ChatView> {
       rawEvents,
       isRenderable: _isRenderableTimelineEvent,
     );
+    _scheduleStickyTimelineDateUpdate();
+  }
+
+  Widget _withTimelineProbe(ChatItem item, Widget child) {
+    return _TimelineItemProbe(
+      key: ValueKey('timeline-probe:${item.id}'),
+      item: item,
+      onAttach: _attachTimelineProbe,
+      onDetach: _detachTimelineProbe,
+      child: child,
+    );
+  }
+
+  void _attachTimelineProbe(_TimelineItemProbeState probe) {
+    _timelineProbes[probe.item.id] = probe;
+    _scheduleStickyTimelineDateUpdate();
+  }
+
+  void _detachTimelineProbe(_TimelineItemProbeState probe) {
+    if (identical(_timelineProbes[probe.item.id], probe)) {
+      _timelineProbes.remove(probe.item.id);
+      _scheduleStickyTimelineDateUpdate();
+    }
+  }
+
+  void _scheduleStickyTimelineDateUpdate() {
+    if (_stickyTimelineUpdateScheduled) return;
+    _stickyTimelineUpdateScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _stickyTimelineUpdateScheduled = false;
+      if (!mounted) return;
+      _updateStickyTimelineDate();
+    });
+  }
+
+  void _updateStickyTimelineDate() {
+    final viewportContext = _timelineViewportKey.currentContext;
+    final viewportBox = viewportContext?.findRenderObject();
+    if (viewportBox is! RenderBox || !viewportBox.attached) return;
+
+    final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
+    final viewportBottom = viewportTop + viewportBox.size.height;
+    final visibleSeparators = <_VisibleTimelineSeparator>[];
+
+    // Сначала измеряем реальные границы pill-разделителей. Probe охватывает
+    // также вертикальные margin, поэтому для collision detection вычитаем их
+    // и работаем именно с верхом/низом нарисованной даты.
+    for (final probe in _timelineProbes.values) {
+      final item = probe.item;
+      if (item is! DaySeparatorItem) continue;
+
+      final itemBox = probe.renderBox;
+      if (itemBox == null || !itemBox.attached || !itemBox.hasSize) continue;
+
+      final itemTop = itemBox.localToGlobal(Offset.zero).dy;
+      final pillTop = itemTop + _timelineSeparatorVerticalMargin;
+      final pillBottom =
+          itemTop + itemBox.size.height - _timelineSeparatorVerticalMargin;
+      if (pillBottom <= viewportTop || pillTop >= viewportBottom) continue;
+
+      visibleSeparators.add(
+        _VisibleTimelineSeparator(
+          id: item.id,
+          date: item.date,
+          top: pillTop - viewportTop,
+          bottom: pillBottom - viewportTop,
+        ),
+      );
+    }
+
+    // Все day-pill имеют одинаковую высоту. Когда граница дня уже рядом, берём
+    // её фактический размер, чтобы решение о смене даты не зависело от пары px.
+    final stickyHeight = visibleSeparators.isEmpty
+        ? _TimelineDaySeparator.estimatedHeight
+        : visibleSeparators.first.height;
+    final anchorY =
+        viewportTop + _stickyTimelineTop + stickyHeight + 1;
+
+    ChatItem? containingAnchor;
+    ChatItem? nearestBelowAnchor;
+    ChatItem? nearestAboveAnchor;
+    var nearestBelowTop = double.infinity;
+    var nearestAboveBottom = double.negativeInfinity;
+
+    for (final probe in _timelineProbes.values) {
+      final item = probe.item;
+      if (item is DaySeparatorItem) continue;
+
+      final itemBox = probe.renderBox;
+      if (itemBox == null || !itemBox.attached || !itemBox.hasSize) continue;
+
+      final top = itemBox.localToGlobal(Offset.zero).dy;
+      final bottom = top + itemBox.size.height;
+      if (bottom <= viewportTop || top >= viewportBottom) continue;
+
+      // Дата переключается только когда сообщение нового дня действительно
+      // прошло под всей sticky-pill. Одного показавшегося сверху кусочка уже
+      // недостаточно: учитываем одновременно top и bottom каждого элемента.
+      if (top <= anchorY && bottom > anchorY) {
+        containingAnchor = item;
+        break;
+      }
+      if (top > anchorY && top < nearestBelowTop) {
+        nearestBelowTop = top;
+        nearestBelowAnchor = item;
+      } else if (bottom <= anchorY && bottom > nearestAboveBottom) {
+        nearestAboveBottom = bottom;
+        nearestAboveAnchor = item;
+      }
+    }
+
+    final topMessageItem =
+        containingAnchor ?? nearestBelowAnchor ?? nearestAboveAnchor;
+
+    DateTime? nextDate;
+    if (topMessageItem is SingleEventItem) {
+      nextDate = topMessageItem.event.originServerTs.toLocal();
+    } else if (topMessageItem is AlbumItem) {
+      nextDate = topMessageItem.leader.originServerTs.toLocal();
+    }
+    if (nextDate == null) {
+      _setStickyTimelineOverlay(null, attachedSeparatorId: null);
+      return;
+    }
+
+    var overlayTop = _stickyTimelineTop;
+    String? attachedSeparatorId;
+    _VisibleTimelineSeparator? ownSeparator;
+
+    for (final separator in visibleSeparators) {
+      if (!orexSameCalendarDay(separator.date, nextDate)) continue;
+      if (ownSeparator == null ||
+          (separator.top - _stickyTimelineTop).abs() <
+              (ownSeparator.top - _stickyTimelineTop).abs()) {
+        ownSeparator = separator;
+      }
+    }
+
+    // Своя метка считается "прикреплённой" только пока её реальная pill хотя
+    // бы частично находится ниже линии закрепления. Это устраняет 1–2 px окно,
+    // в котором раньше source и floating-копия успевали отрисоваться вместе.
+    if (ownSeparator != null &&
+        ownSeparator.bottom > _stickyTimelineTop &&
+        ownSeparator.top < viewportBox.size.height) {
+      overlayTop = ownSeparator.top > _stickyTimelineTop
+          ? ownSeparator.top
+          : _stickyTimelineTop;
+      attachedSeparatorId = ownSeparator.id;
+    }
+
+    // Дополнительная защита на границе дней: floating-pill никогда не имеет
+    // права пересечь видимую pill другого дня. Проверяем интервалы целиком
+    // [top, bottom], а не одну координату, и при столкновении старая дата
+    // естественно выталкивается вверх, как sticky header в Telegram.
+    for (final separator in visibleSeparators) {
+      if (separator.id == attachedSeparatorId ||
+          orexSameCalendarDay(separator.date, nextDate)) {
+        continue;
+      }
+      final overlayBottom = overlayTop + stickyHeight;
+      final overlaps =
+          overlayTop < separator.bottom && overlayBottom > separator.top;
+      if (!overlaps) continue;
+
+      final pushedTop = separator.top - stickyHeight - 1;
+      if (pushedTop < overlayTop) overlayTop = pushedTop;
+    }
+
+    _setStickyTimelineOverlay(
+      _StickyTimelineOverlay(date: nextDate, top: overlayTop),
+      attachedSeparatorId: attachedSeparatorId,
+    );
+  }
+
+  void _setStickyTimelineOverlay(
+    _StickyTimelineOverlay? next, {
+    required String? attachedSeparatorId,
+  }) {
+    if (_attachedTimelineSeparatorId.value != attachedSeparatorId) {
+      _attachedTimelineSeparatorId.value = attachedSeparatorId;
+    }
+
+    final current = _stickyTimelineOverlay.value;
+    if (current == null && next == null) return;
+    if (current != null &&
+        next != null &&
+        orexSameCalendarDay(current.date, next.date) &&
+        (current.top - next.top).abs() < 0.5) {
+      return;
+    }
+    _stickyTimelineOverlay.value = next;
   }
 
   void _scrollListener() {
+    _scheduleStickyTimelineDateUpdate();
     if (!mounted || _timeline == null || _loadingHistory || _noMoreHistory) {
       return;
     }
@@ -644,6 +847,8 @@ class _ChatViewState extends State<ChatView> {
     _input.dispose();
     _scroll.dispose();
     _focusNode.dispose();
+    _stickyTimelineOverlay.dispose();
+    _attachedTimelineSeparatorId.dispose();
     super.dispose();
   }
 
@@ -827,110 +1032,167 @@ class _ChatViewState extends State<ChatView> {
                 ),
               ),
             Expanded(
-              child: ListView.builder(
-                controller: _scroll,
-                reverse: true,
-                physics: const AlwaysScrollableScrollPhysics(
-                  parent: BouncingScrollPhysics(),
-                ),
-                padding: const EdgeInsets.symmetric(
-                  vertical: 12,
-                  horizontal: 8,
-                ),
-                itemCount: _chatItems.length + (_loadingHistory ? 1 : 0),
-                itemBuilder: (_, i) {
-                  if (i == _chatItems.length) {
-                    return const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 16),
-                      child: Center(
-                        child: SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: OrexColors.copper,
+              child: Stack(
+                key: _timelineViewportKey,
+                children: [
+                  Positioned.fill(
+                    child: ListView.builder(
+                      controller: _scroll,
+                      reverse: true,
+                      physics: const AlwaysScrollableScrollPhysics(
+                        parent: BouncingScrollPhysics(),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 12,
+                        horizontal: 8,
+                      ),
+                      itemCount: _chatItems.length + (_loadingHistory ? 1 : 0),
+                      itemBuilder: (_, i) {
+                        if (i == _chatItems.length) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 16),
+                            child: Center(
+                              child: SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: OrexColors.copper,
+                                ),
+                              ),
+                            ),
+                          );
+                        }
+
+                        final item = _chatItems[i];
+
+                        if (item is DaySeparatorItem) {
+                          return _withTimelineProbe(
+                            item,
+                            ValueListenableBuilder<String?>(
+                              valueListenable: _attachedTimelineSeparatorId,
+                              child: _TimelineDaySeparator(
+                                key: ValueKey(item.id),
+                                date: item.date,
+                              ),
+                              builder: (context, attachedId, child) => Opacity(
+                                opacity: attachedId == item.id ? 0 : 1,
+                                child: child!,
+                              ),
+                            ),
+                          );
+                        }
+
+                        if (item is AlbumItem) {
+                          return _withTimelineProbe(
+                            item,
+                            MessageBubble(
+                              key: ValueKey(item.id),
+                              event: item.leader,
+                              isMine: item.leader.senderId == myId,
+                              showSender: !room.isDirectChat,
+                              timeline: liveTimeline,
+                              myUserId: myId,
+                              onReact: (emoji) => room.sendReaction(
+                                item.leader.eventId,
+                                emoji,
+                              ),
+                              onRedact: (rid) => room.redactEvent(rid),
+                              onEdit: liveTimeline == null
+                                  ? null
+                                  : () => _startEdit(item.leader),
+                              onDelete: () =>
+                                  room.redactEvent(item.leader.eventId),
+                              onReply: liveTimeline == null
+                                  ? null
+                                  : () => _startReply(item.leader),
+                              onForward: liveTimeline == null
+                                  ? null
+                                  : () => unawaited(
+                                      _forwardEvents(item.events),
+                                    ),
+                              onOpenRoomReference: _openRoomReference,
+                              onCancelSend: () async {
+                                try {
+                                  await item.leader.cancelSend();
+                                  if (mounted) setState(() {});
+                                } catch (e) {
+                                  OrexLog.d(
+                                    'Chat',
+                                    'cancel send failed room=${room.id}',
+                                    e,
+                                  );
+                                }
+                              },
+                              albumEvents: item.events,
+                            ),
+                          );
+                        } else if (item is SingleEventItem) {
+                          return _withTimelineProbe(
+                            item,
+                            MessageBubble(
+                              key: ValueKey(item.id),
+                              event: item.event,
+                              isMine: item.event.senderId == myId,
+                              showSender: !room.isDirectChat,
+                              timeline: liveTimeline,
+                              myUserId: myId,
+                              onReact: (emoji) => room.sendReaction(
+                                item.event.eventId,
+                                emoji,
+                              ),
+                              onRedact: (rid) => room.redactEvent(rid),
+                              onEdit: liveTimeline == null
+                                  ? null
+                                  : () => _startEdit(item.event),
+                              onDelete: () =>
+                                  room.redactEvent(item.event.eventId),
+                              onReply: liveTimeline == null
+                                  ? null
+                                  : () => _startReply(item.event),
+                              onForward: liveTimeline == null
+                                  ? null
+                                  : () => unawaited(
+                                      _forwardEvents(<Event>[item.event]),
+                                    ),
+                              onOpenRoomReference: _openRoomReference,
+                              onCancelSend: () async {
+                                try {
+                                  await item.event.cancelSend();
+                                  if (mounted) setState(() {});
+                                } catch (e) {
+                                  OrexLog.d(
+                                    'Chat',
+                                    'cancel send failed room=${room.id}',
+                                    e,
+                                  );
+                                }
+                              },
+                            ),
+                          );
+                        }
+                        return const SizedBox.shrink();
+                      },
+                    ),
+                  ),
+                  ValueListenableBuilder<_StickyTimelineOverlay?>(
+                    valueListenable: _stickyTimelineOverlay,
+                    builder: (context, sticky, child) {
+                      if (sticky == null) return const SizedBox.shrink();
+                      return Positioned(
+                        top: sticky.top,
+                        left: 0,
+                        right: 0,
+                        child: IgnorePointer(
+                          child: _TimelineDaySeparator(
+                            date: sticky.date,
+                            floating: true,
                           ),
                         ),
-                      ),
-                    );
-                  }
-
-                  final item = _chatItems[i];
-
-                  if (item is AlbumItem) {
-                    return MessageBubble(
-                      key: ValueKey(item.id),
-                      event: item.leader,
-                      isMine: item.leader.senderId == myId,
-                      showSender: !room.isDirectChat,
-                      timeline: liveTimeline,
-                      myUserId: myId,
-                      onReact: (emoji) =>
-                          room.sendReaction(item.leader.eventId, emoji),
-                      onRedact: (rid) => room.redactEvent(rid),
-                      onEdit: liveTimeline == null
-                          ? null
-                          : () => _startEdit(item.leader),
-                      onDelete: () => room.redactEvent(item.leader.eventId),
-                      onReply: liveTimeline == null
-                          ? null
-                          : () => _startReply(item.leader),
-                      onForward: liveTimeline == null
-                          ? null
-                          : () => unawaited(_forwardEvents(item.events)),
-                      onOpenRoomReference: _openRoomReference,
-                      onCancelSend: () async {
-                        try {
-                          await item.leader.cancelSend();
-                          if (mounted) setState(() {});
-                        } catch (e) {
-                          OrexLog.d(
-                            'Chat',
-                            'cancel send failed room=${room.id}',
-                            e,
-                          );
-                        }
-                      },
-                      albumEvents: item.events,
-                    );
-                  } else if (item is SingleEventItem) {
-                    return MessageBubble(
-                      key: ValueKey(item.id),
-                      event: item.event,
-                      isMine: item.event.senderId == myId,
-                      showSender: !room.isDirectChat,
-                      timeline: liveTimeline,
-                      myUserId: myId,
-                      onReact: (emoji) =>
-                          room.sendReaction(item.event.eventId, emoji),
-                      onRedact: (rid) => room.redactEvent(rid),
-                      onEdit: liveTimeline == null
-                          ? null
-                          : () => _startEdit(item.event),
-                      onDelete: () => room.redactEvent(item.event.eventId),
-                      onReply: liveTimeline == null
-                          ? null
-                          : () => _startReply(item.event),
-                      onForward: liveTimeline == null
-                          ? null
-                          : () => unawaited(_forwardEvents(<Event>[item.event])),
-                      onOpenRoomReference: _openRoomReference,
-                      onCancelSend: () async {
-                        try {
-                          await item.event.cancelSend();
-                          if (mounted) setState(() {});
-                        } catch (e) {
-                          OrexLog.d(
-                            'Chat',
-                            'cancel send failed room=${room.id}',
-                            e,
-                          );
-                        }
-                      },
-                    );
-                  }
-                  return const SizedBox.shrink();
-                },
+                      );
+                    },
+                  ),
+                ],
               ),
             ),
             _InputBar(
@@ -960,4 +1222,146 @@ class _ChatViewState extends State<ChatView> {
       ),
     );
   }
+}
+
+class _StickyTimelineOverlay {
+  const _StickyTimelineOverlay({required this.date, required this.top});
+
+  final DateTime date;
+  final double top;
+}
+
+class _VisibleTimelineSeparator {
+  const _VisibleTimelineSeparator({
+    required this.id,
+    required this.date,
+    required this.top,
+    required this.bottom,
+  });
+
+  final String id;
+  final DateTime date;
+  final double top;
+  final double bottom;
+
+  double get height => bottom - top;
+}
+
+class _TimelineItemProbe extends StatefulWidget {
+  const _TimelineItemProbe({
+    super.key,
+    required this.item,
+    required this.onAttach,
+    required this.onDetach,
+    required this.child,
+  });
+
+  final ChatItem item;
+  final ValueChanged<_TimelineItemProbeState> onAttach;
+  final ValueChanged<_TimelineItemProbeState> onDetach;
+  final Widget child;
+
+  @override
+  State<_TimelineItemProbe> createState() => _TimelineItemProbeState();
+}
+
+class _TimelineItemProbeState extends State<_TimelineItemProbe> {
+  ChatItem get item => widget.item;
+
+  RenderBox? get renderBox {
+    final renderObject = context.findRenderObject();
+    return renderObject is RenderBox ? renderObject : null;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    widget.onAttach(this);
+  }
+
+  @override
+  void didUpdateWidget(covariant _TimelineItemProbe oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.item.id == widget.item.id) return;
+    oldWidget.onDetach(this);
+    widget.onAttach(this);
+  }
+
+  @override
+  void dispose() {
+    widget.onDetach(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+class _TimelineDaySeparator extends StatelessWidget {
+  const _TimelineDaySeparator({
+    super.key,
+    required this.date,
+    this.floating = false,
+  });
+
+  static const double estimatedHeight = 27;
+
+  final DateTime date;
+  final bool floating;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Center(
+      heightFactor: 1,
+      child: Container(
+        margin: EdgeInsets.symmetric(
+          vertical: floating ? 0 : _ChatViewState._timelineSeparatorVerticalMargin,
+          horizontal: 12,
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
+        decoration: BoxDecoration(
+          color: (isDark ? Colors.black : Colors.white).withValues(alpha: 0.18),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(
+          _formatTimelineDate(date),
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: Theme.of(
+              context,
+            ).colorScheme.onSurface.withValues(alpha: 0.72),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _formatTimelineDate(DateTime value) {
+  final date = value.toLocal();
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final day = DateTime(date.year, date.month, date.day);
+  final difference = today.difference(day).inDays;
+
+  if (difference == 0) return 'Сегодня';
+  if (difference == 1) return 'Вчера';
+
+  const months = <String>[
+    'января',
+    'февраля',
+    'марта',
+    'апреля',
+    'мая',
+    'июня',
+    'июля',
+    'августа',
+    'сентября',
+    'октября',
+    'ноября',
+    'декабря',
+  ];
+  final base = '${date.day} ${months[date.month - 1]}';
+  return date.year == now.year ? base : '$base ${date.year}';
 }
