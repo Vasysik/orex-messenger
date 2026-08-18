@@ -196,7 +196,7 @@ class _OrexDownloadScreenState extends State<OrexDownloadScreen> {
                       _DownloadTile(
                         icon: Icons.android_rounded,
                         title: 'Android · ARM64',
-                        subtitle: 'Для большинства современных устройств',
+                        subtitle: 'Для современных устройств',
                         artifact: release?.artifactFor('android-arm64-v8a'),
                       ),
                       const SizedBox(height: 10),

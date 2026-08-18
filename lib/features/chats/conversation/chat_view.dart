@@ -82,10 +82,24 @@ class _ChatViewState extends State<ChatView> {
       ValueNotifier<_StickyTimelineOverlay?>(null);
   final ValueNotifier<String?> _attachedTimelineSeparatorId =
       ValueNotifier<String?>(null);
+  final ValueNotifier<bool> _showJumpToLatestButton =
+      ValueNotifier<bool>(false);
+  final ValueNotifier<bool> _stickyTimelineOverlayVisible =
+      ValueNotifier<bool>(true);
   bool _stickyTimelineUpdateScheduled = false;
+  Timer? _stickyTimelineFadeOutTimer;
+  _StickyTimelineOverlay? _pendingStickyTimelineOverlayAfterFade;
+  String? _pendingStickyTimelineSeparatorIdAfterFade;
+  double? _lastTimelineScrollPixels;
+  bool _scrollingTowardLatest = false;
 
   static const double _stickyTimelineTop = 6;
+  static const Duration _stickyTimelineFadeDuration = Duration(
+    milliseconds: 140,
+  );
   static const double _timelineSeparatorVerticalMargin = 8;
+  static const double _jumpToLatestMinDistance = 420;
+  static const double _jumpToLatestViewportFactor = 0.72;
 
   @override
   void initState() {
@@ -122,7 +136,47 @@ class _ChatViewState extends State<ChatView> {
       if ((_scroll.position.pixels - min).abs() > 1) {
         _scroll.jumpTo(min);
       }
+      _updateJumpToLatestVisibility();
     });
+  }
+
+  void _updateJumpToLatestVisibility() {
+    if (!_scroll.hasClients) {
+      if (_showJumpToLatestButton.value) {
+        _showJumpToLatestButton.value = false;
+      }
+      return;
+    }
+
+    final position = _scroll.position;
+    final viewportThreshold =
+        position.viewportDimension * _jumpToLatestViewportFactor;
+    final threshold = viewportThreshold > _jumpToLatestMinDistance
+        ? viewportThreshold
+        : _jumpToLatestMinDistance;
+    final distanceFromLatest =
+        (position.pixels - position.minScrollExtent).abs();
+    final shouldShow = distanceFromLatest > threshold;
+    if (_showJumpToLatestButton.value != shouldShow) {
+      _showJumpToLatestButton.value = shouldShow;
+    }
+  }
+
+  Future<void> _animateToLatest() async {
+    if (!_scroll.hasClients) return;
+    final position = _scroll.position;
+    final target = position.minScrollExtent;
+    final distance = (position.pixels - target).abs();
+    if (distance <= 1) return;
+
+    unawaited(OrexHaptics.trigger(OrexHapticKind.selection));
+    final milliseconds = (260 + distance / 12).clamp(300, 620).round();
+    await _scroll.animateTo(
+      target,
+      duration: Duration(milliseconds: milliseconds),
+      curve: Curves.easeOutCubic,
+    );
+    if (mounted) _updateJumpToLatestVisibility();
   }
 
   void _preserveHistoryViewportAfterFrame(double oldMaxScrollExtent) {
@@ -138,6 +192,7 @@ class _ChatViewState extends State<ChatView> {
       if ((target - pos.pixels).abs() > 1) {
         _scroll.jumpTo(target.toDouble());
       }
+      _updateJumpToLatestVisibility();
     });
   }
 
@@ -324,11 +379,81 @@ class _ChatViewState extends State<ChatView> {
     _StickyTimelineOverlay? next, {
     required String? attachedSeparatorId,
   }) {
+    final current = _stickyTimelineOverlay.value;
+    final fadeOutInProgress =
+        _stickyTimelineFadeOutTimer != null &&
+        !_stickyTimelineOverlayVisible.value;
+
+    // Пока старая sticky-date гаснет при движении вниз, новые layout-кадры не
+    // должны отменять fade только потому, что anchor уже перескочил на следующий
+    // календарный день. Запоминаем самый свежий target и применяем его ровно
+    // после 140 ms. Так уже прилипшая дата действительно успевает исчезнуть, а
+    // следующая метка затем подхватывается без собственного fade-in.
+    if (fadeOutInProgress) {
+      if (_scrollingTowardLatest) {
+        _pendingStickyTimelineOverlayAfterFade = next;
+        _pendingStickyTimelineSeparatorIdAfterFade = attachedSeparatorId;
+        return;
+      }
+
+      // Пользователь успел развернуть направление обратно в историю: старую
+      // дату больше не надо уводить. Возвращаем её сразу и снова отдаём появление
+      // дат проверенной upward-механике _FadingTimelineDaySeparator.
+      _stickyTimelineFadeOutTimer?.cancel();
+      _stickyTimelineFadeOutTimer = null;
+      _pendingStickyTimelineOverlayAfterFade = null;
+      _pendingStickyTimelineSeparatorIdAfterFade = null;
+      _stickyTimelineOverlayVisible.value = true;
+    }
+
+    final leavesCurrentDayTowardLatest =
+        _scrollingTowardLatest &&
+        current != null &&
+        (next == null || !orexSameCalendarDay(current.date, next.date));
+
+    // При движении к последним сообщениям старая уже прилипшая дата должна
+    // зеркально погаснуть, когда её сменяет следующий день. Важно запускать этот
+    // fade не только при next == null: обычно anchor сразу перескакивает на
+    // следующий день, и прежняя реализация в этот момент мгновенно заменяла
+    // overlay, из-за чего анимацию исчезновения было невозможно увидеть.
+    if (leavesCurrentDayTowardLatest) {
+      _pendingStickyTimelineOverlayAfterFade = next;
+      _pendingStickyTimelineSeparatorIdAfterFade = attachedSeparatorId;
+      _stickyTimelineOverlayVisible.value = false;
+      _stickyTimelineFadeOutTimer = Timer(_stickyTimelineFadeDuration, () {
+        if (!mounted) return;
+
+        final target = _pendingStickyTimelineOverlayAfterFade;
+        final targetSeparatorId =
+            _pendingStickyTimelineSeparatorIdAfterFade;
+        _pendingStickyTimelineOverlayAfterFade = null;
+        _pendingStickyTimelineSeparatorIdAfterFade = null;
+        _stickyTimelineFadeOutTimer = null;
+
+        if (_attachedTimelineSeparatorId.value != targetSeparatorId) {
+          _attachedTimelineSeparatorId.value = targetSeparatorId;
+        }
+        _stickyTimelineOverlay.value = target;
+
+        // Вниз следующая дата уже была частью ленты, поэтому после ухода старой
+        // floating-копии она прикрепляется сразу, без повторного fade-in.
+        _stickyTimelineOverlayVisible.value = true;
+      });
+      return;
+    }
+
+    _stickyTimelineFadeOutTimer?.cancel();
+    _stickyTimelineFadeOutTimer = null;
+    _pendingStickyTimelineOverlayAfterFade = null;
+    _pendingStickyTimelineSeparatorIdAfterFade = null;
+    if (!_stickyTimelineOverlayVisible.value) {
+      _stickyTimelineOverlayVisible.value = true;
+    }
+
     if (_attachedTimelineSeparatorId.value != attachedSeparatorId) {
       _attachedTimelineSeparatorId.value = attachedSeparatorId;
     }
 
-    final current = _stickyTimelineOverlay.value;
     if (current == null && next == null) return;
     if (current != null &&
         next != null &&
@@ -340,11 +465,23 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _scrollListener() {
+    final pos = _scroll.position;
+    final previousPixels = _lastTimelineScrollPixels;
+    if (previousPixels != null) {
+      final delta = pos.pixels - previousPixels;
+      if (delta.abs() >= 0.5) {
+        // Timeline reverse=true: уменьшение offset означает движение вниз,
+        // к последним сообщениям; увеличение — вверх, в историю.
+        _scrollingTowardLatest = delta < 0;
+      }
+    }
+    _lastTimelineScrollPixels = pos.pixels;
+
     _scheduleStickyTimelineDateUpdate();
+    _updateJumpToLatestVisibility();
     if (!mounted || _timeline == null || _loadingHistory || _noMoreHistory) {
       return;
     }
-    final pos = _scroll.position;
     if (pos.pixels >= pos.maxScrollExtent - 200 ||
         (pos.outOfRange && pos.pixels > 0)) {
       _loadMoreHistory();
@@ -843,12 +980,15 @@ class _ChatViewState extends State<ChatView> {
   void dispose() {
     widget.matrix.removeListener(_onMatrix);
     _scroll.removeListener(_scrollListener);
+    _stickyTimelineFadeOutTimer?.cancel();
     _timeline?.cancelSubscriptions();
     _input.dispose();
     _scroll.dispose();
     _focusNode.dispose();
     _stickyTimelineOverlay.dispose();
     _attachedTimelineSeparatorId.dispose();
+    _showJumpToLatestButton.dispose();
+    _stickyTimelineOverlayVisible.dispose();
     super.dispose();
   }
 
@@ -1184,9 +1324,52 @@ class _ChatViewState extends State<ChatView> {
                         left: 0,
                         right: 0,
                         child: IgnorePointer(
-                          child: _TimelineDaySeparator(
-                            date: sticky.date,
-                            floating: true,
+                          child: ValueListenableBuilder<bool>(
+                            valueListenable: _stickyTimelineOverlayVisible,
+                            builder: (context, visible, child) {
+                              return AnimatedOpacity(
+                                opacity: visible ? 1 : 0,
+                                duration: visible
+                                    ? Duration.zero
+                                    : _stickyTimelineFadeDuration,
+                                curve: Curves.easeOut,
+                                child: child,
+                              );
+                            },
+                            child: _FadingTimelineDaySeparator(
+                              key: ValueKey(
+                                'sticky-day-${sticky.date.year}-${sticky.date.month}-${sticky.date.day}',
+                              ),
+                              date: sticky.date,
+                              animateIn: !_scrollingTowardLatest,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  ValueListenableBuilder<bool>(
+                    valueListenable: _showJumpToLatestButton,
+                    child: _JumpToLatestPill(onPressed: _animateToLatest),
+                    builder: (context, visible, child) {
+                      return Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 10,
+                        child: IgnorePointer(
+                          ignoring: !visible,
+                          child: AnimatedSlide(
+                            offset: visible
+                                ? Offset.zero
+                                : const Offset(0, 1.35),
+                            duration: const Duration(milliseconds: 180),
+                            curve: Curves.easeOutCubic,
+                            child: AnimatedOpacity(
+                              opacity: visible ? 1 : 0,
+                              duration: const Duration(milliseconds: 140),
+                              curve: Curves.easeOut,
+                              child: child!,
+                            ),
                           ),
                         ),
                       );
@@ -1295,6 +1478,136 @@ class _TimelineItemProbeState extends State<_TimelineItemProbe> {
 
   @override
   Widget build(BuildContext context) => widget.child;
+}
+
+class _FadingTimelineDaySeparator extends StatefulWidget {
+  const _FadingTimelineDaySeparator({
+    super.key,
+    required this.date,
+    required this.animateIn,
+  });
+
+  final DateTime date;
+  final bool animateIn;
+
+  @override
+  State<_FadingTimelineDaySeparator> createState() =>
+      _FadingTimelineDaySeparatorState();
+}
+
+class _FadingTimelineDaySeparatorState
+    extends State<_FadingTimelineDaySeparator> {
+  late bool _visible;
+
+  @override
+  void initState() {
+    super.initState();
+    _visible = !widget.animateIn;
+    if (widget.animateIn) _revealAfterFrame();
+  }
+
+  @override
+  void didUpdateWidget(covariant _FadingTimelineDaySeparator oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // При движении вниз дата уже физически находится на экране и лишь
+    // отрывается от sticky-позиции. В этом направлении никогда не запускаем
+    // повторный fade-in: если пользователь развернул скролл во время появления,
+    // сразу доводим текущую pill до полной непрозрачности.
+    if (!widget.animateIn && oldWidget.animateIn && !_visible) {
+      _visible = true;
+    }
+  }
+
+  void _revealAfterFrame() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _visible || !widget.animateIn) return;
+      setState(() => _visible = true);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      opacity: _visible ? 1 : 0,
+      duration: widget.animateIn
+          ? const Duration(milliseconds: 140)
+          : Duration.zero,
+      curve: Curves.easeOut,
+      child: _TimelineDaySeparator(date: widget.date, floating: true),
+    );
+  }
+}
+
+class _JumpToLatestPill extends StatelessWidget {
+  const _JumpToLatestPill({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Center(
+      child: Semantics(
+        button: true,
+        label: 'К последним сообщениям',
+        child: Material(
+          elevation: 4,
+          shadowColor: Colors.black.withValues(alpha: 0.16),
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(999),
+          clipBehavior: Clip.antiAlias,
+          child: Ink(
+            decoration: BoxDecoration(
+              color: Color.alphaBlend(
+                OrexColors.copper.withValues(alpha: 0.05),
+                (isDark ? Colors.black : Colors.white).withValues(
+                  alpha: isDark ? 0.64 : 0.84,
+                ),
+              ),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: OrexColors.copper.withValues(alpha: 0.28),
+              ),
+            ),
+            child: InkWell(
+              onTap: onPressed,
+              mouseCursor: SystemMouseCursors.click,
+              borderRadius: BorderRadius.circular(999),
+              hoverColor: OrexColors.copper.withValues(alpha: 0.09),
+              splashColor: OrexColors.copper.withValues(alpha: 0.15),
+              highlightColor: OrexColors.copper.withValues(alpha: 0.065),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 15,
+                  vertical: 9,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.keyboard_double_arrow_down_rounded,
+                      size: 19,
+                      color: OrexColors.copper.withValues(alpha: 0.92),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Вниз',
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: colorScheme.onSurface.withValues(alpha: 0.82),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _TimelineDaySeparator extends StatelessWidget {

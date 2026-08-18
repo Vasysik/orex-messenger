@@ -28,7 +28,7 @@ class OrexDownloadCornerButton extends StatelessWidget {
             shape: BoxShape.circle,
             gradient: OrexColors.copperGradient,
             border: Border.fromBorderSide(
-              BorderSide(color: Color(0xCC5E3A1A), width: 1.5),
+              BorderSide(color: OrexColors.cream, width: 2),
             ),
           ),
           child: InkWell(

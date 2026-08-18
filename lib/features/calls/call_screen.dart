@@ -88,11 +88,17 @@ class _CallScreenState extends State<CallScreen> {
     });
   }
 
-  void _revealFullscreenControls() {
+  void _toggleFullscreenControls() {
     if (!_mediaFullscreen) return;
-    if (!_fullscreenControlsVisible) {
-      setState(() => _fullscreenControlsVisible = true);
+    _fullscreenControlsTimer?.cancel();
+    _fullscreenControlsTimer = null;
+
+    if (_fullscreenControlsVisible) {
+      setState(() => _fullscreenControlsVisible = false);
+      return;
     }
+
+    setState(() => _fullscreenControlsVisible = true);
     _scheduleFullscreenControlsHide();
   }
 
@@ -418,64 +424,61 @@ class _CallScreenState extends State<CallScreen> {
     );
     final state = session.voiceStateForUser(userId);
 
-    return Listener(
-      behavior: HitTestBehavior.translucent,
-      onPointerDown: (_) => _revealFullscreenControls(),
-      child: ColoredBox(
-        color: Colors.black,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            OrexCallParticipantTile(
-              participant: participant,
-              matrix: widget.matrix,
-              room: room,
-              voiceState: state,
-              style: OrexCallParticipantTileStyle.fullscreen,
-              zoomable: true,
-              onDoubleTap: _exitMediaFullscreen,
-              cornerIcon: Icons.fullscreen_exit,
-              cornerTooltip: 'Вернуться к выбранной плитке',
-              onCornerTap: _exitMediaFullscreen,
-              preferScreenShare: _preferScreenShareFor(participant),
-              onSwitchVideoSource: orexHasCameraAndScreen(participant)
-                  ? () => _toggleParticipantVideoSource(participant)
-                  : null,
-              onCycleCamera: participant is lk.LocalParticipant
-                  ? () => _actions.cycleCamera(session)
-                  : null,
-              onGrantVoice: _actions.canGrantVoice(room, userId)
-                  ? () => _actions.grantVoice(room!, userId)
-                  : null,
-              onRevokeVoice: _actions.canRevokeVoice(room, userId)
-                  ? () => _actions.revokeVoice(room!, userId)
-                  : null,
-            ),
-            Align(
-              alignment: Alignment.bottomCenter,
-              child: IgnorePointer(
-                ignoring: !_fullscreenControlsVisible,
-                child: AnimatedSlide(
-                  duration: const Duration(milliseconds: 220),
-                  curve: Curves.easeInOutCubic,
-                  offset: _fullscreenControlsVisible
-                      ? Offset.zero
-                      : const Offset(0, 1.25),
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 180),
-                    curve: Curves.easeOut,
-                    opacity: _fullscreenControlsVisible ? 1 : 0,
-                    child: SafeArea(
-                      top: false,
-                      minimum: const EdgeInsets.only(top: 12),
-                      child: _controls(session),
-                    ),
+    return ColoredBox(
+      color: Colors.black,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          OrexCallParticipantTile(
+            participant: participant,
+            matrix: widget.matrix,
+            room: room,
+            voiceState: state,
+            style: OrexCallParticipantTileStyle.fullscreen,
+            zoomable: true,
+            onTap: _toggleFullscreenControls,
+            onDoubleTap: _exitMediaFullscreen,
+            cornerIcon: Icons.fullscreen_exit,
+            cornerTooltip: 'Вернуться к выбранной плитке',
+            onCornerTap: _exitMediaFullscreen,
+            preferScreenShare: _preferScreenShareFor(participant),
+            onSwitchVideoSource: orexHasCameraAndScreen(participant)
+                ? () => _toggleParticipantVideoSource(participant)
+                : null,
+            onCycleCamera: participant is lk.LocalParticipant
+                ? () => _actions.cycleCamera(session)
+                : null,
+            onGrantVoice: _actions.canGrantVoice(room, userId)
+                ? () => _actions.grantVoice(room!, userId)
+                : null,
+            onRevokeVoice: _actions.canRevokeVoice(room, userId)
+                ? () => _actions.revokeVoice(room!, userId)
+                : null,
+          ),
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: IgnorePointer(
+              ignoring: !_fullscreenControlsVisible,
+              child: AnimatedSlide(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeInOutCubic,
+                offset: _fullscreenControlsVisible
+                    ? Offset.zero
+                    : const Offset(0, 1.25),
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOut,
+                  opacity: _fullscreenControlsVisible ? 1 : 0,
+                  child: SafeArea(
+                    top: false,
+                    minimum: const EdgeInsets.only(top: 12),
+                    child: _controls(session),
                   ),
                 ),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
