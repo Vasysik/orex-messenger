@@ -1106,6 +1106,23 @@ killed-process resolution. Нельзя делать отдельную лока
 
 ### 12.8. Архитектура после релиза
 
+Точечный refactor VoIP уже начат без изменения runtime-контрактов: два самых
+крупных orchestration-файла больше не держат самые тяжёлые сценарии целиком в
+одном классе. `CallController` оставляет публичное состояние и lifecycle API в
+`call_controller.dart`, а длинные start/accept/failure pipeline живут в
+`call_controller_start_flow.dart` как часть той же Dart library. `VoipService`
+аналогично разделён на модели, incoming/disposition flow, MatrixRTC membership /
+encryption flow и WebRTC delegate. Использование `part` здесь намеренное: private
+state остаётся library-private и не превращается в новый публичный API только
+ради уменьшения файлов. Protected API `ChangeNotifier` не вызывается напрямую
+из extension-part: для `notifyListeners()` контроллеры держат private bridge
+внутри самого `ChangeNotifier`-класса, поэтому `flutter analyze` не требует
+ослаблять lint или использовать `ignore`. После этого разрезания Dart-файлов
+выше 2000 строк в проекте больше нет. Следующие крупные кандидаты —
+`chat_view.dart` и `call_session.dart`, но их стоит делить отдельными
+итерациями только по естественным границам ответственности, не одновременно
+с изменением timeline UX или media lifecycle.
+
 * Постепенно уводить API `MatrixService` за более узкие сервисы:
   `matrix.rooms`, `matrix.discovery`, `matrix.security`, `matrix.media`.
 * Вынести contacts/relation policy отдельно от факта существования DM, чтобы
