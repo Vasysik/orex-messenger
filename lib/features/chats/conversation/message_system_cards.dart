@@ -132,6 +132,9 @@ class _InviteNoticeCard extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(16),
       onTap: onTap,
+      mouseCursor: onTap == null
+          ? SystemMouseCursors.basic
+          : SystemMouseCursors.click,
       child: Container(
         constraints: const BoxConstraints(minWidth: 240, maxWidth: 330),
         padding: const EdgeInsets.all(12),

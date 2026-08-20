@@ -324,6 +324,9 @@ class _DownloadTile extends StatelessWidget {
               onTap: artifact == null
                   ? null
                   : () => openOrexDownloadArtifact(artifact.uri),
+              mouseCursor: artifact == null
+                  ? SystemMouseCursors.basic
+                  : SystemMouseCursors.click,
               child: Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 16,

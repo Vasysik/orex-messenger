@@ -143,6 +143,7 @@ class MessageBubble extends StatelessWidget {
                         .map(
                           (e) => InkWell(
                             onTap: () => Navigator.pop(context, 'react:$e'),
+                            mouseCursor: SystemMouseCursors.click,
                             child: Padding(
                               padding: const EdgeInsets.all(5),
                               child: Text(

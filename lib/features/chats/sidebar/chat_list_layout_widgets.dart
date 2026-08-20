@@ -200,6 +200,7 @@ class _FolderTabs extends StatelessWidget {
               child: InkWell(
                 borderRadius: BorderRadius.circular(18),
                 onTap: () => onChanged(index),
+                mouseCursor: SystemMouseCursors.click,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 180),
                   height: 36,

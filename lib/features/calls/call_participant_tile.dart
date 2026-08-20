@@ -199,6 +199,9 @@ class OrexCallParticipantTile extends StatelessWidget {
           child: InkWell(
             onTap: onTap,
             onDoubleTap: onDoubleTap,
+            mouseCursor: onTap != null || onDoubleTap != null
+                ? SystemMouseCursors.click
+                : SystemMouseCursors.basic,
             child: Stack(
               fit: StackFit.expand,
               children: [
@@ -392,6 +395,7 @@ class _TileCornerButton extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
+        mouseCursor: SystemMouseCursors.click,
         borderRadius: BorderRadius.circular(style.cornerButtonRadius),
         child: Container(
           width: style.cornerButtonSize,

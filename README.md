@@ -845,7 +845,7 @@ contract, Android debug/release и Windows release build. Workflow не публ
 - Web-аватары получили persistent CacheStorage; брендовые asset-изображения кешируются nginx, а иконка Orex и белка появляются мягко с коротким `140 ms` fade без временной картинки-заглушки;
 - timeline разделяет сообщения по локальным календарным дням; sticky-date использует тот же стиль, что и обычный разделитель, проверяет пересечение по верхней и нижней координатам pill и не накладывает соседние даты; при движении в историю новая floating-дата проявляется за `140 ms`, а при движении к последним сообщениям уже видимая дата отрывается без fade-in и только уходящая floating-копия зеркально гаснет, после чего исходный separator возвращается без повторного появления;
 - возврат к последним сообщениям оформлен отдельной анимированной pill-кнопкой `Вниз`, которая появляется только после заметного ухода от конца чата; базовый и hover-фоны настроены между прежним тёмным и слишком светлым вариантами, при этом hover остаётся более светлым состоянием того же стиля;
-- emoji и send actions в composer имеют явный desktop cursor/hover/splash, как кнопка вложения; focused media-плитка звонка поддерживает отдельный fullscreen с возвратом по double tap, `Esc` и системному Back, speaking-рамка не меняет размер видео/screen share, а нижние fullscreen call controls автоматически скрываются вниз после 3 секунд бездействия и переключаются обычным тапом по media: видимые скрываются, скрытые возвращаются.
+- desktop mouse UX унифицирован: стандартные `IconButton` / `TextButton` / `FilledButton` / `ElevatedButton` / `OutlinedButton` и кастомные `InkWell`/call controls показывают `click`-курсор только когда действие доступно; hover/splash при этом остаются прежними. Emoji и send actions в composer сохраняют тот же desktop cursor/hover/splash, что и кнопка вложения; focused media-плитка звонка поддерживает отдельный fullscreen с возвратом по double tap, `Esc` и системному Back, speaking-рамка не меняет размер видео/screen share, а нижние fullscreen call controls автоматически скрываются вниз после 3 секунд бездействия и переключаются обычным тапом по media: видимые скрываются, скрытые возвращаются.
 - восстановлены итоговые timeline-карточки личных звонков с исходом и длительностью; Windows incoming-call notification использует cached caller avatar и асинхронно обновляет его при cold cache вместо warning-иконки;
 - на телефоне background lifecycle больше не тратит CPU/сеть на auto-backup, массовый avatar warmup и speaking-frame sampling, при этом Matrix sync, push, foreground call service, Telecom и LiveKit остаются нетронутыми.
 
@@ -953,9 +953,10 @@ Kotlin Gradle Plugin из app/plugins; режим «только подтвер�
   отдельная вытянутая pill-кнопка `Вниз`. Нажатие плавно прокручивает timeline к
   последним сообщениям; базовый и hover-фоны выбраны как промежуточный вариант
   между исходным тёмным и слишком светлым состояниями, а hover остаётся на один
-  шаг светлее. Emoji и send-кнопки composer
-  используют `InkWell` с desktop click cursor, hover и splash в том же языке,
-  что attachment;
+  шаг светлее. Desktop pointer semantics унифицированы для Material-кнопок и
+  кастомных `InkWell`: активные действия показывают `click`-курсор, отключённые —
+  обычный `basic`, без изменения существующих hover/splash. Emoji и send-кнопки
+  composer остаются визуальным эталоном этого поведения вместе с attachment;
 * privacy-safe crash reporting и диагностика критических flow: login, sync,
   calls и media;
 * release smoke tests и фиксация воспроизводимых версий backend/client

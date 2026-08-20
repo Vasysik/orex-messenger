@@ -959,6 +959,7 @@ class _ChatViewState extends State<ChatView> {
           final e = _InputBar.emojis[idx];
           return InkWell(
             onTap: () => _insertEmoji(e),
+            mouseCursor: SystemMouseCursors.click,
             borderRadius: BorderRadius.circular(8),
             child: Center(child: Text(e, style: const TextStyle(fontSize: 22))),
           );

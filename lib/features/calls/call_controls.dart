@@ -169,7 +169,7 @@ class _OrexCallControlButtonState extends State<OrexCallControlButton> {
         highlightShape: BoxShape.circle,
         radius: style.radius,
         customBorder: const CircleBorder(),
-        mouseCursor: SystemMouseCursors.basic,
+        mouseCursor: SystemMouseCursors.click,
         hoverColor: Colors.white.withValues(alpha: 0.12),
         splashColor: Colors.white.withValues(alpha: 0.18),
         highlightColor: Colors.white.withValues(alpha: 0.08),
