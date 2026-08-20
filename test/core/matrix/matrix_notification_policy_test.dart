@@ -61,6 +61,37 @@ void main() {
     },
   );
 
+  test('pauses optional maintenance only while a phone is hidden', () {
+    expect(
+      orexShouldRunForegroundMaintenance(
+        isMobilePlatform: true,
+        lifecycle: AppLifecycleState.paused,
+      ),
+      isFalse,
+    );
+    expect(
+      orexShouldRunForegroundMaintenance(
+        isMobilePlatform: true,
+        lifecycle: AppLifecycleState.resumed,
+      ),
+      isTrue,
+    );
+    expect(
+      orexShouldRunForegroundMaintenance(
+        isMobilePlatform: true,
+        lifecycle: null,
+      ),
+      isFalse,
+    );
+    expect(
+      orexShouldRunForegroundMaintenance(
+        isMobilePlatform: false,
+        lifecycle: AppLifecycleState.paused,
+      ),
+      isTrue,
+    );
+  });
+
   test('sums unread counts for the Windows tray badge', () {
     expect(orexTotalUnreadCount(<int>[2, 0, 3, -7]), 5);
   });

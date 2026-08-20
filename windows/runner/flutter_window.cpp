@@ -613,13 +613,19 @@ void FlutterWindow::ShowWindowsNotification(
   const std::wstring wide_body = Utf8ToWide(body);
   notification_avatar_icon_ =
       LoadAvatarIcon(MapString(payload, "sender_avatar_path"));
+  // A cold avatar cache must not turn an incoming call into the generic
+  // Windows warning/exclamation glyph. Use a private copy of the Orex app icon
+  // until Dart refreshes this same notification with the caller avatar.
+  if (incoming_call && notification_avatar_icon_ == nullptr &&
+      tray_base_icon_ != nullptr) {
+    notification_avatar_icon_ = CopyIcon(tray_base_icon_);
+  }
   tray_icon_.hBalloonIcon = notification_avatar_icon_;
   wcsncpy_s(tray_icon_.szInfoTitle, wide_title.c_str(), _TRUNCATE);
   wcsncpy_s(tray_icon_.szInfo, wide_body.c_str(), _TRUNCATE);
   const DWORD icon_flags =
       notification_avatar_icon_ != nullptr ? NIIF_USER | NIIF_LARGE_ICON
-                                           : (incoming_call ? NIIF_WARNING
-                                                            : NIIF_INFO);
+                                           : NIIF_INFO;
   tray_icon_.dwInfoFlags =
       icon_flags | (incoming_call ? 0 : NIIF_RESPECT_QUIET_TIME);
   tray_icon_.uFlags = NIF_INFO;

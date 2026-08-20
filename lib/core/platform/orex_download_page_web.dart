@@ -3,7 +3,7 @@ import 'package:web/web.dart' as web;
 const bool orexDownloadPageAvailable = true;
 
 void openOrexDownloadPage() {
-  web.window.location.assign('/download/');
+  web.window.open('/download/', '_blank', 'noopener,noreferrer');
 }
 
 void openOrexDownloadArtifact(Uri uri) {

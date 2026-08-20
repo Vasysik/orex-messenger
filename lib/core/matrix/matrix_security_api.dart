@@ -157,6 +157,8 @@ extension MatrixSecurityApi on MatrixService {
 
   void _startAutoBackup() {
     _autoBackupTimer?.cancel();
+    _autoBackupTimer = null;
+    if (!_foregroundMaintenanceAllowed) return;
     _autoBackupTimer = Timer.periodic(
       const Duration(minutes: 2),
       (_) => _uploadKeys(record: true),

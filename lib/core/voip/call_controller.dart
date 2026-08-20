@@ -2242,8 +2242,13 @@ class CallController extends ChangeNotifier {
     final sawRemote = s?.sawRemote ?? false;
     final shouldSendEndedSignal =
         !fromRemote && room != null && _shouldSendEndedSignal(room, s);
-    final shouldPostSummary =
-        initiator && rid != null && (fromRemote || shouldSendEndedSignal);
+    final shouldPostSummary = orexShouldPostCallSummary(
+      initiator: initiator,
+      hasRoomId: rid != null,
+      hadSession: s != null,
+      fromRemote: fromRemote,
+      shouldSendEndedSignal: shouldSendEndedSignal,
+    );
     Future<void>? remoteEndSync;
     if (shouldSendEndedSignal && callInstance != null) {
       remoteEndSync = matrix.voip
@@ -2329,9 +2334,10 @@ class CallController extends ChangeNotifier {
       );
     }
     // Итоговое сообщение о звонке постит ТОЛЬКО инициатор — без дублей.
-    // Если пользователь лишь временно вышел из уже подключённого личного
-    // звонка, summary не публикуем: в комнате всё ещё может ждать собеседник.
-    if (shouldPostSummary) {
+    // Для уже созданной локальной сессии итог сохраняем даже тогда, когда
+    // established personal call намеренно не рассылает общий `ended`: история
+    // локально завершённого разговора не должна из-за этого исчезать из чата.
+    if (shouldPostSummary && rid != null) {
       await _postCallSummary(rid, sawRemote, start);
     }
   }
@@ -2355,12 +2361,18 @@ class CallController extends ChangeNotifier {
     if (room == null || matrix.roomKind(room) == OrexRoomKind.channel) return;
     String outcome;
     String text;
+    final durationSeconds = answered && start != null
+        ? DateTime.now()
+              .difference(start)
+              .inSeconds
+              .clamp(0, 24 * 60 * 60)
+              .toInt()
+        : 0;
     if (answered) {
       outcome = 'answered';
-      final secs = start != null
-          ? DateTime.now().difference(start).inSeconds
-          : 0;
-      text = secs > 0 ? '📞 Звонок · ${_fmtDur(secs)}' : '📞 Звонок';
+      text = durationSeconds > 0
+          ? '📞 Звонок · ${_fmtDur(durationSeconds)}'
+          : '📞 Звонок';
     } else if (matrix.voip?.wasBusy(roomId) ?? false) {
       outcome = 'busy';
       text = '📞 Абонент занят';
@@ -2378,6 +2390,7 @@ class CallController extends ChangeNotifier {
         'msgtype': 'm.notice',
         'body': text,
         'com.orex.call_outcome': outcome,
+        if (answered) 'com.orex.call_duration_seconds': durationSeconds,
       });
     } catch (e) {
       OrexLog.d('Call', 'post call summary failed room=$roomId', e);

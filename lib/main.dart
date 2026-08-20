@@ -435,15 +435,55 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       _nativeIncomingCallNotifications.remove(instance.routeKey);
       return;
     }
-    // Do not put avatar I/O on the ringing path: Windows must surface the call
-    // immediately, even when the Matrix media cache is cold or unavailable.
+    // Surface the call immediately. Passing the deterministic cache key is
+    // cheap: OrexPushService only resolves an already cached local file here,
+    // so a cold Matrix media download never blocks ringing UI.
     final displayName = incoming.room.getLocalizedDisplayname().trim();
+    final title = displayName.isEmpty ? 'Orex' : displayName;
+    final avatar = widget.matrix.conversationAvatar(incoming.room);
+    final avatarCacheKey = avatar != null && avatar.scheme == 'mxc'
+        ? widget.matrix.avatarCacheKey(avatar)
+        : null;
     await widget.matrix.push.showIncomingCallNotification(
       roomId: incoming.room.id,
       ringEventId: instance.ringEventId,
-      title: displayName.isEmpty ? 'Orex' : displayName,
+      title: title,
       body: 'Входящий звонок',
+      avatarCacheKey: avatarCacheKey,
     );
+
+    // If the avatar was not warm yet, populate it off the ringing path and
+    // update the same native notification in place. Exact call-instance checks
+    // prevent a late image fetch from resurrecting a dismissed notification.
+    if (avatar != null) {
+      unawaited(() async {
+        try {
+          final key = await widget.matrix.ensureConversationAvatarCached(
+            incoming.room,
+          );
+          if (!mounted || key == null) return;
+          final current = _canonicalCallInstance(incoming.instance);
+          if (!_nativeIncomingCallNotifications.contains(current.routeKey) ||
+              !(widget.matrix.voip?.isIncomingCallVisible(current) ?? false)) {
+            return;
+          }
+          await widget.matrix.push.showIncomingCallNotification(
+            roomId: incoming.room.id,
+            ringEventId: current.ringEventId,
+            title: title,
+            body: 'Входящий звонок',
+            avatarCacheKey: key,
+          );
+        } catch (error, stackTrace) {
+          OrexLog.d(
+            'Push',
+            'Windows call avatar refresh failed',
+            error,
+            stackTrace,
+          );
+        }
+      }());
+    }
   }
 
   void _handleIncomingCallDismissal(OrexIncomingCallDismissal dismissal) {
@@ -465,6 +505,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    widget.matrix.handleAppLifecycleState(_lifecycleState);
     _wasLoggedIn = widget.matrix.isLoggedIn;
     widget.matrix.addListener(_onChanged);
     widget.theme.addListener(_onChanged);
@@ -511,6 +552,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final previousState = _lifecycleState;
     _lifecycleState = state;
+    widget.matrix.handleAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
       final pendingAcceptedUi =
           widget.matrix.call.pendingAcceptedIncomingCallUiRequest;

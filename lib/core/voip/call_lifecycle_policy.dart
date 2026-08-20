@@ -66,6 +66,25 @@ bool orexShouldNotifyEndedForSystemTermination({
   required bool acceptedInProgress,
 }) => !rejected && acceptedInProgress;
 
+/// The initiator owns the single durable timeline summary for a personal call.
+///
+/// A connected call has a local [CallSession] even when the local caller hangs
+/// up first. Requiring an `ended` control signal suppressed that ordinary case,
+/// because established personal calls intentionally do not broadcast `ended`
+/// on every local leave. Keep deduplication (initiator-only), but treat an
+/// actually created local session as enough evidence that a call attempt should
+/// be recorded in the conversation.
+bool orexShouldPostCallSummary({
+  required bool initiator,
+  required bool hasRoomId,
+  required bool hadSession,
+  required bool fromRemote,
+  required bool shouldSendEndedSignal,
+}) =>
+    initiator &&
+    hasRoomId &&
+    (hadSession || fromRemote || shouldSendEndedSignal);
+
 /// Closing the local incoming surface is part of a system Answer handoff.
 /// It must not tear down the native foreground owner while that same Answer is
 /// still creating the Dart call session.

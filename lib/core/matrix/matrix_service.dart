@@ -82,6 +82,15 @@ int orexTotalUnreadCount(Iterable<int> counts) => counts.fold<int>(
   (total, count) => total + (count < 0 ? 0 : count),
 );
 
+/// Non-critical maintenance should not keep a phone busy while Orex is hidden.
+/// Matrix sync, push and the foreground call runtime deliberately do not use
+/// this gate: they own message/call delivery and must remain independent.
+@visibleForTesting
+bool orexShouldRunForegroundMaintenance({
+  required bool isMobilePlatform,
+  required AppLifecycleState? lifecycle,
+}) => !isMobilePlatform || lifecycle == AppLifecycleState.resumed;
+
 /// Тонкая обёртка над Famedly Matrix Dart SDK.
 ///
 /// Отвечает за: инициализацию клиента с локальной БД (ради «мгновенного»
@@ -177,6 +186,18 @@ class MatrixService extends ChangeNotifier {
   Future<void>? _avatarWarmupFuture;
   bool _avatarWarmupRequestedAfterCurrent = false;
   DateTime? _lastAvatarWarmup;
+  AppLifecycleState? _appLifecycleState;
+
+  bool get _isMobileRuntime =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
+
+  bool get _foregroundMaintenanceAllowed =>
+      orexShouldRunForegroundMaintenance(
+        isMobilePlatform: _isMobileRuntime,
+        lifecycle: _appLifecycleState,
+      );
 
   /// Когда в последний раз ключи выгружались в бэкап (для показа в настройках).
   DateTime? lastBackup;
@@ -200,6 +221,7 @@ class MatrixService extends ChangeNotifier {
 
   /// Инициализация: восстановление сессии из БД (если была) и подписка на sync.
   Future<void> init() async {
+    _appLifecycleState = WidgetsBinding.instance.lifecycleState;
     await audio.init();
     // Для E2EE инициализируйте vodozemac до init():
     //   await vod.init();  (пакет flutter_vodozemac)
@@ -468,7 +490,7 @@ class MatrixService extends ChangeNotifier {
   }
 
   void _scheduleAvatarCacheWarmup({bool force = false}) {
-    if (!client.isLogged()) return;
+    if (!client.isLogged() || !_foregroundMaintenanceAllowed) return;
     final last = _lastAvatarWarmup;
     if (!force &&
         last != null &&
@@ -502,6 +524,12 @@ class MatrixService extends ChangeNotifier {
     final candidates = rooms.take(24).toList(growable: false);
     const batchSize = 4;
     for (var offset = 0; offset < candidates.length; offset += batchSize) {
+      if (!_foregroundMaintenanceAllowed) {
+        // Resume should be allowed to finish the warmup instead of treating a
+        // lifecycle-aborted partial pass as fresh for the full throttle window.
+        _lastAvatarWarmup = null;
+        return;
+      }
       final end = offset + batchSize < candidates.length
           ? offset + batchSize
           : candidates.length;
@@ -596,6 +624,23 @@ class MatrixService extends ChangeNotifier {
       eventId: event.eventId,
       avatarCacheKey: avatarCacheKey,
     );
+  }
+
+  /// Suspends only optional UI/security maintenance on hidden phones.
+  ///
+  /// Do not stop Matrix sync, push delivery, CallController, LiveKit or native
+  /// foreground services here: those are the intentionally fragile background
+  /// paths that keep incoming/ongoing calls reliable.
+  void handleAppLifecycleState(AppLifecycleState state) {
+    _appLifecycleState = state;
+    if (!_isMobileRuntime) return;
+    if (state == AppLifecycleState.resumed) {
+      if (autoBackup && !_backupDisabledByUser) _startAutoBackup();
+      _scheduleAvatarCacheWarmup();
+      return;
+    }
+    _autoBackupTimer?.cancel();
+    _autoBackupTimer = null;
   }
 
   void setForegroundRoomId(String? roomId) {

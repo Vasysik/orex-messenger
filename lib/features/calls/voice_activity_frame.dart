@@ -94,7 +94,8 @@ class OrexSpeakingFrame extends StatefulWidget {
   State<OrexSpeakingFrame> createState() => _OrexSpeakingFrameState();
 }
 
-class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
+class _OrexSpeakingFrameState extends State<OrexSpeakingFrame>
+    with WidgetsBindingObserver {
   Timer? _timer;
   bool _active = false;
   double _levelDb = -100;
@@ -102,8 +103,23 @@ class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _syncSamplingForLifecycle(
+      WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed,
+    );
+  }
+
+  void _syncSamplingForLifecycle(AppLifecycleState state) {
+    _timer?.cancel();
+    _timer = null;
+    if (state != AppLifecycleState.resumed) return;
     _sample();
     _timer = Timer.periodic(const Duration(milliseconds: 35), (_) => _sample());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _syncSamplingForLifecycle(state);
   }
 
   @override
@@ -117,6 +133,7 @@ class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
     super.dispose();
   }
