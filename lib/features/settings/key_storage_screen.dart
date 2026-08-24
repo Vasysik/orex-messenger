@@ -177,6 +177,7 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
   @override
   Widget build(BuildContext context) {
     return AmbientBackground(
+      groupBackdrops: true,
       child: Scaffold(
         backgroundColor: Colors.transparent,
         appBar: AppBar(

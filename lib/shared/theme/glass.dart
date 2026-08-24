@@ -37,43 +37,57 @@ class GlassPanel extends StatelessWidget {
         (isDark ? OrexColors.ochreLight : OrexColors.copperBright)
             .withValues(alpha: isDark ? 0.18 : 0.28);
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(borderRadius),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-        child: Container(
-          padding: padding,
-          decoration: BoxDecoration(
-            color: glassColor,
-            borderRadius: BorderRadius.circular(borderRadius),
-            border: Border.all(color: borderColor, width: 1),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Colors.white.withValues(alpha: isDark ? 0.04 : 0.20),
-                Colors.transparent,
-              ],
-            ),
-          ),
-          child: Material(
-            type: MaterialType.transparency,
-            child: child,
-          ),
+    final filter = ImageFilter.blur(sigmaX: blur, sigmaY: blur);
+    final panel = Container(
+      padding: padding,
+      decoration: BoxDecoration(
+        color: glassColor,
+        borderRadius: BorderRadius.circular(borderRadius),
+        border: Border.all(color: borderColor, width: 1),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Colors.white.withValues(alpha: isDark ? 0.04 : 0.20),
+            Colors.transparent,
+          ],
         ),
       ),
+      child: Material(
+        type: MaterialType.transparency,
+        child: child,
+      ),
+    );
+    final grouped = BackdropGroup.of(context) != null;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(borderRadius),
+      child: grouped
+          ? BackdropFilter.grouped(filter: filter, child: panel)
+          : BackdropFilter(filter: filter, child: panel),
     );
   }
 }
 
 /// Амбиентный фон под стеклянными панелями — даёт чему размываться.
 class AmbientBackground extends StatelessWidget {
-  const AmbientBackground({super.key, required this.child});
+  const AmbientBackground({
+    super.key,
+    required this.child,
+    this.groupBackdrops = false,
+  });
+
   final Widget child;
+
+  /// Позволяет нескольким неперекрывающимся [GlassPanel] разделить один
+  /// backdrop sample. Для длинных экранов настроек это сохраняет тот же blur,
+  /// но не заставляет raster thread повторять одинаковую фильтрацию фона.
+  final bool groupBackdrops;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final content = groupBackdrops ? BackdropGroup(child: child) : child;
     return DecoratedBox(
       decoration: BoxDecoration(
         gradient: isDark ? OrexColors.ambientDark : OrexColors.ambientLight,
@@ -91,7 +105,7 @@ class AmbientBackground extends StatelessWidget {
             left: -40,
             child: _Blob(OrexColors.ochre.withValues(alpha: 0.16), 300),
           ),
-          child,
+          content,
         ],
       ),
     );

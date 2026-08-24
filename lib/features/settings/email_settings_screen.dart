@@ -121,6 +121,7 @@ class _EmailSettingsScreenState extends State<EmailSettingsScreen> {
     final loadFailed = widget.matrix.accountEmailsLoadFailed && !loaded;
 
     return AmbientBackground(
+      groupBackdrops: true,
       child: Scaffold(
         backgroundColor: Colors.transparent,
         appBar: AppBar(

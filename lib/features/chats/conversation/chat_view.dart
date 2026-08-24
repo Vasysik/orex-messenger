@@ -901,10 +901,20 @@ class _ChatViewState extends State<ChatView> {
     if (!mounted) return;
     final timeline = await room.getTimeline(
       onUpdate: () {
-        if (mounted) setState(() {});
+        final events = _timeline?.events ?? const <Event>[];
+        if (mounted) {
+          setState(() {
+            _buildChatItems(events);
+          });
+        }
       },
     );
-    if (mounted) setState(() => _timeline = timeline);
+    if (mounted) {
+      setState(() {
+        _timeline = timeline;
+        _buildChatItems(timeline.events);
+      });
+    }
   }
 
   Future<void> _rejectInvite() async {
@@ -1132,10 +1142,6 @@ class _ChatViewState extends State<ChatView> {
 
     final myId = widget.matrix.client.userID;
     final liveTimeline = _timeline;
-
-    if (liveTimeline != null) {
-      _buildChatItems(liveTimeline.events);
-    }
 
     return DropTarget(
       onDragDone: _attachDroppedFiles,

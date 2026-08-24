@@ -21,10 +21,7 @@ class _RoomListPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final visibleRooms = rooms
-        .where((room) => !matrix.isSupergroupChild(room))
-        .toList();
-    if (visibleRooms.isEmpty && globalItemCount == 0) {
+    if (rooms.isEmpty && globalItemCount == 0) {
       return const Center(
         child: SquirrelMascot(
           size: 110,
@@ -34,10 +31,10 @@ class _RoomListPage extends StatelessWidget {
     }
     return ListView.builder(
       padding: const EdgeInsets.symmetric(horizontal: 8),
-      itemCount: visibleRooms.length + globalItemCount,
+      itemCount: rooms.length + globalItemCount,
       itemBuilder: (_, i) {
-        if (i < visibleRooms.length) {
-          final room = visibleRooms[i];
+        if (i < rooms.length) {
+          final room = rooms[i];
           return _ChatTile(
             matrix: matrix,
             room: room,
@@ -47,7 +44,7 @@ class _RoomListPage extends StatelessWidget {
           );
         }
 
-        return globalItemBuilder(i - visibleRooms.length);
+        return globalItemBuilder(i - rooms.length);
       },
     );
   }

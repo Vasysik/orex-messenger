@@ -61,8 +61,20 @@ class OrexTimelineGrouper {
     required String Function(T event) senderId,
     required DateTime Function(T event) originServerTs,
   }) {
-    final events = rawEvents.where(isRenderable).toList()
-      ..sort((a, b) => originServerTs(b).compareTo(originServerTs(a)));
+    final events = rawEvents.where(isRenderable).toList();
+    // Matrix Timeline уже хранит обычный путь newest-first. Не запускаем
+    // O(N log N) sort на каждое onUpdate длинного чата, но сохраняем fallback
+    // для импортированных/тестовых входов с произвольным порядком.
+    var newestFirst = true;
+    for (var i = 1; i < events.length; i++) {
+      if (originServerTs(events[i - 1]).isBefore(originServerTs(events[i]))) {
+        newestFirst = false;
+        break;
+      }
+    }
+    if (!newestFirst) {
+      events.sort((a, b) => originServerTs(b).compareTo(originServerTs(a)));
+    }
 
     final groups = <OrexTimelineGroup<T>>[];
     var i = 0;
