@@ -1,7 +1,10 @@
 package ru.orex.messenger
 
+import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.net.Uri
@@ -12,6 +15,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import android.util.Rational
 import android.view.ViewGroup
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -29,6 +33,7 @@ class MainActivity : FlutterActivity() {
     private var callHandoffCallId: String? = null
     private var callHandoffRingEventId: String? = null
     private val callHandoffHandler = Handler(Looper.getMainLooper())
+    private var pictureInPictureChannel: MethodChannel? = null
     private var callHandoffRevealTimeout: Runnable? = null
     private var callHandoffTimeout: Runnable? = null
 
@@ -56,6 +61,21 @@ class MainActivity : FlutterActivity() {
         super.onPause()
     }
 
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration,
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        pictureInPictureChannel?.invokeMethod(
+            "onPictureInPictureModeChanged",
+            isInPictureInPictureMode,
+        )
+    }
+
+    private fun isPictureInPictureSupported(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,
@@ -68,6 +88,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        pictureInPictureChannel?.setMethodCallHandler(null)
+        pictureInPictureChannel = null
         clearCallHandoffOverlay()
         setProximityEnabled(false)
         OrexPushBridge.detach(this)
@@ -273,6 +295,30 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        pictureInPictureChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "orex/picture_in_picture",
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "isSupported" -> result.success(isPictureInPictureSupported())
+                    "enter" -> {
+                        if (!isPictureInPictureSupported()) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        val width = call.argument<Int>("width")?.coerceAtLeast(1) ?: 16
+                        val height = call.argument<Int>("height")?.coerceAtLeast(1) ?: 9
+                        val params = PictureInPictureParams.Builder()
+                            .setAspectRatio(Rational(width, height))
+                            .build()
+                        result.success(enterPictureInPictureMode(params))
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {

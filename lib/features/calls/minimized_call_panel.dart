@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:matrix/matrix.dart' hide CallSession;
 
 import '../../core/voip/call_controller.dart';
+import '../../core/platform/orex_system_picture_in_picture.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/mxc_avatar.dart';
@@ -33,6 +35,8 @@ class MinimizedCallPanel extends StatefulWidget {
 }
 
 class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
+  OrexSystemPictureInPicture get _pip =>
+      OrexSystemPictureInPicture.instance;
   static const double _miniTileMinHeight = 132;
   static const double _miniTileMaxHeight = 260;
   static const double _miniTileMinWidth = 220;
@@ -60,6 +64,42 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
     setState(() {
       _videoPreferences.toggleParticipant(participant);
     });
+    if (_pip.isActiveFor(participant.identity)) {
+      final track = orexSelectVideoTrack(
+        participant,
+        preferScreenShare: _preferScreenShareFor(participant),
+      );
+      if (track != null) {
+        unawaited(
+          _pip.updateTrack(identity: participant.identity, track: track),
+        );
+      }
+    }
+  }
+
+  void _toggleParticipantPictureInPicture(lk.Participant participant) {
+    final track = orexSelectVideoTrack(
+      participant,
+      preferScreenShare: _preferScreenShareFor(participant),
+    );
+    if (track == null || !_pip.canOffer) return;
+    unawaited(_pip.toggle(identity: participant.identity, track: track));
+  }
+
+  void _onPictureInPictureChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _pip.addListener(_onPictureInPictureChanged);
+  }
+
+  @override
+  void dispose() {
+    _pip.removeListener(_onPictureInPictureChanged);
+    super.dispose();
   }
 
   @override
@@ -144,6 +184,10 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
             cornerIcon: Icons.close_fullscreen,
             cornerTooltip: 'Отменить приближение плитки',
             onCornerTap: () => widget.call.focusParticipant(null),
+            pictureInPictureActive: _pip.isActiveFor(p.identity),
+            onPictureInPicture: _pip.canOffer
+                ? () => _toggleParticipantPictureInPicture(p)
+                : null,
             preferScreenShare: _preferScreenShareFor(p),
             onSwitchVideoSource: orexHasCameraAndScreen(p)
                 ? () => _toggleParticipantVideoSource(p)
@@ -234,6 +278,10 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
                   cornerIcon: Icons.open_in_full,
                   cornerTooltip: 'Приблизить плитку',
                   onCornerTap: () => widget.call.focusParticipant(p.identity),
+                  pictureInPictureActive: _pip.isActiveFor(p.identity),
+                  onPictureInPicture: _pip.canOffer
+                      ? () => _toggleParticipantPictureInPicture(p)
+                      : null,
                   onTap: () => widget.call.focusParticipant(p.identity),
                   preferScreenShare: _preferScreenShareFor(p),
                   onSwitchVideoSource: orexHasCameraAndScreen(p)

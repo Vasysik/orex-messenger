@@ -846,6 +846,10 @@ contract, Android debug/release и Windows release build. Workflow не публ
 - timeline разделяет сообщения по локальным календарным дням; sticky-date использует тот же стиль, что и обычный разделитель, проверяет пересечение по верхней и нижней координатам pill и не накладывает соседние даты; при движении в историю новая floating-дата проявляется за `140 ms`, а при движении к последним сообщениям уже видимая дата отрывается без fade-in и только уходящая floating-копия зеркально гаснет, после чего исходный separator возвращается без повторного появления;
 - возврат к последним сообщениям оформлен отдельной анимированной pill-кнопкой `Вниз`, которая появляется только после заметного ухода от конца чата; базовый и hover-фоны настроены между прежним тёмным и слишком светлым вариантами, при этом hover остаётся более светлым состоянием того же стиля;
 - desktop mouse UX унифицирован: стандартные `IconButton` / `TextButton` / `FilledButton` / `ElevatedButton` / `OutlinedButton` и кастомные `InkWell`/call controls показывают `click`-курсор только когда действие доступно; hover/splash при этом остаются прежними. Emoji и send actions в composer сохраняют тот же desktop cursor/hover/splash, что и кнопка вложения; focused media-плитка звонка поддерживает отдельный fullscreen с возвратом по double tap, `Esc` и системному Back, speaking-рамка не меняет размер видео/screen share, а нижние fullscreen call controls автоматически скрываются вниз после 3 секунд бездействия и переключаются обычным тапом по media: видимые скрываются, скрытые возвращаются.
+- media-плитки с реальным video/screen-share track получили ручной системный Picture-in-Picture на текущих целевых платформах Orex: Web отдаёт выбранный `<video>` нативному browser PiP, Android использует Activity Picture-in-Picture, а Windows открывает отдельное always-on-top OS-окно на том же Flutter engine/isolate. PiP показывает только выбранную камеру или screen share, call controls туда не переносятся и автоматического входа при background нет;
+- Windows runner явно подключает `windows.h` перед `shellapi.h`; системные tray/PiP API больше не зависят от случайных транзитивных include Flutter wrapper-ов, поэтому multi-view refactor не ломает сборку Windows SDK;
+- Windows runner также явно линкует `flutter_wrapper_plugin`, потому что multi-view runner напрямую получает `PluginRegistrarWindows` для Orex MethodChannel-ов; это устраняет unresolved `PluginRegistrarManager`/`PluginRegistrar` symbols на этапе MSVC link;
+- Windows сохраняет normal-размер и позицию окна относительно выбранного монитора, maximized/restored и имя монитора в HKCU; при исчезнувшем дисплее или координатах вне work area окно возвращается на существующий экран без отдельной DPI-миграции;
 - восстановлены итоговые timeline-карточки личных звонков с исходом и длительностью; Windows incoming-call notification использует cached caller avatar и асинхронно обновляет его при cold cache вместо warning-иконки;
 - на телефоне background lifecycle больше не тратит CPU/сеть на auto-backup, массовый avatar warmup и speaking-frame sampling, при этом Matrix sync, push, foreground call service, Telecom и LiveKit остаются нетронутыми.
 
@@ -908,9 +912,12 @@ Kotlin Gradle Plugin из app/plugins; режим «только подтвер�
   списков настроек, списка чатов и timeline сообщений на Android, Windows и Web;
   работа ведётся по профилированию конкретных jank/frame-time всплесков без
   упрощения дизайна и без предположений о слабом устройстве;
-* 🟡 **Состояние окна Windows.** Сохранять размер, позицию, maximized/restored и
-  монитор; при исчезнувшем мониторе или координатах вне доступной области мягко
-  возвращать окно на существующий экран. Отдельная DPI-логика в эту задачу не входит;
+* 🟢 **Состояние окна Windows.** Orex сохраняет normal-размер, позицию,
+  maximized/restored и имя монитора в пользовательском HKCU. Позиция хранится
+  относительно work area выбранного дисплея, поэтому перестановка мониторов не
+  оставляет окно на старых виртуальных координатах. Если сохранённый монитор
+  исчез, используется существующий основной экран; размер и координаты мягко
+  ограничиваются его work area. Отдельная DPI-логика в эту задачу не входит;
 * 🟢 **Медиа-плитки звонка без изменения размера контента при speaking.** Если
   плитка показывает видео или screen share, speaking-анимация рисуется внешним
   border/glow поверх плитки и не изменяет размер самого медиа; avatar-only плитки
@@ -921,10 +928,16 @@ Kotlin Gradle Plugin из app/plugins; режим «только подтвер�
   предыдущий режим. Нижние call controls доступны поверх fullscreen и через 3 секунды
   бездействия плавно уезжают вниз; обычный тап/клик по media работает как toggle:
   видимые controls скрываются сразу, скрытые возвращаются и снова получают auto-hide;
-* 🟡 **Android media PiP при сворачивании звонка.** Если пользователь развернул
-  участника с видео или screen share и отправил приложение в background, системное
-  Picture-in-Picture продолжает показывать именно выбранное медиа. Внутренний
-  floating overlay Orex для этого не создаётся;
+* 🟢 **Системный media PiP по явной кнопке.** На каждой call-плитке, где реально
+  есть камера или screen share, под zoom/unzoom доступна отдельная кнопка PiP.
+  Это не overlay внутри Orex: Web передаёт конкретный LiveKit/WebRTC `<video>` в
+  browser Picture-in-Picture, Android вручную входит в системный Activity PiP, а
+  Windows создаёт отдельное перемещаемое always-on-top OS-окно. Windows PiP живёт
+  на том же Flutter engine/isolate, поэтому использует тот же `VideoTrack` без
+  второго звонка, процесса или сериализации media. В PiP находится только media
+  выбранного участника/трансляции и минимальное оконное закрытие на Windows —
+  mute/camera/hangup и остальные call controls остаются исключительно в основном
+  интерфейсе. Вход только ручной: сворачивание Orex само PiP не включает;
 * 🟡 **Точный захват выбранного аудиовхода.** При выбранном отдельном микрофоне
   звонок не должен дополнительно открывать микрофон Bluetooth-гарнитуры или другие
   input devices. Нужно проверить системный/native capture path и гарантировать,

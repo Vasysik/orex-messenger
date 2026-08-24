@@ -115,11 +115,14 @@ class OrexCallParticipantTile extends StatelessWidget {
     required this.preferScreenShare,
     required this.style,
     this.zoomable = false,
+    this.showChrome = true,
     this.onTap,
     this.onDoubleTap,
     this.cornerIcon,
     this.cornerTooltip,
     this.onCornerTap,
+    this.pictureInPictureActive = false,
+    this.onPictureInPicture,
     this.onSwitchVideoSource,
     this.onCycleCamera,
     this.onGrantVoice,
@@ -133,11 +136,14 @@ class OrexCallParticipantTile extends StatelessWidget {
   final bool preferScreenShare;
   final OrexCallParticipantTileStyle style;
   final bool zoomable;
+  final bool showChrome;
   final VoidCallback? onTap;
   final VoidCallback? onDoubleTap;
   final IconData? cornerIcon;
   final String? cornerTooltip;
   final VoidCallback? onCornerTap;
+  final bool pictureInPictureActive;
+  final VoidCallback? onPictureInPicture;
   final VoidCallback? onSwitchVideoSource;
   final VoidCallback? onCycleCamera;
   final VoidCallback? onGrantVoice;
@@ -206,25 +212,31 @@ class OrexCallParticipantTile extends StatelessWidget {
               fit: StackFit.expand,
               children: [
                 media,
-                if (style.showNameLabel) _NameLabel(name: name, style: style),
-                if ((cornerIcon != null && onCornerTap != null) ||
-                    onSwitchVideoSource != null)
+                if (showChrome && style.showNameLabel)
+                  _NameLabel(name: name, style: style),
+                if (showChrome &&
+                    ((cornerIcon != null && onCornerTap != null) ||
+                        (track != null && onPictureInPicture != null) ||
+                        onSwitchVideoSource != null))
                   _TopLeftActions(
                     style: style,
                     cornerIcon: cornerIcon,
                     cornerTooltip: cornerTooltip,
                     onCornerTap: onCornerTap,
+                    pictureInPictureActive: pictureInPictureActive,
+                    onPictureInPicture:
+                        track != null ? onPictureInPicture : null,
                     preferScreenShare: preferScreenShare,
                     onSwitchVideoSource: onSwitchVideoSource,
                   ),
-                if (statusBadgeCount > 0)
+                if (showChrome && statusBadgeCount > 0)
                   _MediaStatusBadges(
                     style: style,
                     micMuted: micMuted,
                     soundMuted: soundMuted,
                     local: participant is lk.LocalParticipant,
                   ),
-                if (track != null && onCycleCamera != null)
+                if (showChrome && track != null && onCycleCamera != null)
                   Positioned(
                     right: 8,
                     bottom: cameraButtonBottom,
@@ -235,17 +247,18 @@ class OrexCallParticipantTile extends StatelessWidget {
                       onTap: onCycleCamera!,
                     ),
                   ),
-                Positioned(
-                  right: 8,
-                  top: 8,
-                  child: _VoiceStateBadges(
-                    style: style,
-                    handRaised: voiceState.handRaised,
-                    reaction: voiceState.reaction,
-                    onGrantVoice: onGrantVoice,
-                    onRevokeVoice: onRevokeVoice,
+                if (showChrome)
+                  Positioned(
+                    right: 8,
+                    top: 8,
+                    child: _VoiceStateBadges(
+                      style: style,
+                      handRaised: voiceState.handRaised,
+                      reaction: voiceState.reaction,
+                      onGrantVoice: onGrantVoice,
+                      onRevokeVoice: onRevokeVoice,
+                    ),
                   ),
-                ),
               ],
             ),
           ),
@@ -287,6 +300,8 @@ class _TopLeftActions extends StatelessWidget {
     required this.cornerIcon,
     required this.cornerTooltip,
     required this.onCornerTap,
+    required this.pictureInPictureActive,
+    required this.onPictureInPicture,
     required this.preferScreenShare,
     required this.onSwitchVideoSource,
   });
@@ -295,6 +310,8 @@ class _TopLeftActions extends StatelessWidget {
   final IconData? cornerIcon;
   final String? cornerTooltip;
   final VoidCallback? onCornerTap;
+  final bool pictureInPictureActive;
+  final VoidCallback? onPictureInPicture;
   final bool preferScreenShare;
   final VoidCallback? onSwitchVideoSource;
 
@@ -313,8 +330,23 @@ class _TopLeftActions extends StatelessWidget {
               tooltip: cornerTooltip ?? '',
               onTap: onCornerTap!,
             ),
-          if (onSwitchVideoSource != null) ...[
+          if (onPictureInPicture != null) ...[
             if (cornerIcon != null && onCornerTap != null)
+              SizedBox(height: style.badgeGap),
+            _TileCornerButton(
+              style: style,
+              icon: pictureInPictureActive
+                  ? Icons.picture_in_picture
+                  : Icons.picture_in_picture_alt,
+              tooltip: pictureInPictureActive
+                  ? 'Закрыть Picture in Picture'
+                  : 'Открыть Picture in Picture',
+              onTap: onPictureInPicture!,
+            ),
+          ],
+          if (onSwitchVideoSource != null) ...[
+            if ((cornerIcon != null && onCornerTap != null) ||
+                onPictureInPicture != null)
               SizedBox(height: style.badgeGap),
             _TileCornerButton(
               style: style,

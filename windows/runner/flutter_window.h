@@ -2,10 +2,13 @@
 #define RUNNER_FLUTTER_WINDOW_H_
 
 #include <flutter/dart_project.h>
-#include <flutter/flutter_view_controller.h>
 #include <flutter/encodable_value.h>
 #include <flutter/method_channel.h>
 
+// shellapi.h depends on the core Win32 declarations/macros from windows.h.
+// Do not rely on Flutter wrapper headers to include windows.h transitively: v21
+// no longer owns a FlutterViewController, so that accidental include disappeared.
+#include <windows.h>
 #include <shellapi.h>
 #include <memory>
 #include <string>
@@ -43,12 +46,13 @@ class FlutterWindow : public Win32Window {
   void ActivateNotification();
   void ShowTrayMenu();
   void RequestQuit();
+  void RestoreWindowState();
+  void CaptureNormalWindowBounds();
+  void SaveWindowState();
 
   // The project to run.
   flutter::DartProject project_;
 
-  // The Flutter instance hosted by this window.
-  std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       audio_devices_channel_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> push_channel_;
@@ -67,6 +71,11 @@ class FlutterWindow : public Win32Window {
   bool desktop_window_visible_ = true;
   bool external_shutdown_requested_ = false;
   bool destroyed_ = false;
+  bool window_state_ready_ = false;
+  bool restore_maximized_ = false;
+  bool window_was_maximized_ = false;
+  bool has_normal_window_bounds_ = false;
+  RECT normal_window_bounds_{};
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

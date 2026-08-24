@@ -17,9 +17,11 @@
 #include <variant>
 #include <vector>
 
+#include <flutter/plugin_registrar_windows.h>
 #include <flutter/standard_method_codec.h>
+#include <multiview_desktop/multi_view_desktop_plugin.h>
 
-#include "flutter/generated_plugin_registrant.h"
+#include "orex_plugin_registrant.h"
 #include "resource.h"
 
 namespace {
@@ -37,6 +39,166 @@ constexpr UINT kTrayOpenCommand = 1001;
 constexpr UINT kTrayExitCommand = 1002;
 constexpr DWORD kMaxAvatarFileBytes = 8 * 1024 * 1024;
 constexpr UINT kMaxAvatarDimension = 4096;
+
+#ifdef OREX_DEBUG_CHANNEL
+constexpr const wchar_t kWindowStateRegKey[] =
+    L"Software\\Orex\\MessengerDebug\\Window";
+#else
+constexpr const wchar_t kWindowStateRegKey[] =
+    L"Software\\Orex\\Messenger\\Window";
+#endif
+constexpr const wchar_t kWindowStateLeft[] = L"Left";
+constexpr const wchar_t kWindowStateTop[] = L"Top";
+constexpr const wchar_t kWindowStateWidth[] = L"Width";
+constexpr const wchar_t kWindowStateHeight[] = L"Height";
+constexpr const wchar_t kWindowStateMaximized[] = L"Maximized";
+constexpr const wchar_t kWindowStateMonitor[] = L"Monitor";
+
+struct SavedWindowState {
+  LONG left = 0;
+  LONG top = 0;
+  LONG width = 0;
+  LONG height = 0;
+  bool maximized = false;
+  std::wstring monitor;
+};
+
+bool ReadRegistryDword(HKEY key, const wchar_t* name, DWORD* value) {
+  DWORD size = sizeof(DWORD);
+  return RegGetValueW(key, nullptr, name, RRF_RT_REG_DWORD, nullptr, value,
+                      &size) == ERROR_SUCCESS;
+}
+
+bool ReadRegistryString(HKEY key, const wchar_t* name, std::wstring* value) {
+  DWORD size = 0;
+  if (RegGetValueW(key, nullptr, name, RRF_RT_REG_SZ, nullptr, nullptr,
+                   &size) != ERROR_SUCCESS ||
+      size < sizeof(wchar_t)) {
+    return false;
+  }
+  std::vector<wchar_t> buffer(size / sizeof(wchar_t), L'\0');
+  if (RegGetValueW(key, nullptr, name, RRF_RT_REG_SZ, nullptr, buffer.data(),
+                   &size) != ERROR_SUCCESS) {
+    return false;
+  }
+  *value = buffer.data();
+  return true;
+}
+
+bool LoadSavedWindowState(SavedWindowState* state) {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, kWindowStateRegKey, 0, KEY_QUERY_VALUE,
+                    &key) != ERROR_SUCCESS) {
+    return false;
+  }
+
+  DWORD left = 0;
+  DWORD top = 0;
+  DWORD width = 0;
+  DWORD height = 0;
+  DWORD maximized = 0;
+  const bool complete =
+      ReadRegistryDword(key, kWindowStateLeft, &left) &&
+      ReadRegistryDword(key, kWindowStateTop, &top) &&
+      ReadRegistryDword(key, kWindowStateWidth, &width) &&
+      ReadRegistryDword(key, kWindowStateHeight, &height) &&
+      ReadRegistryDword(key, kWindowStateMaximized, &maximized);
+  if (complete) {
+    ReadRegistryString(key, kWindowStateMonitor, &state->monitor);
+    state->left = static_cast<LONG>(left);
+    state->top = static_cast<LONG>(top);
+    state->width = static_cast<LONG>(width);
+    state->height = static_cast<LONG>(height);
+    state->maximized = maximized != 0;
+  }
+  RegCloseKey(key);
+  return complete && state->width >= 320 && state->height >= 240;
+}
+
+void WriteRegistryDword(HKEY key, const wchar_t* name, LONG value) {
+  const DWORD raw = static_cast<DWORD>(value);
+  RegSetValueExW(key, name, 0, REG_DWORD,
+                 reinterpret_cast<const BYTE*>(&raw), sizeof(raw));
+}
+
+void SaveWindowStateToRegistry(const SavedWindowState& state) {
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, kWindowStateRegKey, 0, nullptr, 0,
+                      KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) {
+    return;
+  }
+  WriteRegistryDword(key, kWindowStateLeft, state.left);
+  WriteRegistryDword(key, kWindowStateTop, state.top);
+  WriteRegistryDword(key, kWindowStateWidth, state.width);
+  WriteRegistryDword(key, kWindowStateHeight, state.height);
+  const DWORD maximized = state.maximized ? 1 : 0;
+  RegSetValueExW(key, kWindowStateMaximized, 0, REG_DWORD,
+                 reinterpret_cast<const BYTE*>(&maximized),
+                 sizeof(maximized));
+  const DWORD monitor_bytes = static_cast<DWORD>(
+      (state.monitor.size() + 1) * sizeof(wchar_t));
+  RegSetValueExW(key, kWindowStateMonitor, 0, REG_SZ,
+                 reinterpret_cast<const BYTE*>(state.monitor.c_str()),
+                 monitor_bytes);
+  RegCloseKey(key);
+}
+
+struct MonitorLookup {
+  std::wstring name;
+  HMONITOR monitor = nullptr;
+};
+
+BOOL CALLBACK FindMonitorByName(HMONITOR monitor, HDC, LPRECT, LPARAM data) {
+  auto* lookup = reinterpret_cast<MonitorLookup*>(data);
+  MONITORINFOEXW info{};
+  info.cbSize = sizeof(info);
+  if (GetMonitorInfoW(monitor, &info) && lookup->name == info.szDevice) {
+    lookup->monitor = monitor;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+HMONITOR MonitorForName(const std::wstring& name) {
+  if (name.empty()) return nullptr;
+  MonitorLookup lookup{name, nullptr};
+  EnumDisplayMonitors(nullptr, nullptr, FindMonitorByName,
+                      reinterpret_cast<LPARAM>(&lookup));
+  return lookup.monitor;
+}
+
+std::wstring MonitorName(HMONITOR monitor) {
+  if (monitor == nullptr) return std::wstring();
+  MONITORINFOEXW info{};
+  info.cbSize = sizeof(info);
+  return GetMonitorInfoW(monitor, &info) ? info.szDevice : std::wstring();
+}
+
+RECT ClampWindowToWorkArea(RECT rect, HMONITOR preferred_monitor) {
+  HMONITOR monitor = preferred_monitor;
+  if (monitor == nullptr) {
+    monitor = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
+  }
+  MONITORINFO info{};
+  info.cbSize = sizeof(info);
+  if (monitor == nullptr || !GetMonitorInfoW(monitor, &info)) return rect;
+
+  const LONG work_width = std::max(1L, info.rcWork.right - info.rcWork.left);
+  const LONG work_height = std::max(1L, info.rcWork.bottom - info.rcWork.top);
+  const LONG min_width = std::min(320L, work_width);
+  const LONG min_height = std::min(240L, work_height);
+  LONG width = std::clamp(rect.right - rect.left, min_width, work_width);
+  LONG height = std::clamp(rect.bottom - rect.top, min_height, work_height);
+  LONG left = rect.left;
+  LONG top = rect.top;
+
+  if (left < info.rcWork.left) left = info.rcWork.left;
+  if (top < info.rcWork.top) top = info.rcWork.top;
+  if (left + width > info.rcWork.right) left = info.rcWork.right - width;
+  if (top + height > info.rcWork.bottom) top = info.rcWork.bottom - height;
+
+  return RECT{left, top, left + width, top + height};
+}
 
 std::wstring Utf8ToWide(const std::string& value) {
   if (value.empty()) return std::wstring();
@@ -373,21 +535,56 @@ bool FlutterWindow::OnCreate() {
   }
 
   RECT frame = GetClientArea();
+  const int width = frame.right - frame.left;
+  const int height = frame.bottom - frame.top;
 
-  // The size here must match the window dimensions to avoid unnecessary surface
-  // creation / destruction in the startup path.
-  flutter_controller_ = std::make_unique<flutter::FlutterViewController>(
-      frame.right - frame.left, frame.bottom - frame.top, project_);
-  // Ensure that basic setup of the controller was successful.
-  if (!flutter_controller_->engine() || !flutter_controller_->view()) {
+  MultiViewDesktopPrepareEngine(project_, GetHandle());
+  FlutterDesktopEngineRef engine = MultiViewDesktopGetEngineRef();
+  if (engine == nullptr) {
     return false;
   }
-  RegisterPlugins(flutter_controller_->engine());
+
+  // Register before the view is attached so a very fast first frame cannot be
+  // missed. The callback runs later on the platform thread, after the window
+  // state below has been restored.
+  FlutterDesktopEngineSetNextFrameCallback(
+      engine,
+      [](void* user_data) {
+        auto* self = static_cast<FlutterWindow*>(user_data);
+        HWND handle = self->GetHandle();
+        if (handle != nullptr) {
+          ShowWindow(handle,
+                     self->restore_maximized_ ? SW_SHOWMAXIMIZED
+                                              : SW_SHOWNORMAL);
+        }
+      },
+      this);
+
+  MultiViewDesktopCreateMainView(GetHandle(), width, height);
+
+  // multiview_desktop creates/registers its own plugin while attaching the
+  // primary view. Register every other Orex plugin afterwards so plugins that
+  // query their registrar's implicit view see the real main FlutterView.
+  RegisterOrexPlugins(engine);
+
+  const HWND flutter_hwnd =
+      MultiViewDesktopGetFlutterHwnd(MultiViewDesktopGetMainViewId());
+  if (flutter_hwnd == nullptr) {
+    return false;
+  }
+  SetChildContent(flutter_hwnd);
+
+  const auto runner_registrar_ref =
+      FlutterDesktopEngineGetPluginRegistrar(engine, "OrexRunnerPlugin");
+  auto* runner_registrar =
+      flutter::PluginRegistrarManager::GetInstance()
+          ->GetRegistrar<flutter::PluginRegistrarWindows>(runner_registrar_ref);
+  auto* messenger = runner_registrar->messenger();
 
   audio_devices_channel_ =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-      flutter_controller_->engine()->messenger(), "orex/audio_devices",
-      &flutter::StandardMethodCodec::GetInstance());
+          messenger, "orex/audio_devices",
+          &flutter::StandardMethodCodec::GetInstance());
   audio_devices_channel_->SetMethodCallHandler(
       [](const flutter::MethodCall<flutter::EncodableValue>& call,
          std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
@@ -406,8 +603,8 @@ bool FlutterWindow::OnCreate() {
 
   push_channel_ =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-      flutter_controller_->engine()->messenger(), "orex/push",
-      &flutter::StandardMethodCodec::GetInstance());
+          messenger, "orex/push",
+          &flutter::StandardMethodCodec::GetInstance());
   push_channel_->SetMethodCallHandler(
       [this](const flutter::MethodCall<flutter::EncodableValue>& call,
              std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
@@ -419,16 +616,16 @@ bool FlutterWindow::OnCreate() {
         if (call.method_name() == "showLocalMatrixNotification" ||
             call.method_name() == "showIncomingCallNotification") {
           if (arguments == nullptr) {
-            result->Success(flutter::EncodableValue(false));
+            result->Error("invalid_arguments", "Expected notification map");
             return;
           }
           ShowWindowsNotification(*arguments);
           result->Success(flutter::EncodableValue(true));
           return;
         }
-        if (call.method_name() == "dismissRoomNotifications") {
+        if (call.method_name() == "dismissLocalMatrixNotification") {
           if (arguments != nullptr) {
-            DismissWindowsNotification(MapString(*arguments, "roomId"));
+            DismissWindowsNotification(MapString(*arguments, "room_id"));
           }
           result->Success(flutter::EncodableValue(true));
           return;
@@ -436,13 +633,13 @@ bool FlutterWindow::OnCreate() {
         if (call.method_name() == "dismissIncomingCallNotification") {
           if (arguments != nullptr) {
             DismissIncomingCallNotification(
-                MapString(*arguments, "roomId"),
-                MapString(*arguments, "ringEventId"));
+                MapString(*arguments, "room_id"),
+                MapString(*arguments, "event_id"));
           }
           result->Success(flutter::EncodableValue(true));
           return;
         }
-        if (call.method_name() == "updateTrayUnreadCount") {
+        if (call.method_name() == "setTrayUnreadCount") {
           if (arguments != nullptr) {
             UpdateTrayUnreadCount(MapInt(*arguments, "count"));
           }
@@ -457,25 +654,15 @@ bool FlutterWindow::OnCreate() {
         result->NotImplemented();
       });
 
-  SetChildContent(flutter_controller_->view()->GetNativeWindow());
+  RestoreWindowState();
 
   taskbar_created_message_ = RegisterWindowMessageW(L"TaskbarCreated");
   // Keep one icon for the process lifetime. It is both the tray affordance and
   // the shell anchor for transient notification balloons.
   EnsureTrayIcon();
 
-  flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
-  });
-
-  // Flutter can complete the first frame before the "show window" callback is
-  // registered. The following call ensures a frame is pending to ensure the
-  // window is shown. It is a no-op if the first frame hasn't completed yet.
-  flutter_controller_->ForceRedraw();
-
   return true;
 }
-
 void FlutterWindow::OnDestroy() {
   if (destroyed_) return;
   destroyed_ = true;
@@ -486,10 +673,6 @@ void FlutterWindow::OnDestroy() {
   RemoveTrayIcon();
   push_channel_ = nullptr;
   audio_devices_channel_ = nullptr;
-  if (flutter_controller_) {
-    flutter_controller_ = nullptr;
-  }
-
   Win32Window::OnDestroy();
 }
 
@@ -676,6 +859,7 @@ void FlutterWindow::DismissIncomingCallNotification(
 bool FlutterWindow::HideToTray() {
   HWND handle = GetHandle();
   if (handle == nullptr || !EnsureTrayIcon()) return false;
+  SaveWindowState();
   hidden_to_tray_ = true;
   ShowWindow(handle, SW_HIDE);
   NotifyWindowVisibility(false);
@@ -739,9 +923,87 @@ void FlutterWindow::ShowTrayMenu() {
 void FlutterWindow::RequestQuit() {
   HWND handle = GetHandle();
   if (handle != nullptr) {
+    SaveWindowState();
     RemoveTrayIcon();
     DestroyWindow(handle);
   }
+}
+
+void FlutterWindow::RestoreWindowState() {
+  HWND handle = GetHandle();
+  if (handle == nullptr) return;
+
+  SavedWindowState saved;
+  if (!LoadSavedWindowState(&saved)) {
+    CaptureNormalWindowBounds();
+    restore_maximized_ = false;
+    window_state_ready_ = true;
+    return;
+  }
+
+  HMONITOR target_monitor = MonitorForName(saved.monitor);
+  if (target_monitor == nullptr) {
+    const POINT primary_origin{0, 0};
+    target_monitor = MonitorFromPoint(primary_origin, MONITOR_DEFAULTTOPRIMARY);
+  }
+
+  MONITORINFO monitor_info{};
+  monitor_info.cbSize = sizeof(monitor_info);
+  RECT restored{saved.left, saved.top, saved.left + saved.width,
+                saved.top + saved.height};
+  if (target_monitor != nullptr &&
+      GetMonitorInfoW(target_monitor, &monitor_info)) {
+    // Position is persisted relative to the selected monitor's work area so a
+    // monitor can move in the virtual desktop without stranding the window.
+    restored.left = monitor_info.rcWork.left + saved.left;
+    restored.top = monitor_info.rcWork.top + saved.top;
+    restored.right = restored.left + saved.width;
+    restored.bottom = restored.top + saved.height;
+  }
+  restored = ClampWindowToWorkArea(restored, target_monitor);
+
+  SetWindowPos(handle, nullptr, restored.left, restored.top,
+               restored.right - restored.left, restored.bottom - restored.top,
+               SWP_NOZORDER | SWP_NOACTIVATE);
+  normal_window_bounds_ = restored;
+  has_normal_window_bounds_ = true;
+  restore_maximized_ = saved.maximized;
+  window_was_maximized_ = saved.maximized;
+  window_state_ready_ = true;
+}
+
+void FlutterWindow::CaptureNormalWindowBounds() {
+  HWND handle = GetHandle();
+  if (handle == nullptr || IsIconic(handle) || IsZoomed(handle)) return;
+  RECT bounds{};
+  if (!GetWindowRect(handle, &bounds)) return;
+  normal_window_bounds_ = bounds;
+  has_normal_window_bounds_ = true;
+}
+
+void FlutterWindow::SaveWindowState() {
+  if (!window_state_ready_) return;
+  HWND handle = GetHandle();
+  if (handle == nullptr) return;
+
+  if (!IsZoomed(handle) && !IsIconic(handle)) CaptureNormalWindowBounds();
+  if (!has_normal_window_bounds_) return;
+
+  HMONITOR monitor =
+      MonitorFromRect(&normal_window_bounds_, MONITOR_DEFAULTTONEAREST);
+  MONITORINFO monitor_info{};
+  monitor_info.cbSize = sizeof(monitor_info);
+  if (monitor == nullptr || !GetMonitorInfoW(monitor, &monitor_info)) return;
+
+  const RECT safe = ClampWindowToWorkArea(normal_window_bounds_, monitor);
+  SavedWindowState state;
+  state.left = safe.left - monitor_info.rcWork.left;
+  state.top = safe.top - monitor_info.rcWork.top;
+  state.width = safe.right - safe.left;
+  state.height = safe.bottom - safe.top;
+  state.maximized = IsZoomed(handle) != FALSE || window_was_maximized_;
+  state.monitor = MonitorName(monitor);
+  SaveWindowStateToRegistry(state);
 }
 
 LRESULT
@@ -764,6 +1026,14 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     }
     external_shutdown_requested_ = false;
   }
+  if (message == WM_EXITSIZEMOVE) {
+    CaptureNormalWindowBounds();
+    SaveWindowState();
+  }
+  if (message == WM_SYSCOMMAND &&
+      (wparam & 0xFFF0) == SC_MAXIMIZE) {
+    CaptureNormalWindowBounds();
+  }
   if (message == WM_SYSCOMMAND &&
       (wparam & 0xFFF0) == SC_CLOSE) {
     if (external_shutdown_requested_) {
@@ -784,6 +1054,15 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     } else if (wparam == SIZE_RESTORED || wparam == SIZE_MAXIMIZED) {
       hidden_to_tray_ = false;
       NotifyWindowVisibility(true);
+      if (window_state_ready_ && wparam == SIZE_MAXIMIZED) {
+        window_was_maximized_ = true;
+        SaveWindowState();
+      } else if (window_state_ready_ && wparam == SIZE_RESTORED &&
+                 window_was_maximized_) {
+        window_was_maximized_ = false;
+        CaptureNormalWindowBounds();
+        SaveWindowState();
+      }
     }
   }
   if (message == WM_COMMAND) {
@@ -802,14 +1081,15 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     return 0;
   }
 
-  // Give Flutter, including plugins, an opportunity to handle window messages.
-  if (flutter_controller_) {
-    std::optional<LRESULT> result =
-        flutter_controller_->HandleTopLevelWindowProc(hwnd, message, wparam,
-                                                      lparam);
-    if (result) {
-      return *result;
-    }
+  // Give Flutter and multiview-aware plugins an opportunity to handle the
+  // native message after Orex's tray/window ownership rules above.
+  LRESULT flutter_result = 0;
+  if (message == WM_FONTCHANGE) {
+    FlutterDesktopEngineReloadSystemFonts(MultiViewDesktopGetEngineRef());
+  }
+  if (MultiViewDesktopHandleWindowProc(hwnd, message, wparam, lparam,
+                                       &flutter_result)) {
+    return flutter_result;
   }
 
   switch (message) {
@@ -830,11 +1110,6 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       }
       return 0;
     }
-    case WM_FONTCHANGE:
-      if (flutter_controller_) {
-        flutter_controller_->engine()->ReloadSystemFonts();
-      }
-      break;
   }
 
   return Win32Window::MessageHandler(hwnd, message, wparam, lparam);

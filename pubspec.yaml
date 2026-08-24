@@ -52,6 +52,8 @@ dependencies:
   sqflite: 2.4.3
   sqflite_common_ffi: 2.3.7+1
   web: 1.1.1
+  # Одно Flutter engine/isolate, но отдельные системные окна Windows (PiP).
+  multiview_desktop: 1.2.1
 
 dev_dependencies:
   flutter_test:

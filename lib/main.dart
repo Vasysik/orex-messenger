@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart' show Room;
+import 'package:multiview_desktop/multiview_desktop.dart';
 
 import 'core/bootstrap_failure.dart';
 import 'core/config/orex_config.dart';
@@ -14,6 +15,7 @@ import 'core/files/file_helper.dart';
 import 'core/storage/database.dart';
 import 'core/update/orex_update_controller.dart';
 import 'core/matrix/matrix_service.dart';
+import 'core/platform/orex_system_picture_in_picture.dart';
 import 'core/push/push_background_resolver.dart';
 import 'core/push/push_platform_bridge.dart';
 import 'core/logging/orex_logger.dart';
@@ -39,6 +41,17 @@ void main() {
   if (kIsWeb) BrowserContextMenu.disableContextMenu();
   if (kIsWeb && _isDownloadRoute(Uri.base.path)) {
     runApp(const OrexDownloadApp());
+    return;
+  }
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
+    runMultiApp(
+      home: (context, publicId) => const OrexBootstrap(),
+      config: MultiAppConfig(
+        generalParams: const MultiPlatformParams(
+          closeMode: CloseMode.forceSecondary,
+        ),
+      ),
+    );
     return;
   }
   runApp(const OrexBootstrap());
@@ -1077,6 +1090,9 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
             left: 16,
             bottom: 16,
             child: SafeArea(child: OrexDownloadCornerButton()),
+          ),
+          const Positioned.fill(
+            child: OrexAndroidPictureInPictureSurface(),
           ),
         ],
       ),

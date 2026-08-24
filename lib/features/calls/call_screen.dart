@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
 import '../../core/matrix/matrix_service.dart';
+import '../../core/platform/orex_system_picture_in_picture.dart';
 import '../../core/voip/call_controller.dart';
 import '../../core/voip/call_session.dart';
 import '../../shared/theme/glass.dart';
@@ -29,6 +30,8 @@ class CallScreen extends StatefulWidget {
 
 class _CallScreenState extends State<CallScreen> {
   CallController get _call => widget.matrix.call;
+  OrexSystemPictureInPicture get _pip =>
+      OrexSystemPictureInPicture.instance;
   CallSession? get _session => _call.session;
   final GlobalKey _reactionButtonKey = GlobalKey();
   final OrexCallVideoPreferences _videoPreferences = OrexCallVideoPreferences();
@@ -57,6 +60,38 @@ class _CallScreenState extends State<CallScreen> {
     setState(() {
       _videoPreferences.toggleParticipant(participant);
     });
+    if (_pip.isActiveFor(participant.identity)) {
+      final track = orexSelectVideoTrack(
+        participant,
+        preferScreenShare: _preferScreenShareFor(participant),
+      );
+      if (track != null) {
+        unawaited(
+          _pip.updateTrack(identity: participant.identity, track: track),
+        );
+      }
+    }
+  }
+
+  void _toggleParticipantPictureInPicture(lk.Participant participant) {
+    final track = orexSelectVideoTrack(
+      participant,
+      preferScreenShare: _preferScreenShareFor(participant),
+    );
+    if (track == null || !_pip.canOffer) return;
+    unawaited(
+      _pip.toggle(identity: participant.identity, track: track),
+    );
+  }
+
+  void _onPictureInPictureChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _pip.addListener(_onPictureInPictureChanged);
   }
 
   void _enterMediaFullscreen() {
@@ -114,6 +149,7 @@ class _CallScreenState extends State<CallScreen> {
 
   @override
   void dispose() {
+    _pip.removeListener(_onPictureInPictureChanged);
     _fullscreenControlsTimer?.cancel();
     unawaited(widget.matrix.push.notifyCallUiHidden());
     // Выход с экрана (кнопка ▼ или системный «назад») = свернуть, не завершая.
@@ -327,6 +363,12 @@ class _CallScreenState extends State<CallScreen> {
           cornerIcon: Icons.close_fullscreen,
           cornerTooltip: 'Отменить приближение плитки',
           onCornerTap: () => _call.focusParticipant(null),
+          pictureInPictureActive: _pip.isActiveFor(
+            pinnedParticipant.identity,
+          ),
+          onPictureInPicture: _pip.canOffer
+              ? () => _toggleParticipantPictureInPicture(pinnedParticipant)
+              : null,
           preferScreenShare: _preferScreenShareFor(pinnedParticipant),
           onSwitchVideoSource: orexHasCameraAndScreen(pinnedParticipant)
               ? () => _toggleParticipantVideoSource(pinnedParticipant)
@@ -379,6 +421,14 @@ class _CallScreenState extends State<CallScreen> {
                                     cornerTooltip: 'Приблизить плитку',
                                     onCornerTap: () =>
                                         _call.focusParticipant(p.identity),
+                                    pictureInPictureActive:
+                                        _pip.isActiveFor(p.identity),
+                                    onPictureInPicture: _pip.canOffer
+                                        ? () =>
+                                              _toggleParticipantPictureInPicture(
+                                                p,
+                                              )
+                                        : null,
                                     preferScreenShare: _preferScreenShareFor(p),
                                     onSwitchVideoSource:
                                         orexHasCameraAndScreen(p)
@@ -441,6 +491,10 @@ class _CallScreenState extends State<CallScreen> {
             cornerIcon: Icons.fullscreen_exit,
             cornerTooltip: 'Вернуться к выбранной плитке',
             onCornerTap: _exitMediaFullscreen,
+            pictureInPictureActive: _pip.isActiveFor(participant.identity),
+            onPictureInPicture: _pip.canOffer
+                ? () => _toggleParticipantPictureInPicture(participant)
+                : null,
             preferScreenShare: _preferScreenShareFor(participant),
             onSwitchVideoSource: orexHasCameraAndScreen(participant)
                 ? () => _toggleParticipantVideoSource(participant)
