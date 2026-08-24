@@ -49,6 +49,22 @@ lk.VideoTrack? orexSelectVideoTrack(
       : (camera ?? screen ?? fallback);
 }
 
+lk.VideoDimensions? orexVideoDimensionsForTrack(
+  lk.Participant participant,
+  lk.VideoTrack track,
+) {
+  for (final pub in participant.videoTrackPublications) {
+    if (!identical(pub.track, track) && pub.track != track) continue;
+    final dimensions = pub.dimensions;
+    if (dimensions == null ||
+        dimensions.width <= 0 ||
+        dimensions.height <= 0) {
+      return null;
+    }
+    return dimensions;
+  }
+  return null;
+}
 
 bool orexHasCameraAndScreen(lk.Participant participant) {
   var hasCamera = false;

@@ -89,16 +89,23 @@ https://orex.vasys.ru/download/
 В Web переход встроен в экран входа и в шапку списка чатов; нативные сборки его
 не показывают.
 
-`web/nginx.conf` и `web/flutter_bootstrap.js` разделяют cache policy по
-назначению. `index.html`, bootstrap и manifest всегда revalidate, а тяжёлые
-Flutter-файлы (`main.dart.js`, `assets/`, CanvasKit) в production запрашиваются
-через build-versioned namespace `/__orex_build/<build-id>/...` и получают
-`Cache-Control: public, max-age=31536000, immutable`. Build id берётся из
-`{{flutter_service_worker_version}}`, который Flutter подставляет при каждой
-сборке. Поэтому обычный reload того же релиза не перекачивает приложение, а
-после нового deploy свежий bootstrap сразу указывает на новый URL и старый кэш
-не мешает обновлению. Для `flutter run`/localhost используется обычный loader
-без production namespace.
+`web/nginx.conf` держит Web shell и Flutter runtime на revalidation: `index.html`,
+`flutter_bootstrap.js`, `main.dart.js`, JS/WASM/JSON и compatibility service
+worker получают `Cache-Control: no-cache, must-revalidate`. Это не запрещает
+браузеру хранить файлы: неизменившийся ресурс обычно подтверждается дешёвым
+`304`, но одноимённый файл нового deploy не должен молча жить год из старого
+кэша. Bundled image assets имеют только короткое окно свежести и затем также
+проверяются через ETag/Last-Modified. Build-versioned namespace
+`/__orex_build/...` текущим bootstrap/nginx **не используется**.
+
+Из-за одноимённых Flutter-файлов `build/web` всё равно нужно публиковать как одну
+согласованную сборку. Web PiP bridge живёт во внешнем same-origin
+`flutter_bootstrap.js` и устанавливается до запуска Dart. В `index.html` нет
+inline-копии bridge: production CSP намеренно не содержит `unsafe-inline`, поэтому
+дублирование там только создавало заблокированный `<script>` и шум в Console.
+Dart перед interop-вызовом также проверяет наличие всех трёх JS-функций. Поэтому
+новый `main.dart.js` со старым shell не должен падать на регистрации PiP callback;
+максимум кнопка безопасно вернёт `false`, если bridge действительно недоступен.
 
 `index.html` также держит лёгкий HTML/CSS bootstrap-фон до первого кадра Flutter,
 поэтому даже при холодном старте между навигацией и canvas нет белой вспышки.
@@ -113,6 +120,17 @@ versioned asset base, и отдельный preload только создава�
 сканера должно снова получить изображение. После первого прогрева списка чатов
 обычная перезагрузка вкладки должна брать MXC-аватары из persistent Web-кэша;
 очистка site data намеренно удаляет этот кэш.
+
+Во время активного Web-звонка отдельно проверьте ручной media PiP из клика по
+кнопке плитки. Chrome требует transient user activation для
+`requestPictureInPicture()`, поэтому между пользовательским действием и browser
+PiP нельзя добавлять отложенный поиск video или другой `await`. После deploy
+проверьте и обычную вкладку, которая уже открывала предыдущий релиз: PiP должен
+открываться без `Uncaught Error` на
+`orexSetPictureInPictureClosedCallback` и без CSP violation про inline script.
+Надписи/controls внутри стандартного video PiP (например Chrome `ПРЯМОЙ ЭФИР`)
+рисует сам браузер; убрать их CSS/JS-кодом Orex нельзя без перехода на отдельный
+Document Picture-in-Picture path с более узкой browser support.
 
 Перед публикацией проверьте login/restore session, E2EE сообщения и вложения, большие входящие файлы, Android ↔ Windows ↔ Web media-E2EE звонок, late join и reconnect.
 

@@ -67,7 +67,11 @@ class _CallScreenState extends State<CallScreen> {
       );
       if (track != null) {
         unawaited(
-          _pip.updateTrack(identity: participant.identity, track: track),
+          _pip.updateTrack(
+            identity: participant.identity,
+            track: track,
+            dimensions: orexVideoDimensionsForTrack(participant, track),
+          ),
         );
       }
     }
@@ -80,7 +84,11 @@ class _CallScreenState extends State<CallScreen> {
     );
     if (track == null || !_pip.canOffer) return;
     unawaited(
-      _pip.toggle(identity: participant.identity, track: track),
+      _pip.toggle(
+        identity: participant.identity,
+        track: track,
+        dimensions: orexVideoDimensionsForTrack(participant, track),
+      ),
     );
   }
 

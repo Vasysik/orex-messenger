@@ -71,7 +71,11 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
       );
       if (track != null) {
         unawaited(
-          _pip.updateTrack(identity: participant.identity, track: track),
+          _pip.updateTrack(
+            identity: participant.identity,
+            track: track,
+            dimensions: orexVideoDimensionsForTrack(participant, track),
+          ),
         );
       }
     }
@@ -83,7 +87,13 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
       preferScreenShare: _preferScreenShareFor(participant),
     );
     if (track == null || !_pip.canOffer) return;
-    unawaited(_pip.toggle(identity: participant.identity, track: track));
+    unawaited(
+      _pip.toggle(
+        identity: participant.identity,
+        track: track,
+        dimensions: orexVideoDimensionsForTrack(participant, track),
+      ),
+    );
   }
 
   void _onPictureInPictureChanged() {

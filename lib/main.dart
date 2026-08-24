@@ -555,9 +555,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
               const <OrexIncomingCall>[]) {
         _showIncomingCall(incoming);
       }
-      if (widget.matrix.isLoggedIn) {
-        unawaited(widget.updates.checkIfDue());
-      }
+      unawaited(widget.updates.check(manual: false));
     });
   }
 
@@ -1048,7 +1046,6 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !widget.matrix.isLoggedIn) return;
         unawaited(widget.matrix.push.ensurePermissionRequested());
-        unawaited(widget.updates.checkIfDue());
       });
     }
     _wasLoggedIn = isLoggedIn;

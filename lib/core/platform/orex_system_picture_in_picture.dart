@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:multiview_desktop/multiview_desktop.dart';
 
@@ -34,6 +35,7 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
   int? _desktopViewId;
   bool _androidSurfaceVisible = false;
   bool _opening = false;
+  double? _renderedAspectRatio;
 
   String? get activeIdentity => _activeIdentity;
   lk.VideoTrack? get activeTrack => _activeTrack;
@@ -56,6 +58,7 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
   Future<void> toggle({
     required String identity,
     required lk.VideoTrack track,
+    lk.VideoDimensions? dimensions,
   }) async {
     if (_opening) return;
     if (_activeIdentity == identity) {
@@ -80,10 +83,10 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
 
       switch (defaultTargetPlatform) {
         case TargetPlatform.android:
-          await _openAndroid(identity, track);
+          await _openAndroid(identity, track, dimensions);
           return;
         case TargetPlatform.windows:
-          await _openWindows(identity, track);
+          await _openWindows(identity, track, dimensions);
           return;
         case TargetPlatform.iOS:
         case TargetPlatform.macOS:
@@ -102,6 +105,7 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
   Future<void> updateTrack({
     required String identity,
     required lk.VideoTrack track,
+    lk.VideoDimensions? dimensions,
   }) async {
     if (_activeIdentity != identity || identical(_activeTrack, track)) return;
 
@@ -111,7 +115,9 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
     if (kIsWeb) return;
 
     _activeTrack = track;
+    _renderedAspectRatio = null;
     notifyListeners();
+    await _updateNativeAspectRatio(_videoAspectRatio(dimensions));
   }
 
   Future<void> close() async {
@@ -132,7 +138,11 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
     _clearActive();
   }
 
-  Future<void> _openAndroid(String identity, lk.VideoTrack track) async {
+  Future<void> _openAndroid(
+    String identity,
+    lk.VideoTrack track,
+    lk.VideoDimensions? dimensions,
+  ) async {
     bool supported = false;
     try {
       supported =
@@ -147,16 +157,20 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
     notifyListeners();
 
     // The selected media must be painted before Android snapshots the Activity
-    // into its system PiP surface.
+    // into its system PiP surface. The renderer may already know the real
+    // decoded-frame ratio by the end of this frame; if not, PiP opens with the
+    // metadata hint and is corrected as soon as the first frame reports size.
     await WidgetsBinding.instance.endOfFrame;
+    final aspectRatio =
+        _renderedAspectRatio ?? _videoAspectRatio(dimensions);
 
     bool entered = false;
     try {
       entered =
-          await _androidChannel.invokeMethod<bool>('enter', <String, int>{
-            'width': 16,
-            'height': 9,
-          }) ??
+          await _androidChannel.invokeMethod<bool>(
+            'enter',
+            _androidAspectArguments(aspectRatio),
+          ) ??
           false;
     } catch (_) {
       entered = false;
@@ -164,7 +178,11 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
     if (!entered) _clearActive();
   }
 
-  Future<void> _openWindows(String identity, lk.VideoTrack track) async {
+  Future<void> _openWindows(
+    String identity,
+    lk.VideoTrack track,
+    lk.VideoDimensions? dimensions,
+  ) async {
     // Only one system PiP is useful at a time. Close the previous secondary
     // view before replacing it with another participant.
     final previousViewId = _desktopViewId;
@@ -176,15 +194,16 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
     }
 
     _setActive(identity, track);
+    final initialAspectRatio = _videoAspectRatio(dimensions);
     try {
       final viewId = await openWindow(
         (context, publicId) => OrexDesktopPictureInPictureWindow(
           service: this,
           viewId: publicId,
         ),
-        options: const WindowOptions(
-          size: Size(384, 216),
-          minimumSize: Size(256, 144),
+        options: WindowOptions(
+          size: _desktopPipSize(initialAspectRatio, longSide: 384),
+          minimumSize: _desktopPipSize(initialAspectRatio, longSide: 256),
           title: 'Orex — Picture in Picture',
           titleBarStyle: TitleBarStyle.hidden,
           windowButtonVisibility: false,
@@ -195,7 +214,10 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
       );
       _desktopViewId = viewId;
       final window = MultiViewDesktop.fromId(viewId);
-      await window.setAspectRatio(16 / 9);
+      await _configureDesktopAspectRatio(
+        window,
+        _renderedAspectRatio ?? initialAspectRatio,
+      );
       await window.setAlwaysOnTop(true);
       await window.setMinimizable(false);
       await window.setMaximizable(false);
@@ -204,6 +226,92 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
     } catch (_) {
       _clearActive();
     }
+  }
+
+  void _reportRenderedAspectRatio(double aspectRatio) {
+    if (!aspectRatio.isFinite || aspectRatio <= 0) return;
+
+    final previous = _renderedAspectRatio;
+    if (previous != null && (previous - aspectRatio).abs() < 0.002) return;
+
+    _renderedAspectRatio = aspectRatio;
+    unawaited(_updateNativeAspectRatio(aspectRatio));
+  }
+
+  Future<void> _updateNativeAspectRatio(double aspectRatio) async {
+    if (kIsWeb || !aspectRatio.isFinite || aspectRatio <= 0) return;
+
+    if (defaultTargetPlatform == TargetPlatform.android &&
+        _androidSurfaceVisible) {
+      try {
+        await _androidChannel.invokeMethod<bool>(
+          'updateAspectRatio',
+          _androidAspectArguments(aspectRatio),
+        );
+      } catch (_) {
+        // PiP may already be closing; aspect updates are best-effort only.
+      }
+      return;
+    }
+
+    if (defaultTargetPlatform == TargetPlatform.windows) {
+      final viewId = _desktopViewId;
+      if (viewId == null) return;
+      try {
+        await _configureDesktopAspectRatio(
+          MultiViewDesktop.fromId(viewId),
+          aspectRatio,
+        );
+      } catch (_) {
+        // The user may have closed the secondary window concurrently.
+      }
+    }
+  }
+
+  Future<void> _configureDesktopAspectRatio(
+    MultiViewDesktop window,
+    double aspectRatio,
+  ) async {
+    await window.setAspectRatio(aspectRatio);
+    await window.setMinimumSize(
+      _desktopPipSize(aspectRatio, longSide: 256),
+    );
+    await window.setSize(
+      _desktopPipSize(aspectRatio, longSide: 384),
+    );
+    await window.setAlignment(Alignment.bottomRight);
+  }
+
+  Map<String, int> _androidAspectArguments(double aspectRatio) {
+    final safeRatio =
+        aspectRatio.isFinite && aspectRatio > 0 ? aspectRatio : 16 / 9;
+    const denominator = 10000;
+    return <String, int>{
+      'width': (safeRatio * denominator)
+          .round()
+          .clamp(1, 1000000)
+          .toInt(),
+      'height': denominator,
+    };
+  }
+
+  double _videoAspectRatio(lk.VideoDimensions? dimensions) {
+    if (dimensions == null ||
+        dimensions.width <= 0 ||
+        dimensions.height <= 0) {
+      return 16 / 9;
+    }
+    final ratio = dimensions.width / dimensions.height;
+    return ratio.isFinite && ratio > 0 ? ratio : 16 / 9;
+  }
+
+  Size _desktopPipSize(
+    double aspectRatio, {
+    required double longSide,
+  }) {
+    return aspectRatio >= 1
+        ? Size(longSide, longSide / aspectRatio)
+        : Size(longSide * aspectRatio, longSide);
   }
 
   Future<void> _handleAndroidMethodCall(MethodCall call) async {
@@ -231,6 +339,7 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
   void _setActive(String identity, lk.VideoTrack track) {
     _activeIdentity = identity;
     _activeTrack = track;
+    _renderedAspectRatio = null;
     notifyListeners();
   }
 
@@ -241,6 +350,7 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
     _activeIdentity = null;
     _activeTrack = null;
     _androidSurfaceVisible = false;
+    _renderedAspectRatio = null;
     if (changed) notifyListeners();
   }
 }
@@ -263,10 +373,109 @@ class OrexAndroidPictureInPictureSurface extends StatelessWidget {
         return ColoredBox(
           color: Colors.black,
           child: Center(
-            child: lk.VideoTrackRenderer(track, fit: lk.VideoViewFit.contain),
+            child: _OrexMeasuredPictureInPictureVideo(
+              key: ObjectKey(track),
+              track: track,
+              onAspectRatioChanged: service._reportRenderedAspectRatio,
+            ),
           ),
         );
       },
+    );
+  }
+}
+
+/// Renders the PiP track through a caller-owned WebRTC renderer so Orex can
+/// observe the geometry of the frame that is actually decoded on this device.
+/// Publication/capture metadata is only a startup hint and may stay 16:9 for a
+/// portrait stream.
+class _OrexMeasuredPictureInPictureVideo extends StatefulWidget {
+  const _OrexMeasuredPictureInPictureVideo({
+    super.key,
+    required this.track,
+    required this.onAspectRatioChanged,
+  });
+
+  final lk.VideoTrack track;
+  final ValueChanged<double> onAspectRatioChanged;
+
+  @override
+  State<_OrexMeasuredPictureInPictureVideo> createState() =>
+      _OrexMeasuredPictureInPictureVideoState();
+}
+
+class _OrexMeasuredPictureInPictureVideoState
+    extends State<_OrexMeasuredPictureInPictureVideo> {
+  rtc.RTCVideoRenderer? _renderer;
+  double? _lastReportedAspectRatio;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_initializeRenderer());
+  }
+
+  Future<void> _initializeRenderer() async {
+    final renderer = rtc.RTCVideoRenderer();
+    try {
+      await renderer.initialize();
+    } catch (_) {
+      await renderer.dispose();
+      return;
+    }
+
+    if (!mounted) {
+      await renderer.dispose();
+      return;
+    }
+
+    renderer.addListener(_onRendererChanged);
+    setState(() => _renderer = renderer);
+    _onRendererChanged();
+  }
+
+  void _onRendererChanged() {
+    final renderer = _renderer;
+    if (renderer == null) return;
+
+    final value = renderer.value;
+    if (value.width <= 0 || value.height <= 0) return;
+
+    // RTCVideoValue.aspectRatio accounts for 90/270 degree frame rotation,
+    // unlike MediaStreamTrack.getSettings()/publication metadata.
+    final aspectRatio = value.aspectRatio;
+    if (!aspectRatio.isFinite || aspectRatio <= 0) return;
+
+    final previous = _lastReportedAspectRatio;
+    if (previous != null && (previous - aspectRatio).abs() < 0.002) return;
+    _lastReportedAspectRatio = aspectRatio;
+    widget.onAspectRatioChanged(aspectRatio);
+  }
+
+  @override
+  void dispose() {
+    final renderer = _renderer;
+    if (renderer != null) {
+      renderer.removeListener(_onRendererChanged);
+      renderer.onResize = null;
+      try {
+        renderer.srcObject = null;
+      } catch (_) {}
+      unawaited(renderer.dispose());
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final renderer = _renderer;
+    if (renderer == null) return const SizedBox.shrink();
+
+    return lk.VideoTrackRenderer(
+      widget.track,
+      fit: lk.VideoViewFit.contain,
+      cachedRenderer: renderer,
+      autoDisposeRenderer: false,
     );
   }
 }
@@ -309,7 +518,12 @@ class _OrexDesktopPictureInPictureWindowState
             fit: StackFit.expand,
             children: [
               if (track != null)
-                lk.VideoTrackRenderer(track, fit: lk.VideoViewFit.contain),
+                _OrexMeasuredPictureInPictureVideo(
+                  key: ObjectKey(track),
+                  track: track,
+                  onAspectRatioChanged:
+                      widget.service._reportRenderedAspectRatio,
+                ),
               const Positioned.fill(
                 child: DragToMoveArea(child: SizedBox.expand()),
               ),

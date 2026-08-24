@@ -76,6 +76,22 @@ class MainActivity : FlutterActivity() {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
 
+    private fun pictureInPictureAspectRatio(width: Int?, height: Int?): Rational {
+        val safeWidth = width?.coerceAtLeast(1) ?: 16
+        val safeHeight = height?.coerceAtLeast(1) ?: 9
+        val ratio = safeWidth.toDouble() / safeHeight.toDouble()
+        return when {
+            ratio > 2.39 -> Rational(239, 100)
+            ratio < (1.0 / 2.39) -> Rational(100, 239)
+            else -> Rational(safeWidth, safeHeight)
+        }
+    }
+
+    private fun pictureInPictureParams(width: Int?, height: Int?): PictureInPictureParams =
+        PictureInPictureParams.Builder()
+            .setAspectRatio(pictureInPictureAspectRatio(width, height))
+            .build()
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,
@@ -307,12 +323,26 @@ class MainActivity : FlutterActivity() {
                             result.success(false)
                             return@setMethodCallHandler
                         }
-                        val width = call.argument<Int>("width")?.coerceAtLeast(1) ?: 16
-                        val height = call.argument<Int>("height")?.coerceAtLeast(1) ?: 9
-                        val params = PictureInPictureParams.Builder()
-                            .setAspectRatio(Rational(width, height))
-                            .build()
+                        val params = pictureInPictureParams(
+                            call.argument<Int>("width"),
+                            call.argument<Int>("height"),
+                        )
                         result.success(enterPictureInPictureMode(params))
+                    }
+                    "updateAspectRatio" -> {
+                        if (!isPictureInPictureSupported()) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        val params = pictureInPictureParams(
+                            call.argument<Int>("width"),
+                            call.argument<Int>("height"),
+                        )
+                        val updated = runCatching {
+                            setPictureInPictureParams(params)
+                            true
+                        }.getOrDefault(false)
+                        result.success(updated)
                     }
                     else -> result.notImplemented()
                 }

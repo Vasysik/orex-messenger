@@ -92,6 +92,8 @@ class _ChatViewState extends State<ChatView> {
   String? _pendingStickyTimelineSeparatorIdAfterFade;
   double? _lastTimelineScrollPixels;
   bool _scrollingTowardLatest = false;
+  DateTime? _initialStickyTimelineDate;
+  bool _hasLeftInitialStickyTimelineDate = false;
 
   static const double _stickyTimelineTop = 6;
   static const Duration _stickyTimelineFadeDuration = Duration(
@@ -370,7 +372,11 @@ class _ChatViewState extends State<ChatView> {
     }
 
     _setStickyTimelineOverlay(
-      _StickyTimelineOverlay(date: nextDate, top: overlayTop),
+      _StickyTimelineOverlay(
+        date: nextDate,
+        top: overlayTop,
+        animateIn: _shouldAnimateStickyTimelineDate(nextDate),
+      ),
       attachedSeparatorId: attachedSeparatorId,
     );
   }
@@ -462,6 +468,19 @@ class _ChatViewState extends State<ChatView> {
       return;
     }
     _stickyTimelineOverlay.value = next;
+  }
+
+  bool _shouldAnimateStickyTimelineDate(DateTime date) {
+    final initialDate = _initialStickyTimelineDate;
+    if (initialDate == null) {
+      _initialStickyTimelineDate = date;
+      return false;
+    }
+    if (!_hasLeftInitialStickyTimelineDate &&
+        !orexSameCalendarDay(initialDate, date)) {
+      _hasLeftInitialStickyTimelineDate = true;
+    }
+    return _hasLeftInitialStickyTimelineDate && !_scrollingTowardLatest;
   }
 
   void _scrollListener() {
@@ -1348,7 +1367,7 @@ class _ChatViewState extends State<ChatView> {
                                 'sticky-day-${sticky.date.year}-${sticky.date.month}-${sticky.date.day}',
                               ),
                               date: sticky.date,
-                              animateIn: !_scrollingTowardLatest,
+                              animateIn: sticky.animateIn,
                             ),
                           ),
                         ),
@@ -1415,10 +1434,15 @@ class _ChatViewState extends State<ChatView> {
 }
 
 class _StickyTimelineOverlay {
-  const _StickyTimelineOverlay({required this.date, required this.top});
+  const _StickyTimelineOverlay({
+    required this.date,
+    required this.top,
+    required this.animateIn,
+  });
 
   final DateTime date;
   final double top;
+  final bool animateIn;
 }
 
 class _VisibleTimelineSeparator {
