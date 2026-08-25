@@ -60,6 +60,16 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
   bool _preferScreenShareFor(lk.Participant participant) =>
       _videoPreferences.prefersParticipantScreenShare(participant);
 
+  OrexCallParticipantProfile _participantProfile(
+    lk.Participant participant,
+  ) {
+    final roomId = widget.call.roomId;
+    final room = roomId == null
+        ? null
+        : widget.call.matrix.client.getRoomById(roomId);
+    return orexCallParticipantProfile(participant, room);
+  }
+
   void _toggleParticipantVideoSource(lk.Participant participant) {
     setState(() {
       _videoPreferences.toggleParticipant(participant);
@@ -75,6 +85,7 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
             identity: participant.identity,
             track: track,
             dimensions: orexVideoDimensionsForTrack(participant, track),
+            preferScreenShare: _preferScreenShareFor(participant),
           ),
         );
       }
@@ -82,16 +93,26 @@ class _MinimizedCallPanelState extends State<MinimizedCallPanel> {
   }
 
   void _toggleParticipantPictureInPicture(lk.Participant participant) {
+    if (_pip.isActiveFor(participant.identity)) {
+      unawaited(_pip.close());
+      return;
+    }
+
     final track = orexSelectVideoTrack(
       participant,
       preferScreenShare: _preferScreenShareFor(participant),
     );
     if (track == null || !_pip.canOffer) return;
+    final profile = _participantProfile(participant);
     unawaited(
       _pip.toggle(
         identity: participant.identity,
         track: track,
+        matrix: widget.call.matrix,
+        participantName: profile.displayName,
+        participantAvatarUrl: profile.avatarUrl,
         dimensions: orexVideoDimensionsForTrack(participant, track),
+        preferScreenShare: _preferScreenShareFor(participant),
       ),
     );
   }

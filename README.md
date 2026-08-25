@@ -768,29 +768,18 @@ Activity/Telecom/уведомлений/audio/power через `dumpsys`, соз
 
 #### Профилирование scrolling/jank
 
-Производительность интерфейса проверяется только в profile/release-подобном
-режиме. Debug frame time не используется как критерий оптимизации. Для Android и
-Windows базовый путь — `flutter run --profile` и Flutter DevTools → Performance;
-для Web — `flutter run -d chrome --profile` и Chrome DevTools → Performance.
-Сам `flutter run --profile` **не печатает итоговый performance-отчёт**: его
-консоль остаётся обычным runtime/logcat-потоком. Нужно открыть ссылку Flutter
-DevTools из вывода запуска (или запустить `dart devtools`), записать нужный
-сценарий во вкладке Performance и сохранить snapshot. Если нужен именно
-машиночитаемый итог с `worst_frame_*` и количеством пропущенных frame budget,
-используется `integration_test`/`traceAction` и `TimelineSummary`, а не завершение
-обычного `flutter run`.
-Сценарий измерения должен быть воспроизводимым: несколько длинных fling списка
-чатов, длинного timeline и экранов настроек, в том числе с приходом нового
-сообщения во время прокрутки.
+Производительность проверяется в profile/release-подобном режиме, не в debug.
+Android/Windows: `flutter run --profile` + Flutter DevTools → Performance. Web:
+Chrome DevTools → Performance на production/staging; отдельный Flutter profile
+build нужен только когда требуется привязка trace к Dart symbols и окружение
+позволяет его подключить к backend. `flutter run --profile` сам итоговый отчёт в
+консоль не печатает — trace нужно записать и сохранить в profiler.
 
-Browser trace от 2026-08-24 показал, что заметные Web frame-time всплески в
-исследованном сценарии приходятся прежде всего на Dart/JavaScript работу внутри
-`requestAnimationFrame` и microtasks. Browser layout/paint/commit в этих кадрах
-намного дешевле, а GC не является доминирующей причиной. Поэтому дальнейшие
-исправления Web jank должны привязываться к конкретным callback/build событиям,
-а не к отключению blur, теней или других частей дизайна. При расширенной
-диагностике tracing build/layout/paint включается только на короткую повторную
-запись: само расширенное tracing тоже добавляет накладные расходы.
+Проверяем одинаковые сценарии: длинный fling списка чатов, timeline и настроек,
+включая приход нового сообщения. Записи 2026-08-24/25 показали, что оставшиеся
+Web-spikes в исследованных сценариях в основном находятся в Dart/JS animation
+workload, а не в browser layout/raster. Это остаётся регрессионной проверкой, а
+не поводом упрощать дизайн без конкретного frame-time профиля.
 
 #### Web-биндинги vodozemac
 
@@ -876,7 +865,7 @@ contract, Android debug/release и Windows release build. Workflow не публ
 - timeline разделяет сообщения по локальным календарным дням; sticky-date использует тот же стиль, что и обычный разделитель, проверяет пересечение по верхней и нижней координатам pill и не накладывает соседние даты; при первом открытии чата дата появляется сразу без мигания, а `140 ms` fade-in активируется уже после ухода с первоначально показанного календарного дня; при движении к последним сообщениям уже видимая дата отрывается без fade-in и только уходящая floating-копия зеркально гаснет, после чего исходный separator возвращается без повторного появления;
 - возврат к последним сообщениям оформлен отдельной анимированной pill-кнопкой `Вниз`, которая появляется только после заметного ухода от конца чата; базовый и hover-фоны настроены между прежним тёмным и слишком светлым вариантами, при этом hover остаётся более светлым состоянием того же стиля;
 - desktop mouse UX унифицирован: стандартные `IconButton` / `TextButton` / `FilledButton` / `ElevatedButton` / `OutlinedButton` и кастомные `InkWell`/call controls показывают `click`-курсор только когда действие доступно; hover/splash при этом остаются прежними. Emoji и send actions в composer сохраняют тот же desktop cursor/hover/splash, что и кнопка вложения; focused media-плитка звонка поддерживает отдельный fullscreen с возвратом по double tap, `Esc` и системному Back, speaking-рамка не меняет размер видео/screen share, а нижние fullscreen call controls автоматически скрываются вниз после 3 секунд бездействия и переключаются обычным тапом по media: видимые скрываются, скрытые возвращаются.
-- media-плитки с реальным video/screen-share track получили ручной системный Picture-in-Picture на текущих целевых платформах Orex: Web отдаёт выбранный `<video>` нативному browser PiP, Android использует Activity Picture-in-Picture, а Windows открывает отдельное always-on-top OS-окно на том же Flutter engine/isolate. Web bridge устанавливается до запуска Flutter из внешнего same-origin bootstrap без inline script и проверяется Dart-кодом перед вызовом; Android/Windows используют dimensions выбранной LiveKit publication только как стартовую подсказку с fallback `16:9`, а после первого декодированного кадра переустанавливают PiP aspect ratio по фактическим `RTCVideoRenderer` width/height/rotation. PiP показывает только выбранную камеру или screen share, call controls туда не переносятся и автоматического входа при background нет;
+- media-плитки с реальным video/screen-share track получили ручной системный Picture-in-Picture на текущих целевых платформах Orex: Web использует отдельный долгоживущий WebRTC `<video>`, не зависящий от rebuild/zoom call-плитки, Android использует Activity Picture-in-Picture, а Windows открывает отдельное always-on-top OS-окно на том же Flutter engine/isolate. PiP запоминает выбранный camera/screen-share приоритет и синхронизируется с LiveKit publication events: появившийся preferred screen share переключает уже открытый PiP, временно выключенное native-video заменяется нейтральной панелью с инициалом, а завершение звонка закрывает PiP. Web bridge устанавливается до запуска Flutter из внешнего same-origin bootstrap без inline script и проверяется Dart-кодом перед вызовом; Android/Windows используют dimensions выбранной LiveKit publication только как стартовую подсказку с fallback `16:9`, а после первого декодированного кадра переустанавливают PiP aspect ratio по фактическим `RTCVideoRenderer` width/height/rotation. PiP показывает только выбранную камеру или screen share, call controls туда не переносятся и автоматического входа при background нет;
 - Windows runner явно подключает `windows.h` перед `shellapi.h`; системные tray/PiP API больше не зависят от случайных транзитивных include Flutter wrapper-ов, поэтому multi-view refactor не ломает сборку Windows SDK;
 - Windows runner также явно линкует `flutter_wrapper_plugin`, потому что multi-view runner напрямую получает `PluginRegistrarWindows` для Orex MethodChannel-ов; это устраняет unresolved `PluginRegistrarManager`/`PluginRegistrar` symbols на этапе MSVC link;
 - Windows сохраняет normal-размер и позицию окна относительно выбранного монитора, maximized/restored и имя монитора в HKCU; при исчезнувшем дисплее или координатах вне work area окно возвращается на существующий экран без отдельной DPI-миграции;
@@ -938,14 +927,11 @@ Kotlin Gradle Plugin из app/plugins; режим «только подтвер�
   Matrix sync, FCM/WorkManager, Android foreground-call runtime, Core-Telecom,
   LiveKit и call wake-lock остаются независимыми и не затрагиваются этой
   оптимизацией;
-* 🟡 **Стабильное листание интерфейса.** Устранение реальных фризов при прокрутке
-  списков настроек, списка чатов и timeline сообщений на Android, Windows и Web;
-  уже убраны безусловная пересортировка Matrix timeline, лишние широкие rebuild
-  списка чатов и независимые backdrop blur там, где они могут быть сгруппированы.
-  Web trace от 2026-08-24 дополнительно локализовал оставшиеся длинные кадры в
-  Dart/JS `requestAnimationFrame`/microtask workload, а не в browser layout/paint;
-  работа продолжается по конкретным frame-time всплескам без упрощения дизайна и
-  без предположений о слабом устройстве;
+* 🟢 **Стабильное листание интерфейса.** Убраны подтверждённые горячие места:
+  безусловная пересортировка Matrix timeline, широкие rebuild списка чатов и
+  независимые backdrop blur на длинных settings-экранах. Android/Windows/Web
+  проверяются профилированием конкретных frame-time всплесков; release-блокер
+  закрыт, дальнейшая работа идёт как обычный performance regression control;
 * 🟢 **Состояние окна Windows.** Orex сохраняет normal-размер, позицию,
   maximized/restored и имя монитора в пользовательском HKCU. Позиция хранится
   относительно work area выбранного дисплея, поэтому перестановка мониторов не
@@ -962,31 +948,18 @@ Kotlin Gradle Plugin из app/plugins; режим «только подтвер�
   предыдущий режим. Нижние call controls доступны поверх fullscreen и через 3 секунды
   бездействия плавно уезжают вниз; обычный тап/клик по media работает как toggle:
   видимые controls скрываются сразу, скрытые возвращаются и снова получают auto-hide;
-* 🟢 **Системный media PiP по явной кнопке.** На каждой call-плитке, где реально
-  есть камера или screen share, под zoom/unzoom доступна отдельная кнопка PiP.
-  Это не overlay внутри Orex: Web передаёт конкретный LiveKit/WebRTC `<video>` в
-  browser Picture-in-Picture, Android вручную входит в системный Activity PiP, а
-  Windows создаёт отдельное перемещаемое always-on-top OS-окно. Windows PiP живёт
-  на том же Flutter engine/isolate, поэтому использует тот же `VideoTrack` без
-  второго звонка, процесса или сериализации media. В PiP находится только media
-  выбранного участника/трансляции и минимальное оконное закрытие на Windows —
-  mute/camera/hangup и остальные call controls остаются исключительно в основном
-  интерфейсе. Вход только ручной: сворачивание Orex само PiP не включает. Web
-  bridge живёт только во внешнем same-origin `flutter_bootstrap.js`, поэтому не
-  требует `unsafe-inline` в CSP; Dart до interop-вызова дополнительно проверяет
-  наличие JS API. Browser video PiP сохраняет фактическое соотношение сторон
-  `<video>`; подписи и controls вроде Chrome `ПРЯМОЙ ЭФИР` принадлежат браузеру
-  и Orex их не рисует. Android и Windows больше не считают LiveKit publication
-  dimensions окончательной геометрией: это только стартовая подсказка с fallback
-  `16:9`. Отдельный PiP `RTCVideoRenderer` наблюдает размер и rotation реально
-  декодированного кадра и после первого frame (а также при последующей смене
-  ориентации) обновляет системный Android PiP или размер/aspect lock Windows-окна.
-  Это важно для portrait camera video, где capture/publication metadata может
-  оставаться горизонтальной. Android дополнительно ограничивает ratio системным
-  диапазоном PiP. Редкий Android lifecycle/task
-  edge-case с чёрным full-screen surface после возврата из PiP пока не считается
-  исправленным без отдельного воспроизводимого Activity/task trace; task flags и
-  ownership Flutter engine ради него не меняются;
+* 🟢 **Системный media PiP по явной кнопке.** Web использует browser PiP,
+  Android — Activity PiP, Windows — отдельное always-on-top окно. PiP следует за
+  выбранным camera/screen-share track, автоматически подхватывает смену источника
+  и закрывается при завершении звонка/уходе участника. При временном отсутствии
+  media Android/Windows показывают тот же Matrix avatar/no-media surface, что и
+  обычная call-плитка; кнопка PiP на карточке остаётся доступной для закрытия.
+  Web держит отдельный стабильный renderer, поэтому zoom/rebuild плитки не
+  замораживает PiP, а после возврата media stream перепривязывается без второго
+  клика. Android/Windows подстраивают окно под реально декодированный aspect
+  ratio, включая portrait video. Редкий Android task/lifecycle edge-case после
+  PiP остаётся отдельной диагностической задачей и не лечится изменением task
+  flags/Flutter engine ownership без воспроизводимого trace;
 * 🟡 **Точный захват выбранного аудиовхода.** При выбранном отдельном микрофоне
   звонок не должен дополнительно открывать микрофон Bluetooth-гарнитуры или другие
   input devices. Нужно проверить системный/native capture path и гарантировать,

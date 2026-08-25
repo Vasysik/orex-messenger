@@ -1609,6 +1609,13 @@ class CallController extends ChangeNotifier {
             preparedKeyProvider: s.e2eeKeyProvider,
             mediaOperationsDrained: s.mediaOperationsFullyDrained,
           );
+
+    // The controller no longer owns a live session at this point. Surface that
+    // state immediately so UI-owned resources such as PiP are dismissed before
+    // push persistence/network teardown can spend seconds awaiting I/O. Media
+    // and signaling teardown ordering above is intentionally unchanged.
+    if (!_disposed) notifyListeners();
+
     if (rid != null) {
       try {
         await matrix.push
@@ -1621,7 +1628,6 @@ class CallController extends ChangeNotifier {
         OrexLog.d('Call', 'failed to persist call hangup', e);
       }
     }
-    if (!_disposed) notifyListeners();
     if (s != null && mediaTeardown != null) {
       try {
         await Future.wait<void>([mediaTeardown, ?leaveSignaling])

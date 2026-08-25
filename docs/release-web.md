@@ -124,13 +124,23 @@ versioned asset base, и отдельный preload только создава�
 Во время активного Web-звонка отдельно проверьте ручной media PiP из клика по
 кнопке плитки. Chrome требует transient user activation для
 `requestPictureInPicture()`, поэтому между пользовательским действием и browser
-PiP нельзя добавлять отложенный поиск video или другой `await`. После deploy
-проверьте и обычную вкладку, которая уже открывала предыдущий релиз: PiP должен
-открываться без `Uncaught Error` на
+PiP нельзя добавлять отложенный поиск video или другой `await`. Orex заранее
+держит отдельный скрытый `RTCVideoRenderer` и открывает PiP на его стабильном
+`<video>`, поэтому после открытия обязательно проверьте `Приблизить плитку` /
+unzoom, смену camera ↔ screen share и появление screen share уже после открытия
+PiP. Отдельный обязательный smoke: `video on → PiP → remote video off → remote
+video on`; браузер может показывать чёрный/paused frame, пока media выключено, но
+после возврата video тот же PiP обязан продолжить движение без повторного клика.
+Browser window также не должен замораживаться при zoom и не должен требовать
+повторного PiP-click. После deploy проверьте и обычную вкладку, которая уже открывала
+предыдущий релиз: PiP должен открываться без `Uncaught Error` на
 `orexSetPictureInPictureClosedCallback` и без CSP violation про inline script.
 Надписи/controls внутри стандартного video PiP (например Chrome `ПРЯМОЙ ЭФИР`)
 рисует сам браузер; убрать их CSS/JS-кодом Orex нельзя без перехода на отдельный
-Document Picture-in-Picture path с более узкой browser support.
+Document Picture-in-Picture path с более узкой browser support. По той же причине
+стандартный video PiP не получает Orex avatar/initial placeholder при временном
+mute: native Android/Windows показывают такую панель, а Web сохраняет стандартное
+browser-owned paused/last-frame поведение.
 
 Перед публикацией проверьте login/restore session, E2EE сообщения и вложения, большие входящие файлы, Android ↔ Windows ↔ Web media-E2EE звонок, late join и reconnect.
 

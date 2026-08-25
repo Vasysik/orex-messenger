@@ -24,6 +24,7 @@ import 'core/vodozemac_initializer.dart';
 import 'features/auth/login_screen.dart';
 import 'features/calls/call_screen.dart';
 import 'features/calls/incoming_call_screen.dart';
+import 'features/calls/voice_activity_frame.dart';
 import 'features/download/download_screen.dart';
 import 'features/home/home_shell.dart';
 import 'features/settings/verification_screen.dart';
@@ -521,6 +522,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     widget.matrix.handleAppLifecycleState(_lifecycleState);
     _wasLoggedIn = widget.matrix.isLoggedIn;
     widget.matrix.addListener(_onChanged);
+    widget.matrix.call.addListener(_onCallChanged);
     widget.theme.addListener(_onChanged);
     _verificationSub = widget.matrix.incomingVerifications.listen((kv) {
       _navKey.currentState?.push(
@@ -1039,6 +1041,40 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     });
   }
 
+  void _onCallChanged() {
+    final pip = OrexSystemPictureInPicture.instance;
+    final identity = pip.activeIdentity;
+    if (identity == null) return;
+
+    final session = widget.matrix.call.session;
+    if (session == null) {
+      unawaited(pip.close());
+      return;
+    }
+
+    for (final participant in session.participants) {
+      if (participant.identity != identity) continue;
+      final track = orexSelectVideoTrack(
+        participant,
+        preferScreenShare: pip.preferScreenShare,
+      );
+      unawaited(
+        pip.syncActiveTrack(
+          identity: identity,
+          track: track,
+          dimensions: track == null
+              ? null
+              : orexVideoDimensionsForTrack(participant, track),
+        ),
+      );
+      return;
+    }
+
+    // The participant left while its PiP was active. Do not let an orphaned
+    // native/browser window outlive the call participant that owned it.
+    unawaited(pip.close());
+  }
+
   void _onChanged() {
     if (!mounted) return;
     final isLoggedIn = widget.matrix.isLoggedIn;
@@ -1065,6 +1101,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     _acceptedCallUiSub?.cancel();
     _pushOpenSub?.cancel();
     widget.matrix.removeListener(_onChanged);
+    widget.matrix.call.removeListener(_onCallChanged);
     widget.theme.removeListener(_onChanged);
     widget.updates.dispose();
     super.dispose();

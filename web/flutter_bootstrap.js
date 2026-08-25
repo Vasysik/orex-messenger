@@ -17,24 +17,79 @@
   let closedCallback = null;
   let pipVideo = null;
 
-  const findVideoForTrack = (trackId) => {
-    for (const video of document.querySelectorAll('video')) {
-      const stream = video.srcObject;
-      if (!stream || typeof stream.getVideoTracks !== 'function') continue;
-      if (stream.getVideoTracks().some((track) => track.id === trackId)) {
-        return video;
-      }
+  const videoContainsTrack = (video, trackId) => {
+    const stream = video && video.srcObject;
+    return !!stream &&
+      typeof stream.getVideoTracks === 'function' &&
+      stream.getVideoTracks().some((track) => track.id === trackId);
+  };
+
+  const preferredVideoForTrack = (trackId, preferredElementId) => {
+    if (!preferredElementId) return null;
+    const preferred = document.getElementById(preferredElementId);
+    return preferred instanceof HTMLVideoElement &&
+      videoContainsTrack(preferred, trackId)
+      ? preferred
+      : null;
+  };
+
+  const findReadyVideoForTrack = (trackId, preferredElementId) => {
+    const preferred = preferredVideoForTrack(trackId, preferredElementId);
+    if (preferred && preferred.readyState !== HTMLMediaElement.HAVE_NOTHING) {
+      return preferred;
     }
-    return null;
+
+    for (const video of document.querySelectorAll('video')) {
+      if (video === preferred) continue;
+      if (video.readyState === HTMLMediaElement.HAVE_NOTHING) continue;
+      if (videoContainsTrack(video, trackId)) return video;
+    }
+    return preferred;
+  };
+
+  const installLeaveHandler = (video) => {
+    video.addEventListener('leavepictureinpicture', (event) => {
+      // Chrome may switch an already-open PiP from the visible call-tile video
+      // to Orex's stable hidden renderer once that renderer has metadata. Ignore
+      // the old element's leave event during that migration.
+      if (pipVideo !== event.currentTarget) return;
+      pipVideo = null;
+      if (closedCallback) closedCallback();
+    }, { once: true });
+  };
+
+  const promoteStableVideo = async (trackId, preferred, current) => {
+    if (!preferred || preferred === current) return;
+    if (pipVideo !== current || document.pictureInPictureElement !== current) {
+      return;
+    }
+    if (!videoContainsTrack(preferred, trackId) ||
+        preferred.readyState === HTMLMediaElement.HAVE_NOTHING ||
+        typeof preferred.requestPictureInPicture !== 'function') {
+      return;
+    }
+
+    const previous = pipVideo;
+    pipVideo = preferred;
+    try {
+      // In Chrome, once a document already owns a PiP window, switching the
+      // element does not require a second user gesture. This lets the initial
+      // click use an already-playing tile while the dedicated renderer warms.
+      await preferred.requestPictureInPicture();
+      installLeaveHandler(preferred);
+    } catch (_) {
+      pipVideo = document.pictureInPictureElement === previous ? previous : null;
+    }
   };
 
   window.orexSetPictureInPictureClosedCallback = (callback) => {
     closedCallback = typeof callback === 'function' ? callback : null;
   };
 
-  window.orexOpenPictureInPicture = async (trackId) => {
+  window.orexOpenPictureInPicture = async (trackId, preferredElementId) => {
     if (!document.pictureInPictureEnabled) return false;
-    const video = findVideoForTrack(trackId);
+    const preferred = preferredVideoForTrack(trackId, preferredElementId);
+    const video = findReadyVideoForTrack(trackId, preferredElementId);
     if (!video || typeof video.requestPictureInPicture !== 'function') {
       return false;
     }
@@ -46,10 +101,18 @@
 
     await video.requestPictureInPicture();
     pipVideo = video;
-    video.addEventListener('leavepictureinpicture', () => {
-      if (pipVideo === video) pipVideo = null;
-      if (closedCallback) closedCallback();
-    }, { once: true });
+    installLeaveHandler(video);
+
+    if (preferred && preferred !== video) {
+      const promote = () => {
+        void promoteStableVideo(trackId, preferred, video);
+      };
+      if (preferred.readyState !== HTMLMediaElement.HAVE_NOTHING) {
+        queueMicrotask(promote);
+      } else {
+        preferred.addEventListener('loadedmetadata', promote, { once: true });
+      }
+    }
     return true;
   };
 

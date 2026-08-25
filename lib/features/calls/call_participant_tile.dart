@@ -4,13 +4,37 @@ import 'package:matrix/matrix.dart' hide CallSession;
 
 import '../../core/matrix/matrix_service.dart';
 import '../../core/voip/voice_participant_state.dart';
-import '../../shared/theme/orex_theme.dart';
-import '../../shared/widgets/mxc_avatar.dart';
+import '../../shared/widgets/orex_call_no_media_surface.dart';
 import 'voice_activity_frame.dart';
 
 String orexMatrixUserIdFromParticipantIdentity(String identity) {
   final match = RegExp(r'@[^:]+:[^:]+').firstMatch(identity);
   return match?.group(0) ?? identity;
+}
+
+final class OrexCallParticipantProfile {
+  const OrexCallParticipantProfile({
+    required this.userId,
+    required this.displayName,
+    this.avatarUrl,
+  });
+
+  final String userId;
+  final String displayName;
+  final Uri? avatarUrl;
+}
+
+OrexCallParticipantProfile orexCallParticipantProfile(
+  lk.Participant participant,
+  Room? room,
+) {
+  final userId = orexMatrixUserIdFromParticipantIdentity(participant.identity);
+  final user = room?.unsafeGetUserFromMemoryOrFallback(userId);
+  return OrexCallParticipantProfile(
+    userId: userId,
+    displayName: user?.calcDisplayname() ?? userId,
+    avatarUrl: user?.avatarUrl,
+  );
 }
 
 class OrexCallParticipantTileStyle {
@@ -162,11 +186,9 @@ class OrexCallParticipantTile extends StatelessWidget {
         ? 8.0
         : 8.0 + statusBadgeCount * style.cameraButtonBottomStep;
 
-    final userId = orexMatrixUserIdFromParticipantIdentity(
-      participant.identity,
-    );
-    final user = room?.unsafeGetUserFromMemoryOrFallback(userId);
-    var name = user?.calcDisplayname() ?? userId;
+    final profile = orexCallParticipantProfile(participant, room);
+    final userId = profile.userId;
+    var name = profile.displayName;
     if (participant is lk.LocalParticipant) name = '$name · вы';
 
     Widget media;
@@ -180,15 +202,11 @@ class OrexCallParticipantTile extends StatelessWidget {
         media = InteractiveViewer(minScale: 1, maxScale: 4, child: media);
       }
     } else {
-      media = Container(
-        decoration: const BoxDecoration(gradient: OrexColors.copperGradient),
-        alignment: Alignment.center,
-        child: MxcAvatar(
-          matrix: matrix,
-          name: user?.calcDisplayname() ?? userId,
-          mxc: user?.avatarUrl,
-          size: zoomable ? style.zoomAvatarSize : style.avatarSize,
-        ),
+      media = OrexCallNoMediaSurface(
+        matrix: matrix,
+        name: profile.displayName,
+        mxc: profile.avatarUrl,
+        avatarSize: zoomable ? style.zoomAvatarSize : style.avatarSize,
       );
     }
 
@@ -216,7 +234,8 @@ class OrexCallParticipantTile extends StatelessWidget {
                   _NameLabel(name: name, style: style),
                 if (showChrome &&
                     ((cornerIcon != null && onCornerTap != null) ||
-                        (track != null && onPictureInPicture != null) ||
+                        ((track != null || pictureInPictureActive) &&
+                            onPictureInPicture != null) ||
                         onSwitchVideoSource != null))
                   _TopLeftActions(
                     style: style,
@@ -225,7 +244,9 @@ class OrexCallParticipantTile extends StatelessWidget {
                     onCornerTap: onCornerTap,
                     pictureInPictureActive: pictureInPictureActive,
                     onPictureInPicture:
-                        track != null ? onPictureInPicture : null,
+                        track != null || pictureInPictureActive
+                            ? onPictureInPicture
+                            : null,
                     preferScreenShare: preferScreenShare,
                     onSwitchVideoSource: onSwitchVideoSource,
                   ),

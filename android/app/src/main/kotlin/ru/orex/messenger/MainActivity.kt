@@ -344,6 +344,22 @@ class MainActivity : FlutterActivity() {
                         }.getOrDefault(false)
                         result.success(updated)
                     }
+                    "dismiss" -> {
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+                            !isInPictureInPictureMode
+                        ) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        // There is no symmetric public exitPictureInPictureMode().
+                        // Do not finish/remove Orex's main Activity here: its Flutter
+                        // engine intentionally survives the host and also owns fragile
+                        // call/push handoff state. Moving the existing task to the back
+                        // dismisses the PiP presentation without destroying that owner.
+                        result.success(
+                            runCatching { moveTaskToBack(false) }.getOrDefault(false),
+                        )
+                    }
                     else -> result.notImplemented()
                 }
             }

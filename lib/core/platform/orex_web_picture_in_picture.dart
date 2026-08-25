@@ -3,8 +3,13 @@ import 'orex_web_picture_in_picture_stub.dart'
 
 Future<bool> orexOpenWebPictureInPicture(
   String trackId, {
+  String? preferredElementId,
   required void Function() onClosed,
-}) => impl.orexOpenWebPictureInPicture(trackId, onClosed: onClosed);
+}) => impl.orexOpenWebPictureInPicture(
+  trackId,
+  preferredElementId: preferredElementId,
+  onClosed: onClosed,
+);
 
 Future<void> orexCloseWebPictureInPicture() =>
     impl.orexCloseWebPictureInPicture();

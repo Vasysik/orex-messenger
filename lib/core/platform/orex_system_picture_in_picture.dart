@@ -7,6 +7,9 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:multiview_desktop/multiview_desktop.dart';
 
+import '../matrix/matrix_service.dart';
+import '../../shared/theme/orex_theme.dart';
+import '../../shared/widgets/orex_call_no_media_surface.dart';
 import 'orex_web_picture_in_picture.dart';
 
 /// Owns one real system-level Picture-in-Picture surface.
@@ -21,6 +24,7 @@ import 'orex_web_picture_in_picture.dart';
 class OrexSystemPictureInPicture extends ChangeNotifier {
   OrexSystemPictureInPicture._() {
     _androidChannel.setMethodCallHandler(_handleAndroidMethodCall);
+    if (kIsWeb) unawaited(_ensureWebRenderer());
   }
 
   static final OrexSystemPictureInPicture instance =
@@ -36,16 +40,25 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
   bool _androidSurfaceVisible = false;
   bool _opening = false;
   double? _renderedAspectRatio;
+  bool _preferScreenShare = true;
+  MatrixService? _participantMatrix;
+  String? _participantName;
+  Uri? _participantAvatarUrl;
+  rtc.RTCVideoRenderer? _webRenderer;
+  Future<rtc.RTCVideoRenderer?>? _webRendererInitialization;
+  bool _webUsesDedicatedRenderer = false;
+  bool _webTrackUnavailable = false;
 
   String? get activeIdentity => _activeIdentity;
   lk.VideoTrack? get activeTrack => _activeTrack;
   bool get isOpening => _opening;
+  bool get preferScreenShare => _preferScreenShare;
 
   bool get shouldRenderAndroidSurface =>
       !kIsWeb &&
       defaultTargetPlatform == TargetPlatform.android &&
       _androidSurfaceVisible &&
-      _activeTrack != null;
+      _activeIdentity != null;
 
   bool isActiveFor(String identity) => _activeIdentity == identity;
 
@@ -58,7 +71,11 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
   Future<void> toggle({
     required String identity,
     required lk.VideoTrack track,
+    required MatrixService matrix,
+    required String participantName,
+    Uri? participantAvatarUrl,
     lk.VideoDimensions? dimensions,
+    bool preferScreenShare = true,
   }) async {
     if (_opening) return;
     if (_activeIdentity == identity) {
@@ -67,16 +84,32 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
     }
 
     _opening = true;
+    _preferScreenShare = preferScreenShare;
+    _participantMatrix = matrix;
+    _participantName = participantName;
+    _participantAvatarUrl = participantAvatarUrl;
     notifyListeners();
     try {
       if (kIsWeb) {
         final trackId = track.mediaStreamTrack.id;
         if (trackId == null || trackId.isEmpty) return;
+
+        // flutter_webrtc already creates a hidden HTMLVideoElement for every
+        // RTCVideoRenderer on Web. Keep one renderer alive for the lifetime of
+        // the app and bind browser PiP to that element instead of a call-tile
+        // renderer, which may legitimately be destroyed by grid/zoom changes.
+        final preferredElementId = _attachWebRendererTrack(track);
         final opened = await orexOpenWebPictureInPicture(
           trackId,
+          preferredElementId: preferredElementId,
           onClosed: _handleExternalClosed,
         );
-        if (!opened) return;
+        if (!opened) {
+          _detachWebRendererTrack();
+          return;
+        }
+        _webUsesDedicatedRenderer = preferredElementId != null;
+        _webTrackUnavailable = false;
         _setActive(identity, track);
         return;
       }
@@ -96,28 +129,81 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
       }
     } finally {
       _opening = false;
+      if (_activeIdentity == null) _clearParticipantPresentation();
       notifyListeners();
     }
   }
 
-  /// Keeps the native PiP on the same participant when the user explicitly
-  /// switches that participant between camera and screen share.
+  /// Keeps PiP on the same participant while its selected source changes.
+  ///
+  /// [preferScreenShare] is remembered so automatic LiveKit publication changes
+  /// (for example a screen share appearing after PiP was opened on the camera)
+  /// can make the same choice as the call tile without requiring a second tap.
   Future<void> updateTrack({
     required String identity,
     required lk.VideoTrack track,
     lk.VideoDimensions? dimensions,
+    bool? preferScreenShare,
   }) async {
-    if (_activeIdentity != identity || identical(_activeTrack, track)) return;
+    if (_activeIdentity != identity) return;
+    if (preferScreenShare != null) _preferScreenShare = preferScreenShare;
 
-    // Browser video PiP is bound to an HTMLVideoElement. Re-requesting PiP for
-    // another element is intentionally left to the next explicit PiP click so
-    // the browser's transient-user-activation requirement is never bypassed.
-    if (kIsWeb) return;
+    if (kIsWeb) {
+      // flutter_webrtc's Web renderer snapshots the stream's current video
+      // tracks into its own MediaStream when srcObject is assigned. A remote
+      // mute/unpublish followed by resume may therefore keep the same LiveKit
+      // VideoTrack object while the renderer still points at an ended internal
+      // track. Rebind after an unavailable -> available transition even when
+      // the LiveKit object itself is identical.
+      final shouldRebind =
+          _webTrackUnavailable || !identical(_activeTrack, track);
+      if (!shouldRebind) return;
+      if (!_webUsesDedicatedRenderer || _webRenderer == null) return;
+      _attachWebRendererTrack(track);
+      _webTrackUnavailable = false;
+      _activeTrack = track;
+      _renderedAspectRatio = null;
+      notifyListeners();
+      return;
+    }
 
+    if (identical(_activeTrack, track)) return;
     _activeTrack = track;
     _renderedAspectRatio = null;
     notifyListeners();
     await _updateNativeAspectRatio(_videoAspectRatio(dimensions));
+  }
+
+  /// Synchronizes native PiP with LiveKit publication availability.
+  ///
+  /// A muted/unpublished video deliberately keeps the PiP itself alive on
+  /// Android/Windows and replaces the stale last frame with the same Matrix
+  /// avatar/initial surface used by the normal call tile. Web video PiP cannot
+  /// render arbitrary Flutter
+  /// UI inside the browser-owned window, so its current frame is left in place
+  /// until the same track resumes or another track becomes available.
+  Future<void> syncActiveTrack({
+    required String identity,
+    required lk.VideoTrack? track,
+    lk.VideoDimensions? dimensions,
+  }) async {
+    if (_activeIdentity != identity) return;
+    if (track == null) {
+      if (kIsWeb) {
+        _webTrackUnavailable = true;
+        return;
+      }
+      if (_activeTrack == null) return;
+      _activeTrack = null;
+      _renderedAspectRatio = null;
+      notifyListeners();
+      return;
+    }
+    await updateTrack(
+      identity: identity,
+      track: track,
+      dimensions: dimensions,
+    );
   }
 
   Future<void> close() async {
@@ -126,6 +212,19 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
 
     if (kIsWeb) {
       await orexCloseWebPictureInPicture();
+      _detachWebRendererTrack();
+      _webUsesDedicatedRenderer = false;
+      _webTrackUnavailable = false;
+    } else if (defaultTargetPlatform == TargetPlatform.android &&
+        _androidSurfaceVisible) {
+      try {
+        // Android has no public exitPictureInPictureMode(). Moving the existing
+        // task to the back dismisses its PiP surface without finish()/process
+        // destruction, preserving Orex's deliberately long-lived Flutter engine.
+        await _androidChannel.invokeMethod<bool>('dismiss');
+      } catch (_) {
+        // The system/user may already have dismissed PiP concurrently.
+      }
     } else if (defaultTargetPlatform == TargetPlatform.windows &&
         desktopViewId != null) {
       try {
@@ -136,6 +235,67 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
     }
 
     _clearActive();
+  }
+
+  Future<rtc.RTCVideoRenderer?> _ensureWebRenderer() {
+    if (!kIsWeb) return Future<rtc.RTCVideoRenderer?>.value(null);
+    final existing = _webRenderer;
+    if (existing != null) {
+      return Future<rtc.RTCVideoRenderer?>.value(existing);
+    }
+    final pending = _webRendererInitialization;
+    if (pending != null) return pending;
+
+    late final Future<rtc.RTCVideoRenderer?> operation;
+    operation = (() async {
+      final renderer = rtc.RTCVideoRenderer();
+      try {
+        await renderer.initialize();
+        renderer.muted = true;
+        _webRenderer = renderer;
+        return renderer;
+      } catch (_) {
+        try {
+          await renderer.dispose();
+        } catch (_) {}
+        return null;
+      }
+    })().whenComplete(() {
+      if (identical(_webRendererInitialization, operation)) {
+        _webRendererInitialization = null;
+      }
+    });
+    _webRendererInitialization = operation;
+    return operation;
+  }
+
+  String? _attachWebRendererTrack(lk.VideoTrack track) {
+    if (!kIsWeb) return null;
+    final renderer = _webRenderer;
+    if (renderer == null) {
+      // Do not await renderer initialization from the click path: browser PiP
+      // requires transient user activation. The renderer is prewarmed when the
+      // singleton is created; this fallback keeps very-early clicks functional.
+      unawaited(_ensureWebRenderer());
+      return null;
+    }
+    try {
+      renderer.srcObject = track.mediaStream;
+      renderer.muted = true;
+      final textureId = renderer.textureId;
+      return textureId == null
+          ? null
+          : 'video_RTCVideoRenderer-$textureId';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _detachWebRendererTrack() {
+    if (!kIsWeb) return;
+    try {
+      _webRenderer?.srcObject = null;
+    } catch (_) {}
   }
 
   Future<void> _openAndroid(
@@ -333,6 +493,8 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
 
   void _handleExternalClosed() {
     if (!kIsWeb) return;
+    _detachWebRendererTrack();
+    _webUsesDedicatedRenderer = false;
     _clearActive();
   }
 
@@ -351,7 +513,15 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
     _activeTrack = null;
     _androidSurfaceVisible = false;
     _renderedAspectRatio = null;
+    _clearParticipantPresentation();
+    _webTrackUnavailable = false;
     if (changed) notifyListeners();
+  }
+
+  void _clearParticipantPresentation() {
+    _participantMatrix = null;
+    _participantName = null;
+    _participantAvatarUrl = null;
   }
 }
 
@@ -367,17 +537,19 @@ class OrexAndroidPictureInPictureSurface extends StatelessWidget {
       listenable: service,
       builder: (context, _) {
         final track = service.activeTrack;
-        if (!service.shouldRenderAndroidSurface || track == null) {
+        if (!service.shouldRenderAndroidSurface) {
           return const SizedBox.shrink();
         }
         return ColoredBox(
           color: Colors.black,
           child: Center(
-            child: _OrexMeasuredPictureInPictureVideo(
-              key: ObjectKey(track),
-              track: track,
-              onAspectRatioChanged: service._reportRenderedAspectRatio,
-            ),
+            child: track == null
+                ? _OrexPictureInPicturePlaceholder(service: service)
+                : _OrexMeasuredPictureInPictureVideo(
+                    key: ObjectKey(track),
+                    track: track,
+                    onAspectRatioChanged: service._reportRenderedAspectRatio,
+                  ),
           ),
         );
       },
@@ -480,6 +652,35 @@ class _OrexMeasuredPictureInPictureVideoState
   }
 }
 
+class _OrexPictureInPicturePlaceholder extends StatelessWidget {
+  const _OrexPictureInPicturePlaceholder({required this.service});
+
+  final OrexSystemPictureInPicture service;
+
+  @override
+  Widget build(BuildContext context) {
+    final matrix = service._participantMatrix;
+    if (matrix == null) {
+      // Presentation metadata is captured before native PiP opens, so this is
+      // only a defensive fallback for an externally restored stale surface.
+      return const SizedBox.expand(
+        child: DecoratedBox(
+          decoration: BoxDecoration(gradient: OrexColors.copperGradient),
+        ),
+      );
+    }
+
+    return SizedBox.expand(
+      child: OrexCallNoMediaSurface(
+        matrix: matrix,
+        name: service._participantName ?? service._activeIdentity ?? '?',
+        mxc: service._participantAvatarUrl,
+        avatarSize: 96,
+      ),
+    );
+  }
+}
+
 /// Content of the separate Windows always-on-top OS window.
 /// The whole media surface is a native drag area; the close button is window
 /// chrome, not a call control.
@@ -523,6 +724,10 @@ class _OrexDesktopPictureInPictureWindowState
                   track: track,
                   onAspectRatioChanged:
                       widget.service._reportRenderedAspectRatio,
+                )
+              else
+                _OrexPictureInPicturePlaceholder(
+                  service: widget.service,
                 ),
               const Positioned.fill(
                 child: DragToMoveArea(child: SizedBox.expand()),
