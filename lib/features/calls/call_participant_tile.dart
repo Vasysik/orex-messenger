@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:matrix/matrix.dart' hide CallSession;
@@ -189,10 +190,23 @@ class OrexCallParticipantTile extends StatelessWidget {
 
     Widget media;
     if (track != null) {
+      Widget renderer = lk.VideoTrackRenderer(
+        track,
+        fit: lk.VideoViewFit.contain,
+      );
+      if (!kIsWeb &&
+          defaultTargetPlatform == TargetPlatform.android &&
+          participant is lk.LocalParticipant) {
+        // LiveKit adds tap-to-focus/exposure gestures around local mobile
+        // video. flutter_webrtc can currently throw a native NPE for those
+        // calls on Android. Orex already owns tile gestures outside the
+        // renderer, so absorb only the renderer's private gesture subtree.
+        renderer = AbsorbPointer(child: renderer);
+      }
       media = Container(
         color: Colors.black,
         alignment: Alignment.center,
-        child: lk.VideoTrackRenderer(track, fit: lk.VideoViewFit.contain),
+        child: renderer,
       );
       if (zoomable) {
         media = InteractiveViewer(minScale: 1, maxScale: 4, child: media);

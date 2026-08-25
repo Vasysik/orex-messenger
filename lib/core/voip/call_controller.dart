@@ -892,6 +892,10 @@ class CallController extends ChangeNotifier {
       _markIncomingHandled(callInstance),
       _notifyIncomingRejected(callInstance),
     ]);
+    // Rejection must suppress this exact ring, but it must not keep owning the
+    // room while native Telecom and remote disposition writes are finishing.
+    // The caller can remain in MatrixRTC and the user may join it manually.
+    matrix.voip?.releaseRejectedIncomingAttempt(callInstance);
     final systemEnded =
         fromSystem || await _rejectPreparedSystemCall(callInstance);
     if (systemEnded && _sameCallInstance(_systemCallInstance, callInstance)) {

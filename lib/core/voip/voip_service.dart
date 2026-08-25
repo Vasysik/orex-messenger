@@ -1005,6 +1005,16 @@ class VoipService extends ChangeNotifier {
     _removeIncomingAttempt(instance);
   }
 
+  /// Releases only the incoming ownership of an attempt that was explicitly
+  /// rejected. The handled/rejected tombstones remain intact, so the same
+  /// ring cannot re-open incoming UI, while a later manual `Join` is free to
+  /// enter a still-running MatrixRTC call in this room.
+  void releaseRejectedIncomingAttempt(OrexCallInstance instance) {
+    _tombstoneTrustedIncomingAction(instance);
+    _removeShownAttempt(instance);
+    _removeIncomingAttempt(instance);
+  }
+
   /// A native action can arrive before Matrix sync has materialized the ring.
   /// Preserve its exact identity first, otherwise that later sync can reopen
   /// the Flutter incoming UI (and restart its ringtone) while answer is live.

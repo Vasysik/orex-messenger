@@ -31,6 +31,11 @@ gradle -p android verifyDebugVodozemacNativeLibs --no-daemon --stacktrace
 
 - cold start и восстановление Matrix-сессии;
 - личный чат, reply, attachment и большой входящий файл;
+- Android emoji panel: несколько emoji подряд не должны снова открывать системную
+  клавиатуру или дёргать layout;
+- верхняя recommendation/update плашка мягко въезжает только при переходе
+  `нет плашки → есть плашка`; смена одной видимой плашки на другую не повторяет
+  entrance-анимацию;
 - E2EE сообщение после перезапуска;
 - обычный/видеозвонок, reconnect и завершение;
 - updater и переход на опубликованный build;
@@ -46,12 +51,18 @@ gradle -p android verifyDebugVodozemacNativeLibs --no-daemon --stacktrace
 - ошибка защищённого старта звонка → немедленная повторная попытка не должна
   получать системное «уже устанавливается соединение»;
 - remote cancel до/после Answer, отсутствие сети и истёкший ring;
+- Reject входящего звонка → пока инициатор остаётся в активной MatrixRTC-сессии,
+  ручной `Войти` должен подключать без `Incoming call attempt changed`;
 - speaker/earpiece/wired/Bluetooth, system mute/hold;
-- камера: включение/выключение и переключение без переподключения;
+- камера: включение/выключение и переключение без переподключения; тап по
+  локальной Android-видеоплитке не должен создавать unhandled
+  `setFocusPoint/setExposurePoint` PlatformException;
 - screen share: permission, background, системный Stop/status chip и повторный
   старт с новым разрешением;
 - PiP: portrait/landscape aspect, camera ↔ screen share, media off/on, закрытие
   звонка и возврат из PiP;
+- fullscreen media: Android system bars скрываются, кнопка выхода не перекрывается
+  статус-баром и после выхода системные панели возвращаются;
 - Android 13+ notification permission и Stop в Active apps;
 - killed-process notification/ring handoff и открытие нужной комнаты.
 

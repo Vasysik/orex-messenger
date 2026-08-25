@@ -13,6 +13,7 @@ final class OrexMessageComposerController<T> {
   bool showEmojiPicker = false;
 
   bool get isEditing => editing != null;
+  bool get shouldRefocusTextInputAfterEmoji => !showEmojiPicker;
 
   void startEdit(T event) {
     editing = event;

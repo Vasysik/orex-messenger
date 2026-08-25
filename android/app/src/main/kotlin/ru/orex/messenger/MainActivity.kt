@@ -109,6 +109,7 @@ class MainActivity : FlutterActivity() {
         clearCallHandoffOverlay()
         setProximityEnabled(false)
         OrexPushBridge.detach(this)
+        OrexSystemUiBridge.detach(this)
         super.onDestroy()
     }
 
@@ -297,6 +298,7 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         OrexAndroidTelecomManager.attach(this, flutterEngine.dartExecutor.binaryMessenger)
         OrexPushBridge.attach(this, flutterEngine.dartExecutor.binaryMessenger)
+        OrexSystemUiBridge.attach(this, flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "orex/update")
             .setMethodCallHandler { call, result ->
                 when (call.method) {

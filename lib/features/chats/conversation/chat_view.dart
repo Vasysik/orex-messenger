@@ -897,7 +897,12 @@ class _ChatViewState extends State<ChatView> {
     } else {
       _input.text = text + emoji;
     }
-    _focusNode.requestFocus();
+    // Keep the system IME hidden while the in-app emoji panel owns input.
+    // Requesting focus after every emoji tap made Android reopen the keyboard
+    // and resize the conversation on each insertion.
+    if (_composer.shouldRefocusTextInputAfterEmoji) {
+      _focusNode.requestFocus();
+    }
   }
 
   void _toggleEmojiPicker() {

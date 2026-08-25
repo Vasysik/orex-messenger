@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
 import '../../core/matrix/matrix_service.dart';
 import '../../core/platform/orex_system_picture_in_picture.dart';
+import '../../core/platform/orex_system_ui.dart';
 import '../../core/voip/call_controller.dart';
 import '../../core/voip/call_session.dart';
 import '../../shared/theme/glass.dart';
@@ -130,6 +131,7 @@ class _CallScreenState extends State<CallScreen> {
       _mediaFullscreen = true;
       _fullscreenControlsVisible = true;
     });
+    unawaited(OrexSystemUi.setCallMediaFullscreen(true));
     _scheduleFullscreenControlsHide();
   }
 
@@ -141,6 +143,7 @@ class _CallScreenState extends State<CallScreen> {
       _mediaFullscreen = false;
       _fullscreenControlsVisible = true;
     });
+    unawaited(OrexSystemUi.setCallMediaFullscreen(false));
   }
 
   void _scheduleFullscreenControlsHide() {
@@ -180,6 +183,9 @@ class _CallScreenState extends State<CallScreen> {
   void dispose() {
     _pip.removeListener(_onPictureInPictureChanged);
     _fullscreenControlsTimer?.cancel();
+    if (_mediaFullscreen) {
+      unawaited(OrexSystemUi.setCallMediaFullscreen(false));
+    }
     unawaited(widget.matrix.push.notifyCallUiHidden());
     // Выход с экрана (кнопка ▼ или системный «назад») = свернуть, не завершая.
     // notifyListeners нельзя дёргать прямо в dispose (дерево залочено —

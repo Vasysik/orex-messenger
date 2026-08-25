@@ -10,6 +10,7 @@ import 'package:multiview_desktop/multiview_desktop.dart';
 import '../matrix/matrix_service.dart';
 import '../../shared/theme/orex_theme.dart';
 import '../../shared/widgets/orex_call_no_media_surface.dart';
+import 'orex_picture_in_picture_policy.dart';
 import 'orex_web_picture_in_picture.dart';
 
 /// Owns one real system-level Picture-in-Picture surface.
@@ -158,11 +159,13 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
       // same LiveKit VideoTrack. Rebind for either transition instead of using
       // LiveKit object identity as the renderer-lifetime signal.
       final currentMediaTrackId = _webMediaTrackId(track);
-      final mediaTrackChanged = currentMediaTrackId != null &&
-          currentMediaTrackId != _webBoundMediaTrackId;
-      final shouldRebind = _webTrackUnavailable ||
-          !identical(_activeTrack, track) ||
-          mediaTrackChanged;
+      final shouldRebind = orexShouldRebindWebPictureInPictureTrack(
+        trackUnavailable: _webTrackUnavailable,
+        activeTrack: _activeTrack,
+        candidateTrack: track,
+        boundMediaTrackId: _webBoundMediaTrackId,
+        candidateMediaTrackId: currentMediaTrackId,
+      );
       if (!shouldRebind) return;
       if (!_webUsesDedicatedRenderer || _webRenderer == null) return;
       _attachWebRendererTrack(track);

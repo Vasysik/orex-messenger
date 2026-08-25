@@ -597,7 +597,31 @@ class _HomeShellState extends State<HomeShell> {
 
                     return Column(
                       children: [
-                        ?notice,
+                        AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 220),
+                          switchInCurve: Curves.easeOutCubic,
+                          switchOutCurve: Curves.easeInCubic,
+                          transitionBuilder: (child, animation) {
+                            return ClipRect(
+                              child: SizeTransition(
+                                sizeFactor: animation,
+                                alignment: Alignment.topCenter,
+                                child: SlideTransition(
+                                  position: Tween<Offset>(
+                                    begin: const Offset(0, -0.35),
+                                    end: Offset.zero,
+                                  ).animate(animation),
+                                  child: child,
+                                ),
+                              ),
+                            );
+                          },
+                          // Notices intentionally share type/key. AnimatedSwitcher
+                          // then animates only absent <-> present transitions; a
+                          // priority change between two visible banners updates in
+                          // place without replaying the entrance animation.
+                          child: notice,
+                        ),
                         Expanded(child: isWide ? _buildWide() : _buildNarrow()),
                       ],
                     );
