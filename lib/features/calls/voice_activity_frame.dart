@@ -192,16 +192,51 @@ class _OrexSpeakingFrameState extends State<OrexSpeakingFrame>
     );
 
     if (widget.preserveChildSize) {
+      final borderDecoration = BoxDecoration(
+        borderRadius: BorderRadius.circular(widget.borderRadius),
+        border: Border.all(
+          color: active
+              ? OrexColors.copper.withValues(alpha: 0.95)
+              : Colors.white.withValues(alpha: 0.08),
+          width: active ? 2 : 1,
+        ),
+      );
+      final glowDecoration = BoxDecoration(
+        borderRadius: BorderRadius.circular(widget.borderRadius),
+        boxShadow: active
+            ? [
+                BoxShadow(
+                  color: OrexColors.copper.withValues(alpha: 0.28),
+                  blurRadius: widget.activeBlur,
+                  spreadRadius: 1,
+                ),
+              ]
+            : null,
+      );
+
+      // Keep the speaking glow behind video. Painting the BoxShadow in the
+      // foreground overlay lets its blur tint decoded frames near the tile
+      // edge, which is especially visible across the top of bright video.
       return Stack(
         fit: StackFit.passthrough,
+        clipBehavior: Clip.none,
         children: [
+          Positioned.fill(
+            child: IgnorePointer(
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 35),
+                curve: Curves.linear,
+                decoration: glowDecoration,
+              ),
+            ),
+          ),
           widget.child,
           Positioned.fill(
             child: IgnorePointer(
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 35),
                 curve: Curves.linear,
-                decoration: decoration,
+                decoration: borderDecoration,
               ),
             ),
           ),

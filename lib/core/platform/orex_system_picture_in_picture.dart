@@ -48,6 +48,7 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
   Future<rtc.RTCVideoRenderer?>? _webRendererInitialization;
   bool _webUsesDedicatedRenderer = false;
   bool _webTrackUnavailable = false;
+  String? _webBoundMediaTrackId;
 
   String? get activeIdentity => _activeIdentity;
   lk.VideoTrack? get activeTrack => _activeTrack;
@@ -153,10 +154,15 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
       // tracks into its own MediaStream when srcObject is assigned. A remote
       // mute/unpublish followed by resume may therefore keep the same LiveKit
       // VideoTrack object while the renderer still points at an ended internal
-      // track. Rebind after an unavailable -> available transition even when
-      // the LiveKit object itself is identical.
-      final shouldRebind =
-          _webTrackUnavailable || !identical(_activeTrack, track);
+      // track. Camera switching can also replace MediaStreamTrack inside the
+      // same LiveKit VideoTrack. Rebind for either transition instead of using
+      // LiveKit object identity as the renderer-lifetime signal.
+      final currentMediaTrackId = _webMediaTrackId(track);
+      final mediaTrackChanged = currentMediaTrackId != null &&
+          currentMediaTrackId != _webBoundMediaTrackId;
+      final shouldRebind = _webTrackUnavailable ||
+          !identical(_activeTrack, track) ||
+          mediaTrackChanged;
       if (!shouldRebind) return;
       if (!_webUsesDedicatedRenderer || _webRenderer == null) return;
       _attachWebRendererTrack(track);
@@ -282,6 +288,7 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
     try {
       renderer.srcObject = track.mediaStream;
       renderer.muted = true;
+      _webBoundMediaTrackId = _webMediaTrackId(track);
       final textureId = renderer.textureId;
       return textureId == null
           ? null
@@ -291,8 +298,14 @@ class OrexSystemPictureInPicture extends ChangeNotifier {
     }
   }
 
+  String? _webMediaTrackId(lk.VideoTrack track) {
+    final id = track.mediaStreamTrack.id;
+    return id == null || id.isEmpty ? null : id;
+  }
+
   void _detachWebRendererTrack() {
     if (!kIsWeb) return;
+    _webBoundMediaTrackId = null;
     try {
       _webRenderer?.srcObject = null;
     } catch (_) {}

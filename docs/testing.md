@@ -68,8 +68,8 @@ gradle -p android verifyDebugVodozemacNativeLibs --no-daemon --stacktrace
 - звонок с camera/microphone → завершение звонка гасит browser capture
   indicators без refresh вкладки;
 - screen share → завершение звонка прекращает capture;
-- media PiP: zoom/unzoom, camera ↔ screen share, появление screen share после
-  открытия PiP, `video on → off → on` без второго PiP-click;
+- media PiP: zoom/unzoom, переключение камеры, camera ↔ screen share, появление
+  screen share после открытия PiP, `video on → off → on` без второго PiP-click;
 - PiP после обновления открывается без CSP violation и JS bridge errors.
 
 Стандартный browser video PiP может показывать browser-owned paused/black frame,
@@ -192,8 +192,18 @@ settings, в том числе с приходом нового сообщени
 .\tool\collect_orex_android_logs.ps1 -Area media
 ```
 
-При нескольких устройствах передать `-Serial <adb-serial>`. `-NoClear` сохраняет
-предыдущий logcat, `-Bugreport` добавляет полный `adb bugreport`.
+Сборщик сначала пытается выбрать активный Orex (`ru.orex.messenger.debug` или
+`ru.orex.messenger`). Если обе установки одновременно запущены или ни одна не
+активна, пакет лучше указать явно:
+
+```powershell
+.\tool\collect_orex_android_logs.ps1 -Area calls -Package ru.orex.messenger.debug
+```
+
+Это важно для `dumpsys package/meminfo/gfxinfo`: диагностика другого application
+ID формально собирается, но не описывает тестируемый процесс. При нескольких
+устройствах передать `-Serial <adb-serial>`. `-NoClear` сохраняет предыдущий
+logcat, `-Bugreport` добавляет полный `adb bugreport`.
 
 `general` собирает общий logcat и Activity/notification/package/power/window/
 meminfo/gfxinfo. Режимы добавляют только профильные состояния:
@@ -201,12 +211,6 @@ meminfo/gfxinfo. Режимы добавляют только профильны
 - `calls` — Telecom и audio;
 - `push` — JobScheduler/WorkManager-контекст;
 - `media` — camera, MediaProjection и audio.
-
-Старый интерфейс сохранен как совместимый wrapper:
-
-```powershell
-.\tool\collect_orex_call_logs.ps1
-```
 
 Архивы создаются в `orex-test-logs/` и не коммитятся. Перед передачей проверить
 их на Matrix access token, FCM token, пароли и приватные URL.

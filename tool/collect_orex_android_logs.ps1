@@ -2,7 +2,7 @@
 param(
     [ValidateSet("general", "calls", "push", "media")]
     [string]$Area = "general",
-    [string]$Package = "ru.orex.messenger",
+    [string]$Package,
     [string]$OutputRoot = ".\orex-test-logs",
     [string]$Serial,
     [switch]$NoClear,
@@ -42,6 +42,65 @@ if ($Serial) {
 $adbTarget = @("-s", $selectedSerial)
 & adb @adbTarget wait-for-device
 
+function Get-OrexPackagePid {
+    param([Parameter(Mandatory = $true)][string]$Candidate)
+
+    return ((& adb @adbTarget shell pidof $Candidate 2>$null) | Out-String).Trim()
+}
+
+function Test-OrexPackageInstalled {
+    param([Parameter(Mandatory = $true)][string]$Candidate)
+
+    $path = ((& adb @adbTarget shell pm path $Candidate 2>$null) | Out-String).Trim()
+    return $LASTEXITCODE -eq 0 -and $path.StartsWith("package:")
+}
+
+$packageSelection = "explicit"
+if (-not $Package) {
+    $candidates = @("ru.orex.messenger.debug", "ru.orex.messenger")
+    $activityState = (& adb @adbTarget shell dumpsys activity activities 2>&1) | Out-String
+    $foreground = @(
+        $candidates | Where-Object {
+            $candidate = $_
+            $activityState -match (
+                "(?m)(?:topResumedActivity|mResumedActivity|ResumedActivity).*" +
+                [regex]::Escape("$candidate/")
+            )
+        }
+    )
+
+    if ($foreground.Count -eq 1) {
+        $Package = $foreground[0]
+        $packageSelection = "foreground"
+    } else {
+        $running = @(
+            $candidates | Where-Object { (Get-OrexPackagePid -Candidate $_) -ne "" }
+        )
+        if ($running.Count -eq 1) {
+            $Package = $running[0]
+            $packageSelection = "running"
+        } elseif ($running.Count -gt 1) {
+            throw "Одновременно запущены Orex Stable и Debug. Передай -Package ru.orex.messenger или -Package ru.orex.messenger.debug."
+        } else {
+            $installed = @(
+                $candidates | Where-Object { Test-OrexPackageInstalled -Candidate $_ }
+            )
+            if ($installed.Count -eq 1) {
+                $Package = $installed[0]
+                $packageSelection = "installed"
+            } elseif ($installed.Count -gt 1) {
+                throw "Установлены Orex Stable и Debug, но ни один не активен. Передай -Package явно."
+            } else {
+                throw "Orex Stable/Debug не найден на устройстве. Передай -Package для другого application ID."
+            }
+        }
+    }
+}
+
+if (-not (Test-OrexPackageInstalled -Candidate $Package)) {
+    throw "Пакет '$Package' не установлен на устройстве '$selectedSerial'."
+}
+
 function Invoke-AdbToFile {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments,
@@ -65,6 +124,7 @@ $deviceInfo = Join-Path $sessionDir "00-device-info.txt"
     "CapturedAt=$(Get-Date -Format o)"
     "Area=$Area"
     "Package=$Package"
+    "PackageSelection=$packageSelection"
     "Serial=$selectedSerial"
     "ADB=$((Get-Command adb).Source)"
     ""
@@ -96,6 +156,7 @@ $logcatProcess = Start-Process `
 Write-Host ""
 Write-Host "Сбор Android-диагностики запущен ($Area)." -ForegroundColor Green
 Write-Host "Устройство: $selectedSerial"
+Write-Host "Пакет: $Package ($packageSelection)"
 Write-Host "Каталог: $sessionDir"
 Write-Host ""
 Write-Host "Перед сценарием можно поставить метку:" -ForegroundColor Cyan

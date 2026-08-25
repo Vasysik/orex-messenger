@@ -13,7 +13,7 @@ flutter test --no-pub
 Android release нельзя распространять без release signing. Debug key больше не
 используется для release-сборки.
 
-### 1. Создать keystore
+### Создать keystore
 
 Один раз на релизной машине:
 
@@ -32,7 +32,7 @@ keytool -genkeypair -v `
 Пароли и keystore должны храниться в резервируемом секретном хранилище. Потеря
 keystore не позволит нормально обновлять уже розданные APK с тем же package id.
 
-### 2. Создать `android/key.properties`
+### Создать `android/key.properties`
 
 Файл не коммитится. Пример:
 
@@ -55,7 +55,7 @@ OREX_ANDROID_KEY_ALIAS
 OREX_ANDROID_KEY_PASSWORD
 ```
 
-### 3. Настроить Android push
+### Настроить Android push
 
 Для реальной background-доставки stable-сборке нужен Firebase Android app с
 package id `ru.orex.messenger`. Параллельная debug-сборка использует
@@ -118,7 +118,7 @@ $env:OREX_ALLOW_ANDROID_RELEASE_WITHOUT_PUSH = "true"
 
 В обычной Orex release-сборке эта переменная не задаётся.
 
-### 4. Версия и имена релизных файлов
+### Версия и имена релизных файлов
 
 Единственный источник версии — строка `version:` в `pubspec.yaml`:
 
@@ -151,7 +151,7 @@ $Release = "$VersionName+$BuildNumber"
 
 После изменения версии выполните `flutter pub get`.
 
-### 5. Собрать stable APK
+### Собрать stable APK
 
 Stable и debug — это каналы приложения, а не Git-ветки. Stable использует
 application ID `ru.orex.messenger` и проверяет `/updates/stable/latest.json`.
@@ -181,7 +181,7 @@ Copy-Item build\app\outputs\flutter-apk\app-armeabi-v7a-release.apk `
   "app-armeabi-v7a-$Release.apk"
 ```
 
-### 6. Собрать параллельный Orex Debug
+### Собрать параллельный Orex Debug
 
 Это тоже оптимизированная `--release` сборка, но с другим application ID,
 названием `Orex Messenger Debug` и каналом `/updates/debug/latest.json`. Она

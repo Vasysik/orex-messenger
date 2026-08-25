@@ -396,7 +396,7 @@ LiveKit JWT берётся через `lk-jwt-service` по legacy-compatible к
 `POST /sfu/get`. В этот endpoint нельзя отправлять `requested_livekit_grants`:
 совместимые backend-ы отклоняют неизвестные поля с HTTP 400.
 
-## 7.2. `M_LIMIT_EXCEEDED` и приватный Synapse
+### 7.3. `M_LIMIT_EXCEEDED` и приватный Synapse
 
 `M_LIMIT_EXCEEDED` возвращает homeserver или reverse proxy, а не LiveKit.
 Orex сериализует call-related Matrix writes, объединяет одинаковые in-flight
