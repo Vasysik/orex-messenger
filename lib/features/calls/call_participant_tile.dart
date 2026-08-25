@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:matrix/matrix.dart' hide CallSession;
 
+import '../../core/logging/orex_logger.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../core/voip/voice_participant_state.dart';
 import '../../shared/widgets/orex_call_no_media_surface.dart';
@@ -11,6 +15,16 @@ import 'voice_activity_frame.dart';
 String orexMatrixUserIdFromParticipantIdentity(String identity) {
   final match = RegExp(r'@[^:]+:[^:]+').firstMatch(identity);
   return match?.group(0) ?? identity;
+}
+
+Future<void> _setAndroidCameraZoom(lk.VideoTrack track, double scale) async {
+  final videoTracks = track.mediaStream.getVideoTracks();
+  if (videoTracks.isEmpty) return;
+  try {
+    await rtc.Helper.setZoom(videoTracks.first, scale);
+  } catch (error) {
+    OrexLog.d('CallTile', 'camera zoom failed', error);
+  }
 }
 
 final class OrexCallParticipantProfile {
@@ -197,11 +211,19 @@ class OrexCallParticipantTile extends StatelessWidget {
       if (!kIsWeb &&
           defaultTargetPlatform == TargetPlatform.android &&
           participant is lk.LocalParticipant) {
-        // LiveKit adds tap-to-focus/exposure gestures around local mobile
-        // video. flutter_webrtc can currently throw a native NPE for those
-        // calls on Android. Orex already owns tile gestures outside the
-        // renderer, so absorb only the renderer's private gesture subtree.
-        renderer = AbsorbPointer(child: renderer);
+        // LiveKit's local Android renderer combines pinch-to-zoom with
+        // tap-to-focus/exposure in one private GestureDetector. The latter can
+        // currently reach flutter_webrtc with a null camera capability and
+        // throw natively, while pinch zoom is useful and should remain. Block
+        // only the SDK gesture subtree, then restore the same hardware zoom
+        // gesture on the Orex-owned wrapper without reintroducing focus taps.
+        renderer = GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onScaleUpdate: (details) {
+            unawaited(_setAndroidCameraZoom(track, details.scale));
+          },
+          child: AbsorbPointer(child: renderer),
+        );
       }
       media = Container(
         color: Colors.black,

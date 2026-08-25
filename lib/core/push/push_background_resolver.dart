@@ -9,6 +9,8 @@ import '../logging/orex_logger.dart';
 import '../media/orex_avatar_cache.dart';
 import '../storage/database.dart';
 import '../vodozemac_initializer.dart';
+import '../voip/call_attempt.dart';
+import '../voip/personal_call_signaling.dart';
 
 const _backgroundPushChannelName = 'orex/push_background';
 const _backgroundPushClientName = 'OrexMessenger';
@@ -459,6 +461,23 @@ Future<Map<String, String>?> resolveOrexMatrixPush(
   Error.throwWithStackTrace(firstError!, firstStackTrace!);
 }
 
+@visibleForTesting
+OrexCallInstance? orexBackgroundRejectedCallInstance(
+  Map<String, String> raw,
+) {
+  String? nonEmpty(String? value) {
+    final normalized = value?.trim();
+    return normalized == null || normalized.isEmpty ? null : normalized;
+  }
+
+  if (nonEmpty(raw['orex_background_call_action']) != 'reject') return null;
+  final roomId = nonEmpty(raw['call_id']) ?? nonEmpty(raw['room_id']);
+  if (roomId == null) return null;
+  final ringEventId =
+      nonEmpty(raw['event_id']) ?? nonEmpty(raw['orex_ring_event_id']);
+  return OrexCallInstance(roomId: roomId, ringEventId: ringEventId);
+}
+
 class _OrexBackgroundPushRuntime {
   Client? _client;
   Future<Client>? _clientFuture;
@@ -466,6 +485,35 @@ class _OrexBackgroundPushRuntime {
   Future<Map<String, String>?> resolve(Map<String, String> raw) async {
     final client = await _ensureClient();
     return resolveOrexMatrixPush(client, raw);
+  }
+
+  Future<bool> handleCallAction(Map<String, String> raw) async {
+    final instance = orexBackgroundRejectedCallInstance(raw);
+    if (instance == null) return false;
+
+    final client = await _ensureClient();
+    var room = client.getRoomById(instance.roomId);
+    if (room == null) {
+      // A cold headless isolate may be ready before the cached room list has
+      // materialized. Give Matrix one bounded sync opportunity, then retry via
+      // WorkManager instead of pretending the reject was delivered.
+      try {
+        await client.oneShotSync(timeout: Duration.zero);
+      } catch (error) {
+        OrexLog.d('PushBackground', 'call reject sync failed', error);
+      }
+      room = client.getRoomById(instance.roomId);
+    }
+    if (room == null) {
+      throw StateError('Call room is unavailable: ${instance.roomId}');
+    }
+
+    final signaling = PersonalCallSignaling(client);
+    await Future.wait<void>([
+      signaling.sendDisposition(instance, OrexCallSignalTypes.rejected),
+      signaling.sendHandled(instance),
+    ]);
+    return true;
   }
 
   Future<Client> _ensureClient() {
@@ -519,17 +567,23 @@ Future<void> runOrexPushBackgroundEntrypoint() async {
   final runtime = _OrexBackgroundPushRuntime();
 
   channel.setMethodCallHandler((call) async {
-    if (call.method != 'resolvePush') return null;
     final raw = _stringMap(call.arguments);
     if (raw.isEmpty) return null;
     try {
-      return await runtime.resolve(raw);
+      switch (call.method) {
+        case 'resolvePush':
+          return await runtime.resolve(raw);
+        case 'handleCallAction':
+          return await runtime.handleCallAction(raw);
+        default:
+          return null;
+      }
     } catch (error, stackTrace) {
-      OrexLog.d('PushBackground', 'event resolution failed', error);
-      OrexLog.d('PushBackground', 'event resolution stack', stackTrace);
-      // `null` is retriable on the Android WorkManager side. Never turn a
-      // transient network/crypto failure into a permanent drop marker.
-      return null;
+      OrexLog.d('PushBackground', '${call.method} failed', error);
+      OrexLog.d('PushBackground', '${call.method} stack', stackTrace);
+      // `null`/false is retriable on the Android WorkManager side. Never turn
+      // a transient network/crypto failure into a successful call action.
+      return call.method == 'handleCallAction' ? false : null;
     }
   });
 

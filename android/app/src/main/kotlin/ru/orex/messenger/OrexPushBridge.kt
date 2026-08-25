@@ -303,6 +303,31 @@ object OrexPushBridge {
         OrexPushBackgroundResolver.resolve(context, payload, callback)
     }
 
+    fun handleBackgroundCallAction(
+        context: Context,
+        payload: Map<String, String>,
+        callback: (Boolean) -> Unit,
+    ) {
+        if (OrexFlutterEngineOwner.isRunning()) {
+            val liveChannel = channel
+            if (liveChannel != null) {
+                deliverNotificationOpen(context.applicationContext, payload)
+                callback(true)
+            } else {
+                // The process-owned engine is still booting. Never start a
+                // second Flutter isolate against the encrypted Matrix DB; let
+                // WorkManager retry once the normal channel is ready.
+                callback(false)
+            }
+            return
+        }
+        OrexPushBackgroundResolver.handleCallAction(
+            context.applicationContext,
+            payload,
+            callback,
+        )
+    }
+
     fun handleResolvedPush(context: Context, resolved: Map<String, String>) {
         val payload = normalizePayload(resolved)
         if (payload.isEmpty() || payload["orex_drop"].equals("true", ignoreCase = true)) {
@@ -399,9 +424,23 @@ object OrexPushBridge {
         systemManaged: Boolean = false,
         ringEventId: String? = null,
     ): PendingIntent {
-        // Android 12+ blocks notification trampolines: a notification action
-        // must launch an Activity directly instead of entering a receiver which
-        // then calls startActivity(). This invisible Activity persists Answer,
+        // Reject never needs to open UI. A direct broadcast avoids creating a
+        // temporary foreground task on OEM launchers; cold-process signaling is
+        // completed by the existing WorkManager/headless Matrix runtime below.
+        if (shouldUseHeadlessPushReject(action, systemManaged)) {
+            return callActionPendingIntent(
+                context = context,
+                callId = callId,
+                ringEventId = ringEventId,
+                displayName = displayName,
+                video = video,
+                action = action,
+                requestCode = requestCode,
+            )
+        }
+
+        // Answer must launch an Activity directly on Android 12+ instead of a
+        // notification trampoline. The no-display Activity persists Answer,
         // starts the foreground call runtime and opens MainActivity. Because it
         // is not showWhenLocked, Android requests the normal device unlock first.
         val intent = OrexCallActionActivity.createIntent(
@@ -482,14 +521,36 @@ object OrexPushBridge {
         val payload = extractPayload(intent)
         if (payload.isEmpty()) return
         val action = payload["orex_action"] ?: return
+        val callId = payload["call_id"] ?: payload["room_id"] ?: return
+        val ringEventId = normalizeRingEventId(payload["event_id"])
+        val fromSystem = payload["orex_from_system"].equals("true", ignoreCase = true)
+
+        if (action == "reject" && !fromSystem) {
+            // The notification itself owns native presentation state. End it
+            // before dispatching Matrix signaling, and never foreground Orex
+            // merely because the Dart process is cold.
+            if (!OrexCallPresentationState.markEnded(
+                    context.applicationContext,
+                    callId,
+                    ringEventId,
+                )
+            ) {
+                OrexNotificationCenter.cancelCallNotification(context.applicationContext)
+                return
+            }
+            OrexNotificationCenter.cancelCallNotification(context.applicationContext)
+            dispatchCallActionWithoutUi(context, payload)
+            return
+        }
+
         val launched = launchIncomingCallAction(
             context = context,
-            callId = payload["call_id"] ?: payload["room_id"] ?: return,
-            ringEventId = payload["event_id"],
+            callId = callId,
+            ringEventId = ringEventId,
             displayName = payload["sender_display_name"] ?: "Orex",
             video = payload["orex_video"].equals("true", ignoreCase = true),
             action = action,
-            fromSystem = payload["orex_from_system"].equals("true", ignoreCase = true),
+            fromSystem = fromSystem,
         )
         if (!launched) {
             deliverNotificationOpen(context.applicationContext, payload)
@@ -541,17 +602,37 @@ object OrexPushBridge {
                 bringUiToFront = bringUiToFront,
             )
             else -> {
-                val payload = incomingCallPayload(
-                    callId = callId,
-                    ringEventId = ringEventId,
-                    displayName = displayName,
-                    video = video,
-                    fromSystem = fromSystem,
+                val payload = openPayload(
+                    incomingCallPayload(
+                        callId = callId,
+                        ringEventId = ringEventId,
+                        displayName = displayName,
+                        video = video,
+                        fromSystem = fromSystem,
+                    ),
+                    action,
                 )
-                deliverNotificationOpen(context.applicationContext, openPayload(payload, action))
-                if (!bringUiToFront && channel != null) true else bringAppToFront(context)
+                if (!bringUiToFront) {
+                    dispatchCallActionWithoutUi(context, payload)
+                    true
+                } else {
+                    deliverNotificationOpen(context.applicationContext, payload)
+                    bringAppToFront(context)
+                }
             }
         }
+    }
+
+    private fun dispatchCallActionWithoutUi(
+        context: Context,
+        payload: Map<String, String>,
+    ) {
+        val appContext = context.applicationContext
+        if (channel != null && OrexFlutterEngineOwner.isRunning()) {
+            deliverNotificationOpen(appContext, payload)
+            return
+        }
+        OrexPushResolveWorker.enqueueCallReject(appContext, payload)
     }
 
     fun acceptIncomingCallFromNativeAction(

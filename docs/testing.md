@@ -46,7 +46,8 @@ gradle -p android verifyDebugVodozemacNativeLibs --no-daemon --stacktrace
 Минимум на AOSP/Pixel-подобном устройстве и Xiaomi/MIUI:
 
 - foreground/outgoing и incoming звонок;
-- Answer/Reject из notification и с lock screen;
+- Answer/Reject из notification и с lock screen; Reject при background/killed
+  процессе не должен открывать MainActivity, но должен завершать ring у инициатора;
 - Home, Back, swipe task и повторное открытие во время connecting/active;
 - ошибка защищённого старта звонка → немедленная повторная попытка не должна
   получать системное «уже устанавливается соединение»;
@@ -54,9 +55,9 @@ gradle -p android verifyDebugVodozemacNativeLibs --no-daemon --stacktrace
 - Reject входящего звонка → пока инициатор остаётся в активной MatrixRTC-сессии,
   ручной `Войти` должен подключать без `Incoming call attempt changed`;
 - speaker/earpiece/wired/Bluetooth, system mute/hold;
-- камера: включение/выключение и переключение без переподключения; тап по
-  локальной Android-видеоплитке не должен создавать unhandled
-  `setFocusPoint/setExposurePoint` PlatformException;
+- камера: включение/выключение и переключение без переподключения; pinch по
+  локальной Android-видеоплитке продолжает менять camera zoom, а обычный tap не
+  создаёт unhandled `setFocusPoint/setExposurePoint` PlatformException;
 - screen share: permission, background, системный Stop/status chip и повторный
   старт с новым разрешением;
 - PiP: portrait/landscape aspect, camera ↔ screen share, media off/on, закрытие
