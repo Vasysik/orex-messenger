@@ -17,15 +17,27 @@ String orexMatrixUserIdFromParticipantIdentity(String identity) {
   return match?.group(0) ?? identity;
 }
 
+bool orexShouldBlockLiveKitAndroidLocalVideoGestures({
+  required bool isWeb,
+  required TargetPlatform platform,
+  required bool isLocalParticipant,
+}) {
+  return !isWeb &&
+      platform == TargetPlatform.android &&
+      isLocalParticipant;
+}
+
 bool orexShouldOwnAndroidCameraZoom({
   required bool isWeb,
   required TargetPlatform platform,
   required bool isLocalParticipant,
   required lk.TrackSource source,
 }) {
-  return !isWeb &&
-      platform == TargetPlatform.android &&
-      isLocalParticipant &&
+  return orexShouldBlockLiveKitAndroidLocalVideoGestures(
+        isWeb: isWeb,
+        platform: platform,
+        isLocalParticipant: isLocalParticipant,
+      ) &&
       source == lk.TrackSource.camera;
 }
 
@@ -220,18 +232,27 @@ class OrexCallParticipantTile extends StatelessWidget {
         track,
         fit: lk.VideoViewFit.contain,
       );
+      final blockLiveKitLocalAndroidGestures =
+          orexShouldBlockLiveKitAndroidLocalVideoGestures(
+        isWeb: kIsWeb,
+        platform: defaultTargetPlatform,
+        isLocalParticipant: participant is lk.LocalParticipant,
+      );
+      if (blockLiveKitLocalAndroidGestures) {
+        // LiveKit currently installs camera-oriented focus/exposure/zoom
+        // gestures for local Android video renderers. They are valid for a
+        // camera capturer but can still reach flutter_webrtc for a local
+        // screen-share capturer, where setZoom throws "Video capturer not
+        // compatible". Own the whole local-renderer gesture boundary in Orex:
+        // always block the SDK subtree, then restore only camera pinch zoom.
+        renderer = AbsorbPointer(child: renderer);
+      }
       if (orexShouldOwnAndroidCameraZoom(
         isWeb: kIsWeb,
         platform: defaultTargetPlatform,
         isLocalParticipant: participant is lk.LocalParticipant,
         source: track.source,
       )) {
-        // LiveKit's local Android renderer combines pinch-to-zoom with
-        // tap-to-focus/exposure in one private GestureDetector. The latter can
-        // currently reach flutter_webrtc with a null camera capability and
-        // throw natively, while pinch zoom is useful and should remain. Block
-        // only the SDK gesture subtree, then restore the same hardware zoom
-        // gesture on the Orex-owned wrapper without reintroducing focus taps.
         renderer = GestureDetector(
           behavior: HitTestBehavior.opaque,
           onScaleUpdate: (details) {
@@ -239,7 +260,7 @@ class OrexCallParticipantTile extends StatelessWidget {
               unawaited(_setAndroidCameraZoom(track, details.scale));
             }
           },
-          child: AbsorbPointer(child: renderer),
+          child: renderer,
         );
       }
       media = Container(

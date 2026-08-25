@@ -56,4 +56,44 @@ void main() {
       );
     });
   });
+
+  group('orexShouldBlockLiveKitAndroidLocalVideoGestures', () {
+    test('blocks SDK gestures for every local Android video source', () {
+      expect(
+        orexShouldBlockLiveKitAndroidLocalVideoGestures(
+          isWeb: false,
+          platform: TargetPlatform.android,
+          isLocalParticipant: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('does not block remote or non-Android renderer gestures', () {
+      expect(
+        orexShouldBlockLiveKitAndroidLocalVideoGestures(
+          isWeb: false,
+          platform: TargetPlatform.android,
+          isLocalParticipant: false,
+        ),
+        isFalse,
+      );
+      expect(
+        orexShouldBlockLiveKitAndroidLocalVideoGestures(
+          isWeb: true,
+          platform: TargetPlatform.android,
+          isLocalParticipant: true,
+        ),
+        isFalse,
+      );
+      expect(
+        orexShouldBlockLiveKitAndroidLocalVideoGestures(
+          isWeb: false,
+          platform: TargetPlatform.windows,
+          isLocalParticipant: true,
+        ),
+        isFalse,
+      );
+    });
+  });
 }
