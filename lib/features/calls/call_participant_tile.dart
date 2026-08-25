@@ -17,6 +17,18 @@ String orexMatrixUserIdFromParticipantIdentity(String identity) {
   return match?.group(0) ?? identity;
 }
 
+bool orexShouldOwnAndroidCameraZoom({
+  required bool isWeb,
+  required TargetPlatform platform,
+  required bool isLocalParticipant,
+  required lk.TrackSource source,
+}) {
+  return !isWeb &&
+      platform == TargetPlatform.android &&
+      isLocalParticipant &&
+      source == lk.TrackSource.camera;
+}
+
 Future<void> _setAndroidCameraZoom(lk.VideoTrack track, double scale) async {
   final videoTracks = track.mediaStream.getVideoTracks();
   if (videoTracks.isEmpty) return;
@@ -208,9 +220,12 @@ class OrexCallParticipantTile extends StatelessWidget {
         track,
         fit: lk.VideoViewFit.contain,
       );
-      if (!kIsWeb &&
-          defaultTargetPlatform == TargetPlatform.android &&
-          participant is lk.LocalParticipant) {
+      if (orexShouldOwnAndroidCameraZoom(
+        isWeb: kIsWeb,
+        platform: defaultTargetPlatform,
+        isLocalParticipant: participant is lk.LocalParticipant,
+        source: track.source,
+      )) {
         // LiveKit's local Android renderer combines pinch-to-zoom with
         // tap-to-focus/exposure in one private GestureDetector. The latter can
         // currently reach flutter_webrtc with a null camera capability and
@@ -220,7 +235,9 @@ class OrexCallParticipantTile extends StatelessWidget {
         renderer = GestureDetector(
           behavior: HitTestBehavior.opaque,
           onScaleUpdate: (details) {
-            unawaited(_setAndroidCameraZoom(track, details.scale));
+            if (details.scale != 1.0) {
+              unawaited(_setAndroidCameraZoom(track, details.scale));
+            }
           },
           child: AbsorbPointer(child: renderer),
         );
