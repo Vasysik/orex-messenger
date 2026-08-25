@@ -51,6 +51,8 @@ object OrexAndroidTelecomManager {
     private const val CHANNEL_NAME = "orex/system_calls"
     private const val TAG = "OrexSystemCall"
     private const val CALL_READY_TIMEOUT_MS = 6_500L
+    private const val CALL_RELEASE_TIMEOUT_MS = 3_000L
+    private const val CALL_CANCEL_TIMEOUT_MS = 1_500L
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -461,7 +463,7 @@ object OrexAndroidTelecomManager {
                 success
             }
             "rejectCall" -> withCall(call, result) { managed ->
-                disconnectInternal(managed, DisconnectCause.REJECTED)
+                endCallAndAwaitRelease(managed, DisconnectCause.REJECTED)
             }
             "endCall" -> withCall(call, result) { managed ->
                 val reason = call.argument<String>("reason")
@@ -470,7 +472,7 @@ object OrexAndroidTelecomManager {
                     "remote" -> DisconnectCause.REMOTE
                     else -> DisconnectCause.LOCAL
                 }
-                disconnectInternal(managed, cause)
+                endCallAndAwaitRelease(managed, cause)
             }
             "hasCall" -> {
                 val callId = call.argument<String>("callId")?.trim().orEmpty()
@@ -672,13 +674,9 @@ object OrexAndroidTelecomManager {
             ) {
                 return false
             }
-            val terminated = withTimeoutOrNull(2000) {
-                existing.job?.join()
-                true
-            } == true
-            if (!terminated) {
-                existing.job?.cancel()
-                cleanup(existing)
+            if (!awaitManagedCallRelease(existing)) {
+                Log.w(TAG, "Previous Telecom call did not release id=${existing.callId}")
+                return false
             }
         }
 
@@ -871,7 +869,7 @@ object OrexAndroidTelecomManager {
         val ready = withTimeoutOrNull(CALL_READY_TIMEOUT_MS) { managed.ready.await() } == true
         if (!ready) {
             managed.job?.cancel()
-            cleanup(managed)
+            awaitManagedCallRelease(managed)
         }
         return ready
     }
@@ -919,16 +917,65 @@ object OrexAndroidTelecomManager {
     private suspend fun cleanupFailedAnswer(managed: ManagedCall) {
         managed.answered = false
         managed.answerRequested = false
-        val disconnected = try {
-            disconnectInternal(managed, DisconnectCause.ERROR)
-        } catch (error: Throwable) {
-            Log.e(TAG, "Failed to disconnect rejected answer id=${managed.callId}", error)
-            false
+        endCallAndAwaitRelease(managed, DisconnectCause.ERROR)
+    }
+
+    private suspend fun endCallAndAwaitRelease(
+        managed: ManagedCall,
+        causeCode: Int,
+    ): Boolean {
+        callMutationMutex.lock()
+        return try {
+            val disconnected = try {
+                disconnectInternal(managed, causeCode)
+            } catch (error: Throwable) {
+                Log.w(TAG, "Failed to disconnect Telecom call id=${managed.callId}", error)
+                false
+            }
+            if (!disconnected) managed.job?.cancel()
+            awaitManagedCallRelease(managed)
+        } finally {
+            callMutationMutex.unlock()
         }
-        if (!disconnected) {
-            managed.job?.cancel()
+    }
+
+    private suspend fun awaitManagedCallRelease(
+        managed: ManagedCall,
+    ): Boolean {
+        val job = managed.job
+        if (job == null) {
             cleanup(managed)
+            return true
         }
+        if (job.isCompleted) {
+            cleanup(managed)
+            return true
+        }
+
+        var released = withTimeoutOrNull(CALL_RELEASE_TIMEOUT_MS) {
+            job.join()
+            true
+        } == true
+        if (!released) {
+            Log.w(TAG, "Timed out releasing Telecom call id=${managed.callId}; cancelling owner job")
+            job.cancel()
+            released = withTimeoutOrNull(CALL_CANCEL_TIMEOUT_MS) {
+                job.join()
+                true
+            } == true
+        }
+
+        if (released || job.isCompleted) {
+            cleanup(managed)
+            return true
+        }
+
+        // Do not clear [current] while Core-Telecom still owns the previous
+        // addCall coroutine. A new addCall at this point can be rejected by
+        // the system as an already-connecting call. The next reportCall will
+        // see the terminating owner and wait for it again instead of racing it.
+        Log.e(TAG, "Telecom owner job is still alive id=${managed.callId}")
+        return false
     }
 
     private suspend fun disconnectInternal(managed: ManagedCall, causeCode: Int): Boolean {

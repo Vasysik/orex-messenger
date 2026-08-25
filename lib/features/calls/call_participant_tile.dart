@@ -14,12 +14,10 @@ String orexMatrixUserIdFromParticipantIdentity(String identity) {
 
 final class OrexCallParticipantProfile {
   const OrexCallParticipantProfile({
-    required this.userId,
     required this.displayName,
     this.avatarUrl,
   });
 
-  final String userId;
   final String displayName;
   final Uri? avatarUrl;
 }
@@ -31,7 +29,6 @@ OrexCallParticipantProfile orexCallParticipantProfile(
   final userId = orexMatrixUserIdFromParticipantIdentity(participant.identity);
   final user = room?.unsafeGetUserFromMemoryOrFallback(userId);
   return OrexCallParticipantProfile(
-    userId: userId,
     displayName: user?.calcDisplayname() ?? userId,
     avatarUrl: user?.avatarUrl,
   );
@@ -187,7 +184,6 @@ class OrexCallParticipantTile extends StatelessWidget {
         : 8.0 + statusBadgeCount * style.cameraButtonBottomStep;
 
     final profile = orexCallParticipantProfile(participant, room);
-    final userId = profile.userId;
     var name = profile.displayName;
     if (participant is lk.LocalParticipant) name = '$name · вы';
 

@@ -61,33 +61,6 @@ Notification/Core-Telecom Answer
 8. Swipe из recent apps или закрытие Activity не уничтожает engine и не останавливает Service.
 9. Force stop и системная кнопка остановки активного приложения считаются безусловным завершением процесса; приложение не пытается обходить Android.
 
-## Обязательная проверка перед релизом
-
-Проверять минимум на Pixel/AOSP и Xiaomi/MIUI:
-
-- исходящий и входящий аудиозвонок из foreground;
-- Answer из notification при выгруженной task;
-- Answer с заблокированного экрана;
-- Home, Back и swipe task во время connecting и active;
-- повторное открытие приложения во время активного звонка;
-- remote cancel до/после Answer;
-- отсутствие сети, истёкший ring и ошибка MatrixRTC;
-- Bluetooth/earpiece/speaker и аппаратный mute;
-- разрешение уведомлений разрешено, запрещено и channel вручную выключен;
-- Android 13+ Stop в Active apps — ожидаемое завершение;
-- process recreation с `answered=true` descriptor.
-
-Полезные проверки:
-
-```bash
-adb shell dumpsys activity services ru.orex.messenger
-adb shell dumpsys notification --noredact | grep -i orex
-adb logcat -s OrexCallService OrexFlutterEngine OrexPush OrexCallHandoff OrexTelecom
-```
-
-`adb shell am force-stop ru.orex.messenger` не является тестом фоновой живучести: force stop обязан остановить приложение и его service.
-
-
 ## v3 handoff invariants
 
 - Presentation ring tokens never own or reject the foreground runtime.

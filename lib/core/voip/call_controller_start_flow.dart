@@ -736,7 +736,7 @@ extension _CallControllerStartFlow on CallController {
     );
     if (systemEnd != null) {
       await systemEnd.timeout(
-        const Duration(seconds: 4),
+        const Duration(seconds: 8),
         onTimeout: () => false,
       );
     }

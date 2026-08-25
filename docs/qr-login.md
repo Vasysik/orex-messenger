@@ -128,17 +128,6 @@ experimental_features:
 поэтому важны защищённое локальное хранилище, короткий TTL и управление
 устройствами.
 
-Проверка модуля:
-
-```bash
-curl -i -X POST \
-  -H 'Content-Type: application/octet-stream' \
-  --data-binary 'test' \
-  https://vasys.ru/_synapse/client/org.matrix.msc3886/rendezvous
-```
-
-Ожидаются `201 Created`, `Location` и `ETag`.
-
 ## Клиентская конфигурация
 
 Production URL задан в `OrexConfig`. Для другого сервера передайте:

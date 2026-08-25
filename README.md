@@ -385,12 +385,12 @@ Production build использует `app_id = ru.vasys.orex_messenger`.
 
 Нативный partial wake lock активного Android-звонка, минутный heartbeat foreground
 service и Matrix fallback-sync намеренно не оптимизировались вслепую: они входят в
-хрупкий call-delivery/runtime contract и должны меняться только после Battery
-Historian/Perfetto-профиля конкретного вызова.
+хрупкий call-delivery/runtime contract и должны меняться только после
+подтверждённой runtime-проблемы.
 
 Практическая сборка описана в `docs/release-android.md`,
-`docs/release-windows.md` и `docs/release-web.md`; диагностика цепочки
-Synapse → Sygnal → FCM — в `docs/push-infrastructure.md`.
+`docs/release-windows.md` и `docs/release-web.md`; production push-инфраструктура —
+в `docs/push-infrastructure.md`, а проверки и диагностика — в `docs/testing.md`.
 
 LiveKit JWT берётся через `lk-jwt-service` по legacy-compatible контракту
 `POST /sfu/get`. В этот endpoint нельзя отправлять `requested_livekit_grants`:
@@ -517,19 +517,8 @@ Release-инструкции разделены по платформам:
 - [Windows](docs/release-windows.md)
 - [Web](docs/release-web.md)
 
-Короткий локальный quality gate перед release candidate:
-
-```powershell
-flutter pub get
-flutter analyze --no-pub
-flutter test --no-pub
-Push-Location android
-.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug --no-daemon
-Pop-Location
-flutter build web --release --no-web-resources-cdn
-flutter build apk --release --split-per-abi
-flutter build windows --release
-```
+Общий quality gate и platform smoke собраны в
+[`docs/testing.md`](docs/testing.md); здесь остаются только build/release-контракты.
 
 `pubspec.lock` коммитится после успешного `flutter pub get` той же Flutter
 версией, которой собирается пререлиз. Android release требует signing и Firebase
@@ -747,39 +736,9 @@ EXE installer на MSIX + App Installer. Это не требуется для �
 
 ### 11.2. Служебные инструменты
 
-#### Диагностика Android-звонка
-
-`tool\collect_orex_call_logs.ps1` интерактивно собирает один тестовый сеанс
-Android-звонка. Скрипт проверяет подключённое ADB-устройство, по умолчанию
-очищает logcat, сохраняет все его буферы без привязки к PID, снимает состояние
-Activity/Telecom/уведомлений/audio/power через `dumpsys`, создаёт
-отфильтрованный `02-logcat-orex-focused.txt` и упаковывает результат в
-`orex-test-logs\orex-call-<дата>.zip`.
-
-```powershell
-.\tool\collect_orex_call_logs.ps1
-.\tool\collect_orex_call_logs.ps1 -NoClear    # сохранить старый logcat
-.\tool\collect_orex_call_logs.ps1 -Bugreport  # дополнительно снять adb bugreport
-```
-
-Скрипт рассчитан на одно устройство в состоянии `adb devices = device`.
-Перед передачей архива проверьте его на access token, FCM token, пароли и
-приватные URL. Каталог `orex-test-logs` не коммитится.
-
-#### Профилирование scrolling/jank
-
-Производительность проверяется в profile/release-подобном режиме, не в debug.
-Android/Windows: `flutter run --profile` + Flutter DevTools → Performance. Web:
-Chrome DevTools → Performance на production/staging; отдельный Flutter profile
-build нужен только когда требуется привязка trace к Dart symbols и окружение
-позволяет его подключить к backend. `flutter run --profile` сам итоговый отчёт в
-консоль не печатает — trace нужно записать и сохранить в profiler.
-
-Проверяем одинаковые сценарии: длинный fling списка чатов, timeline и настроек,
-включая приход нового сообщения. Записи 2026-08-24/25 показали, что оставшиеся
-Web-spikes в исследованных сценариях в основном находятся в Dart/JS animation
-workload, а не в browser layout/raster. Это остаётся регрессионной проверкой, а
-не поводом упрощать дизайн без конкретного frame-time профиля.
+Quality gate, platform smoke и diagnostic collectors собраны в
+[`docs/testing.md`](docs/testing.md). Release-документы ниже описывают
+только сборку, инфраструктуру и публикацию.
 
 #### Web-биндинги vodozemac
 
@@ -800,7 +759,7 @@ workload, а не в browser layout/raster. Это остаётся регрес
 Не храните вручную созданные файлы в `web/pkg`: скрипт удаляет каталог перед
 генерацией.
 
-#### Проверка Android native vodozemac
+#### Android native vodozemac bridge
 
 `android/cargokit_proxy/run_build_tool.cmd` — внутренний Windows-proxy, а не
 команда для ручного запуска. Gradle автоматически подключает его только для
@@ -814,15 +773,8 @@ native E2EE-библиотеки. `android/cargokit_proxy/gradle/plugin.gradle` 
 служебный marker-файл proxy и также не запускается вручную.
 
 Задачи `verifyDebugVodozemacNativeLibs`, `verifyProfileVodozemacNativeLibs` и
-`verifyReleaseVodozemacNativeLibs` проверяют уже объединённые native-библиотеки
-приложения. Они автоматически входят в `assemble*`, `package*` и `bundle*`;
-при диагностике можно вызвать проверку отдельно:
-
-```powershell
-Push-Location android
-.\gradlew.bat verifyDebugVodozemacNativeLibs --no-daemon
-Pop-Location
-```
+`verifyReleaseVodozemacNativeLibs` автоматически входят в Android build graph;
+ручной quality gate вынесен в [`docs/testing.md`](docs/testing.md).
 
 #### Деплой и CI
 
@@ -860,12 +812,12 @@ contract, Android debug/release и Windows release build. Workflow не публ
 - реализованы нативная Synapse-аутентификация, e-mail/3PID, восстановление пароля, подтверждаемый QR-вход и управление Matrix-устройствами;
 - добавлены встроенное обновление приложения, каналы `stable` / `debug` и автоматизированная сборка релизных артефактов;
 - страница `/download/` теперь является частью того же Flutter UI, использует фирменные `AmbientBackground` / `GlassPanel` / brand-компоненты и тот же stable update feed; на Web к ней ведёт глобальная круглая кнопка в левом нижнем углу всех основных экранов и меню (кроме самой `/download/`), оформленная тем же медным градиентом, что и кнопка отправки сообщения, и чуть более заметной тёмной обводкой; кнопка открывает `/download/` в новой вкладке/окне, а hover не использует `Tooltip`/`Overlay`, поэтому она безопасно живёт в глобальном `MaterialApp.builder`;
-- Web QR-сканер теперь полностью освобождает принадлежащий ему camera track при переключении обратно на QR и при закрытии экрана;
-- Web-аватары получили persistent CacheStorage; брендовые asset-изображения кешируются nginx, а иконка Orex и белка появляются мягко с коротким `140 ms` fade без временной картинки-заглушки;
-- timeline разделяет сообщения по локальным календарным дням; sticky-date использует тот же стиль, что и обычный разделитель, проверяет пересечение по верхней и нижней координатам pill и не накладывает соседние даты; при первом открытии чата дата появляется сразу без мигания, а `140 ms` fade-in активируется уже после ухода с первоначально показанного календарного дня; при движении к последним сообщениям уже видимая дата отрывается без fade-in и только уходящая floating-копия зеркально гаснет, после чего исходный separator возвращается без повторного появления;
+- Web QR-сканер корректно освобождает свой camera track при переключении режима и закрытии экрана;
+- Web-аватары получили persistent CacheStorage, а bundled brand assets — предсказуемый HTTP-кэш;
+- timeline получил календарные разделители и sticky-date без мигания при первом открытии чата;
 - возврат к последним сообщениям оформлен отдельной анимированной pill-кнопкой `Вниз`, которая появляется только после заметного ухода от конца чата; базовый и hover-фоны настроены между прежним тёмным и слишком светлым вариантами, при этом hover остаётся более светлым состоянием того же стиля;
-- desktop mouse UX унифицирован: стандартные `IconButton` / `TextButton` / `FilledButton` / `ElevatedButton` / `OutlinedButton` и кастомные `InkWell`/call controls показывают `click`-курсор только когда действие доступно; hover/splash при этом остаются прежними. Emoji и send actions в composer сохраняют тот же desktop cursor/hover/splash, что и кнопка вложения; focused media-плитка звонка поддерживает отдельный fullscreen с возвратом по double tap, `Esc` и системному Back, speaking-рамка не меняет размер видео/screen share, а нижние fullscreen call controls автоматически скрываются вниз после 3 секунд бездействия и переключаются обычным тапом по media: видимые скрываются, скрытые возвращаются.
-- media-плитки с реальным video/screen-share track получили ручной системный Picture-in-Picture на текущих целевых платформах Orex: Web использует отдельный долгоживущий WebRTC `<video>`, не зависящий от rebuild/zoom call-плитки, Android использует Activity Picture-in-Picture, а Windows открывает отдельное always-on-top OS-окно на том же Flutter engine/isolate. PiP запоминает выбранный camera/screen-share приоритет и синхронизируется с LiveKit publication events: появившийся preferred screen share переключает уже открытый PiP, временно выключенное native-video заменяется нейтральной панелью с инициалом, а завершение звонка закрывает PiP. Web bridge устанавливается до запуска Flutter из внешнего same-origin bootstrap без inline script и проверяется Dart-кодом перед вызовом; Android/Windows используют dimensions выбранной LiveKit publication только как стартовую подсказку с fallback `16:9`, а после первого декодированного кадра переустанавливают PiP aspect ratio по фактическим `RTCVideoRenderer` width/height/rotation. PiP показывает только выбранную камеру или screen share, call controls туда не переносятся и автоматического входа при background нет;
+- desktop mouse UX унифицирован; focused call media поддерживает fullscreen, auto-hide controls и speaking-frame без изменения размера видео;
+- добавлен ручной media PiP для Web/Android/Windows с синхронизацией camera/screen share, portrait aspect ratio и корректным lifecycle;
 - Windows runner явно подключает `windows.h` перед `shellapi.h`; системные tray/PiP API больше не зависят от случайных транзитивных include Flutter wrapper-ов, поэтому multi-view refactor не ломает сборку Windows SDK;
 - Windows runner также явно линкует `flutter_wrapper_plugin`, потому что multi-view runner напрямую получает `PluginRegistrarWindows` для Orex MethodChannel-ов; это устраняет unresolved `PluginRegistrarManager`/`PluginRegistrar` symbols на этапе MSVC link;
 - Windows сохраняет normal-размер и позицию окна относительно выбранного монитора, maximized/restored и имя монитора в HKCU; при исчезнувшем дисплее или координатах вне work area окно возвращается на существующий экран без отдельной DPI-миграции;
@@ -927,11 +879,8 @@ Kotlin Gradle Plugin из app/plugins; режим «только подтвер�
   Matrix sync, FCM/WorkManager, Android foreground-call runtime, Core-Telecom,
   LiveKit и call wake-lock остаются независимыми и не затрагиваются этой
   оптимизацией;
-* 🟢 **Стабильное листание интерфейса.** Убраны подтверждённые горячие места:
-  безусловная пересортировка Matrix timeline, широкие rebuild списка чатов и
-  независимые backdrop blur на длинных settings-экранах. Android/Windows/Web
-  проверяются профилированием конкретных frame-time всплесков; release-блокер
-  закрыт, дальнейшая работа идёт как обычный performance regression control;
+* 🟢 **Стабильное листание интерфейса.** Убраны подтверждённые hot paths в
+  timeline, chat list и settings; дальнейшая проверка — обычный regression gate;
 * 🟢 **Состояние окна Windows.** Orex сохраняет normal-размер, позицию,
   maximized/restored и имя монитора в пользовательском HKCU. Позиция хранится
   относительно work area выбранного дисплея, поэтому перестановка мониторов не
@@ -948,18 +897,8 @@ Kotlin Gradle Plugin из app/plugins; режим «только подтвер�
   предыдущий режим. Нижние call controls доступны поверх fullscreen и через 3 секунды
   бездействия плавно уезжают вниз; обычный тап/клик по media работает как toggle:
   видимые controls скрываются сразу, скрытые возвращаются и снова получают auto-hide;
-* 🟢 **Системный media PiP по явной кнопке.** Web использует browser PiP,
-  Android — Activity PiP, Windows — отдельное always-on-top окно. PiP следует за
-  выбранным camera/screen-share track, автоматически подхватывает смену источника
-  и закрывается при завершении звонка/уходе участника. При временном отсутствии
-  media Android/Windows показывают тот же Matrix avatar/no-media surface, что и
-  обычная call-плитка; кнопка PiP на карточке остаётся доступной для закрытия.
-  Web держит отдельный стабильный renderer, поэтому zoom/rebuild плитки не
-  замораживает PiP, а после возврата media stream перепривязывается без второго
-  клика. Android/Windows подстраивают окно под реально декодированный aspect
-  ratio, включая portrait video. Редкий Android task/lifecycle edge-case после
-  PiP остаётся отдельной диагностической задачей и не лечится изменением task
-  flags/Flutter engine ownership без воспроизводимого trace;
+* 🟢 **Системный media PiP по явной кнопке.** Web/Android/Windows синхронизируют
+  источник, no-media lifecycle и фактический aspect ratio без изменения call ownership;
 * 🟡 **Точный захват выбранного аудиовхода.** При выбранном отдельном микрофоне
   звонок не должен дополнительно открывать микрофон Bluetooth-гарнитуры или другие
   input devices. Нужно проверить системный/native capture path и гарантировать,
@@ -1167,7 +1106,7 @@ state остаётся library-private и не превращается в но�
 * Выносить новые контроллеры только там, где появляется реальная продуктовая
   боль, а не ради уменьшения количества строк.
 * Не начинать новый большой архитектурный рефактор без конкретной runtime-
-  проблемы, профилирования или повторяющегося продуктового сценария.
+  проблемы или повторяющегося продуктового сценария.
 
 ## 13. Заметки
 

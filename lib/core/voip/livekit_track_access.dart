@@ -162,13 +162,25 @@ final class OrexLiveKitTrackAccess {
     }
   }
 
-  /// Stops local camera and microphone tracks without waiting for signaling.
-  /// This is used during web teardown so browser capture indicators disappear
-  /// immediately even if disconnect/reconnect futures are still draining.
+  /// Stops local camera and microphone capture during teardown.
+  ///
+  /// LiveKit owns publication state, so disable sources through its public API
+  /// first. The direct LocalTrack stop below is a bounded fallback for a stale
+  /// publication/transport that outlives the room teardown on Web.
   static Future<int> stopLocalCaptureTracks(
     lk.LocalParticipant? participant,
   ) async {
     if (participant == null) return 0;
+
+    await Future.wait<void>([
+      _disableLocalCaptureSource(
+        () => participant.setCameraEnabled(false),
+      ),
+      _disableLocalCaptureSource(
+        () => participant.setMicrophoneEnabled(false),
+      ),
+    ]);
+
     final seenTracks = <Object>{};
     var stopped = 0;
     for (final publication in localPublications(participant)) {
@@ -185,6 +197,16 @@ final class OrexLiveKitTrackAccess {
       } catch (_) {}
     }
     return stopped;
+  }
+
+  static Future<void> _disableLocalCaptureSource(
+    Future<dynamic> Function() disable,
+  ) async {
+    try {
+      await disable().timeout(const Duration(seconds: 2));
+    } catch (_) {
+      // The direct track-stop fallback below still releases local capture.
+    }
   }
 
   static Iterable<dynamic> dynamicValues(dynamic value) sync* {

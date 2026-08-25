@@ -220,39 +220,3 @@ metadata, имени APK и папки релиза.
 и не подходит для updater.
 
 Полная серверная схема описана в `docs/release-updates.md`.
-
-
-## Android smoke
-
-```text
-cold start: native splash -> Flutter splash без белой вспышки
-login / registration: иконка, слоган и версия совпадают со splash
-login / restore session
-установка правильного split APK на arm64-v8a тестовом устройстве
-старый канал с одним постом открывается без ручной прокрутки вверх
-поиск человека -> preview -> вход в DM
-сообщение + reply + attachment
-обычный исходящий и входящий звонок
-видеозвонок: переключение камеры без переподключения к звонку
-отклонение / завершение звонка
-Android 8+: входящий -> системная карточка -> принять / отклонить
-Android 8+: активный звонок -> завершить из системного UI / гарнитуры
-Android 8+: system mute / hold -> микрофон и входящий звук восстанавливаются
-Android 8+: speaker / earpiece / wired / Bluetooth route без конфликта AudioManager
-Android: screen share -> системное MediaProjection-разрешение -> foreground-индикатор
-Android: screen share -> свернуть приложение -> foreground-индикатор и публикация сохраняются
-Android: screen share -> Stop из foreground-уведомления -> track снят, индикатор исчез
-Android: screen share -> системный Stop/status chip или блокировка экрана -> track снят,
-UI возвращается в выключенное состояние; после разблокировки новый share запрашивает
-новое системное разрешение
-Android 13+: permission на уведомления появляется после основного UI, не на splash
-FCM token -> Matrix pusher зарегистрирован на homeserver
-ротация FCM token -> старый pushkey удалён, новый зарегистрирован
-logout -> pusher текущего устройства удалён до завершения Matrix logout
-закрыть процесс -> encrypted FCM -> WorkManager decrypt -> plaintext уведомление
-заблокировать экран -> входящий ring -> отдельное full-screen окно звонка
-ответить / отклонить из native окна -> cold-start Matrix action
-тап по cold-start уведомлению -> после sync открывается нужная room_id
-голосовой канал: grant / revoke
-системная тема сохраняется после перезапуска приложения
-```
