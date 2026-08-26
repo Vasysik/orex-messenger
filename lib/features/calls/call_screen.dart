@@ -1,8 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
 import '../../core/matrix/matrix_service.dart';
+import '../../core/platform/orex_system_picture_in_picture.dart';
+import '../../core/platform/orex_system_ui.dart';
 import '../../core/voip/call_controller.dart';
 import '../../core/voip/call_session.dart';
 import '../../shared/theme/glass.dart';
@@ -28,9 +31,16 @@ class CallScreen extends StatefulWidget {
 
 class _CallScreenState extends State<CallScreen> {
   CallController get _call => widget.matrix.call;
+  OrexSystemPictureInPicture get _pip =>
+      OrexSystemPictureInPicture.instance;
   CallSession? get _session => _call.session;
   final GlobalKey _reactionButtonKey = GlobalKey();
   final OrexCallVideoPreferences _videoPreferences = OrexCallVideoPreferences();
+  static const _fullscreenControlsIdle = Duration(seconds: 3);
+
+  bool _mediaFullscreen = false;
+  bool _fullscreenControlsVisible = true;
+  Timer? _fullscreenControlsTimer;
 
   OrexCallUiActions get _actions => OrexCallUiActions(
     context: context,
@@ -47,14 +57,135 @@ class _CallScreenState extends State<CallScreen> {
   bool _preferScreenShareFor(lk.Participant participant) =>
       _videoPreferences.prefersParticipantScreenShare(participant);
 
+  OrexCallParticipantProfile _participantProfile(
+    lk.Participant participant,
+  ) {
+    final roomId = _call.roomId;
+    final room = roomId == null
+        ? null
+        : widget.matrix.client.getRoomById(roomId);
+    return orexCallParticipantProfile(participant, room);
+  }
+
   void _toggleParticipantVideoSource(lk.Participant participant) {
     setState(() {
       _videoPreferences.toggleParticipant(participant);
     });
+    if (_pip.isActiveFor(participant.identity)) {
+      final track = orexSelectVideoTrack(
+        participant,
+        preferScreenShare: _preferScreenShareFor(participant),
+      );
+      if (track != null) {
+        unawaited(
+          _pip.updateTrack(
+            identity: participant.identity,
+            track: track,
+            dimensions: orexVideoDimensionsForTrack(participant, track),
+            preferScreenShare: _preferScreenShareFor(participant),
+          ),
+        );
+      }
+    }
+  }
+
+  void _toggleParticipantPictureInPicture(lk.Participant participant) {
+    if (_pip.isActiveFor(participant.identity)) {
+      unawaited(_pip.close());
+      return;
+    }
+
+    final track = orexSelectVideoTrack(
+      participant,
+      preferScreenShare: _preferScreenShareFor(participant),
+    );
+    if (track == null || !_pip.canOffer) return;
+    final profile = _participantProfile(participant);
+    unawaited(
+      _pip.toggle(
+        identity: participant.identity,
+        track: track,
+        matrix: widget.matrix,
+        participantName: profile.displayName,
+        participantAvatarUrl: profile.avatarUrl,
+        dimensions: orexVideoDimensionsForTrack(participant, track),
+        preferScreenShare: _preferScreenShareFor(participant),
+      ),
+    );
+  }
+
+  void _onPictureInPictureChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _pip.addListener(_onPictureInPictureChanged);
+  }
+
+  void _enterMediaFullscreen() {
+    if (_mediaFullscreen) return;
+    _fullscreenControlsTimer?.cancel();
+    setState(() {
+      _mediaFullscreen = true;
+      _fullscreenControlsVisible = true;
+    });
+    unawaited(OrexSystemUi.setCallMediaFullscreen(true));
+    _scheduleFullscreenControlsHide();
+  }
+
+  void _exitMediaFullscreen() {
+    if (!_mediaFullscreen) return;
+    _fullscreenControlsTimer?.cancel();
+    _fullscreenControlsTimer = null;
+    setState(() {
+      _mediaFullscreen = false;
+      _fullscreenControlsVisible = true;
+    });
+    unawaited(OrexSystemUi.setCallMediaFullscreen(false));
+  }
+
+  void _scheduleFullscreenControlsHide() {
+    _fullscreenControlsTimer?.cancel();
+    if (!_mediaFullscreen) return;
+    _fullscreenControlsTimer = Timer(_fullscreenControlsIdle, () {
+      if (!mounted || !_mediaFullscreen || !_fullscreenControlsVisible) return;
+      setState(() => _fullscreenControlsVisible = false);
+    });
+  }
+
+  void _toggleFullscreenControls() {
+    if (!_mediaFullscreen) return;
+    _fullscreenControlsTimer?.cancel();
+    _fullscreenControlsTimer = null;
+
+    if (_fullscreenControlsVisible) {
+      setState(() => _fullscreenControlsVisible = false);
+      return;
+    }
+
+    setState(() => _fullscreenControlsVisible = true);
+    _scheduleFullscreenControlsHide();
+  }
+
+  KeyEventResult _handleFullscreenKey(FocusNode _, KeyEvent event) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.escape &&
+        _mediaFullscreen) {
+      _exitMediaFullscreen();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
   }
 
   @override
   void dispose() {
+    _pip.removeListener(_onPictureInPictureChanged);
+    _fullscreenControlsTimer?.cancel();
+    if (_mediaFullscreen) {
+      unawaited(OrexSystemUi.setCallMediaFullscreen(false));
+    }
     unawaited(widget.matrix.push.notifyCallUiHidden());
     // Выход с экрана (кнопка ▼ или системный «назад») = свернуть, не завершая.
     // notifyListeners нельзя дёргать прямо в dispose (дерево залочено —
@@ -70,46 +201,80 @@ class _CallScreenState extends State<CallScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return AmbientBackground(
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        body: SafeArea(
-          child: AnimatedBuilder(
-            animation: _call,
-            builder: (context, _) {
-              final s = _session;
-              if (s == null) {
-                if (_call.isStarting) {
-                  return Column(
-                    children: [
-                      _topBar(null),
-                      Expanded(
-                        child: Center(
-                          child: SquirrelMascot(
-                            size: 120,
-                            caption: _connectionCaption,
+    return PopScope(
+      canPop: !_mediaFullscreen,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _mediaFullscreen) _exitMediaFullscreen();
+      },
+      child: AmbientBackground(
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: Focus(
+            autofocus: true,
+            onKeyEvent: _handleFullscreenKey,
+            child: AnimatedBuilder(
+              animation: _call,
+              builder: (context, _) {
+                final s = _session;
+                if (s == null) {
+                  if (_call.isStarting) {
+                    return SafeArea(
+                      child: Column(
+                        children: [
+                          _topBar(null),
+                          Expanded(
+                            child: Center(
+                              child: SquirrelMascot(
+                                size: 120,
+                                caption: _connectionCaption,
+                              ),
+                            ),
                           ),
-                        ),
+                        ],
                       ),
-                    ],
-                  );
+                    );
+                  }
+                  // Звонок завершён — закрываем экран.
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!mounted) return;
+                    if (_mediaFullscreen) {
+                      _exitMediaFullscreen();
+                      return;
+                    }
+                    final nav = Navigator.of(context);
+                    if (nav.canPop()) nav.pop();
+                  });
+                  return const SizedBox.shrink();
                 }
-                // Звонок завершён — закрываем экран.
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (!mounted) return;
-                  final nav = Navigator.of(context);
-                  if (nav.canPop()) nav.pop();
-                });
-                return const SizedBox.shrink();
-              }
-              return Column(
-                children: [
-                  _topBar(s),
-                  Expanded(child: _body(s)),
-                  if (s.status == CallStatus.connected) _controls(s),
-                ],
-              );
-            },
+
+                if (_mediaFullscreen) {
+                  if (s.status == CallStatus.connected) {
+                    final presentation = OrexCallPresentation.from(
+                      matrix: widget.matrix,
+                      call: _call,
+                      session: s,
+                    );
+                    final focused = presentation.focusedParticipant;
+                    if (focused != null) {
+                      return _fullscreenMedia(presentation, focused);
+                    }
+                  }
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) _exitMediaFullscreen();
+                  });
+                }
+
+                return SafeArea(
+                  child: Column(
+                    children: [
+                      _topBar(s),
+                      Expanded(child: _body(s)),
+                      if (s.status == CallStatus.connected) _controls(s),
+                    ],
+                  ),
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -229,9 +394,16 @@ class _CallScreenState extends State<CallScreen> {
           voiceState: state,
           style: OrexCallParticipantTileStyle.full,
           zoomable: true,
+          onDoubleTap: _enterMediaFullscreen,
           cornerIcon: Icons.close_fullscreen,
           cornerTooltip: 'Отменить приближение плитки',
           onCornerTap: () => _call.focusParticipant(null),
+          pictureInPictureActive: _pip.isActiveFor(
+            pinnedParticipant.identity,
+          ),
+          onPictureInPicture: _pip.canOffer
+              ? () => _toggleParticipantPictureInPicture(pinnedParticipant)
+              : null,
           preferScreenShare: _preferScreenShareFor(pinnedParticipant),
           onSwitchVideoSource: orexHasCameraAndScreen(pinnedParticipant)
               ? () => _toggleParticipantVideoSource(pinnedParticipant)
@@ -284,6 +456,14 @@ class _CallScreenState extends State<CallScreen> {
                                     cornerTooltip: 'Приблизить плитку',
                                     onCornerTap: () =>
                                         _call.focusParticipant(p.identity),
+                                    pictureInPictureActive:
+                                        _pip.isActiveFor(p.identity),
+                                    onPictureInPicture: _pip.canOffer
+                                        ? () =>
+                                              _toggleParticipantPictureInPicture(
+                                                p,
+                                              )
+                                        : null,
                                     preferScreenShare: _preferScreenShareFor(p),
                                     onSwitchVideoSource:
                                         orexHasCameraAndScreen(p)
@@ -313,6 +493,80 @@ class _CallScreenState extends State<CallScreen> {
                 ],
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  Widget _fullscreenMedia(
+    OrexCallPresentation presentation,
+    lk.Participant participant,
+  ) {
+    final session = presentation.session;
+    final room = presentation.room;
+    final userId = orexMatrixUserIdFromParticipantIdentity(
+      participant.identity,
+    );
+    final state = session.voiceStateForUser(userId);
+
+    return ColoredBox(
+      color: Colors.black,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          OrexCallParticipantTile(
+            participant: participant,
+            matrix: widget.matrix,
+            room: room,
+            voiceState: state,
+            style: OrexCallParticipantTileStyle.fullscreen,
+            zoomable: true,
+            onTap: _toggleFullscreenControls,
+            onDoubleTap: _exitMediaFullscreen,
+            cornerIcon: Icons.fullscreen_exit,
+            cornerTooltip: 'Вернуться к выбранной плитке',
+            onCornerTap: _exitMediaFullscreen,
+            pictureInPictureActive: _pip.isActiveFor(participant.identity),
+            onPictureInPicture: _pip.canOffer
+                ? () => _toggleParticipantPictureInPicture(participant)
+                : null,
+            preferScreenShare: _preferScreenShareFor(participant),
+            onSwitchVideoSource: orexHasCameraAndScreen(participant)
+                ? () => _toggleParticipantVideoSource(participant)
+                : null,
+            onCycleCamera: participant is lk.LocalParticipant
+                ? () => _actions.cycleCamera(session)
+                : null,
+            onGrantVoice: _actions.canGrantVoice(room, userId)
+                ? () => _actions.grantVoice(room!, userId)
+                : null,
+            onRevokeVoice: _actions.canRevokeVoice(room, userId)
+                ? () => _actions.revokeVoice(room!, userId)
+                : null,
+          ),
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: IgnorePointer(
+              ignoring: !_fullscreenControlsVisible,
+              child: AnimatedSlide(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeInOutCubic,
+                offset: _fullscreenControlsVisible
+                    ? Offset.zero
+                    : const Offset(0, 1.25),
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOut,
+                  opacity: _fullscreenControlsVisible ? 1 : 0,
+                  child: SafeArea(
+                    top: false,
+                    minimum: const EdgeInsets.only(top: 12),
+                    child: _controls(session),
+                  ),
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );

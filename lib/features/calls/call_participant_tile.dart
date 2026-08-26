@@ -1,16 +1,76 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:matrix/matrix.dart' hide CallSession;
 
+import '../../core/logging/orex_logger.dart';
 import '../../core/matrix/matrix_service.dart';
 import '../../core/voip/voice_participant_state.dart';
-import '../../shared/theme/orex_theme.dart';
-import '../../shared/widgets/mxc_avatar.dart';
+import '../../shared/widgets/orex_call_no_media_surface.dart';
 import 'voice_activity_frame.dart';
 
 String orexMatrixUserIdFromParticipantIdentity(String identity) {
   final match = RegExp(r'@[^:]+:[^:]+').firstMatch(identity);
   return match?.group(0) ?? identity;
+}
+
+bool orexShouldBlockLiveKitAndroidLocalVideoGestures({
+  required bool isWeb,
+  required TargetPlatform platform,
+  required bool isLocalParticipant,
+}) {
+  return !isWeb &&
+      platform == TargetPlatform.android &&
+      isLocalParticipant;
+}
+
+bool orexShouldOwnAndroidCameraZoom({
+  required bool isWeb,
+  required TargetPlatform platform,
+  required bool isLocalParticipant,
+  required lk.TrackSource source,
+}) {
+  return orexShouldBlockLiveKitAndroidLocalVideoGestures(
+        isWeb: isWeb,
+        platform: platform,
+        isLocalParticipant: isLocalParticipant,
+      ) &&
+      source == lk.TrackSource.camera;
+}
+
+Future<void> _setAndroidCameraZoom(lk.VideoTrack track, double scale) async {
+  final videoTracks = track.mediaStream.getVideoTracks();
+  if (videoTracks.isEmpty) return;
+  try {
+    await rtc.Helper.setZoom(videoTracks.first, scale);
+  } catch (error) {
+    OrexLog.d('CallTile', 'camera zoom failed', error);
+  }
+}
+
+final class OrexCallParticipantProfile {
+  const OrexCallParticipantProfile({
+    required this.displayName,
+    this.avatarUrl,
+  });
+
+  final String displayName;
+  final Uri? avatarUrl;
+}
+
+OrexCallParticipantProfile orexCallParticipantProfile(
+  lk.Participant participant,
+  Room? room,
+) {
+  final userId = orexMatrixUserIdFromParticipantIdentity(participant.identity);
+  final user = room?.unsafeGetUserFromMemoryOrFallback(userId);
+  return OrexCallParticipantProfile(
+    displayName: user?.calcDisplayname() ?? userId,
+    avatarUrl: user?.avatarUrl,
+  );
 }
 
 class OrexCallParticipantTileStyle {
@@ -47,6 +107,24 @@ class OrexCallParticipantTileStyle {
     statusBadgeTextSize: 21,
     badgeGap: 6,
     nameFontSize: 12,
+    showNameLabel: true,
+  );
+
+  static const fullscreen = OrexCallParticipantTileStyle(
+    frameBorderRadius: 0,
+    clipBorderRadius: 0,
+    activeBlur: 0,
+    avatarSize: 132,
+    zoomAvatarSize: 160,
+    cornerButtonSize: 40,
+    cornerButtonRadius: 14,
+    cornerButtonIconSize: 19,
+    statusBadgeSize: 40,
+    statusBadgeRadius: 14,
+    statusBadgeIconSize: 19,
+    statusBadgeTextSize: 22,
+    badgeGap: 6,
+    nameFontSize: 13,
     showNameLabel: true,
   );
 
@@ -97,10 +175,14 @@ class OrexCallParticipantTile extends StatelessWidget {
     required this.preferScreenShare,
     required this.style,
     this.zoomable = false,
+    this.showChrome = true,
     this.onTap,
+    this.onDoubleTap,
     this.cornerIcon,
     this.cornerTooltip,
     this.onCornerTap,
+    this.pictureInPictureActive = false,
+    this.onPictureInPicture,
     this.onSwitchVideoSource,
     this.onCycleCamera,
     this.onGrantVoice,
@@ -114,10 +196,14 @@ class OrexCallParticipantTile extends StatelessWidget {
   final bool preferScreenShare;
   final OrexCallParticipantTileStyle style;
   final bool zoomable;
+  final bool showChrome;
   final VoidCallback? onTap;
+  final VoidCallback? onDoubleTap;
   final IconData? cornerIcon;
   final String? cornerTooltip;
   final VoidCallback? onCornerTap;
+  final bool pictureInPictureActive;
+  final VoidCallback? onPictureInPicture;
   final VoidCallback? onSwitchVideoSource;
   final VoidCallback? onCycleCamera;
   final VoidCallback? onGrantVoice;
@@ -136,33 +222,61 @@ class OrexCallParticipantTile extends StatelessWidget {
         ? 8.0
         : 8.0 + statusBadgeCount * style.cameraButtonBottomStep;
 
-    final userId = orexMatrixUserIdFromParticipantIdentity(
-      participant.identity,
-    );
-    final user = room?.unsafeGetUserFromMemoryOrFallback(userId);
-    var name = user?.calcDisplayname() ?? userId;
+    final profile = orexCallParticipantProfile(participant, room);
+    var name = profile.displayName;
     if (participant is lk.LocalParticipant) name = '$name · вы';
 
     Widget media;
     if (track != null) {
+      Widget renderer = lk.VideoTrackRenderer(
+        track,
+        fit: lk.VideoViewFit.contain,
+      );
+      final blockLiveKitLocalAndroidGestures =
+          orexShouldBlockLiveKitAndroidLocalVideoGestures(
+        isWeb: kIsWeb,
+        platform: defaultTargetPlatform,
+        isLocalParticipant: participant is lk.LocalParticipant,
+      );
+      if (blockLiveKitLocalAndroidGestures) {
+        // LiveKit currently installs camera-oriented focus/exposure/zoom
+        // gestures for local Android video renderers. They are valid for a
+        // camera capturer but can still reach flutter_webrtc for a local
+        // screen-share capturer, where setZoom throws "Video capturer not
+        // compatible". Own the whole local-renderer gesture boundary in Orex:
+        // always block the SDK subtree, then restore only camera pinch zoom.
+        renderer = AbsorbPointer(child: renderer);
+      }
+      if (orexShouldOwnAndroidCameraZoom(
+        isWeb: kIsWeb,
+        platform: defaultTargetPlatform,
+        isLocalParticipant: participant is lk.LocalParticipant,
+        source: track.source,
+      )) {
+        renderer = GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onScaleUpdate: (details) {
+            if (details.scale != 1.0) {
+              unawaited(_setAndroidCameraZoom(track, details.scale));
+            }
+          },
+          child: renderer,
+        );
+      }
       media = Container(
         color: Colors.black,
         alignment: Alignment.center,
-        child: lk.VideoTrackRenderer(track, fit: lk.VideoViewFit.contain),
+        child: renderer,
       );
       if (zoomable) {
         media = InteractiveViewer(minScale: 1, maxScale: 4, child: media);
       }
     } else {
-      media = Container(
-        decoration: const BoxDecoration(gradient: OrexColors.copperGradient),
-        alignment: Alignment.center,
-        child: MxcAvatar(
-          matrix: matrix,
-          name: user?.calcDisplayname() ?? userId,
-          mxc: user?.avatarUrl,
-          size: zoomable ? style.zoomAvatarSize : style.avatarSize,
-        ),
+      media = OrexCallNoMediaSurface(
+        matrix: matrix,
+        name: profile.displayName,
+        mxc: profile.avatarUrl,
+        avatarSize: zoomable ? style.zoomAvatarSize : style.avatarSize,
       );
     }
 
@@ -171,35 +285,49 @@ class OrexCallParticipantTile extends StatelessWidget {
       matrix: matrix,
       borderRadius: style.frameBorderRadius,
       activeBlur: style.activeBlur,
+      preserveChildSize: track != null,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(style.clipBorderRadius),
         child: Material(
           color: Colors.transparent,
           child: InkWell(
             onTap: onTap,
+            onDoubleTap: onDoubleTap,
+            mouseCursor: onTap != null || onDoubleTap != null
+                ? SystemMouseCursors.click
+                : SystemMouseCursors.basic,
             child: Stack(
               fit: StackFit.expand,
               children: [
                 media,
-                if (style.showNameLabel) _NameLabel(name: name, style: style),
-                if ((cornerIcon != null && onCornerTap != null) ||
-                    onSwitchVideoSource != null)
+                if (showChrome && style.showNameLabel)
+                  _NameLabel(name: name, style: style),
+                if (showChrome &&
+                    ((cornerIcon != null && onCornerTap != null) ||
+                        ((track != null || pictureInPictureActive) &&
+                            onPictureInPicture != null) ||
+                        onSwitchVideoSource != null))
                   _TopLeftActions(
                     style: style,
                     cornerIcon: cornerIcon,
                     cornerTooltip: cornerTooltip,
                     onCornerTap: onCornerTap,
+                    pictureInPictureActive: pictureInPictureActive,
+                    onPictureInPicture:
+                        track != null || pictureInPictureActive
+                            ? onPictureInPicture
+                            : null,
                     preferScreenShare: preferScreenShare,
                     onSwitchVideoSource: onSwitchVideoSource,
                   ),
-                if (statusBadgeCount > 0)
+                if (showChrome && statusBadgeCount > 0)
                   _MediaStatusBadges(
                     style: style,
                     micMuted: micMuted,
                     soundMuted: soundMuted,
                     local: participant is lk.LocalParticipant,
                   ),
-                if (track != null && onCycleCamera != null)
+                if (showChrome && track != null && onCycleCamera != null)
                   Positioned(
                     right: 8,
                     bottom: cameraButtonBottom,
@@ -210,17 +338,18 @@ class OrexCallParticipantTile extends StatelessWidget {
                       onTap: onCycleCamera!,
                     ),
                   ),
-                Positioned(
-                  right: 8,
-                  top: 8,
-                  child: _VoiceStateBadges(
-                    style: style,
-                    handRaised: voiceState.handRaised,
-                    reaction: voiceState.reaction,
-                    onGrantVoice: onGrantVoice,
-                    onRevokeVoice: onRevokeVoice,
+                if (showChrome)
+                  Positioned(
+                    right: 8,
+                    top: 8,
+                    child: _VoiceStateBadges(
+                      style: style,
+                      handRaised: voiceState.handRaised,
+                      reaction: voiceState.reaction,
+                      onGrantVoice: onGrantVoice,
+                      onRevokeVoice: onRevokeVoice,
+                    ),
                   ),
-                ),
               ],
             ),
           ),
@@ -262,6 +391,8 @@ class _TopLeftActions extends StatelessWidget {
     required this.cornerIcon,
     required this.cornerTooltip,
     required this.onCornerTap,
+    required this.pictureInPictureActive,
+    required this.onPictureInPicture,
     required this.preferScreenShare,
     required this.onSwitchVideoSource,
   });
@@ -270,6 +401,8 @@ class _TopLeftActions extends StatelessWidget {
   final IconData? cornerIcon;
   final String? cornerTooltip;
   final VoidCallback? onCornerTap;
+  final bool pictureInPictureActive;
+  final VoidCallback? onPictureInPicture;
   final bool preferScreenShare;
   final VoidCallback? onSwitchVideoSource;
 
@@ -288,8 +421,23 @@ class _TopLeftActions extends StatelessWidget {
               tooltip: cornerTooltip ?? '',
               onTap: onCornerTap!,
             ),
-          if (onSwitchVideoSource != null) ...[
+          if (onPictureInPicture != null) ...[
             if (cornerIcon != null && onCornerTap != null)
+              SizedBox(height: style.badgeGap),
+            _TileCornerButton(
+              style: style,
+              icon: pictureInPictureActive
+                  ? Icons.picture_in_picture
+                  : Icons.picture_in_picture_alt,
+              tooltip: pictureInPictureActive
+                  ? 'Закрыть Picture in Picture'
+                  : 'Открыть Picture in Picture',
+              onTap: onPictureInPicture!,
+            ),
+          ],
+          if (onSwitchVideoSource != null) ...[
+            if ((cornerIcon != null && onCornerTap != null) ||
+                onPictureInPicture != null)
               SizedBox(height: style.badgeGap),
             _TileCornerButton(
               style: style,
@@ -370,6 +518,7 @@ class _TileCornerButton extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
+        mouseCursor: SystemMouseCursors.click,
         borderRadius: BorderRadius.circular(style.cornerButtonRadius),
         child: Container(
           width: style.cornerButtonSize,

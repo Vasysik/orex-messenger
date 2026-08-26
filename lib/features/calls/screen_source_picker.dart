@@ -492,6 +492,7 @@ class _SourceCardState extends State<_SourceCard> {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: widget.onTap,
+        mouseCursor: SystemMouseCursors.click,
         borderRadius: BorderRadius.circular(16),
         hoverColor: OrexColors.copper.withValues(alpha: 0.08),
         child: AnimatedContainer(

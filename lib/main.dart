@@ -6,13 +6,16 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart' show Room;
+import 'package:multiview_desktop/multiview_desktop.dart';
 
 import 'core/bootstrap_failure.dart';
 import 'core/config/orex_config.dart';
 import 'core/config/app_version.dart';
+import 'core/files/file_helper.dart';
 import 'core/storage/database.dart';
 import 'core/update/orex_update_controller.dart';
 import 'core/matrix/matrix_service.dart';
+import 'core/platform/orex_system_picture_in_picture.dart';
 import 'core/push/push_background_resolver.dart';
 import 'core/push/push_platform_bridge.dart';
 import 'core/logging/orex_logger.dart';
@@ -21,12 +24,15 @@ import 'core/vodozemac_initializer.dart';
 import 'features/auth/login_screen.dart';
 import 'features/calls/call_screen.dart';
 import 'features/calls/incoming_call_screen.dart';
+import 'features/calls/voice_activity_frame.dart';
+import 'features/download/download_screen.dart';
 import 'features/home/home_shell.dart';
 import 'features/settings/verification_screen.dart';
 import 'shared/theme/glass.dart';
 import 'shared/theme/orex_theme.dart';
 import 'shared/theme/theme_controller.dart';
 import 'shared/widgets/orex_app_brand.dart';
+import 'shared/widgets/orex_download_corner_button.dart';
 
 @pragma('vm:entry-point')
 Future<void> orexPushBackgroundMain() => runOrexPushBackgroundEntrypoint();
@@ -34,7 +40,29 @@ Future<void> orexPushBackgroundMain() => runOrexPushBackgroundEntrypoint();
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   if (kIsWeb) BrowserContextMenu.disableContextMenu();
+  if (kIsWeb && _isDownloadRoute(Uri.base.path)) {
+    runApp(const OrexDownloadApp());
+    return;
+  }
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
+    runMultiApp(
+      home: (context, publicId) => const OrexBootstrap(),
+      config: MultiAppConfig(
+        generalParams: const MultiPlatformParams(
+          closeMode: CloseMode.forceSecondary,
+        ),
+      ),
+    );
+    return;
+  }
   runApp(const OrexBootstrap());
+}
+
+bool _isDownloadRoute(String path) {
+  final normalized = path.endsWith('/') && path.length > 1
+      ? path.substring(0, path.length - 1)
+      : path;
+  return normalized == '/download';
 }
 
 class OrexScrollBehavior extends MaterialScrollBehavior {
@@ -66,6 +94,7 @@ class _OrexBootstrapState extends State<OrexBootstrap> {
   late final Future<_Services> _future = _init();
 
   Future<_Services> _init() async {
+    unawaited(FileHelper.cleanupTemporaryFiles());
     final minimumSplash = Future<void>.delayed(
       const Duration(milliseconds: 720),
     );
@@ -420,15 +449,55 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       _nativeIncomingCallNotifications.remove(instance.routeKey);
       return;
     }
-    // Do not put avatar I/O on the ringing path: Windows must surface the call
-    // immediately, even when the Matrix media cache is cold or unavailable.
+    // Surface the call immediately. Passing the deterministic cache key is
+    // cheap: OrexPushService only resolves an already cached local file here,
+    // so a cold Matrix media download never blocks ringing UI.
     final displayName = incoming.room.getLocalizedDisplayname().trim();
+    final title = displayName.isEmpty ? 'Orex' : displayName;
+    final avatar = widget.matrix.conversationAvatar(incoming.room);
+    final avatarCacheKey = avatar != null && avatar.scheme == 'mxc'
+        ? widget.matrix.avatarCacheKey(avatar)
+        : null;
     await widget.matrix.push.showIncomingCallNotification(
       roomId: incoming.room.id,
       ringEventId: instance.ringEventId,
-      title: displayName.isEmpty ? 'Orex' : displayName,
+      title: title,
       body: 'Входящий звонок',
+      avatarCacheKey: avatarCacheKey,
     );
+
+    // If the avatar was not warm yet, populate it off the ringing path and
+    // update the same native notification in place. Exact call-instance checks
+    // prevent a late image fetch from resurrecting a dismissed notification.
+    if (avatar != null) {
+      unawaited(() async {
+        try {
+          final key = await widget.matrix.ensureConversationAvatarCached(
+            incoming.room,
+          );
+          if (!mounted || key == null) return;
+          final current = _canonicalCallInstance(incoming.instance);
+          if (!_nativeIncomingCallNotifications.contains(current.routeKey) ||
+              !(widget.matrix.voip?.isIncomingCallVisible(current) ?? false)) {
+            return;
+          }
+          await widget.matrix.push.showIncomingCallNotification(
+            roomId: incoming.room.id,
+            ringEventId: current.ringEventId,
+            title: title,
+            body: 'Входящий звонок',
+            avatarCacheKey: key,
+          );
+        } catch (error, stackTrace) {
+          OrexLog.d(
+            'Push',
+            'Windows call avatar refresh failed',
+            error,
+            stackTrace,
+          );
+        }
+      }());
+    }
   }
 
   void _handleIncomingCallDismissal(OrexIncomingCallDismissal dismissal) {
@@ -450,8 +519,10 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    widget.matrix.handleAppLifecycleState(_lifecycleState);
     _wasLoggedIn = widget.matrix.isLoggedIn;
     widget.matrix.addListener(_onChanged);
+    widget.matrix.call.addListener(_onCallChanged);
     widget.theme.addListener(_onChanged);
     _verificationSub = widget.matrix.incomingVerifications.listen((kv) {
       _navKey.currentState?.push(
@@ -486,9 +557,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
               const <OrexIncomingCall>[]) {
         _showIncomingCall(incoming);
       }
-      if (widget.matrix.isLoggedIn) {
-        unawaited(widget.updates.checkIfDue());
-      }
+      unawaited(widget.updates.check(manual: false));
     });
   }
 
@@ -496,6 +565,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final previousState = _lifecycleState;
     _lifecycleState = state;
+    widget.matrix.handleAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
       final pendingAcceptedUi =
           widget.matrix.call.pendingAcceptedIncomingCallUiRequest;
@@ -971,6 +1041,40 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     });
   }
 
+  void _onCallChanged() {
+    final pip = OrexSystemPictureInPicture.instance;
+    final identity = pip.activeIdentity;
+    if (identity == null) return;
+
+    final session = widget.matrix.call.session;
+    if (session == null) {
+      unawaited(pip.close());
+      return;
+    }
+
+    for (final participant in session.participants) {
+      if (participant.identity != identity) continue;
+      final track = orexSelectVideoTrack(
+        participant,
+        preferScreenShare: pip.preferScreenShare,
+      );
+      unawaited(
+        pip.syncActiveTrack(
+          identity: identity,
+          track: track,
+          dimensions: track == null
+              ? null
+              : orexVideoDimensionsForTrack(participant, track),
+        ),
+      );
+      return;
+    }
+
+    // The participant left while its PiP was active. Do not let an orphaned
+    // native/browser window outlive the call participant that owned it.
+    unawaited(pip.close());
+  }
+
   void _onChanged() {
     if (!mounted) return;
     final isLoggedIn = widget.matrix.isLoggedIn;
@@ -978,7 +1082,6 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !widget.matrix.isLoggedIn) return;
         unawaited(widget.matrix.push.ensurePermissionRequested());
-        unawaited(widget.updates.checkIfDue());
       });
     }
     _wasLoggedIn = isLoggedIn;
@@ -998,6 +1101,7 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
     _acceptedCallUiSub?.cancel();
     _pushOpenSub?.cancel();
     widget.matrix.removeListener(_onChanged);
+    widget.matrix.call.removeListener(_onCallChanged);
     widget.theme.removeListener(_onChanged);
     widget.updates.dispose();
     super.dispose();
@@ -1013,6 +1117,19 @@ class _OrexAppState extends State<OrexApp> with WidgetsBindingObserver {
       theme: OrexTheme.light,
       darkTheme: OrexTheme.dark,
       themeMode: widget.theme.mode,
+      builder: (context, child) => Stack(
+        children: [
+          Positioned.fill(child: child ?? const SizedBox.shrink()),
+          const Positioned(
+            left: 16,
+            bottom: 16,
+            child: SafeArea(child: OrexDownloadCornerButton()),
+          ),
+          const Positioned.fill(
+            child: OrexAndroidPictureInPictureSurface(),
+          ),
+        ],
+      ),
       home: widget.matrix.isLoggedIn
           ? HomeShell(
               matrix: widget.matrix,

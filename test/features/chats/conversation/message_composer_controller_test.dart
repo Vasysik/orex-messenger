@@ -77,6 +77,18 @@ void main() {
         expect(composer.attachments.files, hasLength(1));
       },
     );
+
+    test('emoji panel owns input without requesting Android IME focus', () {
+      final composer = OrexMessageComposerController<String>();
+
+      expect(composer.shouldRefocusTextInputAfterEmoji, isTrue);
+
+      composer.showEmojiPickerAfterKeyboardHide();
+      expect(composer.shouldRefocusTextInputAfterEmoji, isFalse);
+
+      composer.hideEmojiPicker();
+      expect(composer.shouldRefocusTextInputAfterEmoji, isTrue);
+    });
   });
 }
 

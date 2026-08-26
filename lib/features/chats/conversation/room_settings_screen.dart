@@ -321,6 +321,7 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
         room.canChangeStateEvent(EventTypes.SpaceChild);
 
     return AmbientBackground(
+      groupBackdrops: true,
       child: Scaffold(
         backgroundColor: Colors.transparent,
         appBar: AppBar(

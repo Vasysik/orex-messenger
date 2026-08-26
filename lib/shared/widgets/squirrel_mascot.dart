@@ -30,6 +30,16 @@ class SquirrelMascot extends StatelessWidget {
               width: size,
               height: size,
               fit: BoxFit.cover,
+              gaplessPlayback: true,
+              frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                if (wasSynchronouslyLoaded) return child;
+                return AnimatedOpacity(
+                  opacity: frame == null ? 0 : 1,
+                  duration: const Duration(milliseconds: 140),
+                  curve: Curves.easeOut,
+                  child: child,
+                );
+              },
               errorBuilder: (_, _, _) => Text(
                 '\u{1F43F}',
                 style: TextStyle(fontSize: size * 0.42),

@@ -47,4 +47,47 @@ void main() {
       },
     ), isFalse);
   });
+  group('background call reject', () {
+    test('keeps exact room and ring identity', () {
+      final instance = orexBackgroundRejectedCallInstance(
+        <String, String>{
+          'orex_background_call_action': 'reject',
+          'call_id': '!call:example.org',
+          'event_id': r'$ring',
+        },
+      );
+
+      expect(instance, isNotNull);
+      expect(instance!.roomId, '!call:example.org');
+      expect(instance.ringEventId, r'$ring');
+
+      final fallback = orexBackgroundRejectedCallInstance(
+        <String, String>{
+          'orex_background_call_action': ' reject ',
+          'room_id': '!fallback:example.org',
+          'event_id': ' ',
+          'orex_ring_event_id': r'$fallback-ring',
+        },
+      );
+      expect(fallback?.roomId, '!fallback:example.org');
+      expect(fallback?.ringEventId, r'$fallback-ring');
+    });
+
+    test('rejects unrelated or incomplete background actions', () {
+      expect(
+        orexBackgroundRejectedCallInstance(<String, String>{
+          'orex_background_call_action': 'answer',
+          'call_id': '!call:example.org',
+        }),
+        isNull,
+      );
+      expect(
+        orexBackgroundRejectedCallInstance(<String, String>{
+          'orex_background_call_action': 'reject',
+        }),
+        isNull,
+      );
+    });
+  });
+
 }

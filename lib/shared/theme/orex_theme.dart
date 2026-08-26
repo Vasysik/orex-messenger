@@ -62,6 +62,13 @@ class OrexColors {
 class OrexTheme {
   OrexTheme._();
 
+  static final WidgetStateProperty<MouseCursor?> _buttonMouseCursor =
+      WidgetStateProperty.resolveWith((states) {
+        return states.contains(WidgetState.disabled)
+            ? SystemMouseCursors.basic
+            : SystemMouseCursors.click;
+      });
+
   static ThemeData get dark => _build(Brightness.dark);
   static ThemeData get light => _build(Brightness.light);
 
@@ -91,6 +98,21 @@ class OrexTheme {
           .withValues(alpha: 0.12),
       iconTheme: IconThemeData(
         color: isDark ? OrexColors.ochreLight : OrexColors.walnut,
+      ),
+      iconButtonTheme: IconButtonThemeData(
+        style: ButtonStyle(mouseCursor: _buttonMouseCursor),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: ButtonStyle(mouseCursor: _buttonMouseCursor),
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: ButtonStyle(mouseCursor: _buttonMouseCursor),
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ButtonStyle(mouseCursor: _buttonMouseCursor),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: ButtonStyle(mouseCursor: _buttonMouseCursor),
       ),
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,

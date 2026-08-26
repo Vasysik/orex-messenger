@@ -24,7 +24,7 @@ Future<({String name, String icon})?> _showChildRoomEditorDialog(
   final name = TextEditingController(text: initialName);
   var iconKey = _validRoomIconKey(initialIcon);
   try {
-    return showOrexStatefulFormDialog<({String name, String icon})>(
+    return await showOrexStatefulFormDialog<({String name, String icon})>(
       context,
       title: title,
       confirmLabel: actionLabel,

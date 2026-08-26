@@ -149,135 +149,139 @@ class _LoginScreenState extends State<LoginScreen> {
     return AmbientBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 400),
-                child: GlassPanel(
-                  borderRadius: 28,
-                  padding: const EdgeInsets.all(28),
-                  child: AutofillGroup(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        OrexBrandHeader(
-                          version: widget.version,
-                          iconSize: 116,
-                        ),
-                        const SizedBox(height: 26),
-                        Text(
-                          _isRegistering ? 'Создать аккаунт' : 'С возвращением',
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w700,
-                              ),
-                        ),
-                        const SizedBox(height: 16),
-                        _Field(
-                          controller: _user,
-                          hint: 'Имя пользователя',
-                          suffixIcon: _QrLoginSlot(
-                            visible: !_isRegistering,
-                            enabled: !_busy,
-                            onPressed: _openQrLogin,
-                          ),
-                          autofillHints: const [AutofillHints.username],
-                          textInputAction: TextInputAction.next,
-                        ),
-                        const SizedBox(height: 12),
-                        _Field(
-                          controller: _pass,
-                          hint: 'Пароль',
-                          obscure: true,
-                          suffixIcon: _isRegistering
-                              ? null
-                              : _PasswordRecoverySlot(
-                                  visible: _showPasswordRecovery,
-                                  enabled: !_busy,
-                                  onPressed: _recoverPassword,
-                                ),
-                          autofillHints: _isRegistering
-                              ? const [AutofillHints.newPassword]
-                              : const [AutofillHints.password],
-                          textInputAction: _isRegistering
-                              ? TextInputAction.next
-                              : TextInputAction.done,
-                          onSubmitted: _isRegistering || _busy
-                              ? null
-                              : (_) => _submit(),
-                        ),
-                        if (_isRegistering) ...[
-                          const SizedBox(height: 12),
-                          _Field(
-                            controller: _inviteToken,
-                            hint: 'Код приглашения',
-                            textInputAction: TextInputAction.done,
-                            onSubmitted: _busy ? null : (_) => _submit(),
-                          ),
-                        ],
-                        if (_error != null) ...[
-                          const SizedBox(height: 12),
-                          Semantics(
-                            liveRegion: true,
-                            child: Text(
-                              _error!,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(color: Color(0xFFCF6679)),
+        body: Stack(
+          children: [
+            SafeArea(
+              child: Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(20),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 400),
+                    child: GlassPanel(
+                      borderRadius: 28,
+                      padding: const EdgeInsets.all(28),
+                      child: AutofillGroup(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            OrexBrandHeader(
+                              version: widget.version,
+                              iconSize: 116,
                             ),
-                          ),
-                        ],
-                        const SizedBox(height: 20),
-                        SizedBox(
-                          width: double.infinity,
-                          height: 50,
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: OrexColors.copper,
-                              foregroundColor: OrexColors.cream,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(16),
-                              ),
+                            const SizedBox(height: 26),
+                            Text(
+                              _isRegistering ? 'Создать аккаунт' : 'С возвращением',
+                              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w700,
+                                  ),
                             ),
-                            onPressed: _busy ? null : _submit,
-                            child: _busy
-                                ? const SizedBox.square(
-                                    dimension: 22,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: OrexColors.cream,
+                            const SizedBox(height: 16),
+                            _Field(
+                              controller: _user,
+                              hint: 'Имя пользователя',
+                              suffixIcon: _QrLoginSlot(
+                                visible: !_isRegistering,
+                                enabled: !_busy,
+                                onPressed: _openQrLogin,
+                              ),
+                              autofillHints: const [AutofillHints.username],
+                              textInputAction: TextInputAction.next,
+                            ),
+                            const SizedBox(height: 12),
+                            _Field(
+                              controller: _pass,
+                              hint: 'Пароль',
+                              obscure: true,
+                              suffixIcon: _isRegistering
+                                  ? null
+                                  : _PasswordRecoverySlot(
+                                      visible: _showPasswordRecovery,
+                                      enabled: !_busy,
+                                      onPressed: _recoverPassword,
                                     ),
-                                  )
-                                : Text(_isRegistering ? 'Регистрация' : 'Войти'),
-                          ),
+                              autofillHints: _isRegistering
+                                  ? const [AutofillHints.newPassword]
+                                  : const [AutofillHints.password],
+                              textInputAction: _isRegistering
+                                  ? TextInputAction.next
+                                  : TextInputAction.done,
+                              onSubmitted: _isRegistering || _busy
+                                  ? null
+                                  : (_) => _submit(),
+                            ),
+                            if (_isRegistering) ...[
+                              const SizedBox(height: 12),
+                              _Field(
+                                controller: _inviteToken,
+                                hint: 'Код приглашения',
+                                textInputAction: TextInputAction.done,
+                                onSubmitted: _busy ? null : (_) => _submit(),
+                              ),
+                            ],
+                            if (_error != null) ...[
+                              const SizedBox(height: 12),
+                              Semantics(
+                                liveRegion: true,
+                                child: Text(
+                                  _error!,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(color: Color(0xFFCF6679)),
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 20),
+                            SizedBox(
+                              width: double.infinity,
+                              height: 50,
+                              child: ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: OrexColors.copper,
+                                  foregroundColor: OrexColors.cream,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                ),
+                                onPressed: _busy ? null : _submit,
+                                child: _busy
+                                    ? const SizedBox.square(
+                                        dimension: 22,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: OrexColors.cream,
+                                        ),
+                                      )
+                                    : Text(_isRegistering ? 'Регистрация' : 'Войти'),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            TextButton(
+                              onPressed: _busy
+                                  ? null
+                                  : () {
+                                      setState(() {
+                                        _isRegistering = !_isRegistering;
+                                        _showPasswordRecovery = false;
+                                        _error = null;
+                                      });
+                                    },
+                              child: Text(
+                                _isRegistering
+                                    ? 'Уже есть аккаунт? Войти'
+                                    : 'Ещё нет аккаунта? Зарегистрироваться',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(color: OrexColors.copper),
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 16),
-                        TextButton(
-                          onPressed: _busy
-                              ? null
-                              : () {
-                                  setState(() {
-                                    _isRegistering = !_isRegistering;
-                                    _showPasswordRecovery = false;
-                                    _error = null;
-                                  });
-                                },
-                          child: Text(
-                            _isRegistering
-                                ? 'Уже есть аккаунт? Войти'
-                                : 'Ещё нет аккаунта? Зарегистрироваться',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(color: OrexColors.copper),
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
               ),
             ),
-          ),
+          ],
         ),
       ),
     );

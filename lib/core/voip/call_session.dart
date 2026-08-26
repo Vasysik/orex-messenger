@@ -237,6 +237,7 @@ class CallSession extends ChangeNotifier {
   Future<void>? _backgroundRecoveryInFlight;
   Future<void>? _coldAnswerCameraRecoveryInFlight;
   Future<void>? _cameraToggleInFlight;
+  Future<void>? _screenShareToggleInFlight;
   bool _coldAnswerCameraRecoveryDone = false;
   lk.EventsListener<lk.RoomEvent>? _roomEvents;
   int _reconnectAttempt = 0;
@@ -633,6 +634,7 @@ class CallSession extends ChangeNotifier {
                     true,
                     cameraCaptureOptions: _camera.captureOptions(),
                   );
+                  if (await _stopLateCameraCaptureIfEnded(participant)) return;
                   cameraError = null;
                 } catch (e) {
                   OrexLog.d(
@@ -690,10 +692,12 @@ class CallSession extends ChangeNotifier {
                 !_cameraRequestedOn) {
               return;
             }
+            final participant = _room?.localParticipant;
             final result = await _camera.recoverCapture(
-              participant: _room?.localParticipant,
+              participant: participant,
               canPublishMedia: canPublishMedia,
             );
+            if (await _stopLateCameraCaptureIfEnded(participant)) return;
             _applyCameraResult(result);
             if (result.error == null) _coldAnswerCameraRecoveryDone = true;
             if (!_disposed) notifyListeners();
@@ -750,10 +754,12 @@ class CallSession extends ChangeNotifier {
 
     if (_cameraRequestedOn && canPublishMedia) {
       try {
-        await room.localParticipant?.setCameraEnabled(
+        final participant = room.localParticipant;
+        await participant?.setCameraEnabled(
           true,
           cameraCaptureOptions: _camera.captureOptions(),
         );
+        if (await _stopLateCameraCaptureIfEnded(participant)) return;
         cameraError = null;
       } catch (e) {
         OrexLog.d('Call', 'camera restore failed room=$matrixRoomId', e);
@@ -823,6 +829,11 @@ class CallSession extends ChangeNotifier {
       final operations = <Future<void>>{
         ..._mediaConnectOperations,
         ..._mediaRestoreOperations,
+        ?_reconnectInFlight,
+        ?_backgroundRecoveryInFlight,
+        ?_coldAnswerCameraRecoveryInFlight,
+        ?_cameraToggleInFlight,
+        ?_screenShareToggleInFlight,
       };
       if (operations.isEmpty) return;
       await Future.wait<void>(
@@ -1177,6 +1188,19 @@ class CallSession extends ChangeNotifier {
       true,
       audioCaptureOptions: _audioCaptureOptions(),
     );
+    if (_disposed ||
+        status == CallStatus.ended ||
+        !_micRequestedOn ||
+        _systemMuted ||
+        _systemInactive) {
+      try {
+        await lp.setMicrophoneEnabled(false);
+      } catch (e) {
+        OrexLog.d('Call', 'late microphone enable cleanup failed', e);
+      }
+      await _voiceGate.stop(resetTrack: true);
+      return;
+    }
     await _voiceGate.sync();
   }
 
@@ -1362,18 +1386,34 @@ class CallSession extends ChangeNotifier {
     String? sourceId,
     String? sourceName,
     String? sourceType,
-  }) async {
-    final lp = _room?.localParticipant;
-    if (lp == null || _screenShare.isBusy) return;
-    final result = await _screenShare.toggle(
-      participant: lp,
-      canPublishMedia: canPublishMedia,
-      sourceId: sourceId,
-      sourceName: sourceName,
-      sourceType: sourceType,
-    );
-    error = result.error;
-    if (!_disposed) notifyListeners();
+  }) {
+    final current = _screenShareToggleInFlight;
+    if (current != null) return current;
+
+    late final Future<void> operation;
+    operation = (() async {
+      final lp = _room?.localParticipant;
+      if (lp == null || _disposed || status == CallStatus.ended) return;
+      final result = await _screenShare.toggle(
+        participant: lp,
+        canPublishMedia: canPublishMedia,
+        sourceId: sourceId,
+        sourceName: sourceName,
+        sourceType: sourceType,
+      );
+      if (_disposed || status == CallStatus.ended) {
+        await _screenShare.stop(participant: lp);
+        return;
+      }
+      error = result.error;
+      notifyListeners();
+    })().whenComplete(() {
+      if (identical(_screenShareToggleInFlight, operation)) {
+        _screenShareToggleInFlight = null;
+      }
+    });
+    _screenShareToggleInFlight = operation;
+    return operation;
   }
 
   Future<void> _stopScreenShare({lk.LocalParticipant? lp}) async {
@@ -1444,6 +1484,7 @@ class CallSession extends ChangeNotifier {
               next,
               cameraCaptureOptions: next ? _camera.captureOptions() : null,
             );
+            if (next && await _stopLateCameraCaptureIfEnded(lp)) return;
             cameraError = null;
             if (next) _coldAnswerCameraRecoveryDone = true;
           } catch (e) {
@@ -1463,39 +1504,66 @@ class CallSession extends ChangeNotifier {
   }
 
   Future<void> _restartCameraIfInputChanged({bool force = false}) async {
-    _applyCameraResult(
-      await _camera.restartIfInputChanged(
-        participant: _room?.localParticipant,
-        canPublishMedia: canPublishMedia,
-        force: force,
-      ),
+    final participant = _room?.localParticipant;
+    final result = await _camera.restartIfInputChanged(
+      participant: participant,
+      canPublishMedia: canPublishMedia,
+      force: force,
     );
+    if (await _stopLateCameraCaptureIfEnded(participant)) return;
+    _applyCameraResult(result);
   }
 
   Future<void> selectCameraDevice(
     String? deviceId, {
     String? deviceCategory,
   }) async {
-    _applyCameraResult(
-      await _camera.selectDevice(
-        participant: _room?.localParticipant,
-        canPublishMedia: canPublishMedia,
-        deviceId: deviceId,
-        deviceCategory: deviceCategory,
-      ),
+    final participant = _room?.localParticipant;
+    final result = await _camera.selectDevice(
+      participant: participant,
+      canPublishMedia: canPublishMedia,
+      deviceId: deviceId,
+      deviceCategory: deviceCategory,
     );
+    if (await _stopLateCameraCaptureIfEnded(participant)) return;
+    _applyCameraResult(result);
     if (!_disposed) notifyListeners();
   }
 
   Future<void> cycleCameraDevice(List<OrexAudioDevice> devices) async {
-    _applyCameraResult(
-      await _camera.cycleDevice(
-        participant: _room?.localParticipant,
-        canPublishMedia: canPublishMedia,
-        devices: devices,
-      ),
+    final participant = _room?.localParticipant;
+    final result = await _camera.cycleDevice(
+      participant: participant,
+      canPublishMedia: canPublishMedia,
+      devices: devices,
     );
+    if (await _stopLateCameraCaptureIfEnded(participant)) return;
+    _applyCameraResult(result);
     if (!_disposed) notifyListeners();
+  }
+
+  Future<bool> _stopLateCameraCaptureIfEnded(
+    lk.LocalParticipant? participant,
+  ) async {
+    final ended = _disposed || status == CallStatus.ended;
+    final unexpectedlyEnabled =
+        !_cameraRequestedOn && (participant?.isCameraEnabled() ?? false);
+    if (!ended && !unexpectedlyEnabled) return false;
+
+    if (ended) _cameraRequestedOn = false;
+    if (participant == null) return ended;
+    try {
+      if (participant.isCameraEnabled()) {
+        await participant.setCameraEnabled(false);
+      }
+    } catch (e) {
+      OrexLog.d(
+        'Call',
+        'late camera capture cleanup failed room=$matrixRoomId',
+        e,
+      );
+    }
+    return true;
   }
 
   void _applyCameraResult(OrexCameraDeviceResult result) {
@@ -1536,10 +1604,18 @@ class CallSession extends ChangeNotifier {
     status = CallStatus.ended;
     _connectGeneration++;
     _cancelReconnect();
+    _cameraRequestedOn = false;
+    _micRequestedOn = false;
+
+    // Let an already-started camera/screen-share operation settle before the
+    // final capture shutdown. Stopping capture first allowed a late media
+    // operation to recreate a Web track after hang-up.
+    await _drainMediaOperations();
+    _cameraRequestedOn = false;
+    _micRequestedOn = false;
     if (kIsWeb) {
       await _stopWebLocalCapture(_room);
     }
-    await _drainMediaOperations();
     try {
       await _clearLocalVoiceUiState();
     } catch (e) {
@@ -1565,7 +1641,10 @@ class CallSession extends ChangeNotifier {
       detachE2eeRoom?.call(room);
       await _disposeRoomEvents();
       try {
-        if (screenShareOn) {
+        // Web capture must be disabled even if a browser/plugin edge case left
+        // controller state out of sync with the publication. Native platforms
+        // keep the cheaper state-gated path.
+        if (screenShareOn || kIsWeb) {
           await _stopScreenShare(lp: room.localParticipant);
         }
       } catch (e) {

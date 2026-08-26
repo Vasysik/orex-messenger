@@ -49,6 +49,22 @@ lk.VideoTrack? orexSelectVideoTrack(
       : (camera ?? screen ?? fallback);
 }
 
+lk.VideoDimensions? orexVideoDimensionsForTrack(
+  lk.Participant participant,
+  lk.VideoTrack track,
+) {
+  for (final pub in participant.videoTrackPublications) {
+    if (!identical(pub.track, track) && pub.track != track) continue;
+    final dimensions = pub.dimensions;
+    if (dimensions == null ||
+        dimensions.width <= 0 ||
+        dimensions.height <= 0) {
+      return null;
+    }
+    return dimensions;
+  }
+  return null;
+}
 
 bool orexHasCameraAndScreen(lk.Participant participant) {
   var hasCamera = false;
@@ -78,6 +94,7 @@ class OrexSpeakingFrame extends StatefulWidget {
     this.activePadding = 2,
     this.inactivePadding = 1,
     this.activeBlur = 18,
+    this.preserveChildSize = false,
   });
 
   final lk.Participant participant;
@@ -87,12 +104,14 @@ class OrexSpeakingFrame extends StatefulWidget {
   final double activePadding;
   final double inactivePadding;
   final double activeBlur;
+  final bool preserveChildSize;
 
   @override
   State<OrexSpeakingFrame> createState() => _OrexSpeakingFrameState();
 }
 
-class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
+class _OrexSpeakingFrameState extends State<OrexSpeakingFrame>
+    with WidgetsBindingObserver {
   Timer? _timer;
   bool _active = false;
   double _levelDb = -100;
@@ -100,8 +119,23 @@ class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _syncSamplingForLifecycle(
+      WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed,
+    );
+  }
+
+  void _syncSamplingForLifecycle(AppLifecycleState state) {
+    _timer?.cancel();
+    _timer = null;
+    if (state != AppLifecycleState.resumed) return;
     _sample();
     _timer = Timer.periodic(const Duration(milliseconds: 35), (_) => _sample());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _syncSamplingForLifecycle(state);
   }
 
   @override
@@ -115,6 +149,7 @@ class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
     super.dispose();
   }
@@ -137,11 +172,27 @@ class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
   @override
   Widget build(BuildContext context) {
     final active = _active;
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 35),
-      curve: Curves.linear,
-      padding: EdgeInsets.all(active ? widget.activePadding : widget.inactivePadding),
-      decoration: BoxDecoration(
+    final decoration = BoxDecoration(
+      borderRadius: BorderRadius.circular(widget.borderRadius),
+      border: Border.all(
+        color: active
+            ? OrexColors.copper.withValues(alpha: 0.95)
+            : Colors.white.withValues(alpha: 0.08),
+        width: active ? 2 : 1,
+      ),
+      boxShadow: active
+          ? [
+              BoxShadow(
+                color: OrexColors.copper.withValues(alpha: 0.28),
+                blurRadius: widget.activeBlur,
+                spreadRadius: 1,
+              ),
+            ]
+          : null,
+    );
+
+    if (widget.preserveChildSize) {
+      final borderDecoration = BoxDecoration(
         borderRadius: BorderRadius.circular(widget.borderRadius),
         border: Border.all(
           color: active
@@ -149,16 +200,37 @@ class _OrexSpeakingFrameState extends State<OrexSpeakingFrame> {
               : Colors.white.withValues(alpha: 0.08),
           width: active ? 2 : 1,
         ),
-        boxShadow: active
-            ? [
-                BoxShadow(
-                  color: OrexColors.copper.withValues(alpha: 0.28),
-                  blurRadius: widget.activeBlur,
-                  spreadRadius: 1,
-                ),
-              ]
-            : null,
+      );
+
+      // Keep media itself completely untouched. A blurred copper shadow around
+      // a Texture/Surface-backed video can be composited over the decoded frame
+      // on some platforms and appears as an orange wash along the top edge.
+      // Media tiles therefore use the same active border without blur; the
+      // avatar-only path below keeps the existing glow animation.
+      return Stack(
+        fit: StackFit.passthrough,
+        children: [
+          widget.child,
+          Positioned.fill(
+            child: IgnorePointer(
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 35),
+                curve: Curves.linear,
+                decoration: borderDecoration,
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 35),
+      curve: Curves.linear,
+      padding: EdgeInsets.all(
+        active ? widget.activePadding : widget.inactivePadding,
       ),
+      decoration: decoration,
       child: widget.child,
     );
   }

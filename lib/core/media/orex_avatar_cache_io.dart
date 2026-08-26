@@ -133,7 +133,7 @@ class OrexAvatarCache {
   static Future<bool> contains(Uri mxc) async {
     if (mxc.scheme != 'mxc') return false;
     try {
-      return (await _fileFor(mxc)).exists();
+      return await (await _fileFor(mxc)).exists();
     } catch (_) {
       return false;
     }

@@ -178,6 +178,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
   @override
   Widget build(BuildContext context) {
     return AmbientBackground(
+      groupBackdrops: true,
       child: Scaffold(
         backgroundColor: Colors.transparent,
         appBar: AppBar(

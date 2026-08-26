@@ -190,7 +190,8 @@ class _ChatListPanelState extends State<ChatListPanel> {
     final q = _query.toLowerCase();
     final byId = <String, Room>{};
     for (final room in widget.matrix.rooms) {
-      if (_matchesLocalRoomSearch(widget.matrix, room, q)) {
+      if (!widget.matrix.isSupergroupChild(room) &&
+          _matchesLocalRoomSearch(widget.matrix, room, q)) {
         byId[room.id] = room;
       }
     }
@@ -213,7 +214,7 @@ class _ChatListPanelState extends State<ChatListPanel> {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: Listenable.merge([widget.matrix, widget.folders]),
+      animation: widget.folders,
       builder: (context, _) {
         final folders = widget.folders.folders;
         final selectedIndex = folders.isEmpty
@@ -239,28 +240,31 @@ class _ChatListPanelState extends State<ChatListPanel> {
             ),
             const SizedBox(height: 4),
             Expanded(
-              child: PageView.builder(
-                controller: _pageController,
-                itemCount: folders.length,
-                onPageChanged: (index) {
-                  setState(() => _folderIndex = index);
-                  _centerFolderTab(index);
-                },
-                itemBuilder: (context, index) {
-                  final folder = folders[index];
-                  final rooms = _roomsForFolder(folder);
-                  return _RoomListPage(
-                    matrix: widget.matrix,
-                    rooms: rooms,
-                    selectedRoomId: widget.selectedRoomId,
-                    globalItemCount: index == selectedIndex
-                        ? _globalSectionItemCount
-                        : 0,
-                    globalItemBuilder: _globalSearchItem,
-                    onSelect: widget.onSelect,
-                    onDelete: _confirmDelete,
-                  );
-                },
+              child: AnimatedBuilder(
+                animation: widget.matrix,
+                builder: (context, _) => PageView.builder(
+                  controller: _pageController,
+                  itemCount: folders.length,
+                  onPageChanged: (index) {
+                    setState(() => _folderIndex = index);
+                    _centerFolderTab(index);
+                  },
+                  itemBuilder: (context, index) {
+                    final folder = folders[index];
+                    final rooms = _roomsForFolder(folder);
+                    return _RoomListPage(
+                      matrix: widget.matrix,
+                      rooms: rooms,
+                      selectedRoomId: widget.selectedRoomId,
+                      globalItemCount: index == selectedIndex
+                          ? _globalSectionItemCount
+                          : 0,
+                      globalItemBuilder: _globalSearchItem,
+                      onSelect: widget.onSelect,
+                      onDelete: _confirmDelete,
+                    );
+                  },
+                ),
               ),
             ),
           ],

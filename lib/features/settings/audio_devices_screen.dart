@@ -16,6 +16,7 @@ class AudioDevicesScreen extends StatelessWidget {
       matrix: matrix,
       includeCallRoutes: false,
       builder: (context, controller, actions) => AmbientBackground(
+        groupBackdrops: true,
         child: Scaffold(
           backgroundColor: Colors.transparent,
           appBar: AppBar(

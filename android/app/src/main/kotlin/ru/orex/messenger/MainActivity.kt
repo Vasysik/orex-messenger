@@ -1,7 +1,10 @@
 package ru.orex.messenger
 
+import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.net.Uri
@@ -12,6 +15,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import android.util.Rational
 import android.view.ViewGroup
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -29,6 +33,7 @@ class MainActivity : FlutterActivity() {
     private var callHandoffCallId: String? = null
     private var callHandoffRingEventId: String? = null
     private val callHandoffHandler = Handler(Looper.getMainLooper())
+    private var pictureInPictureChannel: MethodChannel? = null
     private var callHandoffRevealTimeout: Runnable? = null
     private var callHandoffTimeout: Runnable? = null
 
@@ -56,6 +61,37 @@ class MainActivity : FlutterActivity() {
         super.onPause()
     }
 
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration,
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        pictureInPictureChannel?.invokeMethod(
+            "onPictureInPictureModeChanged",
+            isInPictureInPictureMode,
+        )
+    }
+
+    private fun isPictureInPictureSupported(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+
+    private fun pictureInPictureAspectRatio(width: Int?, height: Int?): Rational {
+        val safeWidth = width?.coerceAtLeast(1) ?: 16
+        val safeHeight = height?.coerceAtLeast(1) ?: 9
+        val ratio = safeWidth.toDouble() / safeHeight.toDouble()
+        return when {
+            ratio > 2.39 -> Rational(239, 100)
+            ratio < (1.0 / 2.39) -> Rational(100, 239)
+            else -> Rational(safeWidth, safeHeight)
+        }
+    }
+
+    private fun pictureInPictureParams(width: Int?, height: Int?): PictureInPictureParams =
+        PictureInPictureParams.Builder()
+            .setAspectRatio(pictureInPictureAspectRatio(width, height))
+            .build()
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,
@@ -68,9 +104,12 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        pictureInPictureChannel?.setMethodCallHandler(null)
+        pictureInPictureChannel = null
         clearCallHandoffOverlay()
         setProximityEnabled(false)
         OrexPushBridge.detach(this)
+        OrexSystemUiBridge.detach(this)
         super.onDestroy()
     }
 
@@ -259,6 +298,7 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         OrexAndroidTelecomManager.attach(this, flutterEngine.dartExecutor.binaryMessenger)
         OrexPushBridge.attach(this, flutterEngine.dartExecutor.binaryMessenger)
+        OrexSystemUiBridge.attach(this, flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "orex/update")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -273,6 +313,60 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        pictureInPictureChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "orex/picture_in_picture",
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "isSupported" -> result.success(isPictureInPictureSupported())
+                    "enter" -> {
+                        if (!isPictureInPictureSupported()) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        val params = pictureInPictureParams(
+                            call.argument<Int>("width"),
+                            call.argument<Int>("height"),
+                        )
+                        result.success(enterPictureInPictureMode(params))
+                    }
+                    "updateAspectRatio" -> {
+                        if (!isPictureInPictureSupported()) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        val params = pictureInPictureParams(
+                            call.argument<Int>("width"),
+                            call.argument<Int>("height"),
+                        )
+                        val updated = runCatching {
+                            setPictureInPictureParams(params)
+                            true
+                        }.getOrDefault(false)
+                        result.success(updated)
+                    }
+                    "dismiss" -> {
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+                            !isInPictureInPictureMode
+                        ) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        // There is no symmetric public exitPictureInPictureMode().
+                        // Do not finish/remove Orex's main Activity here: its Flutter
+                        // engine intentionally survives the host and also owns fragile
+                        // call/push handoff state. Moving the existing task to the back
+                        // dismisses the PiP presentation without destroying that owner.
+                        result.success(
+                            runCatching { moveTaskToBack(false) }.getOrDefault(false),
+                        )
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {

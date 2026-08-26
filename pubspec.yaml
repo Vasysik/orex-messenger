@@ -1,7 +1,7 @@
 name: orex_messenger
 description: "Orex Messenger — тёплый ореховый мессенджер на MatrixRTC + LiveKit."
 publish_to: "none"
-version: 0.4.3+6
+version: 0.4.4+7
 
 environment:
   sdk: ">=3.12.0 <4.0.0"
@@ -52,6 +52,8 @@ dependencies:
   sqflite: 2.4.3
   sqflite_common_ffi: 2.3.7+1
   web: 1.1.1
+  # Одно Flutter engine/isolate, но отдельные системные окна Windows (PiP).
+  multiview_desktop: 1.2.1
 
 dev_dependencies:
   flutter_test:

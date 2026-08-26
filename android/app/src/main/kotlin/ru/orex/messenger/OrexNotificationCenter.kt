@@ -309,20 +309,10 @@ object OrexNotificationCenter {
         } else {
             answer
         }
-        val uiDecline = if (isRinging) {
-            OrexPushBridge.incomingCallActionPendingIntent(
-                context = context,
-                callId = callId,
-                displayName = displayName,
-                video = video,
-                action = "reject",
-                requestCode = 7002,
-                systemManaged = true,
-                ringEventId = ringEventId,
-            )
-        } else {
-            decline
-        }
+        // Core-Telecom already supplied a direct BroadcastReceiver action.
+        // Replacing it with a temporary Activity made Reject foreground the
+        // whole Orex task on cold-process/OEM paths. Decline never needs UI.
+        val uiDecline = decline
         return postCall(
             context = context,
             displayName = displayName,

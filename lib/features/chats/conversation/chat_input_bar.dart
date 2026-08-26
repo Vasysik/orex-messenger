@@ -235,19 +235,37 @@ class _InputBar extends StatelessWidget {
                           ),
                         ),
                       ),
-                      GestureDetector(
-                        onTap: canSend
-                            ? () => _runWithHaptic(
-                                  onToggleEmojiPicker,
-                                  kind: OrexHapticKind.selection,
-                                )
-                            : null,
-                        child: Icon(
-                          showEmojiPicker
-                              ? Icons.keyboard_hide_outlined
-                              : Icons.emoji_emotions_outlined,
-                          color: OrexColors.copper
-                              .withValues(alpha: canSend ? 0.8 : 0.32),
+                      Material(
+                        color: Colors.transparent,
+                        shape: const CircleBorder(),
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: canSend
+                              ? () => _runWithHaptic(
+                                    onToggleEmojiPicker,
+                                    kind: OrexHapticKind.selection,
+                                  )
+                              : null,
+                          mouseCursor: canSend
+                              ? SystemMouseCursors.click
+                              : SystemMouseCursors.basic,
+                          customBorder: const CircleBorder(),
+                          hoverColor:
+                              OrexColors.copper.withValues(alpha: 0.08),
+                          splashColor:
+                              OrexColors.copper.withValues(alpha: 0.14),
+                          highlightColor:
+                              OrexColors.copper.withValues(alpha: 0.06),
+                          child: SizedBox.square(
+                            dimension: 40,
+                            child: Icon(
+                              showEmojiPicker
+                                  ? Icons.keyboard_hide_outlined
+                                  : Icons.emoji_emotions_outlined,
+                              color: OrexColors.copper
+                                  .withValues(alpha: canSend ? 0.8 : 0.32),
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -255,14 +273,11 @@ class _InputBar extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              GestureDetector(
-                onTap: canSend
-                    ? () => _runWithHaptic(
-                          onSend,
-                          kind: OrexHapticKind.confirm,
-                        )
-                    : null,
-                child: Container(
+              Material(
+                color: Colors.transparent,
+                shape: const CircleBorder(),
+                clipBehavior: Clip.antiAlias,
+                child: Ink(
                   width: 46,
                   height: 46,
                   decoration: BoxDecoration(
@@ -272,12 +287,27 @@ class _InputBar extends StatelessWidget {
                         ? null
                         : OrexColors.walnut.withValues(alpha: 0.18),
                   ),
-                  child: Icon(
-                    Icons.send,
-                    color: canSend
-                        ? OrexColors.cream
-                        : OrexColors.copper.withValues(alpha: 0.36),
-                    size: 20,
+                  child: InkWell(
+                    onTap: canSend
+                        ? () => _runWithHaptic(
+                              onSend,
+                              kind: OrexHapticKind.confirm,
+                            )
+                        : null,
+                    mouseCursor: canSend
+                        ? SystemMouseCursors.click
+                        : SystemMouseCursors.basic,
+                    customBorder: const CircleBorder(),
+                    hoverColor: OrexColors.cream.withValues(alpha: 0.10),
+                    splashColor: OrexColors.cream.withValues(alpha: 0.16),
+                    highlightColor: OrexColors.cream.withValues(alpha: 0.07),
+                    child: Icon(
+                      Icons.send,
+                      color: canSend
+                          ? OrexColors.cream
+                          : OrexColors.copper.withValues(alpha: 0.36),
+                      size: 20,
+                    ),
                   ),
                 ),
               ),

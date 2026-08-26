@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -5,29 +6,80 @@ import 'package:open_app_file/open_app_file.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'temporary_media_store_io.dart';
+
 class FileHelper {
+  static Future<OrexTemporaryMediaStore>? _storeFuture;
+  static Future<void> _operationTail = Future<void>.value();
+
   static Future<void> saveAndOpenFile(String filename, Uint8List bytes) async {
-    final dir = await getTemporaryDirectory();
-    final safeName = _safeFilename(filename);
-    final file = File(p.join(dir.path, safeName));
-    await file.writeAsBytes(bytes, flush: true);
-    await OpenAppFile.open(file.path);
+    final file = await _serialize(() async {
+      final store = await _store();
+      return store.write(filename, bytes);
+    });
+
+    try {
+      final result = await OpenAppFile.open(file.path);
+      if (result.type != ResultType.done) {
+        throw FileSystemException(result.message, file.path);
+      }
+    } catch (_) {
+      try {
+        await file.delete();
+      } on FileSystemException {
+        // Best effort: the managed cleanup retries on the next launch/open.
+      }
+      rethrow;
+    }
   }
 
-  static String _safeFilename(String filename) {
-    var name = filename.trim().replaceAll('\\', '/').split('/').last;
-    name = name
-        .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    if (name.isEmpty || name == '.' || name == '..') return 'download.bin';
-    if (name.length <= 120) return name;
+  static Future<void> cleanupTemporaryFiles() async {
+    try {
+      await _serialize(() async {
+        final store = await _store();
+        await store.cleanup();
+      });
+    } catch (_) {
+      // Temporary cleanup must never prevent application startup.
+    }
+  }
 
-    final ext = p.extension(name);
-    final base = p.basenameWithoutExtension(name);
-    final maxBase = (120 - ext.length).clamp(16, 120).toInt();
-    final trimmedBase = base.length > maxBase ? base.substring(0, maxBase) : base;
-    if (trimmedBase.isEmpty) return name.substring(0, 120);
-    return '$trimmedBase$ext';
+  static Future<OrexTemporaryMediaStore> _store() async {
+    final existing = _storeFuture;
+    if (existing != null) return existing;
+
+    final created = _createStore();
+    _storeFuture = created;
+    try {
+      return await created;
+    } catch (_) {
+      if (identical(_storeFuture, created)) _storeFuture = null;
+      rethrow;
+    }
+  }
+
+  static Future<OrexTemporaryMediaStore> _createStore() async {
+    final temp = await getTemporaryDirectory();
+    return OrexTemporaryMediaStore(
+      root: Directory(p.join(temp.path, 'orex_media')),
+    );
+  }
+
+  static Future<T> _serialize<T>(Future<T> Function() action) {
+    final completer = Completer<T>();
+    final previous = _operationTail;
+    _operationTail = () async {
+      try {
+        await previous;
+      } catch (_) {
+        // A failed operation must not block the managed queue.
+      }
+      try {
+        completer.complete(await action());
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    }();
+    return completer.future;
   }
 }

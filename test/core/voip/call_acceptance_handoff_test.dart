@@ -85,6 +85,42 @@ void main() {
     );
   });
 
+  test('caller posts a timeline summary when ending an established call', () {
+    expect(
+      orexShouldPostCallSummary(
+        initiator: true,
+        hasRoomId: true,
+        hadSession: true,
+        fromRemote: false,
+        shouldSendEndedSignal: false,
+      ),
+      isTrue,
+    );
+  });
+
+  test('call summaries remain initiator-only to avoid duplicate timeline cards', () {
+    expect(
+      orexShouldPostCallSummary(
+        initiator: false,
+        hasRoomId: true,
+        hadSession: true,
+        fromRemote: true,
+        shouldSendEndedSignal: true,
+      ),
+      isFalse,
+    );
+    expect(
+      orexShouldPostCallSummary(
+        initiator: true,
+        hasRoomId: false,
+        hadSession: true,
+        fromRemote: false,
+        shouldSendEndedSignal: false,
+      ),
+      isFalse,
+    );
+  });
+
   test('fresh cold-answer descriptor survives bridge dispatch races', () {
     expect(
       orexShouldKeepRecoverableAnswerBootstrap(

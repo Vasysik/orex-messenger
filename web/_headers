@@ -8,3 +8,30 @@
   Cross-Origin-Embedder-Policy: require-corp
   Cross-Origin-Resource-Policy: same-origin
   Permissions-Policy: camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=(), usb=()
+
+/index.html
+  Cache-Control: no-cache, must-revalidate
+
+/flutter_bootstrap.js
+  Cache-Control: no-cache, must-revalidate
+
+/manifest.json
+  Cache-Control: no-cache, must-revalidate
+
+/version.json
+  Cache-Control: no-cache, must-revalidate
+
+/main.dart.js
+  Cache-Control: no-cache, must-revalidate
+
+/flutter_service_worker.js
+  Cache-Control: no-cache, must-revalidate
+
+/e2ee.worker.dart.js
+  Cache-Control: no-cache, must-revalidate
+
+/assets/*
+  Cache-Control: public, max-age=300, must-revalidate
+
+/icons/*
+  Cache-Control: public, max-age=300, must-revalidate

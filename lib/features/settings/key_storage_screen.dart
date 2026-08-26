@@ -177,6 +177,7 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
   @override
   Widget build(BuildContext context) {
     return AmbientBackground(
+      groupBackdrops: true,
       child: Scaffold(
         backgroundColor: Colors.transparent,
         appBar: AppBar(
@@ -201,6 +202,9 @@ class _KeyStorageScreenState extends State<KeyStorageScreen> {
                     child: InkWell(
                       borderRadius: BorderRadius.circular(18),
                       onTap: enabled ? null : _enableKeyStorage,
+                      mouseCursor: enabled
+                          ? SystemMouseCursors.basic
+                          : SystemMouseCursors.click,
                       child: Padding(
                         padding: const EdgeInsets.all(18),
                         child: Row(

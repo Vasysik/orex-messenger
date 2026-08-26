@@ -19,10 +19,10 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 /**
- * Resolves one Matrix push outside FirebaseMessagingService.
+ * Runs bounded Matrix work outside FirebaseMessagingService.
  *
- * The worker may open the encrypted Matrix cache, fetch the exact event and
- * wait for missing Megolm keys. None of that work is allowed to block FCM.
+ * It resolves encrypted push events and delivers cold-process call Reject
+ * signaling. None of that work is allowed to block FCM or a notification tap.
  */
 class OrexPushResolveWorker(
     appContext: Context,
@@ -32,6 +32,24 @@ class OrexPushResolveWorker(
     override suspend fun doWork(): Result {
         val payload = decodePayload(inputData.getString(KEY_PAYLOAD_JSON))
         if (payload.isEmpty()) return Result.success()
+
+        if (payload[KEY_BACKGROUND_CALL_ACTION] == "reject") {
+            val handled = withTimeoutOrNull(WORK_TIMEOUT_MS) {
+                suspendCancellableCoroutine<Boolean> { continuation ->
+                    OrexPushBridge.handleBackgroundCallAction(
+                        applicationContext,
+                        payload,
+                    ) { value ->
+                        if (continuation.isActive) continuation.resume(value)
+                    }
+                }
+            } == true
+            if (!handled) {
+                Log.w(TAG, "Background call action unavailable attempt=$runAttemptCount")
+                return if (runAttemptCount < MAX_RETRIES) Result.retry() else Result.success()
+            }
+            return Result.success()
+        }
 
         val resolved = withTimeoutOrNull(WORK_TIMEOUT_MS) {
             suspendCancellableCoroutine<Map<String, String>?> { continuation ->
@@ -55,6 +73,16 @@ class OrexPushResolveWorker(
         private const val KEY_PAYLOAD_JSON = "payload_json"
         private const val WORK_TIMEOUT_MS = 85_000L
         private const val MAX_RETRIES = 2
+        const val KEY_BACKGROUND_CALL_ACTION = "orex_background_call_action"
+
+        fun enqueueCallReject(
+            context: Context,
+            payload: Map<String, String>,
+        ) {
+            val queued = LinkedHashMap(payload)
+            queued[KEY_BACKGROUND_CALL_ACTION] = "reject"
+            enqueue(context, queued)
+        }
 
         fun enqueue(context: Context, payload: Map<String, String>) {
             if (payload.isEmpty()) return
@@ -79,13 +107,18 @@ class OrexPushResolveWorker(
             val identity = payload["event_id"]
                 ?: payload["message_id"]
                 ?: "${payload["room_id"].orEmpty()}|${payload.hashCode()}"
-            val workName = "orex_push_resolve_${identity.hashCode()}"
+            val workPrefix = if (payload.containsKey(KEY_BACKGROUND_CALL_ACTION)) {
+                "orex_call_action"
+            } else {
+                "orex_push_resolve"
+            }
+            val workName = "${workPrefix}_${identity.hashCode()}"
             WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
                 workName,
                 ExistingWorkPolicy.KEEP,
                 request,
             )
-            Log.i(TAG, "Queued Matrix push resolution work=$workName")
+            Log.i(TAG, "Queued Matrix background work=$workName")
         }
 
         private fun decodePayload(encoded: String?): Map<String, String> {

@@ -69,9 +69,49 @@ flutter build web --release --no-pub --no-web-resources-cdn `
 build\web
 ```
 
-## Web smoke
+### Flutter-страница скачивания
 
-Перед публикацией проверьте login/restore session, E2EE сообщения и вложения, большие входящие файлы, Android ↔ Windows ↔ Web media-E2EE звонок, late join и reconnect.
+`/download/` — это route того же Flutter-приложения, а не отдельный HTML/CSS
+frontend. `web/nginx.conf` обрабатывает `/download`/`/download/` явно и возвращает
+`index.html`, после чего bootstrap выбирает облегчённый download-screen без
+запуска Matrix-сессии. Явный location нужен, чтобы случайная/stale директория
+`build/web/download` не превращала этот SPA route в nginx `403 Forbidden`.
+После публикации Web страница доступна по адресу:
+
+```text
+https://orex.vasys.ru/download/
+```
+
+Экран переиспользует Orex theme, `AmbientBackground`, `GlassPanel` и brand-widget.
+Он не хранит версии и ссылки вручную: запрашивает `/updates/stable/latest.json`,
+валидирует его через общую update-модель и показывает Windows x64, Android ARM64
+и ARMv7. Если feed временно недоступен, можно повторить запрос прямо на экране.
+В Web переход встроен в экран входа и в шапку списка чатов; нативные сборки его
+не показывают.
+
+`web/nginx.conf` держит Web shell и Flutter runtime на revalidation: `index.html`,
+`flutter_bootstrap.js`, `main.dart.js`, JS/WASM/JSON и compatibility service
+worker получают `Cache-Control: no-cache, must-revalidate`. Это не запрещает
+браузеру хранить файлы: неизменившийся ресурс обычно подтверждается дешёвым
+`304`, но одноимённый файл нового deploy не должен молча жить год из старого
+кэша. Bundled image assets имеют только короткое окно свежести и затем также
+проверяются через ETag/Last-Modified. Build-versioned namespace
+`/__orex_build/...` текущим bootstrap/nginx **не используется**.
+
+Из-за одноимённых Flutter-файлов `build/web` всё равно нужно публиковать как одну
+согласованную сборку. Web PiP bridge живёт во внешнем same-origin
+`flutter_bootstrap.js` и устанавливается до запуска Dart. В `index.html` нет
+inline-копии bridge: production CSP намеренно не содержит `unsafe-inline`, поэтому
+дублирование там только создавало заблокированный `<script>` и шум в Console.
+Dart перед interop-вызовом также проверяет наличие всех трёх JS-функций. Поэтому
+новый `main.dart.js` со старым shell не должен падать на регистрации PiP callback;
+максимум кнопка безопасно вернёт `false`, если bridge действительно недоступен.
+
+`index.html` также держит лёгкий HTML/CSS bootstrap-фон до первого кадра Flutter,
+поэтому даже при холодном старте между навигацией и canvas нет белой вспышки.
+Preload `app_icon.png` намеренно удалён: Flutter запрашивает ассет уже через свой
+versioned asset base, и отдельный preload только создавал предупреждение
+`preloaded ... but not used`.
 
 ## Деплой на `https://orex.vasys.ru/` через Traefik
 
@@ -107,13 +147,17 @@ docker compose -f docker-compose.web.yml up -d --force-recreate orex-web
 
 ```bash
 curl -I https://orex.vasys.ru/
+curl -I https://orex.vasys.ru/download/
+curl -I https://orex.vasys.ru/flutter_bootstrap.js
 ```
 
 В ответе должны быть CSP, HSTS, `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, Permissions Policy,
 `Cross-Origin-Opener-Policy: same-origin`,
 `Cross-Origin-Embedder-Policy: require-corp`,
-`Cross-Origin-Resource-Policy: same-origin` и `Cache-Control: no-cache`. Эти
+`Cross-Origin-Resource-Policy: same-origin` и revalidation cache policy.
+`/download/` должен отвечать `200`, а не `403`; bootstrap должен иметь
+`Cache-Control: no-cache, must-revalidate`. Эти
 COOP/COEP-заголовки нужны `SharedArrayBuffer`/flutter_rust_bridge; обычный
 `flutter run -d chrome` их не выставляет и потому может печатать предупреждение,
 даже когда production deployment настроен правильно. Файл `web/_headers` остаётся декларацией тех же

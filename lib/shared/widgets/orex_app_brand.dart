@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../../core/config/app_version.dart';
@@ -7,6 +8,7 @@ import '../theme/orex_theme.dart';
 String get orexAppName => OrexConfig.appDisplayName;
 const String orexAppSlogan = 'Тепло. Быстро. Децентрализованно.';
 const String orexAppIconAsset = 'assets/icon/app_icon.png';
+const String orexWebAppIconUrl = '/icons/Icon-192.png';
 
 /// Фирменная иконка Orex с единым размером, скруглением и мягким медным glow.
 /// Используется на bootstrap/auth-поверхностях, чтобы splash и регистрация не
@@ -31,6 +33,7 @@ class OrexAppIcon extends StatelessWidget {
         width: size,
         height: size,
         decoration: BoxDecoration(
+          gradient: OrexColors.copperGradient,
           borderRadius: radius,
           boxShadow: [
             BoxShadow(
@@ -41,20 +44,48 @@ class OrexAppIcon extends StatelessWidget {
           ],
         ),
         clipBehavior: Clip.antiAlias,
-        child: Image.asset(
-          orexAppIconAsset,
-          fit: BoxFit.cover,
-          cacheWidth: decodeWidth,
-          filterQuality: FilterQuality.medium,
-          errorBuilder: (context, error, stackTrace) => DecoratedBox(
-            decoration: const BoxDecoration(gradient: OrexColors.copperGradient),
-            child: Icon(
-              Icons.chat_bubble_rounded,
-              color: OrexColors.cream,
-              size: size * 0.46,
-            ),
-          ),
-        ),
+        child: kIsWeb
+            ? Image.network(
+                orexWebAppIconUrl,
+                fit: BoxFit.cover,
+                filterQuality: FilterQuality.medium,
+                gaplessPlayback: true,
+                frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                  if (wasSynchronouslyLoaded) return child;
+                  return AnimatedOpacity(
+                    opacity: frame == null ? 0 : 1,
+                    duration: const Duration(milliseconds: 140),
+                    curve: Curves.easeOut,
+                    child: child,
+                  );
+                },
+                errorBuilder: (_, _, _) => Icon(
+                  Icons.eco_outlined,
+                  color: OrexColors.cream,
+                  size: size * 0.42,
+                ),
+              )
+            : Image.asset(
+                orexAppIconAsset,
+                fit: BoxFit.cover,
+                cacheWidth: decodeWidth,
+                filterQuality: FilterQuality.medium,
+                gaplessPlayback: true,
+                frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                  if (wasSynchronouslyLoaded) return child;
+                  return AnimatedOpacity(
+                    opacity: frame == null ? 0 : 1,
+                    duration: const Duration(milliseconds: 140),
+                    curve: Curves.easeOut,
+                    child: child,
+                  );
+                },
+                errorBuilder: (_, _, _) => Icon(
+                  Icons.eco_outlined,
+                  color: OrexColors.cream,
+                  size: size * 0.42,
+                ),
+              ),
       ),
     );
   }
@@ -64,16 +95,18 @@ class OrexAppIcon extends StatelessWidget {
 class OrexBrandHeader extends StatelessWidget {
   const OrexBrandHeader({
     super.key,
-    required this.version,
+    this.version,
     this.iconSize = 120,
     this.titleFontSize = 22,
     this.textAlign = TextAlign.center,
-  });
+    this.showVersion = true,
+  }) : assert(!showVersion || version != null);
 
-  final OrexAppVersion version;
+  final OrexAppVersion? version;
   final double iconSize;
   final double titleFontSize;
   final TextAlign textAlign;
+  final bool showVersion;
 
   @override
   Widget build(BuildContext context) {
@@ -96,17 +129,19 @@ class OrexBrandHeader extends StatelessWidget {
           textAlign: textAlign,
           style: Theme.of(context).textTheme.bodySmall,
         ),
-        const SizedBox(height: 10),
-        Text(
-          version.settingsSubtitle,
-          textAlign: textAlign,
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? OrexColors.cream.withValues(alpha: 0.82)
-                    : OrexColors.walnutDeep.withValues(alpha: 0.72),
-                fontSize: 13,
-              ),
-        ),
+        if (showVersion) ...[
+          const SizedBox(height: 10),
+          Text(
+            (version ?? OrexAppVersion.fallback).settingsSubtitle,
+            textAlign: textAlign,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? OrexColors.cream.withValues(alpha: 0.82)
+                      : OrexColors.walnutDeep.withValues(alpha: 0.72),
+                  fontSize: 13,
+                ),
+          ),
+        ],
       ],
     );
   }

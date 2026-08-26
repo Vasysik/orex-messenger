@@ -44,6 +44,7 @@ class _ChatTile extends StatelessWidget {
           borderRadius: BorderRadius.circular(16),
           onTap: onTap,
           onLongPress: onLongPress,
+          mouseCursor: SystemMouseCursors.click,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),
             margin: const EdgeInsets.symmetric(vertical: 2),
@@ -206,6 +207,7 @@ class _GlobalSearchTile extends StatelessWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
           onTap: onTap,
+          mouseCursor: SystemMouseCursors.click,
           child: Padding(
             padding: const EdgeInsets.all(10),
             child: Row(

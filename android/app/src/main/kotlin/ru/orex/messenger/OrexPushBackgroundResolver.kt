@@ -16,12 +16,11 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * One-shot Matrix/E2EE resolver for FCM data messages.
+ * Serialized headless Matrix/E2EE runtime for Android background work.
  *
- * Sygnal cannot decrypt E2EE. When the UI engine is absent this object starts a
- * headless Flutter isolate, opens the existing encrypted Matrix cache and asks
- * the Matrix Dart SDK to fetch/decrypt the exact room event referenced by the
- * push. Requests are serialized so two FCM deliveries never race the same DB.
+ * It resolves encrypted push events and can deliver an exact call Reject while
+ * the UI engine is absent. Requests share one Flutter isolate so background
+ * work never races the encrypted Matrix database with itself.
  */
 object OrexPushBackgroundResolver {
     private const val TAG = "OrexPushResolver"
@@ -33,14 +32,14 @@ object OrexPushBackgroundResolver {
 
     private data class Request(
         val id: String = UUID.randomUUID().toString(),
+        val method: String,
         val payload: Map<String, String>,
-        val callback: (Map<String, String>?) -> Unit,
+        val callback: (Any?) -> Unit,
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val queue = ArrayDeque<Request>()
 
-    private var applicationContext: Context? = null
     private var engine: FlutterEngine? = null
     private var channel: MethodChannel? = null
     private var ready = false
@@ -86,11 +85,37 @@ object OrexPushBackgroundResolver {
         context: Context,
         payload: Map<String, String>,
         callback: (Map<String, String>?) -> Unit,
+    ) = enqueue(
+        context = context,
+        method = "resolvePush",
+        payload = payload,
+    ) { raw -> callback(stringMap(raw)) }
+
+    fun handleCallAction(
+        context: Context,
+        payload: Map<String, String>,
+        callback: (Boolean) -> Unit,
+    ) = enqueue(
+        context = context,
+        method = "handleCallAction",
+        payload = payload,
+    ) { raw -> callback(raw == true) }
+
+    private fun enqueue(
+        context: Context,
+        method: String,
+        payload: Map<String, String>,
+        callback: (Any?) -> Unit,
     ) {
         val appContext = context.applicationContext
         mainHandler.post {
-            applicationContext = appContext
-            queue.addLast(Request(payload = LinkedHashMap(payload), callback = callback))
+            queue.addLast(
+                Request(
+                    method = method,
+                    payload = LinkedHashMap(payload),
+                    callback = callback,
+                ),
+            )
             cancelIdleShutdown()
             ensureEngine(appContext)
             pump()
@@ -130,7 +155,7 @@ object OrexPushBackgroundResolver {
                     )
                     newEngine.dartExecutor.executeDartEntrypoint(entrypoint)
                     scheduleStartupTimeout()
-                    Log.i(TAG, "Headless Flutter resolver started")
+                    Log.i(TAG, "Headless Matrix runtime started")
                 } catch (error: Throwable) {
                     Log.e(TAG, "Failed to start headless Flutter resolver", error)
                     creatingEngine = false
@@ -153,7 +178,7 @@ object OrexPushBackgroundResolver {
                 startupTimeout?.let(mainHandler::removeCallbacks)
                 startupTimeout = null
                 result.success(true)
-                Log.i(TAG, "Headless Matrix resolver is ready")
+                Log.i(TAG, "Headless Matrix runtime is ready")
                 pump()
             }
             else -> result.notImplemented()
@@ -179,11 +204,11 @@ object OrexPushBackgroundResolver {
         mainHandler.postDelayed(timeout, RESOLVE_TIMEOUT_MS)
 
         methodChannel.invokeMethod(
-            "resolvePush",
+            request.method,
             request.payload,
             object : MethodChannel.Result {
                 override fun success(result: Any?) {
-                    finishActive(request, stringMap(result))
+                    finishActive(request, result)
                 }
 
                 override fun error(
@@ -196,16 +221,16 @@ object OrexPushBackgroundResolver {
                 }
 
                 override fun notImplemented() {
-                    Log.e(TAG, "Dart push resolver is not implemented")
+                    Log.e(TAG, "Dart background method is not implemented")
                     finishActive(request, null)
                 }
             },
         )
     }
 
-    private fun finishActive(request: Request, resolved: Map<String, String>?) {
+    private fun finishActive(request: Request, result: Any?) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post { finishActive(request, resolved) }
+            mainHandler.post { finishActive(request, result) }
             return
         }
         if (active?.id != request.id) return
@@ -213,7 +238,7 @@ object OrexPushBackgroundResolver {
         activeTimeout = null
         active = null
         try {
-            request.callback(resolved)
+            request.callback(result)
         } catch (error: Throwable) {
             Log.e(TAG, "Push resolution callback failed", error)
         }
@@ -279,7 +304,7 @@ object OrexPushBackgroundResolver {
         channel = null
         engine?.destroy()
         engine = null
-        Log.i(TAG, "Headless Flutter resolver stopped")
+        Log.i(TAG, "Headless Matrix runtime stopped")
     }
 
     private fun stringMap(raw: Any?): Map<String, String>? {

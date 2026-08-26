@@ -18,21 +18,104 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="Orex Messenger">
+  <meta name="theme-color" content="#1C140E">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="orex_messenger">
+  <meta name="apple-mobile-web-app-title" content="Orex Messenger">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>orex_messenger</title>
+  <title>Orex Messenger</title>
   <link rel="manifest" href="manifest.json">
+
+  <!-- Keep the page branded while the Flutter engine starts. No image is used
+       here, so a cold cache can never flash a white page or wait for an icon. -->
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #1C140E;
+    }
+
+    #orex-bootstrap {
+      position: fixed;
+      inset: 0;
+      z-index: 2147483647;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 35% 20%, #3A2415 0, #1C140E 62%);
+      transition: opacity 140ms ease-out;
+    }
+
+    #orex-bootstrap.orex-bootstrap-hide {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .orex-asset-warmup {
+      position: fixed;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .orex-asset-warmup img {
+      width: 1px;
+      height: 1px;
+    }
+
+    .orex-bootstrap-spinner {
+      width: 42px;
+      height: 42px;
+      box-sizing: border-box;
+      border: 4px solid rgba(238, 141, 63, 0.2);
+      border-top-color: #D47939;
+      border-radius: 50%;
+      animation: orex-spin 780ms linear infinite;
+    }
+
+    @keyframes orex-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    @media (prefers-color-scheme: light) {
+      html, body { background: #F6ECDD; }
+      #orex-bootstrap {
+        background:
+          radial-gradient(circle at 35% 20%, #FBEAD2 0, #F6ECDD 68%);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #orex-bootstrap { transition: none; }
+      .orex-bootstrap-spinner { animation-duration: 1600ms; }
+    }
+  </style>
 </head>
 <body>
+  <!-- Start fetching the two brand images before Flutter/CanvasKit starts.
+       They are ordinary images rather than <link rel=preload>, so Chrome does
+       not warn if Flutter needs them slightly later. The URLs exactly match
+       the Web widgets below, allowing the normal browser HTTP cache to reuse
+       the response immediately. -->
+  <div class="orex-asset-warmup" aria-hidden="true">
+    <img src="icons/Icon-192.png" alt="" loading="eager" fetchpriority="high" decoding="async">
+    <img src="assets/assets/mascot/squirrel.png" alt="" loading="eager" fetchpriority="low" decoding="async">
+  </div>
+
+  <div id="orex-bootstrap" aria-label="Orex загружается" role="status">
+    <div class="orex-bootstrap-spinner" aria-hidden="true"></div>
+  </div>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

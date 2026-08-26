@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:matrix/matrix.dart';
 import 'package:orex_messenger/features/chats/conversation/chat_timeline_items.dart';
 
 void main() {
@@ -66,6 +67,29 @@ void main() {
       expect(groups.every((group) => !group.isAlbum), isTrue);
     });
 
+    test('does not group media across calendar-day boundaries', () {
+      final newer = DateTime(2026, 7, 4, 0, 0, 10);
+      final events = [
+        _TimelineStub(
+          id: 'after-midnight',
+          senderId: '@alice:example.org',
+          at: newer,
+          media: true,
+        ),
+        _TimelineStub(
+          id: 'before-midnight',
+          senderId: '@alice:example.org',
+          at: newer.subtract(const Duration(seconds: 20)),
+          media: true,
+        ),
+      ];
+
+      final groups = _group(events);
+
+      expect(groups, hasLength(2));
+      expect(groups.every((group) => !group.isAlbum), isTrue);
+    });
+
     test('filters non-renderable and redacted events before grouping', () {
       final base = DateTime(2026, 7, 3, 12);
       final events = [
@@ -95,6 +119,63 @@ void main() {
 
       expect(groups, hasLength(1));
       expect(groups.single.items.single.id, 'visible-image');
+    });
+  });
+
+  group('OrexTimelineAdapter day separators', () {
+    late Client client;
+    late Room room;
+
+    setUp(() {
+      client = Client(
+        'OrexTimelineAdapterTest',
+        database: MatrixSdkDatabase.buildWithoutOpen('OrexTimelineAdapterTest'),
+      );
+      room = Room(id: '!room:example.org', client: client);
+    });
+
+    tearDown(() => client.dispose(closeDatabase: false));
+
+    Event message(String id, DateTime at) => Event(
+      content: const <String, dynamic>{
+        'msgtype': MessageTypes.Text,
+        'body': 'message',
+      },
+      type: EventTypes.Message,
+      eventId: id,
+      senderId: '@alice:example.org',
+      originServerTs: at,
+      room: room,
+    );
+
+    test('inserts a separator between different calendar days', () {
+      final newer = DateTime(2026, 7, 4, 9);
+      final older = DateTime(2026, 7, 3, 23);
+
+      final items = OrexTimelineAdapter.transform(
+        [message('newer', newer), message('older', older)],
+        isRenderable: (_) => true,
+      );
+
+      expect(items, hasLength(3));
+      expect(items[0], isA<SingleEventItem>());
+      expect(items[1], isA<DaySeparatorItem>());
+      expect(items[2], isA<SingleEventItem>());
+      expect((items[1] as DaySeparatorItem).date, newer);
+    });
+
+    test('does not insert a separator inside one calendar day', () {
+      final base = DateTime(2026, 7, 4, 9);
+
+      final items = OrexTimelineAdapter.transform(
+        [
+          message('newer', base),
+          message('older', base.subtract(const Duration(hours: 2))),
+        ],
+        isRenderable: (_) => true,
+      );
+
+      expect(items.whereType<DaySeparatorItem>(), isEmpty);
     });
   });
 }

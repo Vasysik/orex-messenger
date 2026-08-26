@@ -31,7 +31,6 @@ class OrexUpdateController extends ChangeNotifier {
     required this._platform,
   });
 
-  static const Duration automaticCheckInterval = Duration(hours: 6);
   static const int _maximumFeedBytes = 128 * 1024;
   static const int _maximumNotesBytes = 256 * 1024;
 
@@ -157,16 +156,6 @@ class OrexUpdateController extends ChangeNotifier {
       'orex_update_dismissed_${channel.toLowerCase()}';
   String get _lastCheckPreferenceKey =>
       'orex_update_last_check_${channel.toLowerCase()}';
-
-  Future<void> checkIfDue() async {
-    if (!supportsInstall || isChecking) return;
-    final lastCheck = _lastCheckedAt;
-    if (lastCheck != null &&
-        DateTime.now().difference(lastCheck) < automaticCheckInterval) {
-      return;
-    }
-    await check(manual: false);
-  }
 
   Future<void> check({bool manual = true}) async {
     if (isChecking) return;
