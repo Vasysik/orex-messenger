@@ -837,7 +837,13 @@ Built-in Kotlin, server-side enforcement LiveKit grants/voice permissions,
   диагностику для login, sync, calls и media без утечки чувствительных данных;
 * 🟡 **Release smoke tests и воспроизводимость окружения.** Зафиксировать
   воспроизводимые версии backend/client зависимостей и обязательный smoke-набор
-  перед публичным распространением.
+  перед публичным распространением;
+* 🟡 **Контролируемое обновление Flutter/Dart и realtime/media stack.** После
+  выпуска `0.4.4` обновить зафиксированный Flutter/Dart и совместимые версии
+  `livekit_client`, `flutter_webrtc` и связанных realtime/media зависимостей одним
+  отдельным проходом. Не обновлять toolchain изолированно: после миграции заново
+  прогнать Flutter/Kotlin tests и полный regression звонков, media E2EE,
+  camera/screen share, PiP, background/cold-start и Web.
 
 ### 12.2. Версия 0.5.0 — доверие, контакты и управление сессиями
 
